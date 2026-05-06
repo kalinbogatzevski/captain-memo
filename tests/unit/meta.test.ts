@@ -70,3 +70,79 @@ test('MetaStore — deleteDocument removes by source_path', () => {
   store.deleteDocument('/abs/path/foo.md');
   expect(store.getDocument('/abs/path/foo.md')).toBeNull();
 });
+
+test('MetaStore — replaceChunksForDocument inserts chunks', () => {
+  const docId = store.upsertDocument({
+    source_path: '/abs/path/foo.md',
+    channel: 'memory',
+    project_id: 'erp-platform',
+    sha: 'abc',
+    mtime_epoch: 1,
+    metadata: {},
+  });
+  store.replaceChunksForDocument(docId, [
+    { chunk_id: 'memory:foo:aaaa1111', text: 'first chunk', sha: 'sha1', position: 0, metadata: { type: 'a' } },
+    { chunk_id: 'memory:foo:bbbb2222', text: 'second chunk', sha: 'sha2', position: 1, metadata: { type: 'b' } },
+  ]);
+  const chunks = store.getChunksForDocument(docId);
+  expect(chunks).toHaveLength(2);
+  expect(chunks[0]!.text).toBe('first chunk');
+  expect(chunks[1]!.metadata.type).toBe('b');
+});
+
+test('MetaStore — replaceChunksForDocument replaces all existing on rerun', () => {
+  const docId = store.upsertDocument({
+    source_path: '/abs/path/foo.md',
+    channel: 'memory',
+    project_id: 'erp-platform',
+    sha: 'abc',
+    mtime_epoch: 1,
+    metadata: {},
+  });
+  store.replaceChunksForDocument(docId, [
+    { chunk_id: 'memory:foo:aaaa1111', text: 'old', sha: 'old', position: 0, metadata: {} },
+  ]);
+  store.replaceChunksForDocument(docId, [
+    { chunk_id: 'memory:foo:bbbb2222', text: 'new', sha: 'new', position: 0, metadata: {} },
+  ]);
+  const chunks = store.getChunksForDocument(docId);
+  expect(chunks).toHaveLength(1);
+  expect(chunks[0]!.text).toBe('new');
+});
+
+test('MetaStore — searchKeyword via FTS5 returns ranked chunks', () => {
+  const docId = store.upsertDocument({
+    source_path: '/abs/path/foo.md',
+    channel: 'memory',
+    project_id: 'erp-platform',
+    sha: 'abc',
+    mtime_epoch: 1,
+    metadata: {},
+  });
+  store.replaceChunksForDocument(docId, [
+    { chunk_id: 'a', text: 'GLAB#367 fixed locked form fields', sha: 's1', position: 0, metadata: {} },
+    { chunk_id: 'b', text: 'rebuilt the cashbox UI', sha: 's2', position: 1, metadata: {} },
+    { chunk_id: 'c', text: 'GLAB#366 was about smart defaults', sha: 's3', position: 2, metadata: {} },
+  ]);
+  const hits = store.searchKeyword('GLAB#367', 5);
+  expect(hits.length).toBeGreaterThan(0);
+  expect(hits[0]!.chunk_id).toBe('a');
+});
+
+test('MetaStore — getChunkById returns chunk + parent document', () => {
+  const docId = store.upsertDocument({
+    source_path: '/abs/path/foo.md',
+    channel: 'memory',
+    project_id: 'erp-platform',
+    sha: 'abc',
+    mtime_epoch: 1,
+    metadata: { description: 'doc-meta' },
+  });
+  store.replaceChunksForDocument(docId, [
+    { chunk_id: 'foo:aaaa1111', text: 'hello', sha: 's', position: 0, metadata: { type: 'a' } },
+  ]);
+  const result = store.getChunkById('foo:aaaa1111');
+  expect(result).not.toBeNull();
+  expect(result!.chunk.text).toBe('hello');
+  expect(result!.document.metadata.description).toBe('doc-meta');
+});

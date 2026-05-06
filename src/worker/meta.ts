@@ -13,6 +13,37 @@ CREATE TABLE IF NOT EXISTS documents (
   metadata TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_documents_project_channel ON documents(project_id, channel);
+
+CREATE TABLE IF NOT EXISTS chunks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  chunk_id TEXT NOT NULL UNIQUE,
+  text TEXT NOT NULL,
+  sha TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  metadata TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_document ON chunks(document_id);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+  text,
+  content='chunks',
+  content_rowid='id',
+  tokenize='unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
+  INSERT INTO chunks_fts(rowid, text) VALUES (new.id, new.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
+  INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES ('delete', old.id, old.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
+  INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES ('delete', old.id, old.text);
+  INSERT INTO chunks_fts(rowid, text) VALUES (new.id, new.text);
+END;
 `;
 
 export interface UpsertDocumentInput {
@@ -22,6 +53,29 @@ export interface UpsertDocumentInput {
   sha: string;
   mtime_epoch: number;
   metadata: Record<string, unknown>;
+}
+
+export interface ChunkRow {
+  id: number;
+  document_id: number;
+  chunk_id: string;
+  text: string;
+  sha: string;
+  position: number;
+  metadata: Record<string, unknown>;
+}
+
+export interface ChunkUpsertInput {
+  chunk_id: string;
+  text: string;
+  sha: string;
+  position: number;
+  metadata: Record<string, unknown>;
+}
+
+export interface KeywordHit {
+  chunk_id: string;
+  rank: number;        // FTS5 BM25 score (lower = more relevant; we'll invert)
 }
 
 export class MetaStore {
@@ -89,6 +143,60 @@ export class MetaStore {
 
   deleteDocument(source_path: string): void {
     this.db.query('DELETE FROM documents WHERE source_path = ?').run(source_path);
+  }
+
+  replaceChunksForDocument(documentId: number, chunks: ChunkUpsertInput[]): void {
+    const tx = this.db.transaction((docId: number, items: ChunkUpsertInput[]) => {
+      this.db.query('DELETE FROM chunks WHERE document_id = ?').run(docId);
+      const insert = this.db.query(
+        `INSERT INTO chunks (document_id, chunk_id, text, sha, position, metadata)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      );
+      for (const c of items) {
+        insert.run(docId, c.chunk_id, c.text, c.sha, c.position, JSON.stringify(c.metadata));
+      }
+    });
+    tx(documentId, chunks);
+  }
+
+  getChunksForDocument(documentId: number): ChunkRow[] {
+    const rows = this.db
+      .query('SELECT * FROM chunks WHERE document_id = ? ORDER BY position ASC')
+      .all(documentId) as Array<Omit<ChunkRow, 'metadata'> & { metadata: string }>;
+    return rows.map(r => ({ ...r, metadata: JSON.parse(r.metadata) }));
+  }
+
+  searchKeyword(query: string, topK: number): KeywordHit[] {
+    // FTS5 MATCH expects a term — we sanitize by escaping double quotes and wrapping
+    const safeQuery = `"${query.replace(/"/g, '""')}"`;
+    const rows = this.db
+      .query(
+        `SELECT chunks.chunk_id AS chunk_id, chunks_fts.rank AS rank
+         FROM chunks_fts
+         JOIN chunks ON chunks.id = chunks_fts.rowid
+         WHERE chunks_fts MATCH ?
+         ORDER BY chunks_fts.rank
+         LIMIT ?`
+      )
+      .all(safeQuery, topK) as KeywordHit[];
+    return rows;
+  }
+
+  getChunkById(chunk_id: string): { chunk: ChunkRow; document: Document } | null {
+    const chunkRow = this.db
+      .query('SELECT * FROM chunks WHERE chunk_id = ?')
+      .get(chunk_id) as (Omit<ChunkRow, 'metadata'> & { metadata: string }) | undefined;
+    if (!chunkRow) return null;
+    const docRow = this.db
+      .query('SELECT * FROM documents WHERE id = ?')
+      .get(chunkRow.document_id) as
+      | (Omit<Document, 'metadata'> & { metadata: string })
+      | undefined;
+    if (!docRow) return null;
+    return {
+      chunk: { ...chunkRow, metadata: JSON.parse(chunkRow.metadata) },
+      document: { ...docRow, metadata: JSON.parse(docRow.metadata) },
+    };
   }
 
   close(): void {
