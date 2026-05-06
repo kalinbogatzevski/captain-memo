@@ -69,3 +69,62 @@ test('VoyageEmbedder — sends auth header when apiKey provided', async () => {
   expect(capturedAuth as unknown as string).toBe('Bearer secret-key');
   authServer.stop();
 });
+
+test('VoyageEmbedder — retries on 5xx with exponential backoff', async () => {
+  let callCount = 0;
+  const flakyServer = Bun.serve({
+    port: 0,
+    async fetch() {
+      callCount++;
+      if (callCount < 3) {
+        return new Response('server error', { status: 503 });
+      }
+      return new Response(JSON.stringify({
+        data: [{ embedding: [1, 2, 3], index: 0 }],
+        model: 'voyage-4-nano',
+      }));
+    },
+  });
+  const embedder = new VoyageEmbedder({
+    endpoint: `http://localhost:${flakyServer.port}/v1/embeddings`,
+    model: 'voyage-4-nano',
+    maxRetries: 3,
+  });
+  const result = await embedder.embed(['x']);
+  expect(callCount).toBe(3);
+  expect(result[0]).toEqual([1, 2, 3]);
+  flakyServer.stop();
+});
+
+test('VoyageEmbedder — gives up after maxRetries', async () => {
+  const brokenServer = Bun.serve({
+    port: 0,
+    fetch: () => new Response('server error', { status: 503 }),
+  });
+  const embedder = new VoyageEmbedder({
+    endpoint: `http://localhost:${brokenServer.port}/v1/embeddings`,
+    model: 'voyage-4-nano',
+    maxRetries: 2,
+  });
+  await expect(embedder.embed(['x'])).rejects.toThrow(/HTTP 503/);
+  brokenServer.stop();
+});
+
+test('VoyageEmbedder — does NOT retry on 4xx', async () => {
+  let callCount = 0;
+  const fourFourServer = Bun.serve({
+    port: 0,
+    fetch() {
+      callCount++;
+      return new Response('bad request', { status: 400 });
+    },
+  });
+  const embedder = new VoyageEmbedder({
+    endpoint: `http://localhost:${fourFourServer.port}/v1/embeddings`,
+    model: 'voyage-4-nano',
+    maxRetries: 5,
+  });
+  await expect(embedder.embed(['x'])).rejects.toThrow(/HTTP 400/);
+  expect(callCount).toBe(1);
+  fourFourServer.stop();
+});
