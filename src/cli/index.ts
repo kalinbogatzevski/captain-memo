@@ -1,4 +1,5 @@
-export async function main(args: string[]): Promise<void> {
-  // CLI entry point — placeholder for Task 2+
-  console.log('aelita-mcp CLI initialized');
+// src/cli/index.ts
+// Minimal placeholder — full implementation in Plan-1 Task 26
+export async function main(_args: string[]): Promise<void> {
+  // intentionally empty
 }
