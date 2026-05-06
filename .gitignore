@@ -1,0 +1,8 @@
+node_modules/
+bun.lock
+bun.lockb
+dist/
+.aelita-mcp/
+*.tsbuildinfo
+.DS_Store
+*.log
