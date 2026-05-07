@@ -81,3 +81,24 @@ test('worker — /search/observations accepts type and files filters', async () 
   });
   expect(res.status).toBe(200);
 });
+
+test('worker — /get_full returns 404 for unknown doc_id', async () => {
+  const res = await fetch(`http://localhost:${PORT}/get_full`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ doc_id: 'nonexistent:foo:abcd1234' }),
+  });
+  expect(res.status).toBe(404);
+});
+
+test('worker — /reindex accepts channel parameter', async () => {
+  const res = await fetch(`http://localhost:${PORT}/reindex`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ channel: 'memory' }),
+  });
+  expect(res.status).toBe(200);
+  const body = await res.json() as any;
+  expect(body).toHaveProperty('indexed');
+  expect(body).toHaveProperty('skipped');
+});

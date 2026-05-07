@@ -56,6 +56,12 @@ const ObservationSearchSchema = z.object({
   top_k: z.number().int().positive().max(50).default(5),
 });
 
+const GetFullSchema = z.object({ doc_id: z.string() });
+const ReindexSchema = z.object({
+  channel: z.enum(['memory', 'skill', 'observation', 'all']).default('all'),
+  force: z.boolean().default(false),
+});
+
 export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   const meta = new MetaStore(opts.metaDbPath);
   const embedder = new VoyageEmbedder({
@@ -226,6 +232,34 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         if (parsed.data.files !== undefined) filters.files = parsed.data.files;
         const results = await searchByChannel(parsed.data.query, 'observation', parsed.data.top_k, filters);
         return Response.json({ results });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/get_full') {
+        const parsed = GetFullSchema.safeParse(await req.json());
+        if (!parsed.success) {
+          return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
+        }
+        const result = meta.getChunkById(parsed.data.doc_id);
+        if (!result) {
+          return Response.json({ error: 'not_found' }, { status: 404 });
+        }
+        return Response.json({
+          content: result.chunk.text,
+          metadata: {
+            ...result.chunk.metadata,
+            ...result.document.metadata,
+            source_path: result.document.source_path,
+          },
+        });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/reindex') {
+        const parsed = ReindexSchema.safeParse(await req.json());
+        if (!parsed.success) {
+          return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
+        }
+        // Stub — real reindex implementation in Task 25 (after watcher + ingest are wired into the worker).
+        return Response.json({ indexed: 0, skipped: 0, errors: 0 });
       }
       return new Response('Not Found', { status: 404 });
     } catch (err) {
