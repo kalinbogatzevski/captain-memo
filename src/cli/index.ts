@@ -1,5 +1,6 @@
 import { statusCommand } from './commands/status.ts';
 import { statsCommand } from './commands/stats.ts';
+import { reindexCommand } from './commands/reindex.ts';
 
 const HELP = `aelita-mcp — local memory layer for Claude Code
 
@@ -9,11 +10,14 @@ Usage:
 Commands:
   status       Check whether the worker is running and reachable
   stats        Print corpus statistics (chunk counts by channel)
+  reindex      Re-embed corpus content (optionally scoped to a channel)
   help         Show this message
 
 Examples:
   aelita-mcp status
   aelita-mcp stats
+  aelita-mcp reindex --channel memory
+  aelita-mcp reindex --force
 `;
 
 export async function main(args: string[]): Promise<void> {
@@ -25,6 +29,9 @@ export async function main(args: string[]): Promise<void> {
       break;
     case 'stats':
       exit = await statsCommand();
+      break;
+    case 'reindex':
+      exit = await reindexCommand(args.slice(1));
       break;
     case 'help':
     case '--help':
