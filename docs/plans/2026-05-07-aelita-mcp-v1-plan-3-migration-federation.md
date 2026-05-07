@@ -88,9 +88,9 @@ Plan 1 created `src/{shared,worker/chunkers,cli/commands}` and `tests/{unit,inte
 │   │       ├── migrate-from-claude-mem.ts  # NEW — Task 4
 │   │       ├── transform-memory-md.ts      # NEW — Task 10
 │   │       ├── federation.ts               # NEW — Task 19 (`aelita-mcp federation status`)
-│   │       ├── optimize.ts                 # NEW — Task 22 (list / merge subcommands)
-│   │       ├── purge.ts                    # NEW — Task 23
-│   │       ├── forget.ts                   # NEW — Task 24
+│   │       ├── optimize.ts                 # NEW — Task 23 (list / merge subcommands)
+│   │       ├── purge.ts                    # NEW — Task 24
+│   │       ├── forget.ts                   # NEW — Task 25
 │   │       ├── eval.ts                     # NEW — Task 28
 │   │       └── doctor.ts                   # NEW — Task 33
 │   ├── migration/
@@ -112,7 +112,7 @@ Plan 1 created `src/{shared,worker/chunkers,cli/commands}` and `tests/{unit,inte
 │   │   ├── optimizer.ts                    # NEW — Task 20 (near-duplicate detection)
 │   │   └── eval-runner.ts                  # NEW — Task 27 (in-process eval execution)
 │   └── shared/
-│       └── audit.ts                        # NEW — Task 25 (write-once audit log helper)
+│       └── audit.ts                        # NEW — Task 22 (write-once audit log helper)
 └── tests/
     ├── unit/
     │   ├── migration/
@@ -131,7 +131,7 @@ Plan 1 created `src/{shared,worker/chunkers,cli/commands}` and `tests/{unit,inte
     │   ├── migration-e2e.test.ts           # NEW — Task 6
     │   ├── memory-md-roundtrip.test.ts     # NEW — Task 11
     │   ├── federation-fakes.test.ts        # NEW — Task 17
-    │   ├── optimize-cli.test.ts            # NEW — Task 22
+    │   ├── optimize-cli.test.ts            # NEW — Task 23
     │   ├── eval-cli.test.ts                # NEW — Task 29
     │   └── plan3-release-gate.test.ts      # NEW — Task 35 (full E2E)
     └── fixtures/
@@ -3897,7 +3897,7 @@ test('stats — duplicate_clusters surfaces only when count ≥ 5', async () => 
 
     // Cannot easily seed 5 clusters without a full vector seed; this test asserts the
     // `undefined` case for the surfacing threshold. Full coverage is in Layer D's
-    // optimize-cli test (Task 22) which seeds clusters directly via MetaStore.
+    // optimize-cli test (Task 23) which seeds clusters directly via MetaStore.
   } finally {
     await worker.stop();
   }
@@ -3916,355 +3916,14 @@ git commit -m "feat(worker): /optimize endpoints + stats surfaces dup count when
 
 ---
 
-### Task 22: `aelita-mcp optimize list / merge` CLI
-
-`optimize list` shows top clusters by size with sample chunks. `optimize merge <cluster_id>` keeps the newest chunk by `mtime_epoch` (or first chunk if mtime ties), deletes the rest, and records the action in `audit_log`.
-
-**Files:**
-- Create: `src/cli/commands/optimize.ts`
-- Modify: `src/cli/index.ts`
-- Modify: `src/worker/index.ts` (add `POST /optimize/merge`)
-- Create: `tests/integration/optimize-cli.test.ts`
-
-- [ ] **Step 1: Add `POST /optimize/merge` endpoint**
-
-```typescript
-if (req.method === 'POST' && url.pathname === '/optimize/merge') {
-  const body = await req.json().catch(() => ({})) as { cluster_id?: string; reason?: string };
-  if (!body.cluster_id) return Response.json({ error: 'cluster_id required' }, { status: 400 });
-
-  const cluster = meta.getDuplicateCluster(body.cluster_id);
-  if (!cluster) return Response.json({ error: 'cluster not found' }, { status: 404 });
-  if (cluster.status !== 'unreviewed') {
-    return Response.json({ error: `cluster already ${cluster.status}` }, { status: 409 });
-  }
-
-  // Pick canonical = chunk whose document has the largest mtime_epoch
-  let canonical: string | null = null;
-  let canonicalMtime = -1;
-  for (const cid of cluster.chunk_ids) {
-    const lookup = meta.getChunkById(cid);
-    if (!lookup) continue;
-    if (lookup.document.mtime_epoch > canonicalMtime) {
-      canonicalMtime = lookup.document.mtime_epoch;
-      canonical = cid;
-    }
-  }
-  if (canonical === null) {
-    return Response.json({ error: 'no resolvable chunks in cluster' }, { status: 422 });
-  }
-
-  const toDelete = cluster.chunk_ids.filter(id => id !== canonical);
-  await vector.delete(collectionName, toDelete);
-  // Delete chunks from MetaStore (also removes the document if it becomes empty)
-  for (const id of toDelete) {
-    (meta as unknown as { db: { query: (s: string) => { run: (...a: unknown[]) => unknown } } })
-      .db.query('DELETE FROM chunks WHERE chunk_id = ?').run(id);
-  }
-  meta.markClusterMerged(cluster.cluster_id, {
-    canonical_chunk_id: canonical,
-    deleted_chunk_ids: toDelete,
-    reason: body.reason ?? '',
-  });
-  meta.recordAudit({
-    action: 'merge',
-    target_cluster_id: cluster.cluster_id,
-    reason: body.reason ?? '',
-    details: { canonical, deleted: toDelete },
-  });
-  return Response.json({ canonical, deleted_count: toDelete.length });
-}
-```
-
-(`recordAudit` is added in Task 25; for now stub it as a TODO if Task 25 hasn't landed yet — but the canonical sequence is to land Tasks 23-25 before 22's commit. Re-order if you want to keep linearity; the suggested execution order in the Self-Review section reflects the dependency.)
-
-- [ ] **Step 2: Implement CLI command**
-
-```typescript
-// src/cli/commands/optimize.ts
-import { workerGet, workerPost } from '../client.ts';
-
-interface Cluster {
-  cluster_id: string;
-  channel: string;
-  chunk_ids: string[];
-  avg_similarity: number;
-  status: string;
-}
-
-export async function optimizeCommand(args: string[]): Promise<number> {
-  const sub = args[0];
-  if (sub === 'detect') {
-    const result = await workerPost('/optimize/detect', {}) as { clusters_detected: number };
-    console.log(`Detected ${result.clusters_detected} unreviewed cluster(s).`);
-    return 0;
-  }
-  if (sub === 'list') {
-    const { clusters } = await workerGet('/optimize/clusters?status=unreviewed') as { clusters: Cluster[] };
-    if (clusters.length === 0) {
-      console.log('No unreviewed clusters. Run `aelita-mcp optimize detect` first.');
-      return 0;
-    }
-    console.log(`${clusters.length} unreviewed cluster(s):`);
-    for (const c of clusters.slice(0, 50)) {
-      console.log(`  ${c.cluster_id}  channel=${c.channel}  size=${c.chunk_ids.length}  sim=${c.avg_similarity.toFixed(3)}`);
-      for (const id of c.chunk_ids.slice(0, 3)) console.log(`    - ${id}`);
-      if (c.chunk_ids.length > 3) console.log(`    (+ ${c.chunk_ids.length - 3} more)`);
-    }
-    return 0;
-  }
-  if (sub === 'merge') {
-    const clusterId = args[1];
-    if (!clusterId) {
-      console.error('Usage: aelita-mcp optimize merge <cluster_id> [--reason TEXT]');
-      return 2;
-    }
-    let reason = '';
-    for (let i = 2; i < args.length; i++) {
-      if (args[i] === '--reason' && args[i + 1]) reason = args[++i] as string;
-    }
-    const result = await workerPost('/optimize/merge', { cluster_id: clusterId, reason }) as {
-      canonical: string; deleted_count: number;
-    };
-    console.log(`Merged. Canonical = ${result.canonical}, deleted ${result.deleted_count} chunk(s).`);
-    return 0;
-  }
-  console.error('Usage: aelita-mcp optimize {detect | list | merge <cluster_id>}');
-  return 2;
-}
-```
-
-- [ ] **Step 3: Wire**
-
-```typescript
-import { optimizeCommand } from './commands/optimize.ts';
-    case 'optimize':
-      exit = await optimizeCommand(args.slice(1));
-      break;
-```
-
-HELP entry: `  optimize {detect|list|merge}  Memory hygiene — find/list/merge near-duplicate clusters.`
-
-- [ ] **Step 4: Integration test**
-
-```typescript
-// tests/integration/optimize-cli.test.ts
-import { test, expect } from 'bun:test';
-import { startWorker } from '../../src/worker/index.ts';
-
-test('optimize/list — returns unreviewed clusters from a seeded worker', async () => {
-  const worker = await startWorker({
-    port: 0, projectId: 'opt', metaDbPath: ':memory:',
-    embedderEndpoint: 'http://localhost:1', embedderModel: 'voyage-4-nano',
-    vectorDbPath: ':memory:', embeddingDimension: 1024,
-    skipEmbed: true,
-  });
-  try {
-    const list = await fetch(`http://localhost:${worker.port}/optimize/clusters`).then(r => r.json());
-    expect(list.clusters).toEqual([]);
-  } finally {
-    await worker.stop();
-  }
-});
-```
-
-Run: `bun test tests/integration/optimize-cli.test.ts`
-Expected: `1 pass, 0 fail`.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/cli/commands/optimize.ts src/cli/index.ts src/worker/index.ts \
-        tests/integration/optimize-cli.test.ts
-git commit -m "feat(cli/worker): optimize list/detect/merge — canonical = newest chunk"
-```
-
----
-
-### Task 23: `aelita-mcp purge` — bulk delete by date
-
-Refuses to run without `--yes`. Drops every document whose `mtime_epoch < before` and deletes their chunks from the vector store. Audited.
-
-**Files:**
-- Create: `src/cli/commands/purge.ts`
-- Modify: `src/cli/index.ts`
-- Modify: `src/worker/index.ts` (add `POST /optimize/purge`)
-
-- [ ] **Step 1: Add worker endpoint**
-
-```typescript
-if (req.method === 'POST' && url.pathname === '/optimize/purge') {
-  const body = await req.json().catch(() => ({})) as { before_epoch?: number; reason?: string; confirm?: boolean };
-  if (typeof body.before_epoch !== 'number') {
-    return Response.json({ error: 'before_epoch required' }, { status: 400 });
-  }
-  if (!body.confirm) {
-    return Response.json({ error: 'confirm flag required for purge' }, { status: 400 });
-  }
-  // Collect chunks first so we can drop them from the vector store
-  const docs = (meta as unknown as { db: { query: (s: string) => { all: (...a: unknown[]) => unknown[] } } })
-    .db.query('SELECT id FROM documents WHERE mtime_epoch < ?').all(body.before_epoch) as Array<{ id: number }>;
-  for (const d of docs) {
-    const ids = meta.getChunkIdsForDocument(d.id);
-    if (ids.length > 0) await vector.delete(collectionName, ids);
-  }
-  const removed = meta.purgeBeforeEpoch(body.before_epoch);
-  meta.recordAudit({
-    action: 'purge',
-    reason: body.reason ?? '',
-    details: { before_epoch: body.before_epoch, documents_removed: removed },
-  });
-  return Response.json({ documents_removed: removed });
-}
-```
-
-- [ ] **Step 2: Implement CLI**
-
-```typescript
-// src/cli/commands/purge.ts
-import { workerPost } from '../client.ts';
-
-export async function purgeCommand(args: string[]): Promise<number> {
-  let beforeIso: string | null = null;
-  let yes = false;
-  let reason = '';
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === '--before' && args[i + 1]) beforeIso = args[++i] as string;
-    else if (a === '--yes') yes = true;
-    else if (a === '--reason' && args[i + 1]) reason = args[++i] as string;
-    else { console.error(`Unknown flag: ${a}`); return 2; }
-  }
-  if (!beforeIso) {
-    console.error('Usage: aelita-mcp purge --before <ISO-date> --yes [--reason TEXT]');
-    return 2;
-  }
-  if (!yes) {
-    console.error('Refusing to purge without --yes. This deletes documents permanently.');
-    return 2;
-  }
-  const beforeEpoch = Math.floor(new Date(beforeIso).getTime() / 1000);
-  if (Number.isNaN(beforeEpoch)) {
-    console.error(`Invalid date: ${beforeIso}`);
-    return 2;
-  }
-  const result = await workerPost('/optimize/purge', {
-    before_epoch: beforeEpoch, reason, confirm: true,
-  }) as { documents_removed: number };
-  console.log(`Purged ${result.documents_removed} document(s) older than ${beforeIso}.`);
-  return 0;
-}
-```
-
-- [ ] **Step 3: Wire**
-
-```typescript
-import { purgeCommand } from './commands/purge.ts';
-    case 'purge':
-      exit = await purgeCommand(args.slice(1));
-      break;
-```
-
-HELP: `  purge --before DATE --yes  Bulk-delete documents older than a date (audited).`
-
-- [ ] **Step 4: Smoke test**
-
-```bash
-./bin/aelita-mcp purge --before 1970-01-01           # → exits 2 (missing --yes)
-./bin/aelita-mcp purge --before 1970-01-01 --yes     # → exits 0, "Purged 0 document(s)"
-```
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/cli/commands/purge.ts src/cli/index.ts src/worker/index.ts
-git commit -m "feat(cli/worker): purge --before --yes — audited bulk delete by date"
-```
-
----
-
-### Task 24: `aelita-mcp forget <doc_id>` — single-chunk delete
-
-**Files:**
-- Create: `src/cli/commands/forget.ts`
-- Modify: `src/cli/index.ts`
-- Modify: `src/worker/index.ts` (add `POST /optimize/forget`)
-
-- [ ] **Step 1: Add worker endpoint**
-
-```typescript
-if (req.method === 'POST' && url.pathname === '/optimize/forget') {
-  const body = await req.json().catch(() => ({})) as { doc_id?: string; reason?: string };
-  if (!body.doc_id) return Response.json({ error: 'doc_id required' }, { status: 400 });
-  const lookup = meta.getChunkById(body.doc_id);
-  if (!lookup) return Response.json({ error: 'not found' }, { status: 404 });
-  await vector.delete(collectionName, [body.doc_id]);
-  (meta as unknown as { db: { query: (s: string) => { run: (...a: unknown[]) => unknown } } })
-    .db.query('DELETE FROM chunks WHERE chunk_id = ?').run(body.doc_id);
-  meta.recordAudit({
-    action: 'forget',
-    target_chunk_id: body.doc_id,
-    reason: body.reason ?? '',
-    details: { source_path: lookup.document.source_path },
-  });
-  return Response.json({ deleted: 1 });
-}
-```
-
-- [ ] **Step 2: Implement CLI**
-
-```typescript
-// src/cli/commands/forget.ts
-import { workerPost } from '../client.ts';
-
-export async function forgetCommand(args: string[]): Promise<number> {
-  const docId = args[0];
-  if (!docId) {
-    console.error('Usage: aelita-mcp forget <doc_id> [--reason TEXT]');
-    return 2;
-  }
-  let reason = '';
-  for (let i = 1; i < args.length; i++) {
-    if (args[i] === '--reason' && args[i + 1]) reason = args[++i] as string;
-  }
-  const r = await workerPost('/optimize/forget', { doc_id: docId, reason }) as {
-    deleted?: number; error?: string;
-  };
-  if (r.error) {
-    console.error(r.error);
-    return 1;
-  }
-  console.log(`Forgot 1 chunk: ${docId}`);
-  return 0;
-}
-```
-
-- [ ] **Step 3: Wire**
-
-```typescript
-import { forgetCommand } from './commands/forget.ts';
-    case 'forget':
-      exit = await forgetCommand(args.slice(1));
-      break;
-```
-
-HELP: `  forget <doc_id>            Delete a single chunk (audited).`
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add src/cli/commands/forget.ts src/cli/index.ts src/worker/index.ts
-git commit -m "feat(cli/worker): forget <doc_id> — audited single-chunk delete"
-```
-
----
-
-### Task 25: Audit log helper + `audit` inspection CLI
+### Task 22: Audit log helper + `audit` inspection CLI
 
 The `audit_log` table created in Task 20 needs:
-1. A `MetaStore.recordAudit()` helper used by merge/purge/forget endpoints (Tasks 22-24).
+1. A `MetaStore.recordAudit()` helper used by merge/purge/forget endpoints (Tasks 23-25).
 2. A `MetaStore.listAudit()` reader.
 3. A `aelita-mcp audit` CLI to inspect it.
+
+This task lands **before** the destructive ops (Tasks 23-25) because each of those calls `recordAudit()`. Land this first; downstream tasks fail loudly otherwise.
 
 **Files:**
 - Modify: `src/worker/meta.ts` (add `recordAudit` + `listAudit`)
@@ -4428,6 +4087,347 @@ git add src/shared/audit.ts src/worker/meta.ts src/worker/index.ts \
         src/cli/commands/audit.ts src/cli/index.ts \
         tests/unit/audit.test.ts
 git commit -m "feat(audit): MetaStore.recordAudit + listAudit + audit CLI"
+```
+
+---
+
+### Task 23: `aelita-mcp optimize list / merge` CLI
+
+`optimize list` shows top clusters by size with sample chunks. `optimize merge <cluster_id>` keeps the newest chunk by `mtime_epoch` (or first chunk if mtime ties), deletes the rest, and records the action in `audit_log` via `MetaStore.recordAudit` (added in Task 22).
+
+**Files:**
+- Create: `src/cli/commands/optimize.ts`
+- Modify: `src/cli/index.ts`
+- Modify: `src/worker/index.ts` (add `POST /optimize/merge`)
+- Create: `tests/integration/optimize-cli.test.ts`
+
+- [ ] **Step 1: Add `POST /optimize/merge` endpoint**
+
+```typescript
+if (req.method === 'POST' && url.pathname === '/optimize/merge') {
+  const body = await req.json().catch(() => ({})) as { cluster_id?: string; reason?: string };
+  if (!body.cluster_id) return Response.json({ error: 'cluster_id required' }, { status: 400 });
+
+  const cluster = meta.getDuplicateCluster(body.cluster_id);
+  if (!cluster) return Response.json({ error: 'cluster not found' }, { status: 404 });
+  if (cluster.status !== 'unreviewed') {
+    return Response.json({ error: `cluster already ${cluster.status}` }, { status: 409 });
+  }
+
+  // Pick canonical = chunk whose document has the largest mtime_epoch
+  let canonical: string | null = null;
+  let canonicalMtime = -1;
+  for (const cid of cluster.chunk_ids) {
+    const lookup = meta.getChunkById(cid);
+    if (!lookup) continue;
+    if (lookup.document.mtime_epoch > canonicalMtime) {
+      canonicalMtime = lookup.document.mtime_epoch;
+      canonical = cid;
+    }
+  }
+  if (canonical === null) {
+    return Response.json({ error: 'no resolvable chunks in cluster' }, { status: 422 });
+  }
+
+  const toDelete = cluster.chunk_ids.filter(id => id !== canonical);
+  await vector.delete(collectionName, toDelete);
+  // Delete chunks from MetaStore (also removes the document if it becomes empty)
+  for (const id of toDelete) {
+    (meta as unknown as { db: { query: (s: string) => { run: (...a: unknown[]) => unknown } } })
+      .db.query('DELETE FROM chunks WHERE chunk_id = ?').run(id);
+  }
+  meta.markClusterMerged(cluster.cluster_id, {
+    canonical_chunk_id: canonical,
+    deleted_chunk_ids: toDelete,
+    reason: body.reason ?? '',
+  });
+  meta.recordAudit({
+    action: 'merge',
+    target_cluster_id: cluster.cluster_id,
+    reason: body.reason ?? '',
+    details: { canonical, deleted: toDelete },
+  });
+  return Response.json({ canonical, deleted_count: toDelete.length });
+}
+```
+
+- [ ] **Step 2: Implement CLI command**
+
+```typescript
+// src/cli/commands/optimize.ts
+import { workerGet, workerPost } from '../client.ts';
+
+interface Cluster {
+  cluster_id: string;
+  channel: string;
+  chunk_ids: string[];
+  avg_similarity: number;
+  status: string;
+}
+
+export async function optimizeCommand(args: string[]): Promise<number> {
+  const sub = args[0];
+  if (sub === 'detect') {
+    const result = await workerPost('/optimize/detect', {}) as { clusters_detected: number };
+    console.log(`Detected ${result.clusters_detected} unreviewed cluster(s).`);
+    return 0;
+  }
+  if (sub === 'list') {
+    const { clusters } = await workerGet('/optimize/clusters?status=unreviewed') as { clusters: Cluster[] };
+    if (clusters.length === 0) {
+      console.log('No unreviewed clusters. Run `aelita-mcp optimize detect` first.');
+      return 0;
+    }
+    console.log(`${clusters.length} unreviewed cluster(s):`);
+    for (const c of clusters.slice(0, 50)) {
+      console.log(`  ${c.cluster_id}  channel=${c.channel}  size=${c.chunk_ids.length}  sim=${c.avg_similarity.toFixed(3)}`);
+      for (const id of c.chunk_ids.slice(0, 3)) console.log(`    - ${id}`);
+      if (c.chunk_ids.length > 3) console.log(`    (+ ${c.chunk_ids.length - 3} more)`);
+    }
+    return 0;
+  }
+  if (sub === 'merge') {
+    const clusterId = args[1];
+    if (!clusterId) {
+      console.error('Usage: aelita-mcp optimize merge <cluster_id> [--reason TEXT]');
+      return 2;
+    }
+    let reason = '';
+    for (let i = 2; i < args.length; i++) {
+      if (args[i] === '--reason' && args[i + 1]) reason = args[++i] as string;
+    }
+    const result = await workerPost('/optimize/merge', { cluster_id: clusterId, reason }) as {
+      canonical: string; deleted_count: number;
+    };
+    console.log(`Merged. Canonical = ${result.canonical}, deleted ${result.deleted_count} chunk(s).`);
+    return 0;
+  }
+  console.error('Usage: aelita-mcp optimize {detect | list | merge <cluster_id>}');
+  return 2;
+}
+```
+
+- [ ] **Step 3: Wire**
+
+```typescript
+import { optimizeCommand } from './commands/optimize.ts';
+    case 'optimize':
+      exit = await optimizeCommand(args.slice(1));
+      break;
+```
+
+HELP entry: `  optimize {detect|list|merge}  Memory hygiene — find/list/merge near-duplicate clusters.`
+
+- [ ] **Step 4: Integration test**
+
+```typescript
+// tests/integration/optimize-cli.test.ts
+import { test, expect } from 'bun:test';
+import { startWorker } from '../../src/worker/index.ts';
+
+test('optimize/list — returns unreviewed clusters from a seeded worker', async () => {
+  const worker = await startWorker({
+    port: 0, projectId: 'opt', metaDbPath: ':memory:',
+    embedderEndpoint: 'http://localhost:1', embedderModel: 'voyage-4-nano',
+    vectorDbPath: ':memory:', embeddingDimension: 1024,
+    skipEmbed: true,
+  });
+  try {
+    const list = await fetch(`http://localhost:${worker.port}/optimize/clusters`).then(r => r.json());
+    expect(list.clusters).toEqual([]);
+  } finally {
+    await worker.stop();
+  }
+});
+```
+
+Run: `bun test tests/integration/optimize-cli.test.ts`
+Expected: `1 pass, 0 fail`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/cli/commands/optimize.ts src/cli/index.ts src/worker/index.ts \
+        tests/integration/optimize-cli.test.ts
+git commit -m "feat(cli/worker): optimize list/detect/merge — canonical = newest chunk"
+```
+
+---
+
+### Task 24: `aelita-mcp purge` — bulk delete by date
+
+Refuses to run without `--yes`. Drops every document whose `mtime_epoch < before` and deletes their chunks from the vector store. Audited.
+
+**Files:**
+- Create: `src/cli/commands/purge.ts`
+- Modify: `src/cli/index.ts`
+- Modify: `src/worker/index.ts` (add `POST /optimize/purge`)
+
+- [ ] **Step 1: Add worker endpoint**
+
+```typescript
+if (req.method === 'POST' && url.pathname === '/optimize/purge') {
+  const body = await req.json().catch(() => ({})) as { before_epoch?: number; reason?: string; confirm?: boolean };
+  if (typeof body.before_epoch !== 'number') {
+    return Response.json({ error: 'before_epoch required' }, { status: 400 });
+  }
+  if (!body.confirm) {
+    return Response.json({ error: 'confirm flag required for purge' }, { status: 400 });
+  }
+  // Collect chunks first so we can drop them from the vector store
+  const docs = (meta as unknown as { db: { query: (s: string) => { all: (...a: unknown[]) => unknown[] } } })
+    .db.query('SELECT id FROM documents WHERE mtime_epoch < ?').all(body.before_epoch) as Array<{ id: number }>;
+  for (const d of docs) {
+    const ids = meta.getChunkIdsForDocument(d.id);
+    if (ids.length > 0) await vector.delete(collectionName, ids);
+  }
+  const removed = meta.purgeBeforeEpoch(body.before_epoch);
+  meta.recordAudit({
+    action: 'purge',
+    reason: body.reason ?? '',
+    details: { before_epoch: body.before_epoch, documents_removed: removed },
+  });
+  return Response.json({ documents_removed: removed });
+}
+```
+
+- [ ] **Step 2: Implement CLI**
+
+```typescript
+// src/cli/commands/purge.ts
+import { workerPost } from '../client.ts';
+
+export async function purgeCommand(args: string[]): Promise<number> {
+  let beforeIso: string | null = null;
+  let yes = false;
+  let reason = '';
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--before' && args[i + 1]) beforeIso = args[++i] as string;
+    else if (a === '--yes') yes = true;
+    else if (a === '--reason' && args[i + 1]) reason = args[++i] as string;
+    else { console.error(`Unknown flag: ${a}`); return 2; }
+  }
+  if (!beforeIso) {
+    console.error('Usage: aelita-mcp purge --before <ISO-date> --yes [--reason TEXT]');
+    return 2;
+  }
+  if (!yes) {
+    console.error('Refusing to purge without --yes. This deletes documents permanently.');
+    return 2;
+  }
+  const beforeEpoch = Math.floor(new Date(beforeIso).getTime() / 1000);
+  if (Number.isNaN(beforeEpoch)) {
+    console.error(`Invalid date: ${beforeIso}`);
+    return 2;
+  }
+  const result = await workerPost('/optimize/purge', {
+    before_epoch: beforeEpoch, reason, confirm: true,
+  }) as { documents_removed: number };
+  console.log(`Purged ${result.documents_removed} document(s) older than ${beforeIso}.`);
+  return 0;
+}
+```
+
+- [ ] **Step 3: Wire**
+
+```typescript
+import { purgeCommand } from './commands/purge.ts';
+    case 'purge':
+      exit = await purgeCommand(args.slice(1));
+      break;
+```
+
+HELP: `  purge --before DATE --yes  Bulk-delete documents older than a date (audited).`
+
+- [ ] **Step 4: Smoke test**
+
+```bash
+./bin/aelita-mcp purge --before 1970-01-01           # → exits 2 (missing --yes)
+./bin/aelita-mcp purge --before 1970-01-01 --yes     # → exits 0, "Purged 0 document(s)"
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/cli/commands/purge.ts src/cli/index.ts src/worker/index.ts
+git commit -m "feat(cli/worker): purge --before --yes — audited bulk delete by date"
+```
+
+---
+
+### Task 25: `aelita-mcp forget <doc_id>` — single-chunk delete
+
+**Files:**
+- Create: `src/cli/commands/forget.ts`
+- Modify: `src/cli/index.ts`
+- Modify: `src/worker/index.ts` (add `POST /optimize/forget`)
+
+- [ ] **Step 1: Add worker endpoint**
+
+```typescript
+if (req.method === 'POST' && url.pathname === '/optimize/forget') {
+  const body = await req.json().catch(() => ({})) as { doc_id?: string; reason?: string };
+  if (!body.doc_id) return Response.json({ error: 'doc_id required' }, { status: 400 });
+  const lookup = meta.getChunkById(body.doc_id);
+  if (!lookup) return Response.json({ error: 'not found' }, { status: 404 });
+  await vector.delete(collectionName, [body.doc_id]);
+  (meta as unknown as { db: { query: (s: string) => { run: (...a: unknown[]) => unknown } } })
+    .db.query('DELETE FROM chunks WHERE chunk_id = ?').run(body.doc_id);
+  meta.recordAudit({
+    action: 'forget',
+    target_chunk_id: body.doc_id,
+    reason: body.reason ?? '',
+    details: { source_path: lookup.document.source_path },
+  });
+  return Response.json({ deleted: 1 });
+}
+```
+
+- [ ] **Step 2: Implement CLI**
+
+```typescript
+// src/cli/commands/forget.ts
+import { workerPost } from '../client.ts';
+
+export async function forgetCommand(args: string[]): Promise<number> {
+  const docId = args[0];
+  if (!docId) {
+    console.error('Usage: aelita-mcp forget <doc_id> [--reason TEXT]');
+    return 2;
+  }
+  let reason = '';
+  for (let i = 1; i < args.length; i++) {
+    if (args[i] === '--reason' && args[i + 1]) reason = args[++i] as string;
+  }
+  const r = await workerPost('/optimize/forget', { doc_id: docId, reason }) as {
+    deleted?: number; error?: string;
+  };
+  if (r.error) {
+    console.error(r.error);
+    return 1;
+  }
+  console.log(`Forgot 1 chunk: ${docId}`);
+  return 0;
+}
+```
+
+- [ ] **Step 3: Wire**
+
+```typescript
+import { forgetCommand } from './commands/forget.ts';
+    case 'forget':
+      exit = await forgetCommand(args.slice(1));
+      break;
+```
+
+HELP: `  forget <doc_id>            Delete a single chunk (audited).`
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/cli/commands/forget.ts src/cli/index.ts src/worker/index.ts
+git commit -m "feat(cli/worker): forget <doc_id> — audited single-chunk delete"
 ```
 
 ---
@@ -5854,7 +5854,7 @@ Plan 3 is complete and saved to:
 
 1. Layer A (migration) and Layer B (MEMORY.md) are independent — execute either first.
 2. Layer C (federation) is independent of A/B; its worker integration (Task 18) modifies `src/worker/index.ts` so coordinate with Layer D's worker changes.
-3. Layer D (optimization) — execute Task 25 (audit helper) **before** Tasks 22-24 (merge/purge/forget) so `recordAudit` exists when the destructive endpoints call it. The numbering in this plan reflects logical reading order; a careful executor will reorder commits 22→23→24 to come after 25, OR land all five tasks in the same iteration and squash if needed.
+3. Layer D (optimization) — Task 22 (audit helper) must land first because Tasks 23-25 (merge/purge/forget) all call `MetaStore.recordAudit`. The numbered order matches the dependency order; just execute 22→23→24→25 sequentially.
 4. Layer E (eval) is independent — can run any time after Layer C ships (so federated hits show up in `/search/all`).
 5. Layer F (Voyage installer) is independent of all other layers.
 6. Layer G (Doctor + USAGE + release gate) is last — Task 33's doctor probes endpoints that A/C/D add; Task 34's USAGE folds in everything; Task 35's release-gate test exercises the whole stack.
