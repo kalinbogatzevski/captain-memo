@@ -6,12 +6,30 @@ import { VectorStore } from './vector-store.ts';
 import { HybridSearcher } from './search.ts';
 import { IngestPipeline } from './ingest.ts';
 import { FileWatcher } from './watcher.ts';
+import { ObservationQueue } from './observation-queue.ts';
+import { ObservationsStore } from './observations-store.ts';
+import { PendingEmbedQueue } from './pending-embed-queue.ts';
+import { chunkObservation } from './chunkers/observation.ts';
+import { newChunkId } from '../shared/id.ts';
+import { sha256Hex } from '../shared/sha.ts';
+import type { RawObservationEvent, ObservationType, Observation } from '../shared/types.ts';
 import {
   META_DB_PATH,
   VECTOR_DB_DIR,
   DEFAULT_WORKER_PORT,
   DEFAULT_VOYAGE_ENDPOINT,
+  QUEUE_DB_PATH,
+  OBSERVATIONS_DB_PATH,
+  PENDING_EMBED_DB_PATH,
 } from '../shared/paths.ts';
+
+export interface SummarizerResult {
+  type: ObservationType;
+  title: string;
+  narrative: string;
+  facts: string[];
+  concepts: string[];
+}
 
 export interface WorkerOptions {
   port: number;
@@ -25,6 +43,13 @@ export interface WorkerOptions {
   skipEmbed?: boolean;
   watchPaths?: string[];
   watchChannel?: 'memory' | 'skill';
+  observationQueueDbPath?: string;
+  observationsDbPath?: string;
+  pendingEmbedDbPath?: string;
+  summarize?: (events: RawObservationEvent[]) => Promise<SummarizerResult>;
+  observationTickMs?: number;
+  observationBatchSize?: number;
+  hookBudgetTokens?: number;
 }
 
 export interface WorkerHandle {
@@ -64,6 +89,27 @@ const GetFullSchema = z.object({ doc_id: z.string() });
 const ReindexSchema = z.object({
   channel: z.enum(['memory', 'skill', 'observation', 'all']).default('all'),
   force: z.boolean().default(false),
+});
+
+const ObservationEnqueueSchema = z.object({
+  session_id: z.string().min(1),
+  project_id: z.string().min(1),
+  prompt_number: z.number().int().nonnegative(),
+  tool_name: z.string().min(1),
+  tool_input_summary: z.string().max(2000),
+  tool_result_summary: z.string().max(2000),
+  files_read: z.array(z.string()).default([]),
+  files_modified: z.array(z.string()).default([]),
+  ts_epoch: z.number().int(),
+});
+
+const ObservationFlushSchema = z.object({
+  session_id: z.string().optional(),
+  max: z.number().int().positive().max(500).default(100),
+});
+
+const PendingEmbedRetrySchema = z.object({
+  max: z.number().int().positive().max(500).default(50),
 });
 
 export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
@@ -150,6 +196,136 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       },
     });
     await watcher.start();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Plan-2: observation pipeline (queue → store → vector/meta).
+  // ─────────────────────────────────────────────────────────────────────
+  const obsQueue = opts.observationQueueDbPath
+    ? new ObservationQueue(opts.observationQueueDbPath)
+    : null;
+  const obsStore = opts.observationsDbPath
+    ? new ObservationsStore(opts.observationsDbPath)
+    : null;
+  const pendingEmbed = opts.pendingEmbedDbPath
+    ? new PendingEmbedQueue(opts.pendingEmbedDbPath)
+    : null;
+
+  const summarize = opts.summarize ?? null;
+  const tickMs = opts.observationTickMs ?? 5000;
+  const batchSize = opts.observationBatchSize ?? 20;
+
+  function dedupeFlat(lists: string[][]): string[] {
+    return [...new Set(lists.flat())];
+  }
+
+  async function ingestObservation(obs: Observation): Promise<void> {
+    const chunks = chunkObservation(obs);
+    if (chunks.length === 0) return;
+    const synthesizedPath = `observation:${opts.projectId}:${obs.id}`;
+    const chunksWithIds = chunks.map(c => ({
+      chunk_id: newChunkId('observation', String(obs.id)),
+      text: c.text,
+      sha: sha256Hex(c.text),
+      position: c.position,
+      metadata: c.metadata,
+    }));
+
+    const embeddings: number[][] = await (async () => {
+      if (opts.skipEmbed) return chunksWithIds.map(() => new Array(opts.embeddingDimension).fill(0));
+      try {
+        return await embedder.embed(chunksWithIds.map(c => c.text));
+      } catch {
+        if (pendingEmbed) {
+          for (const c of chunksWithIds) {
+            pendingEmbed.enqueue({
+              chunk_id: c.chunk_id, source_path: synthesizedPath,
+              sha: c.sha, channel: 'observation',
+            });
+          }
+        }
+        return chunksWithIds.map(() => new Array(opts.embeddingDimension).fill(0));
+      }
+    })();
+
+    const documentId = meta.upsertDocument({
+      source_path: synthesizedPath,
+      channel: 'observation',
+      project_id: opts.projectId,
+      sha: sha256Hex(JSON.stringify(obs)),
+      mtime_epoch: obs.created_at_epoch,
+      metadata: {
+        observation_id: obs.id,
+        session_id: obs.session_id,
+        type: obs.type,
+        title: obs.title,
+        created_at_epoch: obs.created_at_epoch,
+      },
+    });
+    meta.replaceChunksForDocument(documentId, chunksWithIds);
+    await vector.add(
+      collectionName,
+      chunksWithIds.map((c, i) => ({ id: c.chunk_id, embedding: embeddings[i]! })),
+    );
+  }
+
+  async function processBatch(limit: number): Promise<{ processed: number; observations_created: number }> {
+    if (!obsQueue || !obsStore || !summarize) return { processed: 0, observations_created: 0 };
+    const batch = obsQueue.takeBatch(limit);
+    if (batch.length === 0) return { processed: 0, observations_created: 0 };
+
+    // Group by (session_id, prompt_number) — one observation per prompt window.
+    const groups = new Map<string, typeof batch>();
+    for (const row of batch) {
+      const key = `${row.payload.session_id}::${row.payload.prompt_number}`;
+      const existing = groups.get(key) ?? [];
+      existing.push(row);
+      groups.set(key, existing);
+    }
+
+    let observations_created = 0;
+    const doneIds: number[] = [];
+    const failedIds: number[] = [];
+
+    for (const groupRows of groups.values()) {
+      const events = groupRows.map(r => r.payload);
+      try {
+        const summary = await summarize(events);
+        const head = events[0]!;
+        const id = obsStore.insert({
+          session_id: head.session_id,
+          project_id: head.project_id,
+          prompt_number: head.prompt_number,
+          type: summary.type,
+          title: summary.title,
+          narrative: summary.narrative,
+          facts: summary.facts,
+          concepts: summary.concepts,
+          files_read: dedupeFlat(events.map(e => e.files_read)),
+          files_modified: dedupeFlat(events.map(e => e.files_modified)),
+          created_at_epoch: head.ts_epoch,
+        });
+        const inserted = obsStore.findById(id);
+        if (inserted) await ingestObservation(inserted);
+        observations_created++;
+        doneIds.push(...groupRows.map(r => r.id));
+      } catch (err) {
+        console.error(`[obs-batch] summarize failed: ${(err as Error).message}`);
+        failedIds.push(...groupRows.map(r => r.id));
+      }
+    }
+
+    obsQueue.markDone(doneIds);
+    obsQueue.markFailed(failedIds);
+
+    return { processed: batch.length, observations_created };
+  }
+
+  let tickTimer: ReturnType<typeof setInterval> | null = null;
+  if (tickMs > 0 && obsQueue && obsStore && summarize) {
+    tickTimer = setInterval(() => {
+      processBatch(batchSize).catch(err => console.error('[obs-tick]', err));
+    }, tickMs);
   }
 
   type ChannelFilters = {
@@ -355,6 +531,54 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 
         return Response.json({ indexed, skipped, errors });
       }
+
+      if (req.method === 'POST' && url.pathname === '/observation/enqueue') {
+        if (!obsQueue) return Response.json({ error: 'observation_pipeline_disabled' }, { status: 503 });
+        const parsed = ObservationEnqueueSchema.safeParse(await req.json());
+        if (!parsed.success) {
+          return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
+        }
+        const id = obsQueue.enqueue(parsed.data);
+        return Response.json({ id, queued: true });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/observation/flush') {
+        if (!obsQueue || !obsStore || !summarize) {
+          return Response.json({ error: 'observation_pipeline_disabled' }, { status: 503 });
+        }
+        const parsed = ObservationFlushSchema.safeParse(await req.json());
+        if (!parsed.success) {
+          return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
+        }
+        let total_processed = 0;
+        let total_created = 0;
+        while (total_processed < parsed.data.max) {
+          const remaining = parsed.data.max - total_processed;
+          const result = await processBatch(Math.min(batchSize, remaining));
+          if (result.processed === 0) break;
+          total_processed += result.processed;
+          total_created += result.observations_created;
+        }
+        return Response.json({
+          processed: total_processed,
+          observations_created: total_created,
+          pending_remaining: obsQueue.pendingCount(),
+        });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/pending_embed/retry') {
+        if (!pendingEmbed) return Response.json({ error: 'pending_embed_disabled' }, { status: 503 });
+        const parsed = PendingEmbedRetrySchema.safeParse(await req.json());
+        if (!parsed.success) {
+          return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
+        }
+        const due = pendingEmbed.listDue(parsed.data.max);
+        return Response.json({
+          due_count: due.length,
+          total_pending: pendingEmbed.totalCount(),
+        });
+      }
+
       return new Response('Not Found', { status: 404 });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -370,8 +594,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   return {
     port: server.port ?? opts.port,
     stop: async () => {
+      if (tickTimer) clearInterval(tickTimer);
       if (watcher) await watcher.close();
-      server.stop();
+      server.stop(true);
+      if (obsQueue) obsQueue.close();
+      if (obsStore) obsStore.close();
+      if (pendingEmbed) pendingEmbed.close();
       vector.close();
       meta.close();
     },
@@ -415,6 +643,9 @@ if (import.meta.main) {
     vectorDbPath,
     embeddingDimension: 1024,
     ...(watchPaths !== undefined && watchChannel !== undefined && { watchPaths, watchChannel }),
+    observationQueueDbPath: QUEUE_DB_PATH,
+    observationsDbPath: OBSERVATIONS_DB_PATH,
+    pendingEmbedDbPath: PENDING_EMBED_DB_PATH,
   });
   console.log(`[worker] listening on http://localhost:${handle.port}`);
 

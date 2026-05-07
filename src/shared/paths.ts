@@ -5,6 +5,7 @@ export const DATA_DIR = process.env.AELITA_MCP_DATA_DIR ?? join(homedir(), '.ael
 
 export const META_DB_PATH = join(DATA_DIR, 'meta.sqlite3');
 export const QUEUE_DB_PATH = join(DATA_DIR, 'queue.db');
+export const OBSERVATIONS_DB_PATH = join(DATA_DIR, 'observations.db');
 export const PENDING_EMBED_DB_PATH = join(DATA_DIR, 'pending_embed.db');
 export const VECTOR_DB_DIR = join(DATA_DIR, 'vector-db');
 export const LOGS_DIR = join(DATA_DIR, 'logs');
