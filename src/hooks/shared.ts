@@ -1,0 +1,99 @@
+// Shared helpers for the four hook scripts.
+//
+// Hook contract: Claude Code spawns the hook process, writes a JSON payload
+// to stdin, and reads the hook's stdout. Errors should NEVER cause the hook
+// to print stack traces — fail-open is the contract. The script's job is to
+// pass through (UserPromptSubmit appends the envelope; others just log).
+
+import { DEFAULT_WORKER_PORT } from '../shared/paths.ts';
+
+const WORKER_BASE = `http://localhost:${process.env.AELITA_MCP_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
+
+/** Read all of stdin synchronously (Bun supports this via Bun.stdin). */
+export async function readStdinJson<T = unknown>(): Promise<T> {
+  const text = await Bun.stdin.text();
+  if (!text || !text.trim()) return {} as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch (err) {
+    throw new Error(`hook: failed to parse stdin JSON: ${(err as Error).message}`);
+  }
+}
+
+/** Write a string to stdout, no trailing newline added (caller controls). */
+export function writeStdout(s: string): void {
+  Bun.write(Bun.stdout, s);
+}
+
+export interface FetchWithTimeoutOptions {
+  method?: 'GET' | 'POST';
+  body?: unknown;
+  timeoutMs: number;
+}
+
+export interface FetchResult<T> {
+  ok: boolean;
+  status: number;
+  body: T | null;
+  timedOut: boolean;
+  errorMessage: string | null;
+}
+
+/**
+ * Bounded fetch — returns a structured result, NEVER throws.
+ * Used by every hook so a worker outage cannot block Claude Code.
+ */
+export async function workerFetch<T>(
+  path: string,
+  opts: FetchWithTimeoutOptions,
+): Promise<FetchResult<T>> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), opts.timeoutMs);
+  try {
+    const init: RequestInit = {
+      method: opts.method ?? 'GET',
+      signal: controller.signal,
+    };
+    if (opts.body !== undefined) {
+      init.headers = { 'content-type': 'application/json' };
+      init.body = JSON.stringify(opts.body);
+    }
+    const res = await fetch(`${WORKER_BASE}${path}`, init);
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      return { ok: false, status: res.status, body: null, timedOut: false, errorMessage: `${res.status}: ${txt}` };
+    }
+    const body = await res.json() as T;
+    return { ok: true, status: res.status, body, timedOut: false, errorMessage: null };
+  } catch (err) {
+    const e = err as Error;
+    const timedOut = e.name === 'AbortError' || /aborted/i.test(e.message);
+    return { ok: false, status: 0, body: null, timedOut, errorMessage: e.message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Coerce hook-time CWD → project_id for non-installed flows. Honors $AELITA_MCP_PROJECT_ID. */
+export function resolveProjectId(cwd: string | undefined): string {
+  if (process.env.AELITA_MCP_PROJECT_ID) return process.env.AELITA_MCP_PROJECT_ID;
+  if (!cwd) return 'default';
+  const parts = cwd.split('/').filter(Boolean);
+  return parts[parts.length - 1] ?? 'default';
+}
+
+/** Truncate any string to ≤ N chars, preserving a trailing marker. */
+export function clamp(s: string, max: number): string {
+  if (typeof s !== 'string') return '';
+  if (s.length <= max) return s;
+  return s.slice(0, max - 1) + '…';
+}
+
+/** Compact-stringify any object/value for tool_input/tool_response summaries. */
+export function summarize(value: unknown, max = 1500): string {
+  try {
+    return clamp(typeof value === 'string' ? value : JSON.stringify(value), max);
+  } catch {
+    return '[unserializable]';
+  }
+}
