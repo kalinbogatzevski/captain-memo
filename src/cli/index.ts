@@ -1,6 +1,8 @@
 import { statusCommand } from './commands/status.ts';
 import { statsCommand } from './commands/stats.ts';
 import { reindexCommand } from './commands/reindex.ts';
+import { observationCommand } from './commands/observation.ts';
+import { configCommand } from './commands/config.ts';
 
 const HELP = `aelita-mcp — local memory layer for Claude Code
 
@@ -11,6 +13,8 @@ Commands:
   status       Check whether the worker is running and reachable
   stats        Print corpus statistics (chunk counts by channel)
   reindex      Re-embed corpus content (optionally scoped to a channel)
+  observation  list|flush — manage observation queue (--limit N, --session ID)
+  config       show — print effective config (env + defaults, secrets masked)
   help         Show this message
 
 Examples:
@@ -18,6 +22,9 @@ Examples:
   aelita-mcp stats
   aelita-mcp reindex --channel memory
   aelita-mcp reindex --force
+  aelita-mcp observation list --limit 50
+  aelita-mcp observation flush --session ses_abc
+  aelita-mcp config show
 `;
 
 export async function main(args: string[]): Promise<void> {
@@ -32,6 +39,12 @@ export async function main(args: string[]): Promise<void> {
       break;
     case 'reindex':
       exit = await reindexCommand(args.slice(1));
+      break;
+    case 'observation':
+      exit = await observationCommand(args.slice(1));
+      break;
+    case 'config':
+      exit = await configCommand(args.slice(1));
       break;
     case 'help':
     case '--help':

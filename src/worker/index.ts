@@ -426,6 +426,15 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           embedder: { model: opts.embedderModel, endpoint: opts.embedderEndpoint },
         });
       }
+      if (req.method === 'GET' && url.pathname === '/observations/recent') {
+        if (!obsStore) return Response.json({ items: [] });
+        const limit = Math.min(200, Number(url.searchParams.get('limit') ?? 20));
+        const items = obsStore.listRecent(limit).map(o => ({
+          id: o.id, session_id: o.session_id, prompt_number: o.prompt_number,
+          type: o.type, title: o.title, created_at_epoch: o.created_at_epoch,
+        }));
+        return Response.json({ items });
+      }
       if (req.method === 'POST' && url.pathname === '/search/all') {
         const parsed = SearchRequestSchema.safeParse(await req.json());
         if (!parsed.success) {
