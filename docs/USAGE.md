@@ -90,25 +90,51 @@ AELITA_MCP_WATCH_MEMORY="/home/me/.claude/memory/*.md" bun run worker:start
 Plan 2 layers auto-injection hooks, the observation queue, and a configurable
 Haiku-class summarizer on top of the Plan-1 foundation.
 
-## Summarizer auth — pick one
+## Summarizer — pick a provider
 
-The summarizer is what compresses raw tool-use events into structured observations. You choose how it authenticates with Anthropic via the `AELITA_MCP_SUMMARIZER_PROVIDER` env var:
+The summarizer compresses raw tool-use events into structured observations. Pick how it gets a model via `AELITA_MCP_SUMMARIZER_PROVIDER`:
 
-| Provider | How it authenticates | When to use |
+| Provider | How it works | When to use |
 |---|---|---|
-| `claude-code` | Shells out to `claude -p`, uses your **Claude Code Max/Pro plan** quota | Recommended for individuals — zero setup, no API key, no separate billing |
-| `anthropic` (default) | Direct `@anthropic-ai/sdk` calls with `ANTHROPIC_API_KEY` | Recommended for teams / orgs that already have API billing or want metered call accounting |
+| `claude-code` | Shells out to `claude -p`, uses your **Claude Code Max/Pro plan** | Recommended for individuals — zero setup, no API key |
+| `openai-compatible` | POSTs to any `/v1/chat/completions` endpoint you point it at | Local LLMs (Ollama, LM Studio, vLLM, llama.cpp), OpenAI, OpenRouter, Together, Groq, DeepSeek, Mistral, etc. |
+| `anthropic` (default) | Direct Anthropic SDK + `ANTHROPIC_API_KEY` | You already have Anthropic API billing |
 
-### Quick start — Max/Pro plan (no API key needed)
+### Quick start — Max/Pro plan (no API key, no install)
 
 ```bash
 export AELITA_MCP_SUMMARIZER_PROVIDER=claude-code
 bun run worker:start
 ```
 
-The worker subprocess invokes `claude -p --output-format json --model <haiku-model> ...` for every batch. Auth comes from your existing Claude Code login. Trade-off: ~1-2 s subprocess overhead per batch (vs ~200-400 ms for direct API), and calls count against your Max session rate limits.
+Auth comes from your existing Claude Code login. Trade-off: ~1-2 s subprocess overhead per batch (vs ~200-400 ms direct API), and calls count against your Max session rate limits.
 
-### Quick start — direct API
+### Quick start — local LLM via Ollama
+
+```bash
+# Run any model via Ollama (e.g. llama3.3-70b, qwen2.5-coder, mistral-nemo)
+ollama pull qwen2.5:14b-instruct
+export AELITA_MCP_SUMMARIZER_PROVIDER=openai-compatible
+export AELITA_MCP_OPENAI_ENDPOINT=http://localhost:11434/v1/chat/completions
+export AELITA_MCP_HAIKU_MODEL=qwen2.5:14b-instruct   # whatever your endpoint serves
+bun run worker:start
+```
+
+No API key needed for local servers. The same pattern works for **LM Studio** (port 1234), **vLLM** (port 8000), **llama.cpp's `--server`** mode, and any other tool that exposes the OpenAI Chat Completions shape.
+
+### Quick start — OpenAI / OpenRouter / Together / Groq / DeepSeek / etc.
+
+```bash
+export AELITA_MCP_SUMMARIZER_PROVIDER=openai-compatible
+export AELITA_MCP_OPENAI_ENDPOINT=https://api.openai.com/v1/chat/completions
+export AELITA_MCP_OPENAI_API_KEY=sk-...
+export AELITA_MCP_HAIKU_MODEL=gpt-4o-mini
+bun run worker:start
+```
+
+(Replace endpoint + model with whatever provider you use.)
+
+### Quick start — direct Anthropic API
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -121,9 +147,11 @@ bun run worker:start
 
 | Variable | Default | Required for |
 |---|---|---|
-| `AELITA_MCP_SUMMARIZER_PROVIDER` | `anthropic` | `anthropic` (API key) or `claude-code` (Max/Pro subprocess). |
-| `ANTHROPIC_API_KEY` | — | Required when `provider=anthropic`. Ignored under `claude-code`. |
-| `AELITA_MCP_HAIKU_MODEL` | `claude-haiku-4-6` | Primary summarizer model. Default is a 2026-05 snapshot — point it at any newer model when one ships (e.g. `claude-haiku-4-7`). |
+| `AELITA_MCP_SUMMARIZER_PROVIDER` | `anthropic` | `anthropic` / `claude-code` / `openai-compatible`. |
+| `ANTHROPIC_API_KEY` | — | Required when `provider=anthropic`. Ignored under other providers. |
+| `AELITA_MCP_OPENAI_ENDPOINT` | — | Required when `provider=openai-compatible`. Full URL to `/v1/chat/completions`. |
+| `AELITA_MCP_OPENAI_API_KEY` | — | Optional bearer token for `provider=openai-compatible`. Local servers (Ollama, LM Studio) typically don't need it. |
+| `AELITA_MCP_HAIKU_MODEL` | `claude-haiku-4-6` | Primary summarizer model. The name is historical (originally targeted Anthropic Haiku) but applies to whatever provider you pick — set it to whatever model your endpoint serves. |
 | `AELITA_MCP_HAIKU_FALLBACKS` | `claude-haiku-4-5` | Comma-separated fallback chain. Each model is tried in order on `model_not_found`; the first one that responds is cached for the worker's lifetime. |
 | `AELITA_MCP_HOOK_BUDGET_TOKENS` | `4000` | Hard cap on `<memory-context>` token budget. |
 | `AELITA_MCP_HOOK_TIMEOUT_MS` | `250` | UserPromptSubmit hard timeout. |

@@ -33,6 +33,8 @@ export async function configCommand(args: string[]): Promise<number> {
     `haiku_model           ${process.env.AELITA_MCP_HAIKU_MODEL ?? DEFAULT_HAIKU_MODEL}`,
     `haiku_fallbacks       ${process.env.AELITA_MCP_HAIKU_FALLBACKS ?? DEFAULT_HAIKU_FALLBACKS.join(',')}`,
     `anthropic_api_key     ${mask(process.env.ANTHROPIC_API_KEY)}`,
+    `openai_endpoint       ${process.env.AELITA_MCP_OPENAI_ENDPOINT ?? '(unset)'}`,
+    `openai_api_key        ${mask(process.env.AELITA_MCP_OPENAI_API_KEY)}`,
     `hook_budget_tokens    ${process.env.AELITA_MCP_HOOK_BUDGET_TOKENS ?? DEFAULT_HOOK_BUDGET_TOKENS}`,
     `hook_timeout_ms       ${process.env.AELITA_MCP_HOOK_TIMEOUT_MS ?? DEFAULT_HOOK_TIMEOUT_MS}`,
     `observation_batch     ${process.env.AELITA_MCP_OBSERVATION_BATCH_SIZE ?? DEFAULT_OBSERVATION_BATCH_SIZE}`,

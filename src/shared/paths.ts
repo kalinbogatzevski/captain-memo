@@ -38,10 +38,19 @@ export const ENV_HOOK_TIMEOUT_MS = 'AELITA_MCP_HOOK_TIMEOUT_MS';
 export const ENV_OBSERVATION_BATCH_SIZE = 'AELITA_MCP_OBSERVATION_BATCH_SIZE';
 export const ENV_OBSERVATION_TICK_MS = 'AELITA_MCP_OBSERVATION_TICK_MS';
 
-/** Summarizer transport providers. 'anthropic' = Anthropic SDK with API key
- *  (default); 'claude-code' = `claude -p` subprocess (Max plan auth, no key). */
-export type SummarizerProvider = 'anthropic' | 'claude-code';
+/** Summarizer transport providers.
+ *  - 'anthropic'         (default) — Anthropic SDK + ANTHROPIC_API_KEY
+ *  - 'claude-code'       — `claude -p` subprocess; uses your Claude Code Max/Pro plan, no API key
+ *  - 'openai-compatible' — POST /v1/chat/completions to AELITA_MCP_OPENAI_ENDPOINT;
+ *                          works with Ollama, LM Studio, vLLM, llama.cpp, OpenAI,
+ *                          OpenRouter, Together, Groq, DeepSeek, Mistral, etc. */
+export type SummarizerProvider = 'anthropic' | 'claude-code' | 'openai-compatible';
 export const DEFAULT_SUMMARIZER_PROVIDER: SummarizerProvider = 'anthropic';
+
+/** Endpoint URL for openai-compatible provider. Required when provider=openai-compatible. */
+export const ENV_OPENAI_ENDPOINT = 'AELITA_MCP_OPENAI_ENDPOINT';
+/** Optional bearer token for openai-compatible provider (most local servers don't need this). */
+export const ENV_OPENAI_API_KEY = 'AELITA_MCP_OPENAI_API_KEY';
 
 // Hard contracts from spec §5 — defaults if env not set.
 export const DEFAULT_HOOK_TIMEOUT_MS = 250;

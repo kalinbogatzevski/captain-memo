@@ -25,6 +25,8 @@ import {
   ENV_SUMMARIZER_PROVIDER,
   DEFAULT_SUMMARIZER_PROVIDER,
   type SummarizerProvider,
+  ENV_OPENAI_ENDPOINT,
+  ENV_OPENAI_API_KEY,
   ENV_HAIKU_MODEL,
   ENV_HAIKU_FALLBACKS,
   DEFAULT_HAIKU_MODEL,
@@ -815,8 +817,9 @@ if (import.meta.main) {
   //     counts against Max session quota.
   const providerRaw = (process.env[ENV_SUMMARIZER_PROVIDER] ?? DEFAULT_SUMMARIZER_PROVIDER).toLowerCase();
   const provider: SummarizerProvider =
-    providerRaw === 'claude-code' ? 'claude-code' :
-    providerRaw === 'anthropic'  ? 'anthropic' :
+    providerRaw === 'claude-code'                                ? 'claude-code' :
+    providerRaw === 'openai-compatible' || providerRaw === 'openai' ? 'openai-compatible' :
+    providerRaw === 'anthropic'                                  ? 'anthropic' :
     (() => {
       console.error(`[worker] unknown ${ENV_SUMMARIZER_PROVIDER}="${providerRaw}" — falling back to '${DEFAULT_SUMMARIZER_PROVIDER}'`);
       return DEFAULT_SUMMARIZER_PROVIDER;
@@ -833,6 +836,28 @@ if (import.meta.main) {
     });
     summarize = (events) => summarizer.summarize(events);
     console.error(`[worker] summarizer provider = claude-code (Max/Pro plan auth via 'claude -p')`);
+  } else if (provider === 'openai-compatible') {
+    const endpoint = process.env[ENV_OPENAI_ENDPOINT];
+    if (!endpoint) {
+      console.error(
+        `[worker] ${ENV_SUMMARIZER_PROVIDER}=openai-compatible requires ${ENV_OPENAI_ENDPOINT} to be set\n` +
+        `         (e.g. http://localhost:11434/v1/chat/completions for Ollama)`
+      );
+    } else {
+      const apiKey = process.env[ENV_OPENAI_API_KEY];
+      const { createOpenAITransport } = await import('./summarizer-openai.ts');
+      const summarizer = new HaikuSummarizer({
+        apiKey: '', // unused — openai transport carries its own optional key
+        model: haikuModel,
+        fallbackModels: haikuFallbacks,
+        transport: createOpenAITransport({
+          endpoint,
+          ...(apiKey !== undefined && { apiKey }),
+        }),
+      });
+      summarize = (events) => summarizer.summarize(events);
+      console.error(`[worker] summarizer provider = openai-compatible (${endpoint})${apiKey ? ' [auth]' : ' [no auth]'}`);
+    }
   } else if (anthropicKey) {
     const summarizer = new HaikuSummarizer({
       apiKey: anthropicKey,
@@ -843,9 +868,10 @@ if (import.meta.main) {
     console.error(`[worker] summarizer provider = anthropic (Anthropic API key)`);
   } else {
     console.error(
-      `[worker] observation summarizer disabled — set either:\n` +
-      `         - ${ENV_SUMMARIZER_PROVIDER}=claude-code (uses Max/Pro plan, no key)\n` +
-      `         - ${ENV_ANTHROPIC_API_KEY}=sk-... (direct API)`
+      `[worker] observation summarizer disabled — set one of:\n` +
+      `         - ${ENV_SUMMARIZER_PROVIDER}=claude-code        (Max/Pro plan, no key)\n` +
+      `         - ${ENV_SUMMARIZER_PROVIDER}=openai-compatible  + ${ENV_OPENAI_ENDPOINT} (Ollama / LM Studio / OpenAI / etc.)\n` +
+      `         - ${ENV_ANTHROPIC_API_KEY}=sk-...                (direct Anthropic API)`
     );
   }
 
