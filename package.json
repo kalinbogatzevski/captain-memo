@@ -14,13 +14,16 @@
     "test": "bun test",
     "test:unit": "bun test tests/unit/",
     "test:integration": "bun test tests/integration/",
+    "test:hooks": "bun test tests/hooks/",
     "typecheck": "tsc --noEmit",
     "worker:start": "bun src/worker/index.ts",
     "worker:dev": "AELITA_MCP_DATA_DIR=./.aelita-mcp.dev bun --watch src/worker/index.ts",
     "mcp:start": "bun src/mcp-server.ts",
-    "cli": "bun bin/aelita-mcp"
+    "cli": "bun bin/aelita-mcp",
+    "hook": "bun bin/aelita-mcp-hook"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.95.0",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "chokidar": "^4.0.3",
     "gpt-tokenizer": "^2.5.1",
