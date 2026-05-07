@@ -1,0 +1,3 @@
+#!/usr/bin/env bun
+// bin/aelita-mcp-hook
+import '../src/hooks/dispatcher.ts';
