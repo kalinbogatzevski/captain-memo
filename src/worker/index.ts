@@ -79,11 +79,11 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 }
 
 if (import.meta.main) {
-  const port = Number(process.env.AELITA_WORKER_PORT ?? DEFAULT_WORKER_PORT);
-  const projectId = process.env.AELITA_PROJECT_ID ?? 'default';
-  const embedderEndpoint = process.env.VOYAGE_ENDPOINT ?? DEFAULT_VOYAGE_ENDPOINT;
-  const embedderModel = process.env.VOYAGE_MODEL ?? 'voyage-4-nano';
-  const embedderApiKey = process.env.VOYAGE_API_KEY;
+  const port = Number(process.env.AELITA_MCP_WORKER_PORT ?? DEFAULT_WORKER_PORT);
+  const projectId = process.env.AELITA_MCP_PROJECT_ID ?? 'default';
+  const embedderEndpoint = process.env.AELITA_MCP_VOYAGE_ENDPOINT ?? DEFAULT_VOYAGE_ENDPOINT;
+  const embedderModel = process.env.AELITA_MCP_VOYAGE_MODEL ?? 'voyage-4-nano';
+  const embedderApiKey = process.env.AELITA_MCP_VOYAGE_API_KEY;
   const vectorDbPath = join(VECTOR_DB_DIR, 'embeddings.db');
 
   const handle = await startWorker({
