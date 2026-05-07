@@ -64,6 +64,49 @@ const TOOLS = [
       required: ['query'],
     },
   },
+  {
+    name: 'search_all',
+    description: 'Unified search across all configured channels (memory + skill + observation + remote). Returns merged top-K.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string' },
+        channels: { type: 'array', items: { type: 'string', enum: ['memory', 'skill', 'observation', 'remote'] } },
+        top_k: { type: 'number', default: 10 },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'get_full',
+    description: 'Retrieve full content of a hit by its doc_id (returned in search results).',
+    inputSchema: {
+      type: 'object',
+      properties: { doc_id: { type: 'string' } },
+      required: ['doc_id'],
+    },
+  },
+  {
+    name: 'reindex',
+    description: 'Trigger a reindex (admin). Optionally restrict to a channel or force re-embedding.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        channel: { type: 'string', enum: ['memory', 'skill', 'observation', 'all'], default: 'all' },
+        force: { type: 'boolean', default: false },
+      },
+    },
+  },
+  {
+    name: 'stats',
+    description: 'Return corpus stats: total chunks, by channel, last index time, embedder info.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'status',
+    description: 'Health check: are voyage and chroma reachable?',
+    inputSchema: { type: 'object', properties: {} },
+  },
 ];
 
 if (import.meta.main) {
@@ -78,10 +121,26 @@ if (import.meta.main) {
     const { name, arguments: args } = request.params;
     let result: unknown;
     try {
-      if (name === 'search_memory') result = await workerPost('/search/memory', args);
-      else if (name === 'search_skill') result = await workerPost('/search/skill', args);
-      else if (name === 'search_observations') result = await workerPost('/search/observations', args);
-      else throw new Error(`unknown tool: ${name}`);
+      switch (name) {
+        case 'search_memory':       result = await workerPost('/search/memory', args); break;
+        case 'search_skill':        result = await workerPost('/search/skill', args); break;
+        case 'search_observations': result = await workerPost('/search/observations', args); break;
+        case 'search_all':          result = await workerPost('/search/all', args); break;
+        case 'get_full':            result = await workerPost('/get_full', args); break;
+        case 'reindex':             result = await workerPost('/reindex', args); break;
+        case 'stats': {
+          const res = await fetch(`${WORKER_BASE}/stats`);
+          if (!res.ok) throw new Error(`worker /stats returned ${res.status}`);
+          result = await res.json();
+          break;
+        }
+        case 'status': {
+          const res = await fetch(`${WORKER_BASE}/health`);
+          result = res.ok ? await res.json() : { healthy: false };
+          break;
+        }
+        default: throw new Error(`unknown tool: ${name}`);
+      }
     } catch (err) {
       const e = err as Error;
       return {
