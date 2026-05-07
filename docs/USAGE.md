@@ -1,4 +1,4 @@
-# aelita-mcp Plan-1 — Manual Usage (Foundation)
+# captain-memo Plan-1 — Manual Usage (Foundation)
 
 This is what's available after Plan 1 ships. Hooks (auto-injection) come in Plan 2; migration from claude-mem and federation come in Plan 3.
 
@@ -19,25 +19,25 @@ Default port: `39888`. Override via env:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AELITA_MCP_WORKER_PORT` | `39888` | HTTP port for the long-lived worker. |
-| `AELITA_MCP_PROJECT_ID` | `default` | Project namespace for the per-project vector collection. |
-| `AELITA_MCP_VOYAGE_ENDPOINT` | `http://localhost:8124/v1/embeddings` | Voyage embeddings endpoint. |
-| `AELITA_MCP_VOYAGE_MODEL` | `voyage-4-nano` | Model identifier passed to Voyage. |
-| `AELITA_MCP_VOYAGE_API_KEY` | — | Optional bearer token for Voyage. |
-| `AELITA_MCP_WATCH_MEMORY` | — | Comma-separated globs to watch for memory files (channel = `memory`). |
-| `AELITA_MCP_WATCH_SKILLS` | — | Comma-separated globs to watch for skill files (channel = `skill`). |
-| `AELITA_MCP_DATA_DIR` | `~/.aelita-mcp` | Where the meta SQLite + vector SQLite + logs live. |
+| `CAPTAIN_MEMO_WORKER_PORT` | `39888` | HTTP port for the long-lived worker. |
+| `CAPTAIN_MEMO_PROJECT_ID` | `default` | Project namespace for the per-project vector collection. |
+| `CAPTAIN_MEMO_VOYAGE_ENDPOINT` | `http://localhost:8124/v1/embeddings` | Voyage embeddings endpoint. |
+| `CAPTAIN_MEMO_VOYAGE_MODEL` | `voyage-4-nano` | Model identifier passed to Voyage. |
+| `CAPTAIN_MEMO_VOYAGE_API_KEY` | — | Optional bearer token for Voyage. |
+| `CAPTAIN_MEMO_WATCH_MEMORY` | — | Comma-separated globs to watch for memory files (channel = `memory`). |
+| `CAPTAIN_MEMO_WATCH_SKILLS` | — | Comma-separated globs to watch for skill files (channel = `skill`). |
+| `CAPTAIN_MEMO_DATA_DIR` | `~/.captain-memo` | Where the meta SQLite + vector SQLite + logs live. |
 
-> Plan-1 supports **one watch channel per worker process**. If both `AELITA_MCP_WATCH_MEMORY` and `AELITA_MCP_WATCH_SKILLS` are set, the worker uses memory and warns. Multi-channel watch is on the Plan-2 backlog.
+> Plan-1 supports **one watch channel per worker process**. If both `CAPTAIN_MEMO_WATCH_MEMORY` and `CAPTAIN_MEMO_WATCH_SKILLS` are set, the worker uses memory and warns. Multi-channel watch is on the Plan-2 backlog.
 
 ## Use the CLI
 
 ```bash
-aelita-mcp status                     # health check + total chunk count
-aelita-mcp stats                      # corpus stats by channel
-aelita-mcp reindex                    # cheap sha-diff reindex
-aelita-mcp reindex --channel memory   # restrict to one channel
-aelita-mcp reindex --force            # ignore sha cache, re-embed all
+captain-memo status                     # health check + total chunk count
+captain-memo stats                      # corpus stats by channel
+captain-memo reindex                    # cheap sha-diff reindex
+captain-memo reindex --channel memory   # restrict to one channel
+captain-memo reindex --force            # ignore sha cache, re-embed all
 ```
 
 ## Use the MCP server (manual)
@@ -53,10 +53,10 @@ Expose to Claude Code via `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "aelita-mcp": {
+    "captain-memo": {
       "type": "stdio",
       "command": "bun",
-      "args": ["/absolute/path/to/aelita-mcp/src/mcp-server.ts"]
+      "args": ["/absolute/path/to/captain-memo/src/mcp-server.ts"]
     }
   }
 }
@@ -66,12 +66,12 @@ Tools exposed: `search_memory`, `search_skill`, `search_observations`, `search_a
 
 ## Watch paths
 
-Set the env vars `AELITA_MCP_WATCH_MEMORY` or `AELITA_MCP_WATCH_SKILLS` to comma-separated globs. Patterns are passed to Bun's native glob — typical forms like `~/.claude/memory/*.md` work after shell expansion (note: env-passed values won't expand `~`, so prefer absolute paths in env).
+Set the env vars `CAPTAIN_MEMO_WATCH_MEMORY` or `CAPTAIN_MEMO_WATCH_SKILLS` to comma-separated globs. Patterns are passed to Bun's native glob — typical forms like `~/.claude/memory/*.md` work after shell expansion (note: env-passed values won't expand `~`, so prefer absolute paths in env).
 
 Example:
 
 ```bash
-AELITA_MCP_WATCH_MEMORY="/home/me/.claude/memory/*.md" bun run worker:start
+CAPTAIN_MEMO_WATCH_MEMORY="/home/me/.claude/memory/*.md" bun run worker:start
 ```
 
 ## What's NOT in Plan 1
@@ -85,14 +85,14 @@ AELITA_MCP_WATCH_MEMORY="/home/me/.claude/memory/*.md" bun run worker:start
 
 ---
 
-# aelita-mcp Plan-2 — Hooks + Observation Pipeline
+# captain-memo Plan-2 — Hooks + Observation Pipeline
 
 Plan 2 layers auto-injection hooks, the observation queue, and a configurable
 Haiku-class summarizer on top of the Plan-1 foundation.
 
 ## Summarizer — pick a provider
 
-The summarizer compresses raw tool-use events into structured observations. Pick how it gets a model via `AELITA_MCP_SUMMARIZER_PROVIDER`:
+The summarizer compresses raw tool-use events into structured observations. Pick how it gets a model via `CAPTAIN_MEMO_SUMMARIZER_PROVIDER`:
 
 | Provider | How it works | When to use |
 |---|---|---|
@@ -103,7 +103,7 @@ The summarizer compresses raw tool-use events into structured observations. Pick
 ### Quick start — Max/Pro plan (no API key, no install)
 
 ```bash
-export AELITA_MCP_SUMMARIZER_PROVIDER=claude-code
+export CAPTAIN_MEMO_SUMMARIZER_PROVIDER=claude-code
 bun run worker:start
 ```
 
@@ -114,9 +114,9 @@ Auth comes from your existing Claude Code login. Trade-off: ~1-2 s subprocess ov
 ```bash
 # Run any model via Ollama (e.g. llama3.3-70b, qwen2.5-coder, mistral-nemo)
 ollama pull qwen2.5:14b-instruct
-export AELITA_MCP_SUMMARIZER_PROVIDER=openai-compatible
-export AELITA_MCP_OPENAI_ENDPOINT=http://localhost:11434/v1/chat/completions
-export AELITA_MCP_SUMMARIZER_MODEL=qwen2.5:14b-instruct   # whatever your endpoint serves
+export CAPTAIN_MEMO_SUMMARIZER_PROVIDER=openai-compatible
+export CAPTAIN_MEMO_OPENAI_ENDPOINT=http://localhost:11434/v1/chat/completions
+export CAPTAIN_MEMO_SUMMARIZER_MODEL=qwen2.5:14b-instruct   # whatever your endpoint serves
 bun run worker:start
 ```
 
@@ -125,10 +125,10 @@ No API key needed for local servers. The same pattern works for **LM Studio** (p
 ### Quick start — OpenAI / OpenRouter / Together / Groq / DeepSeek / etc.
 
 ```bash
-export AELITA_MCP_SUMMARIZER_PROVIDER=openai-compatible
-export AELITA_MCP_OPENAI_ENDPOINT=https://api.openai.com/v1/chat/completions
-export AELITA_MCP_OPENAI_API_KEY=sk-...
-export AELITA_MCP_SUMMARIZER_MODEL=gpt-4o-mini
+export CAPTAIN_MEMO_SUMMARIZER_PROVIDER=openai-compatible
+export CAPTAIN_MEMO_OPENAI_ENDPOINT=https://api.openai.com/v1/chat/completions
+export CAPTAIN_MEMO_OPENAI_API_KEY=sk-...
+export CAPTAIN_MEMO_SUMMARIZER_MODEL=gpt-4o-mini
 bun run worker:start
 ```
 
@@ -141,33 +141,33 @@ export ANTHROPIC_API_KEY=sk-ant-...
 bun run worker:start
 ```
 
-(Default `AELITA_MCP_SUMMARIZER_PROVIDER=anthropic`, no other config needed.)
+(Default `CAPTAIN_MEMO_SUMMARIZER_PROVIDER=anthropic`, no other config needed.)
 
 ## New prerequisites
 
 | Variable | Default | Required for |
 |---|---|---|
-| `AELITA_MCP_SUMMARIZER_PROVIDER` | `anthropic` | `anthropic` / `claude-code` / `openai-compatible`. |
+| `CAPTAIN_MEMO_SUMMARIZER_PROVIDER` | `anthropic` | `anthropic` / `claude-code` / `openai-compatible`. |
 | `ANTHROPIC_API_KEY` | — | Required when `provider=anthropic`. Ignored under other providers. |
-| `AELITA_MCP_OPENAI_ENDPOINT` | — | Required when `provider=openai-compatible`. Full URL to `/v1/chat/completions`. |
-| `AELITA_MCP_OPENAI_API_KEY` | — | Optional bearer token for `provider=openai-compatible`. Local servers (Ollama, LM Studio) typically don't need it. |
-| `AELITA_MCP_SUMMARIZER_MODEL` | `claude-haiku-4-6` | Primary summarizer model. Provider-agnostic — set it to whatever model your endpoint serves (e.g. `gpt-4o-mini`, `qwen2.5:14b`, `deepseek-chat`, etc.). |
-| `AELITA_MCP_SUMMARIZER_FALLBACKS` | `claude-haiku-4-5` | Comma-separated fallback chain. Each model is tried in order on `model_not_found`; the first one that responds is cached for the worker's lifetime. |
-| `AELITA_MCP_HOOK_BUDGET_TOKENS` | `4000` | Hard cap on `<memory-context>` token budget. |
-| `AELITA_MCP_HOOK_TIMEOUT_MS` | `250` | UserPromptSubmit hard timeout. |
-| `AELITA_MCP_OBSERVATION_BATCH_SIZE` | `20` | Rows pulled per processor tick. |
-| `AELITA_MCP_OBSERVATION_TICK_MS` | `5000` | Interval for the auto-tick processor. |
+| `CAPTAIN_MEMO_OPENAI_ENDPOINT` | — | Required when `provider=openai-compatible`. Full URL to `/v1/chat/completions`. |
+| `CAPTAIN_MEMO_OPENAI_API_KEY` | — | Optional bearer token for `provider=openai-compatible`. Local servers (Ollama, LM Studio) typically don't need it. |
+| `CAPTAIN_MEMO_SUMMARIZER_MODEL` | `claude-haiku-4-6` | Primary summarizer model. Provider-agnostic — set it to whatever model your endpoint serves (e.g. `gpt-4o-mini`, `qwen2.5:14b`, `deepseek-chat`, etc.). |
+| `CAPTAIN_MEMO_SUMMARIZER_FALLBACKS` | `claude-haiku-4-5` | Comma-separated fallback chain. Each model is tried in order on `model_not_found`; the first one that responds is cached for the worker's lifetime. |
+| `CAPTAIN_MEMO_HOOK_BUDGET_TOKENS` | `4000` | Hard cap on `<memory-context>` token budget. |
+| `CAPTAIN_MEMO_HOOK_TIMEOUT_MS` | `250` | UserPromptSubmit hard timeout. |
+| `CAPTAIN_MEMO_OBSERVATION_BATCH_SIZE` | `20` | Rows pulled per processor tick. |
+| `CAPTAIN_MEMO_OBSERVATION_TICK_MS` | `5000` | Interval for the auto-tick processor. |
 
-> If neither `AELITA_MCP_SUMMARIZER_PROVIDER=claude-code` nor `ANTHROPIC_API_KEY` is set, the queue accepts events but `flush` returns 503 (observations stay queued; nothing is dropped).
+> If neither `CAPTAIN_MEMO_SUMMARIZER_PROVIDER=claude-code` nor `ANTHROPIC_API_KEY` is set, the queue accepts events but `flush` returns 503 (observations stay queued; nothing is dropped).
 
 ## Install hooks
 
 ```bash
 # User-scope (default) — registers in ~/.claude/settings.json
-aelita-mcp install-hooks
+captain-memo install-hooks
 
 # Project-scope — registers in <cwd>/.claude/settings.json
-aelita-mcp install-hooks --project
+captain-memo install-hooks --project
 ```
 
 The command is idempotent — running it twice doesn't duplicate entries.
@@ -176,13 +176,13 @@ Foreign hook entries (from other tools) are preserved.
 ## CLI extensions (Plan 2)
 
 ```bash
-aelita-mcp config show              # Effective config + masked secrets
-aelita-mcp observation list         # Recent observations
-aelita-mcp observation list --limit 50
-aelita-mcp observation flush        # Drain the whole queue
-aelita-mcp observation flush --session ses_xyz
-aelita-mcp install-hooks            # Register hooks in settings.json
-aelita-mcp install-hooks --project
+captain-memo config show              # Effective config + masked secrets
+captain-memo observation list         # Recent observations
+captain-memo observation list --limit 50
+captain-memo observation flush        # Drain the whole queue
+captain-memo observation flush --session ses_xyz
+captain-memo install-hooks            # Register hooks in settings.json
+captain-memo install-hooks --project
 ```
 
 ## Hook contracts at a glance

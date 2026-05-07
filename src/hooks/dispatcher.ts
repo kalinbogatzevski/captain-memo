@@ -12,7 +12,7 @@ async function main(): Promise<void> {
   const event =
     process.argv[2] ??
     process.env.CLAUDE_HOOK_EVENT_NAME ??
-    process.env.AELITA_MCP_HOOK_EVENT;
+    process.env.CAPTAIN_MEMO_HOOK_EVENT;
 
   if (!event || !(event in EVENTS)) {
     process.exit(0);

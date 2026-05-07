@@ -20,7 +20,7 @@ const PORT = 39893;
 const EMBEDDING_DIM = 8;
 
 beforeAll(async () => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-e2e-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-e2e-'));
   memoryDir = join(workDir, 'memory');
   mkdirSync(memoryDir, { recursive: true });
 

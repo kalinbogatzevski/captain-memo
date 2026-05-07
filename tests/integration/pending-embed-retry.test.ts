@@ -9,7 +9,7 @@ let worker: WorkerHandle | null;
 let workDir: string;
 
 beforeEach(async () => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-pe-int-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-pe-int-'));
   worker = null;
 });
 

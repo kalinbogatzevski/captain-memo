@@ -7,7 +7,7 @@
 
 import { DEFAULT_WORKER_PORT } from '../shared/paths.ts';
 
-const WORKER_BASE = `http://localhost:${process.env.AELITA_MCP_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
+const WORKER_BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
 
 /** Read all of stdin synchronously (Bun supports this via Bun.stdin). */
 export async function readStdinJson<T = unknown>(): Promise<T> {
@@ -74,9 +74,9 @@ export async function workerFetch<T>(
   }
 }
 
-/** Coerce hook-time CWD → project_id for non-installed flows. Honors $AELITA_MCP_PROJECT_ID. */
+/** Coerce hook-time CWD → project_id for non-installed flows. Honors $CAPTAIN_MEMO_PROJECT_ID. */
 export function resolveProjectId(cwd: string | undefined): string {
-  if (process.env.AELITA_MCP_PROJECT_ID) return process.env.AELITA_MCP_PROJECT_ID;
+  if (process.env.CAPTAIN_MEMO_PROJECT_ID) return process.env.CAPTAIN_MEMO_PROJECT_ID;
   if (!cwd) return 'default';
   const parts = cwd.split('/').filter(Boolean);
   return parts[parts.length - 1] ?? 'default';

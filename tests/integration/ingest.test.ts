@@ -31,7 +31,7 @@ const fakeVectorStore = {
 };
 
 beforeEach(() => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-ingest-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-ingest-'));
   dbPath = join(workDir, 'meta.sqlite3');
   store = new MetaStore(dbPath);
   vecCalls = [];

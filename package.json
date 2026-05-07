@@ -1,5 +1,5 @@
 {
-  "name": "aelita-mcp",
+  "name": "captain-memo",
   "version": "0.1.0-alpha",
   "description": "Local memory layer for Claude Code — Voyage-embedded, hybrid search, federated remotes",
   "type": "module",
@@ -8,7 +8,7 @@
     "bun": ">=1.1.14"
   },
   "bin": {
-    "aelita-mcp": "./bin/aelita-mcp"
+    "captain-memo": "./bin/captain-memo"
   },
   "scripts": {
     "test": "bun test",
@@ -17,10 +17,10 @@
     "test:hooks": "bun test tests/hooks/",
     "typecheck": "tsc --noEmit",
     "worker:start": "bun src/worker/index.ts",
-    "worker:dev": "AELITA_MCP_DATA_DIR=./.aelita-mcp.dev bun --watch src/worker/index.ts",
+    "worker:dev": "CAPTAIN_MEMO_DATA_DIR=./.captain-memo.dev bun --watch src/worker/index.ts",
     "mcp:start": "bun src/mcp-server.ts",
-    "cli": "bun bin/aelita-mcp",
-    "hook": "bun bin/aelita-mcp-hook"
+    "cli": "bun bin/captain-memo",
+    "hook": "bun bin/captain-memo-hook"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.95.0",

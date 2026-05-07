@@ -47,7 +47,7 @@ async function runHook(input: string, env: Record<string, string> = {}): Promise
     stderr: 'pipe',
     env: {
       ...process.env,
-      AELITA_MCP_WORKER_PORT: String(PORT),
+      CAPTAIN_MEMO_WORKER_PORT: String(PORT),
       ...env,
     },
   });
@@ -73,17 +73,17 @@ test('UserPromptSubmit — preserves the original prompt at the bottom', async (
 });
 
 test('UserPromptSubmit — fails open when worker is unreachable (no envelope, exit 0)', async () => {
-  const { stdout, exitCode } = await runHook(FIXTURE, { AELITA_MCP_WORKER_PORT: '1' });
+  const { stdout, exitCode } = await runHook(FIXTURE, { CAPTAIN_MEMO_WORKER_PORT: '1' });
   expect(exitCode).toBe(0);
   expect(stdout).not.toContain('<memory-context');
   expect(stdout).toContain('How do I run the worker');
 });
 
-test('UserPromptSubmit — respects AELITA_MCP_HOOK_TIMEOUT_MS', async () => {
+test('UserPromptSubmit — respects CAPTAIN_MEMO_HOOK_TIMEOUT_MS', async () => {
   const start = Date.now();
   const { stdout, exitCode } = await runHook(FIXTURE, {
-    AELITA_MCP_WORKER_PORT: '1',
-    AELITA_MCP_HOOK_TIMEOUT_MS: '50',
+    CAPTAIN_MEMO_WORKER_PORT: '1',
+    CAPTAIN_MEMO_HOOK_TIMEOUT_MS: '50',
   });
   const elapsed = Date.now() - start;
   expect(exitCode).toBe(0);
@@ -98,7 +98,7 @@ test('UserPromptSubmit — empty stdin is tolerated', async () => {
 
 test('UserPromptSubmit — envelope conforms to spec §3 template', async () => {
   const PORT2 = 39907;
-  const workDir = mkdtempSync(join(tmpdir(), 'aelita-hook-contract-'));
+  const workDir = mkdtempSync(join(tmpdir(), 'captain-memo-hook-contract-'));
   const memDir = join(workDir, 'memory');
   mkdirSync(memDir, { recursive: true });
   writeFileSync(
@@ -131,10 +131,10 @@ test('UserPromptSubmit — envelope conforms to spec §3 template', async () => 
       stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
       env: {
         ...process.env,
-        AELITA_MCP_WORKER_PORT: String(PORT2),
+        CAPTAIN_MEMO_WORKER_PORT: String(PORT2),
         // Bun cold-start + fetch can exceed 250ms on the dev box; loosen for
         // this specific contract test (production cap is unchanged).
-        AELITA_MCP_HOOK_TIMEOUT_MS: '2000',
+        CAPTAIN_MEMO_HOOK_TIMEOUT_MS: '2000',
       },
     });
     proc.stdin.write(fixture);
@@ -143,7 +143,7 @@ test('UserPromptSubmit — envelope conforms to spec §3 template', async () => 
     await proc.exited;
 
     // Spec §3 — envelope template assertions.
-    expect(stdout).toMatch(/<memory-context retrieved-by="aelita-mcp"/);
+    expect(stdout).toMatch(/<memory-context retrieved-by="captain-memo"/);
     expect(stdout).toMatch(/project="contract-test"/);
     expect(stdout).toMatch(/k="\d+"/);
     expect(stdout).toMatch(/budget-tokens="2000"/);

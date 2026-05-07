@@ -1,6 +1,6 @@
 import { DEFAULT_WORKER_PORT } from '../shared/paths.ts';
 
-const BASE = `http://localhost:${process.env.AELITA_MCP_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
+const BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
 
 export async function workerGet(path: string): Promise<unknown> {
   const res = await fetch(`${BASE}${path}`);

@@ -1,8 +1,8 @@
-# aelita-mcp v1 — Plan 1: Foundation Implementation Plan
+# captain-memo v1 — Plan 1: Foundation Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the foundation of `aelita-mcp` — a manually-usable MCP plugin that indexes memory files + skill bodies + observations into Voyage-embedded Chroma, exposes hybrid search via 8 MCP tools and a basic CLI, and watches the filesystem for incremental updates. Hooks, summarizer, migration, federation, and optimization land in Plans 2 and 3.
+**Goal:** Build the foundation of `captain-memo` — a manually-usable MCP plugin that indexes memory files + skill bodies + observations into Voyage-embedded Chroma, exposes hybrid search via 8 MCP tools and a basic CLI, and watches the filesystem for incremental updates. Hooks, summarizer, migration, federation, and optimization land in Plans 2 and 3.
 
 **Architecture:** Long-running worker process (bun, port 39888) owns the Chroma + SQLite + Voyage clients and exposes an HTTP API. A separate stdio MCP server (started fresh per Claude Code session) and a CLI both talk to the worker via HTTP. Pure-logic modules (chunkers, RRF, sha) are unit-tested with no external deps; integration tests bring up real Chroma + a mocked Voyage HTTP server.
 
@@ -18,26 +18,26 @@
 - **IDs:** `nanoid`
 - **Tests:** `bun:test` (built-in)
 
-Spec reference: `~/projects/aelita-mcp/docs/specs/2026-05-06-aelita-mcp-design.md`
+Spec reference: `~/projects/captain-memo/docs/specs/2026-05-06-captain-memo-design.md`
 
 ---
 
 ## File Structure
 
 ```
-~/projects/aelita-mcp/
+~/projects/captain-memo/
 ├── package.json                           # bun deps + scripts
 ├── tsconfig.json                           # strict TS config
-├── .gitignore                              # node_modules, dist, .aelita-mcp/
+├── .gitignore                              # node_modules, dist, .captain-memo/
 ├── bin/
-│   └── aelita-mcp                          # CLI shebang entry point (bun)
+│   └── captain-memo                          # CLI shebang entry point (bun)
 ├── src/
 │   ├── mcp-server.ts                       # Stdio MCP — talks to worker over HTTP
 │   ├── shared/
 │   │   ├── types.ts                        # Hit, Chunk, Document, ChannelType, etc.
 │   │   ├── sha.ts                          # sha256 hex digest
 │   │   ├── tokens.ts                       # tiktoken-compatible token counter
-│   │   ├── paths.ts                        # ~/.aelita-mcp data dir resolution
+│   │   ├── paths.ts                        # ~/.captain-memo data dir resolution
 │   │   └── id.ts                           # chunk_id / cluster_id generators
 │   ├── worker/
 │   │   ├── index.ts                        # Long-running worker bootstrap (Bun.serve)
@@ -88,14 +88,14 @@ Spec reference: `~/projects/aelita-mcp/docs/specs/2026-05-06-aelita-mcp-design.m
 - Create: `package.json`
 - Create: `tsconfig.json`
 - Create: `.gitignore`
-- Create: `bin/aelita-mcp`
+- Create: `bin/captain-memo`
 - Create: `src/` directory structure (empty placeholders)
 
 - [ ] **Step 1: Create `package.json`**
 
 ```json
 {
-  "name": "aelita-mcp",
+  "name": "captain-memo",
   "version": "0.1.0-alpha",
   "description": "Local memory layer for Claude Code — Voyage-embedded, hybrid search, federated remotes",
   "type": "module",
@@ -104,7 +104,7 @@ Spec reference: `~/projects/aelita-mcp/docs/specs/2026-05-06-aelita-mcp-design.m
     "bun": ">=1.1.14"
   },
   "bin": {
-    "aelita-mcp": "./bin/aelita-mcp"
+    "captain-memo": "./bin/captain-memo"
   },
   "scripts": {
     "test": "bun test",
@@ -156,13 +156,13 @@ Spec reference: `~/projects/aelita-mcp/docs/specs/2026-05-06-aelita-mcp-design.m
 node_modules/
 bun.lockb
 dist/
-.aelita-mcp/
+.captain-memo/
 *.tsbuildinfo
 .DS_Store
 *.log
 ```
 
-- [ ] **Step 4: Create `bin/aelita-mcp` entry point**
+- [ ] **Step 4: Create `bin/captain-memo` entry point**
 
 ```typescript
 #!/usr/bin/env bun
@@ -172,7 +172,7 @@ main(process.argv.slice(2));
 
 Make executable:
 ```bash
-chmod +x bin/aelita-mcp
+chmod +x bin/captain-memo
 ```
 
 - [ ] **Step 5: Create directory structure**
@@ -195,7 +195,7 @@ Expected: Exit 0 (no source files yet, but TS config valid).
 - [ ] **Step 8: Commit**
 
 ```bash
-git add package.json tsconfig.json .gitignore bin/aelita-mcp .gitignore
+git add package.json tsconfig.json .gitignore bin/captain-memo .gitignore
 git commit -m "feat: project scaffolding — package.json, tsconfig, dirs, CLI entry"
 ```
 
@@ -511,7 +511,7 @@ export function parseDocId(id: string): ParsedDocId | null {
 import { homedir } from 'os';
 import { join } from 'path';
 
-export const DATA_DIR = process.env.AELITA_MCP_DATA_DIR ?? join(homedir(), '.aelita-mcp');
+export const DATA_DIR = process.env.CAPTAIN_MEMO_DATA_DIR ?? join(homedir(), '.captain-memo');
 
 export const META_DB_PATH = join(DATA_DIR, 'meta.sqlite3');
 export const QUEUE_DB_PATH = join(DATA_DIR, 'queue.db');
@@ -1121,7 +1121,7 @@ import { test, expect, beforeEach, afterEach } from 'bun:test';
 import { MetaStore } from '../../src/worker/meta.ts';
 import { unlinkSync, existsSync } from 'fs';
 
-const TEST_DB = '/tmp/aelita-mcp-test-meta.sqlite3';
+const TEST_DB = '/tmp/captain-memo-test-meta.sqlite3';
 let store: MetaStore;
 
 beforeEach(() => {
@@ -1905,7 +1905,7 @@ let dataDir: string;
 let client: ChromaClient;
 
 beforeAll(async () => {
-  dataDir = mkdtempSync(join(tmpdir(), 'aelita-chroma-test-'));
+  dataDir = mkdtempSync(join(tmpdir(), 'captain-memo-chroma-test-'));
   client = new ChromaClient({ dataDir });
   await client.connect();
 });
@@ -1916,30 +1916,30 @@ afterAll(async () => {
 });
 
 test('ChromaClient — connects and creates a collection', async () => {
-  await client.ensureCollection('aelita_test');
+  await client.ensureCollection('captain_memo_test');
   // Idempotent — second call should not throw
-  await client.ensureCollection('aelita_test');
+  await client.ensureCollection('captain_memo_test');
 });
 
 test('ChromaClient — adds and queries vectors', async () => {
-  await client.ensureCollection('aelita_test_query');
-  await client.add('aelita_test_query', [
+  await client.ensureCollection('captain_memo_test_query');
+  await client.add('captain_memo_test_query', [
     { id: 'chunk-a', embedding: [1, 0, 0, 0], document: 'apple', metadata: { kind: 'fruit' } },
     { id: 'chunk-b', embedding: [0, 1, 0, 0], document: 'car', metadata: { kind: 'vehicle' } },
   ]);
-  const results = await client.query('aelita_test_query', [0.99, 0.01, 0, 0], 2);
+  const results = await client.query('captain_memo_test_query', [0.99, 0.01, 0, 0], 2);
   expect(results.length).toBeGreaterThan(0);
   expect(results[0]!.id).toBe('chunk-a'); // Closest to [1,0,0,0]
 });
 
 test('ChromaClient — deletes by id', async () => {
-  await client.ensureCollection('aelita_test_delete');
-  await client.add('aelita_test_delete', [
+  await client.ensureCollection('captain_memo_test_delete');
+  await client.add('captain_memo_test_delete', [
     { id: 'd1', embedding: [1, 0], document: 'first', metadata: {} },
     { id: 'd2', embedding: [0, 1], document: 'second', metadata: {} },
   ]);
-  await client.delete('aelita_test_delete', ['d1']);
-  const results = await client.query('aelita_test_delete', [1, 0], 5);
+  await client.delete('captain_memo_test_delete', ['d1']);
+  const results = await client.query('captain_memo_test_delete', [1, 0], 5);
   expect(results.find(r => r.id === 'd1')).toBeUndefined();
   expect(results.find(r => r.id === 'd2')).toBeDefined();
 });
@@ -1992,7 +1992,7 @@ export class ChromaClient {
       command: 'uvx',
       args: ['chroma-mcp', '--data-dir', this.dataDir],
     });
-    this.client = new Client({ name: 'aelita-mcp-chroma', version: '0.1.0' }, { capabilities: {} });
+    this.client = new Client({ name: 'captain-memo-chroma', version: '0.1.0' }, { capabilities: {} });
     await this.client.connect(this.transport);
     this.connected = true;
   }
@@ -2363,7 +2363,7 @@ const fakeChroma = {
 };
 
 beforeEach(() => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-ingest-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-ingest-'));
   dbPath = join(workDir, 'meta.sqlite3');
   store = new MetaStore(dbPath);
   pipeline = new IngestPipeline({
@@ -2583,7 +2583,7 @@ let watcher: FileWatcher;
 let events: Array<{ type: string; path: string }>;
 
 beforeEach(() => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-watch-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-watch-'));
   events = [];
 });
 
@@ -2747,7 +2747,7 @@ beforeAll(async () => {
     metaDbPath: ':memory:',
     embedderEndpoint: 'http://localhost:0/unused',
     embedderModel: 'voyage-4-nano',
-    chromaDataDir: '/tmp/aelita-worker-test-chroma',
+    chromaDataDir: '/tmp/captain-memo-worker-test-chroma',
     skipChromaConnect: true,
   });
 });
@@ -2851,15 +2851,15 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 if (import.meta.main) {
   const { DEFAULT_WORKER_PORT, META_DB_PATH, VECTOR_DB_DIR, DEFAULT_VOYAGE_ENDPOINT } = await import('../shared/paths.ts');
   await startWorker({
-    port: parseInt(process.env.AELITA_MCP_WORKER_PORT ?? `${DEFAULT_WORKER_PORT}`),
-    projectId: process.env.AELITA_MCP_PROJECT_ID ?? 'default',
+    port: parseInt(process.env.CAPTAIN_MEMO_WORKER_PORT ?? `${DEFAULT_WORKER_PORT}`),
+    projectId: process.env.CAPTAIN_MEMO_PROJECT_ID ?? 'default',
     metaDbPath: META_DB_PATH,
-    embedderEndpoint: process.env.AELITA_MCP_VOYAGE_ENDPOINT ?? DEFAULT_VOYAGE_ENDPOINT,
-    embedderModel: process.env.AELITA_MCP_VOYAGE_MODEL ?? 'voyage-4-nano',
-    embedderApiKey: process.env.AELITA_MCP_VOYAGE_API_KEY,
+    embedderEndpoint: process.env.CAPTAIN_MEMO_VOYAGE_ENDPOINT ?? DEFAULT_VOYAGE_ENDPOINT,
+    embedderModel: process.env.CAPTAIN_MEMO_VOYAGE_MODEL ?? 'voyage-4-nano',
+    embedderApiKey: process.env.CAPTAIN_MEMO_VOYAGE_API_KEY,
     chromaDataDir: VECTOR_DB_DIR,
   });
-  console.log(`aelita-mcp worker listening on :${DEFAULT_WORKER_PORT}`);
+  console.log(`captain-memo worker listening on :${DEFAULT_WORKER_PORT}`);
 }
 ```
 
@@ -3285,7 +3285,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { DEFAULT_WORKER_PORT } from './shared/paths.ts';
 
-const WORKER_BASE = `http://localhost:${process.env.AELITA_MCP_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
+const WORKER_BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
 
 async function workerPost(path: string, body: unknown): Promise<unknown> {
   const res = await fetch(`${WORKER_BASE}${path}`, {
@@ -3345,7 +3345,7 @@ const TOOLS = [
 ];
 
 const server = new Server(
-  { name: 'aelita-mcp', version: '0.1.0-alpha' },
+  { name: 'captain-memo', version: '0.1.0-alpha' },
   { capabilities: { tools: {} } },
 );
 
@@ -3373,7 +3373,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-console.error('aelita-mcp stdio MCP server connected');
+console.error('captain-memo stdio MCP server connected');
 ```
 
 - [ ] **Step 2: Smoke test — start the worker, then connect MCP server in stdio mode**
@@ -3526,7 +3526,7 @@ let memoryDir: string;
 const PORT = 39892;
 
 beforeAll(async () => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-worker-ingest-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-worker-ingest-'));
   memoryDir = join(workDir, 'memory');
   require('fs').mkdirSync(memoryDir, { recursive: true });
 
@@ -3731,7 +3731,7 @@ git commit -m "feat(worker): initial indexing + live watcher + real /reindex + /
 // src/cli/client.ts
 import { DEFAULT_WORKER_PORT } from '../shared/paths.ts';
 
-const BASE = `http://localhost:${process.env.AELITA_MCP_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
+const BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
 
 export async function workerGet(path: string): Promise<unknown> {
   const res = await fetch(`${BASE}${path}`);
@@ -3768,12 +3768,12 @@ import { workerGet, workerHealthy } from '../client.ts';
 export async function statusCommand(): Promise<number> {
   const healthy = await workerHealthy();
   if (!healthy) {
-    console.error('aelita-mcp worker: NOT RUNNING');
-    console.error('  Start with: aelita-mcp worker start');
+    console.error('captain-memo worker: NOT RUNNING');
+    console.error('  Start with: captain-memo worker start');
     return 1;
   }
   const stats = await workerGet('/stats') as Record<string, unknown>;
-  console.log('aelita-mcp worker: HEALTHY');
+  console.log('captain-memo worker: HEALTHY');
   console.log(`  total_chunks: ${stats.total_chunks}`);
   console.log(`  project_id:   ${stats.project_id}`);
   return 0;
@@ -3793,7 +3793,7 @@ export async function statsCommand(): Promise<number> {
     project_id: string;
     embedder: { model: string; endpoint: string };
   };
-  console.log('aelita-mcp corpus statistics');
+  console.log('captain-memo corpus statistics');
   console.log('---');
   console.log(`Project:     ${stats.project_id}`);
   console.log(`Total chunks: ${stats.total_chunks}`);
@@ -3813,10 +3813,10 @@ export async function statsCommand(): Promise<number> {
 import { statusCommand } from './commands/status.ts';
 import { statsCommand } from './commands/stats.ts';
 
-const HELP = `aelita-mcp — local memory layer for Claude Code
+const HELP = `captain-memo — local memory layer for Claude Code
 
 Usage:
-  aelita-mcp <command> [args]
+  captain-memo <command> [args]
 
 Commands:
   status       Check whether the worker is running and reachable
@@ -3825,10 +3825,10 @@ Commands:
   help         Show this message
 
 Examples:
-  aelita-mcp status
-  aelita-mcp stats
-  aelita-mcp reindex --channel memory
-  aelita-mcp reindex --force
+  captain-memo status
+  captain-memo stats
+  captain-memo reindex --channel memory
+  captain-memo reindex --force
 `;
 
 export async function main(args: string[]): Promise<void> {
@@ -3857,8 +3857,8 @@ export async function main(args: string[]): Promise<void> {
 bun run worker:start
 
 # In another terminal:
-./bin/aelita-mcp status
-./bin/aelita-mcp stats
+./bin/captain-memo status
+./bin/captain-memo stats
 ```
 
 Expected: status shows HEALTHY, stats prints corpus info.
@@ -3867,7 +3867,7 @@ Expected: status shows HEALTHY, stats prints corpus info.
 
 ```bash
 git add src/cli/index.ts src/cli/client.ts src/cli/commands/status.ts src/cli/commands/stats.ts
-git commit -m "feat(cli): aelita-mcp status + stats commands"
+git commit -m "feat(cli): captain-memo status + stats commands"
 ```
 
 ---
@@ -3929,8 +3929,8 @@ import { reindexCommand } from './commands/reindex.ts';
 - [ ] **Step 3: Smoke test**
 
 ```bash
-./bin/aelita-mcp reindex --channel memory
-./bin/aelita-mcp reindex --force
+./bin/captain-memo reindex --channel memory
+./bin/captain-memo reindex --force
 ```
 
 Expected: prints "Reindex complete" with counts.
@@ -3965,7 +3965,7 @@ let memoryDir: string;
 const PORT = 39893;
 
 beforeAll(async () => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-e2e-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-e2e-'));
   memoryDir = join(workDir, 'memory');
   mkdirSync(memoryDir, { recursive: true });
 
@@ -4098,16 +4098,16 @@ In `package.json`, replace the `scripts` section:
   "test:integration": "bun test tests/integration/",
   "typecheck": "tsc --noEmit",
   "worker:start": "bun src/worker/index.ts",
-  "worker:dev": "AELITA_MCP_DATA_DIR=./.aelita-mcp.dev bun --watch src/worker/index.ts",
+  "worker:dev": "CAPTAIN_MEMO_DATA_DIR=./.captain-memo.dev bun --watch src/worker/index.ts",
   "mcp:start": "bun src/mcp-server.ts",
-  "cli": "bun bin/aelita-mcp"
+  "cli": "bun bin/captain-memo"
 }
 ```
 
 - [ ] **Step 2: Write USAGE.md**
 
 ```markdown
-# aelita-mcp Plan-1 — Manual Usage (Foundation)
+# captain-memo Plan-1 — Manual Usage (Foundation)
 
 This is what's available after Plan 1 ships. Hooks (auto-injection) come in Plan 2; migration and federation in Plan 3.
 
@@ -4120,15 +4120,15 @@ This is what's available after Plan 1 ships. Hooks (auto-injection) come in Plan
 ```bash
 bun run worker:start
 ```
-Default port: 39888. Configure via `AELITA_MCP_WORKER_PORT`, `AELITA_MCP_VOYAGE_ENDPOINT`, `AELITA_MCP_PROJECT_ID`.
+Default port: 39888. Configure via `CAPTAIN_MEMO_WORKER_PORT`, `CAPTAIN_MEMO_VOYAGE_ENDPOINT`, `CAPTAIN_MEMO_PROJECT_ID`.
 
 ## Use the CLI
 ```bash
-aelita-mcp status                     # health check
-aelita-mcp stats                      # corpus stats
-aelita-mcp reindex                    # cheap sha-diff reindex
-aelita-mcp reindex --channel memory   # specific channel
-aelita-mcp reindex --force            # ignore sha cache
+captain-memo status                     # health check
+captain-memo stats                      # corpus stats
+captain-memo reindex                    # cheap sha-diff reindex
+captain-memo reindex --channel memory   # specific channel
+captain-memo reindex --force            # ignore sha cache
 ```
 
 ## Use the MCP server (manual)
@@ -4140,10 +4140,10 @@ Expose to Claude Code via `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "aelita-mcp": {
+    "captain-memo": {
       "type": "stdio",
       "command": "bun",
-      "args": ["/path/to/aelita-mcp/src/mcp-server.ts"]
+      "args": ["/path/to/captain-memo/src/mcp-server.ts"]
     }
   }
 }
@@ -4151,8 +4151,8 @@ Expose to Claude Code via `.mcp.json`:
 
 ## Watch paths
 Set via env or pass to `startWorker`:
-- `AELITA_MCP_WATCH_MEMORY` — glob for memory files
-- `AELITA_MCP_WATCH_SKILLS` — glob for skill files
+- `CAPTAIN_MEMO_WATCH_MEMORY` — glob for memory files
+- `CAPTAIN_MEMO_WATCH_SKILLS` — glob for skill files
 
 ## What's NOT in Plan 1
 - Auto-injection on user prompts (Plan 2)
@@ -4210,7 +4210,7 @@ The following are deliberately deferred:
 
 ## Execution Handoff
 
-Plan 1 is complete and saved to `~/projects/aelita-mcp/docs/plans/2026-05-06-aelita-mcp-v1-plan-1-foundation.md`.
+Plan 1 is complete and saved to `~/projects/captain-memo/docs/plans/2026-05-06-captain-memo-v1-plan-1-foundation.md`.
 
 Two execution options:
 

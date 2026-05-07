@@ -2,7 +2,7 @@ import { test, expect, beforeEach, afterEach } from 'bun:test';
 import { MetaStore } from '../../src/worker/meta.ts';
 import { unlinkSync, existsSync } from 'fs';
 
-const TEST_DB = '/tmp/aelita-mcp-test-meta.sqlite3';
+const TEST_DB = '/tmp/captain-memo-test-meta.sqlite3';
 let store: MetaStore;
 
 beforeEach(() => {

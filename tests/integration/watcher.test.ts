@@ -9,7 +9,7 @@ let watcher: FileWatcher;
 let events: Array<{ type: string; path: string }>;
 
 beforeEach(() => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-watch-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-watch-'));
   events = [];
 });
 

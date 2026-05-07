@@ -8,7 +8,7 @@ let workDir: string;
 let q: PendingEmbedQueue;
 
 beforeEach(() => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-pe-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-pe-'));
   q = new PendingEmbedQueue(join(workDir, 'pending.db'));
 });
 

@@ -9,7 +9,7 @@ let worker: WorkerHandle;
 let workDir: string;
 
 beforeEach(async () => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-inject-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-inject-'));
   const memDir = join(workDir, 'memory');
   mkdirSync(memDir, { recursive: true });
   writeFileSync(join(memDir, 'feedback_seed.md'), `---\ntype: feedback\ndescription: Seeded\n---\nAlways use erp-components, no custom page styles.\n`);

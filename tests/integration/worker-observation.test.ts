@@ -9,7 +9,7 @@ let worker: WorkerHandle;
 let workDir: string;
 
 beforeEach(async () => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-obs-int-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-obs-int-'));
   worker = await startWorker({
     port: PORT,
     projectId: 'obs-test',

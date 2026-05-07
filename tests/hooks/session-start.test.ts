@@ -43,7 +43,7 @@ async function runHook(env: Record<string, string> = {}) {
   const proc = spawn({
     cmd: ['bun', HOOK_PATH],
     stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
-    env: { ...process.env, AELITA_MCP_WORKER_PORT: String(PORT), ...env },
+    env: { ...process.env, CAPTAIN_MEMO_WORKER_PORT: String(PORT), ...env },
   });
   proc.stdin.write(FIXTURE);
   proc.stdin.end();
@@ -59,6 +59,6 @@ test('SessionStart — calls /health to warm worker', async () => {
 });
 
 test('SessionStart — exits 0 even when worker unreachable', async () => {
-  const { exitCode } = await runHook({ AELITA_MCP_WORKER_PORT: '1' });
+  const { exitCode } = await runHook({ CAPTAIN_MEMO_WORKER_PORT: '1' });
   expect(exitCode).toBe(0);
 });

@@ -5,10 +5,10 @@ import { observationCommand } from './commands/observation.ts';
 import { configCommand } from './commands/config.ts';
 import { installHooksCommand } from './commands/install-hooks.ts';
 
-const HELP = `aelita-mcp — local memory layer for Claude Code
+const HELP = `captain-memo — local memory layer for Claude Code
 
 Usage:
-  aelita-mcp <command> [args]
+  captain-memo <command> [args]
 
 Commands:
   status       Check whether the worker is running and reachable
@@ -20,13 +20,13 @@ Commands:
   help         Show this message
 
 Examples:
-  aelita-mcp status
-  aelita-mcp stats
-  aelita-mcp reindex --channel memory
-  aelita-mcp reindex --force
-  aelita-mcp observation list --limit 50
-  aelita-mcp observation flush --session ses_abc
-  aelita-mcp config show
+  captain-memo status
+  captain-memo stats
+  captain-memo reindex --channel memory
+  captain-memo reindex --force
+  captain-memo observation list --limit 50
+  captain-memo observation flush --session ses_abc
+  captain-memo config show
 `;
 
 export async function main(args: string[]): Promise<void> {

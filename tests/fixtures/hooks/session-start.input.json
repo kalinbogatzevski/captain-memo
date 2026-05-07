@@ -1,7 +1,7 @@
 {
   "session_id": "ses_2026-05-07T12-00-00_abc123",
   "transcript_path": "/tmp/claude-transcripts/abc123.jsonl",
-  "cwd": "/home/kalin/projects/aelita-mcp",
+  "cwd": "/home/kalin/projects/captain-memo",
   "hook_event_name": "SessionStart",
   "source": "startup"
 }

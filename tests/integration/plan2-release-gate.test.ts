@@ -11,7 +11,7 @@ let workDir: string;
 const HOOK = (name: string) => join(import.meta.dir, `../../src/hooks/${name}.ts`);
 
 beforeAll(async () => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-rg-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-rg-'));
   const memDir = join(workDir, 'memory');
   mkdirSync(memDir, { recursive: true });
   writeFileSync(
@@ -57,10 +57,10 @@ async function runHook(script: string, payload: unknown): Promise<{ stdout: stri
     stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
     env: {
       ...process.env,
-      AELITA_MCP_WORKER_PORT: String(PORT),
+      CAPTAIN_MEMO_WORKER_PORT: String(PORT),
       // Bun cold-start + fetch may exceed 250ms on dev hardware; loosen for
       // this end-to-end test (production cap remains 250ms).
-      AELITA_MCP_HOOK_TIMEOUT_MS: '2000',
+      CAPTAIN_MEMO_HOOK_TIMEOUT_MS: '2000',
     },
   });
   proc.stdin.write(JSON.stringify(payload));

@@ -8,7 +8,7 @@ let workDir: string;
 let store: ObservationsStore;
 
 beforeEach(() => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-obs-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-obs-'));
   store = new ObservationsStore(join(workDir, 'observations.db'));
 });
 

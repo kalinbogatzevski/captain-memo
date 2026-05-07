@@ -9,7 +9,7 @@ let store: VectorStore;
 const DIM = 4;  // small dim for tests
 
 beforeEach(() => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-vec-test-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-vec-test-'));
   store = new VectorStore({ dbPath: join(workDir, 'vectors.sqlite3'), dimension: DIM });
 });
 

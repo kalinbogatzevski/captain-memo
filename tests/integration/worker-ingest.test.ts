@@ -10,7 +10,7 @@ let memoryDir: string;
 const PORT = 39892;
 
 beforeAll(async () => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-worker-ingest-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-worker-ingest-'));
   memoryDir = join(workDir, 'memory');
   mkdirSync(memoryDir, { recursive: true });
 

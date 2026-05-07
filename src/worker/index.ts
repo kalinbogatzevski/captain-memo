@@ -773,15 +773,15 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 }
 
 if (import.meta.main) {
-  const port = Number(process.env.AELITA_MCP_WORKER_PORT ?? DEFAULT_WORKER_PORT);
-  const projectId = process.env.AELITA_MCP_PROJECT_ID ?? 'default';
-  const embedderEndpoint = process.env.AELITA_MCP_VOYAGE_ENDPOINT ?? DEFAULT_VOYAGE_ENDPOINT;
-  const embedderModel = process.env.AELITA_MCP_VOYAGE_MODEL ?? 'voyage-4-nano';
-  const embedderApiKey = process.env.AELITA_MCP_VOYAGE_API_KEY;
+  const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
+  const projectId = process.env.CAPTAIN_MEMO_PROJECT_ID ?? 'default';
+  const embedderEndpoint = process.env.CAPTAIN_MEMO_VOYAGE_ENDPOINT ?? DEFAULT_VOYAGE_ENDPOINT;
+  const embedderModel = process.env.CAPTAIN_MEMO_VOYAGE_MODEL ?? 'voyage-4-nano';
+  const embedderApiKey = process.env.CAPTAIN_MEMO_VOYAGE_API_KEY;
   const vectorDbPath = join(VECTOR_DB_DIR, 'embeddings.db');
 
-  const watchMemory = process.env.AELITA_MCP_WATCH_MEMORY;
-  const watchSkills = process.env.AELITA_MCP_WATCH_SKILLS;
+  const watchMemory = process.env.CAPTAIN_MEMO_WATCH_MEMORY;
+  const watchSkills = process.env.CAPTAIN_MEMO_WATCH_SKILLS;
 
   let watchPaths: string[] | undefined;
   let watchChannel: 'memory' | 'skill' | undefined;
@@ -790,7 +790,7 @@ if (import.meta.main) {
     watchChannel = 'memory';
     if (watchSkills) {
       console.error(
-        '[worker] both AELITA_MCP_WATCH_MEMORY and AELITA_MCP_WATCH_SKILLS set; ' +
+        '[worker] both CAPTAIN_MEMO_WATCH_MEMORY and CAPTAIN_MEMO_WATCH_SKILLS set; ' +
         'Plan-1 supports one channel per worker — using memory'
       );
     }

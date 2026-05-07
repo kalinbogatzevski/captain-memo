@@ -1,18 +1,18 @@
-# aelita-mcp v1 — Plan 2: Hooks + Observation Pipeline + Haiku Summarizer
+# captain-memo v1 — Plan 2: Hooks + Observation Pipeline + Haiku Summarizer
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Date:** 2026-05-07
-**Builds on:** Plan 1 (foundation — already shipped, see `2026-05-06-aelita-mcp-v1-plan-1-foundation.md`)
+**Builds on:** Plan 1 (foundation — already shipped, see `2026-05-06-captain-memo-v1-plan-1-foundation.md`)
 
-**Goal:** Layer auto-injection hooks, the PostToolUse → Stop observation pipeline, and a configurable Haiku-class summarizer on top of the Plan-1 foundation. After Plan 2, `aelita-mcp` becomes a *running* memory layer: the four Claude Code hooks fire, every user prompt is enriched with a `<memory-context>` envelope, every tool use feeds an observation queue, and summarized observations are ingested through the existing `IngestPipeline` with full sha-diff and vector-store discipline.
+**Goal:** Layer auto-injection hooks, the PostToolUse → Stop observation pipeline, and a configurable Haiku-class summarizer on top of the Plan-1 foundation. After Plan 2, `captain-memo` becomes a *running* memory layer: the four Claude Code hooks fire, every user prompt is enriched with a `<memory-context>` envelope, every tool use feeds an observation queue, and summarized observations are ingested through the existing `IngestPipeline` with full sha-diff and vector-store discipline.
 
 The summarizer is **model-agnostic** — primary model + ordered fallback chain, both env-configurable. Defaults are a 2026-05 snapshot (`claude-haiku-4-6` primary, `claude-haiku-4-5` fallback); point them at any newer Haiku-class model when one ships, no code changes required.
 
 **Architecture:** Plan 2 adds three thin layers on top of the existing worker:
 1. **Worker support endpoints** — `/inject/context`, `/observation/enqueue`, `/observation/flush`, `/pending_embed/retry`. All thin glue around stores already implemented in Plan 1.
 2. **Stores + processors** — observation queue (SQLite WAL), pending-embed retry queue (SQLite), Haiku summarizer client (Anthropic SDK).
-3. **Hook scripts + dispatcher** — four hook handlers behind a single `bin/aelita-mcp-hook` shim that picks the right handler based on the event name.
+3. **Hook scripts + dispatcher** — four hook handlers behind a single `bin/captain-memo-hook` shim that picks the right handler based on the event name.
 
 **Hard contracts (from spec Section 5):**
 - `UserPromptSubmit`: 250ms p95 hard cap, fail-open (no envelope, never block the prompt).
@@ -24,7 +24,7 @@ The summarizer is **model-agnostic** — primary model + ordered fallback chain,
 - `@anthropic-ai/sdk` — observation summarizer. Primary model + ordered fallback chain, both env-configurable. Defaults are 2026-05 snapshot values; the worker walks the chain on `model_not_found` and caches the first model that responds.
 - No other new runtime deps. Hooks are bun scripts; HTTP, SQLite, zod, file-watching, vector store all reused.
 
-Spec reference: `~/projects/aelita-mcp/docs/specs/2026-05-06-aelita-mcp-design.md` (Sections 3-6 + Decision Log D8, D14).
+Spec reference: `~/projects/captain-memo/docs/specs/2026-05-06-captain-memo-design.md` (Sections 3-6 + Decision Log D8, D14).
 
 ---
 
@@ -59,11 +59,11 @@ Plan-2 must NOT modify Plan-1 components except where explicitly noted (worker `
 ## File Structure
 
 ```
-~/projects/aelita-mcp/
+~/projects/captain-memo/
 ├── package.json                              # +@anthropic-ai/sdk, +scripts
 ├── bin/
-│   ├── aelita-mcp                            # (existing — CLI entry)
-│   └── aelita-mcp-hook                       # NEW — hook dispatcher shebang
+│   ├── captain-memo                            # (existing — CLI entry)
+│   └── captain-memo-hook                       # NEW — hook dispatcher shebang
 ├── src/
 │   ├── shared/
 │   │   ├── types.ts                          # +RawObservationEvent, +Observation, +EnvelopePayload
@@ -139,10 +139,10 @@ Replace the `dependencies` and `scripts` sections of `package.json`:
     "test:hooks": "bun test tests/hooks/",
     "typecheck": "tsc --noEmit",
     "worker:start": "bun src/worker/index.ts",
-    "worker:dev": "AELITA_MCP_DATA_DIR=./.aelita-mcp.dev bun --watch src/worker/index.ts",
+    "worker:dev": "CAPTAIN_MEMO_DATA_DIR=./.captain-memo.dev bun --watch src/worker/index.ts",
     "mcp:start": "bun src/mcp-server.ts",
-    "cli": "bun bin/aelita-mcp",
-    "hook": "bun bin/aelita-mcp-hook"
+    "cli": "bun bin/captain-memo",
+    "hook": "bun bin/captain-memo-hook"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.0",
@@ -270,18 +270,18 @@ export const DEFAULT_SUMMARIZER_MODEL = 'claude-haiku-4-6';
 
 // Ordered fallback chain — each model is tried on `model_not_found` from the
 // previous one. The first successful model is cached for the worker's lifetime.
-// Override via AELITA_MCP_SUMMARIZER_FALLBACKS (comma-separated list).
+// Override via CAPTAIN_MEMO_SUMMARIZER_FALLBACKS (comma-separated list).
 export const DEFAULT_SUMMARIZER_FALLBACKS: string[] = ['claude-haiku-4-5'];
 
-// Env-var names — keep all under AELITA_MCP_* except ANTHROPIC_API_KEY,
+// Env-var names — keep all under CAPTAIN_MEMO_* except ANTHROPIC_API_KEY,
 // which intentionally matches the Anthropic SDK convention.
 export const ENV_ANTHROPIC_API_KEY = 'ANTHROPIC_API_KEY';
-export const ENV_SUMMARIZER_MODEL = 'AELITA_MCP_SUMMARIZER_MODEL';
-export const ENV_SUMMARIZER_FALLBACKS = 'AELITA_MCP_SUMMARIZER_FALLBACKS';
-export const ENV_HOOK_BUDGET_TOKENS = 'AELITA_MCP_HOOK_BUDGET_TOKENS';
-export const ENV_HOOK_TIMEOUT_MS = 'AELITA_MCP_HOOK_TIMEOUT_MS';
-export const ENV_OBSERVATION_BATCH_SIZE = 'AELITA_MCP_OBSERVATION_BATCH_SIZE';
-export const ENV_OBSERVATION_TICK_MS = 'AELITA_MCP_OBSERVATION_TICK_MS';
+export const ENV_SUMMARIZER_MODEL = 'CAPTAIN_MEMO_SUMMARIZER_MODEL';
+export const ENV_SUMMARIZER_FALLBACKS = 'CAPTAIN_MEMO_SUMMARIZER_FALLBACKS';
+export const ENV_HOOK_BUDGET_TOKENS = 'CAPTAIN_MEMO_HOOK_BUDGET_TOKENS';
+export const ENV_HOOK_TIMEOUT_MS = 'CAPTAIN_MEMO_HOOK_TIMEOUT_MS';
+export const ENV_OBSERVATION_BATCH_SIZE = 'CAPTAIN_MEMO_OBSERVATION_BATCH_SIZE';
+export const ENV_OBSERVATION_TICK_MS = 'CAPTAIN_MEMO_OBSERVATION_TICK_MS';
 
 // Hard contracts from spec §5 — defaults if env not set.
 export const DEFAULT_HOOK_TIMEOUT_MS = 250;
@@ -323,7 +323,7 @@ git commit -m "feat(types): plan-2 — RawObservationEvent + Observation + Envel
 {
   "session_id": "ses_2026-05-07T12-00-00_abc123",
   "transcript_path": "/tmp/claude-transcripts/abc123.jsonl",
-  "cwd": "/home/kalin/projects/aelita-mcp",
+  "cwd": "/home/kalin/projects/captain-memo",
   "hook_event_name": "UserPromptSubmit",
   "prompt": "How do I run the worker against a custom data dir?",
   "prompt_number": 1
@@ -336,7 +336,7 @@ git commit -m "feat(types): plan-2 — RawObservationEvent + Observation + Envel
 {
   "session_id": "ses_2026-05-07T12-00-00_abc123",
   "transcript_path": "/tmp/claude-transcripts/abc123.jsonl",
-  "cwd": "/home/kalin/projects/aelita-mcp",
+  "cwd": "/home/kalin/projects/captain-memo",
   "hook_event_name": "SessionStart",
   "source": "startup"
 }
@@ -348,18 +348,18 @@ git commit -m "feat(types): plan-2 — RawObservationEvent + Observation + Envel
 {
   "session_id": "ses_2026-05-07T12-00-00_abc123",
   "transcript_path": "/tmp/claude-transcripts/abc123.jsonl",
-  "cwd": "/home/kalin/projects/aelita-mcp",
+  "cwd": "/home/kalin/projects/captain-memo",
   "hook_event_name": "PostToolUse",
   "prompt_number": 1,
   "tool_name": "Edit",
   "tool_input": {
-    "file_path": "/home/kalin/projects/aelita-mcp/src/worker/index.ts",
+    "file_path": "/home/kalin/projects/captain-memo/src/worker/index.ts",
     "old_string": "skipChromaConnect",
     "new_string": "skipEmbed"
   },
   "tool_response": {
     "success": true,
-    "filePath": "/home/kalin/projects/aelita-mcp/src/worker/index.ts"
+    "filePath": "/home/kalin/projects/captain-memo/src/worker/index.ts"
   }
 }
 ```
@@ -370,7 +370,7 @@ git commit -m "feat(types): plan-2 — RawObservationEvent + Observation + Envel
 {
   "session_id": "ses_2026-05-07T12-00-00_abc123",
   "transcript_path": "/tmp/claude-transcripts/abc123.jsonl",
-  "cwd": "/home/kalin/projects/aelita-mcp",
+  "cwd": "/home/kalin/projects/captain-memo",
   "hook_event_name": "Stop",
   "stop_hook_active": false
 }
@@ -419,7 +419,7 @@ const ev = (overrides: Partial<RawObservationEvent> = {}): RawObservationEvent =
 });
 
 beforeEach(() => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-q-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-q-'));
   queue = new ObservationQueue(join(workDir, 'queue.db'));
 });
 
@@ -695,7 +695,7 @@ let workDir: string;
 let store: ObservationsStore;
 
 beforeEach(() => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-obs-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-obs-'));
   store = new ObservationsStore(join(workDir, 'observations.db'));
 });
 
@@ -900,7 +900,7 @@ let workDir: string;
 let q: PendingEmbedQueue;
 
 beforeEach(() => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-pe-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-pe-'));
   q = new PendingEmbedQueue(join(workDir, 'pending.db'));
 });
 
@@ -1187,7 +1187,7 @@ git commit -m "feat(tokens): truncateToTokenBudget — binary-chop truncator wit
 The format template (reproduced verbatim from spec §3, "`<memory-context>` envelope"):
 
 ```
-<memory-context retrieved-by="aelita-mcp" project="<project_id>" k="<count>" budget-tokens="1500">
+<memory-context retrieved-by="captain-memo" project="<project_id>" k="<count>" budget-tokens="1500">
 The following items were retrieved automatically based on the user's most recent prompt.
 The user did NOT see this. Cite sources when using; treat as your own background knowledge.
 
@@ -1443,7 +1443,7 @@ export function formatEnvelope(opts: FormatEnvelopeOptions): FormatEnvelopeResul
   const flagAttrs = degradation_flags.length > 0
     ? ` ${degradation_flags.map(f => `flag="${f}"`).join(' ')}`
     : '';
-  const openTag = `<memory-context retrieved-by="aelita-mcp" project="${project_id}" k="${hits.length}" budget-tokens="${budget_tokens}"${flagAttrs}>`;
+  const openTag = `<memory-context retrieved-by="captain-memo" project="${project_id}" k="${hits.length}" budget-tokens="${budget_tokens}"${flagAttrs}>`;
   const closeTag = `</memory-context>`;
 
   const headerSection = HEADER_LINES.join('\n');
@@ -1512,7 +1512,7 @@ let worker: WorkerHandle;
 let workDir: string;
 
 beforeEach(async () => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-obs-int-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-obs-int-'));
   worker = await startWorker({
     port: PORT,
     projectId: 'obs-test',
@@ -1929,7 +1929,7 @@ git commit -m "feat(worker): observation endpoints + queue/store/pending-embed w
 - Create: `src/worker/summarizer.ts`
 - Create: `tests/unit/summarizer.test.ts`
 
-> Anthropic API key handling: `ANTHROPIC_API_KEY` env var (matches the SDK convention). Default primary model `claude-haiku-4-6`; default fallback chain `[claude-haiku-4-5]`. Both are configurable via `AELITA_MCP_SUMMARIZER_MODEL` and `AELITA_MCP_SUMMARIZER_FALLBACKS` (comma-separated chain). On `model_not_found` for any candidate, the next entry in the chain is tried; the first model that responds successfully is cached for the worker's lifetime. The defaults reflect the 2026-05 model lineup — point them at newer models as they ship without touching code.
+> Anthropic API key handling: `ANTHROPIC_API_KEY` env var (matches the SDK convention). Default primary model `claude-haiku-4-6`; default fallback chain `[claude-haiku-4-5]`. Both are configurable via `CAPTAIN_MEMO_SUMMARIZER_MODEL` and `CAPTAIN_MEMO_SUMMARIZER_FALLBACKS` (comma-separated chain). On `model_not_found` for any candidate, the next entry in the chain is tried; the first model that responds successfully is cached for the worker's lifetime. The defaults reflect the 2026-05 model lineup — point them at newer models as they ship without touching code.
 
 The summarizer takes a window of `RawObservationEvent` rows and returns a structured `SummarizerResult`. Output is constrained via a JSON schema embedded in the prompt; on parse failure the summarizer raises (caller in `processBatch` will mark the batch failed → retry).
 
@@ -2285,7 +2285,7 @@ let worker: WorkerHandle;
 let workDir: string;
 
 beforeEach(async () => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-inject-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-inject-'));
   const memDir = join(workDir, 'memory');
   mkdirSync(memDir, { recursive: true });
   writeFileSync(join(memDir, 'feedback_seed.md'), `---
@@ -2557,7 +2557,7 @@ git commit -m "feat(worker): /inject/context — envelope endpoint + summarizer 
 
 import { DEFAULT_WORKER_PORT } from '../shared/paths.ts';
 
-const WORKER_BASE = `http://localhost:${process.env.AELITA_MCP_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
+const WORKER_BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
 
 /** Read all of stdin synchronously (Bun supports this via Bun.stdin). */
 export async function readStdinJson<T = unknown>(): Promise<T> {
@@ -2624,9 +2624,9 @@ export async function workerFetch<T>(
   }
 }
 
-/** Coerce hook-time CWD → project_id for non-installed flows. Honors $AELITA_MCP_PROJECT_ID. */
+/** Coerce hook-time CWD → project_id for non-installed flows. Honors $CAPTAIN_MEMO_PROJECT_ID. */
 export function resolveProjectId(cwd: string | undefined): string {
-  if (process.env.AELITA_MCP_PROJECT_ID) return process.env.AELITA_MCP_PROJECT_ID;
+  if (process.env.CAPTAIN_MEMO_PROJECT_ID) return process.env.CAPTAIN_MEMO_PROJECT_ID;
   if (!cwd) return 'default';
   const parts = cwd.split('/').filter(Boolean);
   return parts[parts.length - 1] ?? 'default';
@@ -2671,7 +2671,7 @@ git commit -m "feat(hooks): shared helpers — bounded fetch, stdin JSON, summar
 - Create: `src/hooks/user-prompt-submit.ts`
 - Create: `tests/hooks/user-prompt-submit.test.ts`
 
-The hook reads Claude Code's JSON payload from stdin, posts to `/inject/context` with a hard 250 ms p95 budget (configurable via `AELITA_MCP_HOOK_TIMEOUT_MS`), and writes the envelope on stdout. Failure modes — worker down, timeout, error — produce empty stdout, never block.
+The hook reads Claude Code's JSON payload from stdin, posts to `/inject/context` with a hard 250 ms p95 budget (configurable via `CAPTAIN_MEMO_HOOK_TIMEOUT_MS`), and writes the envelope on stdout. Failure modes — worker down, timeout, error — produce empty stdout, never block.
 
 - [ ] **Step 1: Write the failing contract test**
 
@@ -2724,7 +2724,7 @@ async function runHook(input: string, env: Record<string, string> = {}): Promise
     stderr: 'pipe',
     env: {
       ...process.env,
-      AELITA_MCP_WORKER_PORT: String(PORT),
+      CAPTAIN_MEMO_WORKER_PORT: String(PORT),
       ...env,
     },
   });
@@ -2751,18 +2751,18 @@ test('UserPromptSubmit — preserves the original prompt at the bottom', async (
 });
 
 test('UserPromptSubmit — fails open when worker is unreachable (no envelope, exit 0)', async () => {
-  const { stdout, exitCode } = await runHook(FIXTURE, { AELITA_MCP_WORKER_PORT: '1' });
+  const { stdout, exitCode } = await runHook(FIXTURE, { CAPTAIN_MEMO_WORKER_PORT: '1' });
   expect(exitCode).toBe(0);
   expect(stdout).not.toContain('<memory-context');
   // Original prompt MUST still pass through
   expect(stdout).toContain('How do I run the worker');
 });
 
-test('UserPromptSubmit — respects AELITA_MCP_HOOK_TIMEOUT_MS', async () => {
+test('UserPromptSubmit — respects CAPTAIN_MEMO_HOOK_TIMEOUT_MS', async () => {
   const start = Date.now();
   const { stdout, exitCode } = await runHook(FIXTURE, {
-    AELITA_MCP_WORKER_PORT: '1',
-    AELITA_MCP_HOOK_TIMEOUT_MS: '50',
+    CAPTAIN_MEMO_WORKER_PORT: '1',
+    CAPTAIN_MEMO_HOOK_TIMEOUT_MS: '50',
   });
   const elapsed = Date.now() - start;
   expect(exitCode).toBe(0);
@@ -2910,7 +2910,7 @@ async function runHook(env: Record<string, string> = {}) {
   const proc = spawn({
     cmd: ['bun', HOOK_PATH],
     stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
-    env: { ...process.env, AELITA_MCP_WORKER_PORT: String(PORT), ...env },
+    env: { ...process.env, CAPTAIN_MEMO_WORKER_PORT: String(PORT), ...env },
   });
   proc.stdin.write(FIXTURE);
   proc.stdin.end();
@@ -2926,7 +2926,7 @@ test('SessionStart — calls /health to warm worker', async () => {
 });
 
 test('SessionStart — exits 0 even when worker unreachable', async () => {
-  const { exitCode } = await runHook({ AELITA_MCP_WORKER_PORT: '1' });
+  const { exitCode } = await runHook({ CAPTAIN_MEMO_WORKER_PORT: '1' });
   expect(exitCode).toBe(0);
 });
 ```
@@ -3035,7 +3035,7 @@ async function runHook(input: string, env: Record<string, string> = {}) {
   const proc = spawn({
     cmd: ['bun', HOOK_PATH],
     stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
-    env: { ...process.env, AELITA_MCP_WORKER_PORT: String(PORT), ...env },
+    env: { ...process.env, CAPTAIN_MEMO_WORKER_PORT: String(PORT), ...env },
   });
   proc.stdin.write(input);
   proc.stdin.end();
@@ -3052,11 +3052,11 @@ test('PostToolUse — enqueues a normalized RawObservationEvent', async () => {
   expect(ev.tool_name).toBe('Edit');
   expect(ev.session_id).toBe('ses_2026-05-07T12-00-00_abc123');
   expect(typeof ev.tool_input_summary).toBe('string');
-  expect(ev.files_modified).toContain('/home/kalin/projects/aelita-mcp/src/worker/index.ts');
+  expect(ev.files_modified).toContain('/home/kalin/projects/captain-memo/src/worker/index.ts');
 });
 
 test('PostToolUse — fire-and-forget on worker down', async () => {
-  const { exitCode } = await runHook(FIXTURE, { AELITA_MCP_WORKER_PORT: '1' });
+  const { exitCode } = await runHook(FIXTURE, { CAPTAIN_MEMO_WORKER_PORT: '1' });
   expect(exitCode).toBe(0);
 });
 
@@ -3160,7 +3160,7 @@ git commit -m "feat(hooks): PostToolUse — fire-and-forget enqueue with file-mo
 **Files:**
 - Create: `src/hooks/stop.ts`
 - Create: `src/hooks/dispatcher.ts`
-- Create: `bin/aelita-mcp-hook`
+- Create: `bin/captain-memo-hook`
 - Create: `tests/hooks/stop.test.ts`
 
 The Stop hook drains the queue for the session — 5 s budget. Then the dispatcher shim picks the right script based on `process.argv[2]` (or `$CLAUDE_HOOK_EVENT_NAME`).
@@ -3205,7 +3205,7 @@ async function runHook(env: Record<string, string> = {}) {
   const proc = spawn({
     cmd: ['bun', HOOK_PATH],
     stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
-    env: { ...process.env, AELITA_MCP_WORKER_PORT: String(PORT), ...env },
+    env: { ...process.env, CAPTAIN_MEMO_WORKER_PORT: String(PORT), ...env },
   });
   proc.stdin.write(FIXTURE);
   proc.stdin.end();
@@ -3231,7 +3231,7 @@ test('Stop — completes within 5s when worker is fast', async () => {
 
 test('Stop — completes within ~5s budget when worker unreachable', async () => {
   const start = Date.now();
-  const { exitCode } = await runHook({ AELITA_MCP_WORKER_PORT: '1' });
+  const { exitCode } = await runHook({ CAPTAIN_MEMO_WORKER_PORT: '1' });
   const elapsed = Date.now() - start;
   expect(exitCode).toBe(0);
   expect(elapsed).toBeLessThan(7_000);
@@ -3291,8 +3291,8 @@ Expected: `3 pass, 0 fail`.
 // Single shebang shim → routes to the correct hook handler based on
 // argv[2] or $CLAUDE_HOOK_EVENT_NAME. Settings.json may register either:
 //
-//   command: "aelita-mcp-hook UserPromptSubmit"
-//   command: "aelita-mcp-hook"  (with env CLAUDE_HOOK_EVENT_NAME=...)
+//   command: "captain-memo-hook UserPromptSubmit"
+//   command: "captain-memo-hook"  (with env CLAUDE_HOOK_EVENT_NAME=...)
 
 const EVENTS: Record<string, string> = {
   UserPromptSubmit: '../hooks/user-prompt-submit.ts',
@@ -3305,7 +3305,7 @@ async function main(): Promise<void> {
   const event =
     process.argv[2] ??
     process.env.CLAUDE_HOOK_EVENT_NAME ??
-    process.env.AELITA_MCP_HOOK_EVENT;
+    process.env.CAPTAIN_MEMO_HOOK_EVENT;
 
   if (!event || !(event in EVENTS)) {
     // Unknown / missing event → fail-open (exit 0, no output).
@@ -3325,20 +3325,20 @@ if (import.meta.main) {
 
 ```typescript
 #!/usr/bin/env bun
-// bin/aelita-mcp-hook
+// bin/captain-memo-hook
 import '../src/hooks/dispatcher.ts';
 ```
 
 Make executable:
 
 ```bash
-chmod +x /home/kalin/projects/aelita-mcp/bin/aelita-mcp-hook
+chmod +x /home/kalin/projects/captain-memo/bin/captain-memo-hook
 ```
 
 - [ ] **Step 7: Smoke test the dispatcher**
 
 ```bash
-echo '{}' | /home/kalin/projects/aelita-mcp/bin/aelita-mcp-hook UserPromptSubmit
+echo '{}' | /home/kalin/projects/captain-memo/bin/captain-memo-hook UserPromptSubmit
 echo $?
 ```
 Expected: exit 0 (worker not running → fail-open).
@@ -3346,7 +3346,7 @@ Expected: exit 0 (worker not running → fail-open).
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/hooks/stop.ts src/hooks/dispatcher.ts bin/aelita-mcp-hook tests/hooks/stop.test.ts
+git add src/hooks/stop.ts src/hooks/dispatcher.ts bin/captain-memo-hook tests/hooks/stop.test.ts
 git commit -m "feat(hooks): Stop drain (5s budget) + dispatcher shim + bin entry"
 ```
 
@@ -3398,7 +3398,7 @@ test('UserPromptSubmit — envelope conforms to spec §3 template', async () => 
     const proc = spawn({
       cmd: ['bun', HOOK_PATH],
       stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
-      env: { ...process.env, AELITA_MCP_WORKER_PORT: String(PORT2) },
+      env: { ...process.env, CAPTAIN_MEMO_WORKER_PORT: String(PORT2) },
     });
     proc.stdin.write(fixture);
     proc.stdin.end();
@@ -3406,7 +3406,7 @@ test('UserPromptSubmit — envelope conforms to spec §3 template', async () => 
     await proc.exited;
 
     // Spec §3 — envelope template assertions.
-    expect(stdout).toMatch(/<memory-context retrieved-by="aelita-mcp"/);
+    expect(stdout).toMatch(/<memory-context retrieved-by="captain-memo"/);
     expect(stdout).toMatch(/project="contract-test"/);
     expect(stdout).toMatch(/k="\d+"/);
     expect(stdout).toMatch(/budget-tokens="2000"/);
@@ -3497,7 +3497,7 @@ export async function observationCommand(args: string[]): Promise<number> {
     return 0;
   }
 
-  console.error('Usage: aelita-mcp observation <list|flush> [--limit N] [--session ID]');
+  console.error('Usage: captain-memo observation <list|flush> [--limit N] [--session ID]');
   return 2;
 }
 ```
@@ -3541,8 +3541,8 @@ Update HELP:
 bun run worker:start &
 WORKER_PID=$!
 sleep 1
-./bin/aelita-mcp observation list
-./bin/aelita-mcp observation flush
+./bin/captain-memo observation list
+./bin/captain-memo observation flush
 kill $WORKER_PID
 ```
 
@@ -3584,28 +3584,28 @@ function mask(secret: string | undefined): string {
 export async function configCommand(args: string[]): Promise<number> {
   const sub = args[0] ?? 'show';
   if (sub !== 'show') {
-    console.error('Usage: aelita-mcp config show');
+    console.error('Usage: captain-memo config show');
     return 2;
   }
 
   const lines = [
-    'aelita-mcp effective config',
+    'captain-memo effective config',
     '---',
     `data_dir              ${DATA_DIR}`,
-    `worker_port           ${process.env.AELITA_MCP_WORKER_PORT ?? DEFAULT_WORKER_PORT}`,
-    `project_id            ${process.env.AELITA_MCP_PROJECT_ID ?? '(default)'}`,
-    `voyage_endpoint       ${process.env.AELITA_MCP_VOYAGE_ENDPOINT ?? DEFAULT_VOYAGE_ENDPOINT}`,
-    `voyage_model          ${process.env.AELITA_MCP_VOYAGE_MODEL ?? 'voyage-4-nano'}`,
-    `voyage_api_key        ${mask(process.env.AELITA_MCP_VOYAGE_API_KEY)}`,
-    `summarizer_model           ${process.env.AELITA_MCP_SUMMARIZER_MODEL ?? DEFAULT_SUMMARIZER_MODEL}`,
-    `summarizer_fallbacks       ${process.env.AELITA_MCP_SUMMARIZER_FALLBACKS ?? DEFAULT_SUMMARIZER_FALLBACKS.join(',')}`,
+    `worker_port           ${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`,
+    `project_id            ${process.env.CAPTAIN_MEMO_PROJECT_ID ?? '(default)'}`,
+    `voyage_endpoint       ${process.env.CAPTAIN_MEMO_VOYAGE_ENDPOINT ?? DEFAULT_VOYAGE_ENDPOINT}`,
+    `voyage_model          ${process.env.CAPTAIN_MEMO_VOYAGE_MODEL ?? 'voyage-4-nano'}`,
+    `voyage_api_key        ${mask(process.env.CAPTAIN_MEMO_VOYAGE_API_KEY)}`,
+    `summarizer_model           ${process.env.CAPTAIN_MEMO_SUMMARIZER_MODEL ?? DEFAULT_SUMMARIZER_MODEL}`,
+    `summarizer_fallbacks       ${process.env.CAPTAIN_MEMO_SUMMARIZER_FALLBACKS ?? DEFAULT_SUMMARIZER_FALLBACKS.join(',')}`,
     `anthropic_api_key     ${mask(process.env.ANTHROPIC_API_KEY)}`,
-    `hook_budget_tokens    ${process.env.AELITA_MCP_HOOK_BUDGET_TOKENS ?? DEFAULT_HOOK_BUDGET_TOKENS}`,
-    `hook_timeout_ms       ${process.env.AELITA_MCP_HOOK_TIMEOUT_MS ?? DEFAULT_HOOK_TIMEOUT_MS}`,
-    `observation_batch     ${process.env.AELITA_MCP_OBSERVATION_BATCH_SIZE ?? DEFAULT_OBSERVATION_BATCH_SIZE}`,
-    `observation_tick_ms   ${process.env.AELITA_MCP_OBSERVATION_TICK_MS ?? DEFAULT_OBSERVATION_TICK_MS}`,
-    `watch_memory          ${process.env.AELITA_MCP_WATCH_MEMORY ?? '(unset)'}`,
-    `watch_skills          ${process.env.AELITA_MCP_WATCH_SKILLS ?? '(unset)'}`,
+    `hook_budget_tokens    ${process.env.CAPTAIN_MEMO_HOOK_BUDGET_TOKENS ?? DEFAULT_HOOK_BUDGET_TOKENS}`,
+    `hook_timeout_ms       ${process.env.CAPTAIN_MEMO_HOOK_TIMEOUT_MS ?? DEFAULT_HOOK_TIMEOUT_MS}`,
+    `observation_batch     ${process.env.CAPTAIN_MEMO_OBSERVATION_BATCH_SIZE ?? DEFAULT_OBSERVATION_BATCH_SIZE}`,
+    `observation_tick_ms   ${process.env.CAPTAIN_MEMO_OBSERVATION_TICK_MS ?? DEFAULT_OBSERVATION_TICK_MS}`,
+    `watch_memory          ${process.env.CAPTAIN_MEMO_WATCH_MEMORY ?? '(unset)'}`,
+    `watch_skills          ${process.env.CAPTAIN_MEMO_WATCH_SKILLS ?? '(unset)'}`,
   ];
   for (const l of lines) console.log(l);
   return 0;
@@ -3624,7 +3624,7 @@ Add to HELP: `  config show  Print effective config (env + defaults)`.
 - [ ] **Step 3: Smoke test**
 
 ```bash
-./bin/aelita-mcp config show
+./bin/captain-memo config show
 ```
 Expected: lists all keys, masks API keys.
 
@@ -3651,7 +3651,7 @@ The Claude Code hook config shape (per the harness docs):
 {
   "hooks": {
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "/abs/path/to/aelita-mcp-hook UserPromptSubmit" } ] }
+      { "hooks": [ { "type": "command", "command": "/abs/path/to/captain-memo-hook UserPromptSubmit" } ] }
     ]
   }
 }
@@ -3665,13 +3665,13 @@ import { test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { applyHookInstall, AELITA_HOOK_MARKER } from '../../src/cli/commands/install-hooks.ts';
+import { applyHookInstall, CAPTAIN_MEMO_HOOK_MARKER } from '../../src/cli/commands/install-hooks.ts';
 
 let workDir: string;
 let settingsPath: string;
 
 beforeEach(() => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-install-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-install-'));
   settingsPath = join(workDir, 'settings.json');
 });
 
@@ -3680,22 +3680,22 @@ afterEach(() => {
 });
 
 test('applyHookInstall — empty file: writes 4 hooks all marked', () => {
-  applyHookInstall({ settingsPath, hookCommand: '/usr/bin/aelita-mcp-hook' });
+  applyHookInstall({ settingsPath, hookCommand: '/usr/bin/captain-memo-hook' });
   const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
   expect(settings.hooks).toBeDefined();
   for (const event of ['UserPromptSubmit', 'SessionStart', 'PostToolUse', 'Stop']) {
     expect(settings.hooks[event]).toBeDefined();
     const found = JSON.stringify(settings.hooks[event]);
-    expect(found).toContain('aelita-mcp-hook');
-    expect(found).toContain(AELITA_HOOK_MARKER);
+    expect(found).toContain('captain-memo-hook');
+    expect(found).toContain(CAPTAIN_MEMO_HOOK_MARKER);
   }
 });
 
 test('applyHookInstall — idempotent: re-running does not duplicate entries', () => {
-  applyHookInstall({ settingsPath, hookCommand: '/usr/bin/aelita-mcp-hook' });
-  applyHookInstall({ settingsPath, hookCommand: '/usr/bin/aelita-mcp-hook' });
+  applyHookInstall({ settingsPath, hookCommand: '/usr/bin/captain-memo-hook' });
+  applyHookInstall({ settingsPath, hookCommand: '/usr/bin/captain-memo-hook' });
   const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-  // Each event's hooks array should contain exactly one aelita entry
+  // Each event's hooks array should contain exactly one captain-memo entry
   for (const event of ['UserPromptSubmit', 'SessionStart', 'PostToolUse', 'Stop']) {
     const groupCount = settings.hooks[event].length;
     expect(groupCount).toBe(1);
@@ -3710,11 +3710,11 @@ test('applyHookInstall — preserves foreign hook entries', () => {
       ],
     },
   }, null, 2));
-  applyHookInstall({ settingsPath, hookCommand: '/usr/bin/aelita-mcp-hook' });
+  applyHookInstall({ settingsPath, hookCommand: '/usr/bin/captain-memo-hook' });
   const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
   const ups = JSON.stringify(settings.hooks.UserPromptSubmit);
   expect(ups).toContain('/some/other/hook');
-  expect(ups).toContain('/usr/bin/aelita-mcp-hook');
+  expect(ups).toContain('/usr/bin/captain-memo-hook');
 });
 
 test('applyHookInstall — warns and skips a foreign command at our marker if present', () => {
@@ -3723,11 +3723,11 @@ test('applyHookInstall — warns and skips a foreign command at our marker if pr
   writeFileSync(settingsPath, JSON.stringify({
     hooks: {
       UserPromptSubmit: [
-        { hooks: [{ type: 'command', command: `/foreign/path #${AELITA_HOOK_MARKER}` }] },
+        { hooks: [{ type: 'command', command: `/foreign/path #${CAPTAIN_MEMO_HOOK_MARKER}` }] },
       ],
     },
   }, null, 2));
-  const result = applyHookInstall({ settingsPath, hookCommand: '/usr/bin/aelita-mcp-hook' });
+  const result = applyHookInstall({ settingsPath, hookCommand: '/usr/bin/captain-memo-hook' });
   expect(result.warnings.length).toBeGreaterThan(0);
 });
 
@@ -3736,7 +3736,7 @@ test('applyHookInstall — preserves non-hook keys in settings.json', () => {
     permissions: { allow: ['Read'] },
     statusLine: { type: 'static', text: 'foo' },
   }, null, 2));
-  applyHookInstall({ settingsPath, hookCommand: '/usr/bin/aelita-mcp-hook' });
+  applyHookInstall({ settingsPath, hookCommand: '/usr/bin/captain-memo-hook' });
   const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
   expect(settings.permissions.allow).toEqual(['Read']);
   expect(settings.statusLine.text).toBe('foo');
@@ -3758,7 +3758,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { homedir } from 'os';
 
-export const AELITA_HOOK_MARKER = 'aelita-mcp-hook-managed';
+export const CAPTAIN_MEMO_HOOK_MARKER = 'captain-memo-hook-managed';
 
 const EVENTS = ['UserPromptSubmit', 'SessionStart', 'PostToolUse', 'Stop'] as const;
 type EventName = typeof EVENTS[number];
@@ -3780,7 +3780,7 @@ interface ClaudeSettings {
 
 export interface ApplyHookInstallOptions {
   settingsPath: string;
-  hookCommand: string; // absolute path to bin/aelita-mcp-hook
+  hookCommand: string; // absolute path to bin/captain-memo-hook
 }
 
 export interface ApplyHookInstallResult {
@@ -3790,7 +3790,7 @@ export interface ApplyHookInstallResult {
 }
 
 function isOurEntry(entry: HookCommandEntry): boolean {
-  return typeof entry.command === 'string' && entry.command.includes(AELITA_HOOK_MARKER);
+  return typeof entry.command === 'string' && entry.command.includes(CAPTAIN_MEMO_HOOK_MARKER);
 }
 
 function readSettings(path: string): ClaudeSettings {
@@ -3817,7 +3817,7 @@ export function applyHookInstall(opts: ApplyHookInstallOptions): ApplyHookInstal
 
   for (const event of EVENTS) {
     const groups = settings.hooks[event] ?? [];
-    // Detect existing aelita-managed entry
+    // Detect existing captain-memo-managed entry
     let existing: HookCommandEntry | null = null;
     for (const g of groups) {
       for (const h of g.hooks ?? []) {
@@ -3838,7 +3838,7 @@ export function applyHookInstall(opts: ApplyHookInstallOptions): ApplyHookInstal
 
     const newEntry: HookCommandEntry = {
       type: 'command',
-      command: `${hookCommand} ${event} #${AELITA_HOOK_MARKER}`,
+      command: `${hookCommand} ${event} #${CAPTAIN_MEMO_HOOK_MARKER}`,
     };
     groups.push({ hooks: [newEntry] });
     settings.hooks[event] = groups;
@@ -3862,7 +3862,7 @@ export async function installHooksCommand(args: string[]): Promise<number> {
     : join(homedir(), '.claude', 'settings.json');
 
   // Resolve absolute path to the hook shim — assume the CLI is colocated.
-  const hookCommand = resolve(import.meta.dir, '../../../bin/aelita-mcp-hook');
+  const hookCommand = resolve(import.meta.dir, '../../../bin/captain-memo-hook');
 
   console.log(`Installing hooks to: ${settingsPath}`);
   console.log(`Hook command:        ${hookCommand}`);
@@ -3927,7 +3927,7 @@ let worker: WorkerHandle;
 let workDir: string;
 
 beforeEach(async () => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-pe-int-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-pe-int-'));
 });
 
 afterEach(async () => {
@@ -4109,7 +4109,7 @@ let workDir: string;
 const HOOK = (name: string) => join(import.meta.dir, `../../src/hooks/${name}.ts`);
 
 beforeAll(async () => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-rg-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-rg-'));
   const memDir = join(workDir, 'memory');
   mkdirSync(memDir, { recursive: true });
   writeFileSync(join(memDir, 'feedback_seed.md'),
@@ -4151,7 +4151,7 @@ async function runHook(script: string, payload: unknown): Promise<{ stdout: stri
   const proc = spawn({
     cmd: ['bun', script],
     stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
-    env: { ...process.env, AELITA_MCP_WORKER_PORT: String(PORT) },
+    env: { ...process.env, CAPTAIN_MEMO_WORKER_PORT: String(PORT) },
   });
   proc.stdin.write(JSON.stringify(payload));
   proc.stdin.end();
@@ -4228,7 +4228,7 @@ git commit -m "test(plan2): release-gate — full SessionStart → prompt → to
 - [ ] **Step 1: Append a Plan-2 section to `docs/USAGE.md`**
 
 ```markdown
-# aelita-mcp Plan-2 — Hooks + Observation Pipeline
+# captain-memo Plan-2 — Hooks + Observation Pipeline
 
 Plan 2 layers auto-injection hooks, the observation queue, and the Haiku
 summarizer on top of the Plan-1 foundation.
@@ -4238,21 +4238,21 @@ summarizer on top of the Plan-1 foundation.
 | Variable | Default | Required for |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — | Observation summarization (Haiku-class small model). Without it the queue accepts events but `flush` returns 503. |
-| `AELITA_MCP_SUMMARIZER_MODEL` | `claude-haiku-4-6` | Primary summarizer model. Default is a 2026-05 snapshot — point it at any newer model when one ships (e.g. `claude-haiku-4-7`). |
-| `AELITA_MCP_SUMMARIZER_FALLBACKS` | `claude-haiku-4-5` | Comma-separated fallback chain. Each model is tried in order on `model_not_found`; the first one that responds is cached for the worker's lifetime. |
-| `AELITA_MCP_HOOK_BUDGET_TOKENS` | `4000` | Hard cap on `<memory-context>` token budget. |
-| `AELITA_MCP_HOOK_TIMEOUT_MS` | `250` | UserPromptSubmit hard timeout. |
-| `AELITA_MCP_OBSERVATION_BATCH_SIZE` | `20` | Rows pulled per processor tick. |
-| `AELITA_MCP_OBSERVATION_TICK_MS` | `5000` | Interval for the auto-tick processor. |
+| `CAPTAIN_MEMO_SUMMARIZER_MODEL` | `claude-haiku-4-6` | Primary summarizer model. Default is a 2026-05 snapshot — point it at any newer model when one ships (e.g. `claude-haiku-4-7`). |
+| `CAPTAIN_MEMO_SUMMARIZER_FALLBACKS` | `claude-haiku-4-5` | Comma-separated fallback chain. Each model is tried in order on `model_not_found`; the first one that responds is cached for the worker's lifetime. |
+| `CAPTAIN_MEMO_HOOK_BUDGET_TOKENS` | `4000` | Hard cap on `<memory-context>` token budget. |
+| `CAPTAIN_MEMO_HOOK_TIMEOUT_MS` | `250` | UserPromptSubmit hard timeout. |
+| `CAPTAIN_MEMO_OBSERVATION_BATCH_SIZE` | `20` | Rows pulled per processor tick. |
+| `CAPTAIN_MEMO_OBSERVATION_TICK_MS` | `5000` | Interval for the auto-tick processor. |
 
 ## Install hooks
 
 ```bash
 # User-scope (default) — registers in ~/.claude/settings.json
-aelita-mcp install-hooks
+captain-memo install-hooks
 
 # Project-scope — registers in <cwd>/.claude/settings.json
-aelita-mcp install-hooks --project
+captain-memo install-hooks --project
 ```
 
 The command is idempotent — running it twice doesn't duplicate entries.
@@ -4261,13 +4261,13 @@ Foreign hook entries (from other tools) are preserved.
 ## CLI extensions (Plan 2)
 
 ```bash
-aelita-mcp config show              # Effective config + masked secrets
-aelita-mcp observation list         # Recent observations
-aelita-mcp observation list --limit 50
-aelita-mcp observation flush        # Drain the whole queue
-aelita-mcp observation flush --session ses_xyz
-aelita-mcp install-hooks            # Register hooks in settings.json
-aelita-mcp install-hooks --project
+captain-memo config show              # Effective config + masked secrets
+captain-memo observation list         # Recent observations
+captain-memo observation list --limit 50
+captain-memo observation flush        # Drain the whole queue
+captain-memo observation flush --session ses_xyz
+captain-memo install-hooks            # Register hooks in settings.json
+captain-memo install-hooks --project
 ```
 
 ## Hook contracts at a glance
@@ -4304,10 +4304,10 @@ git commit -m "docs(usage): plan-2 section — hooks, observations, install-hook
 │                       Claude Code harness                                │
 │                                                                          │
 │  spawns 4 hook processes per event:                                      │
-│    aelita-mcp-hook UserPromptSubmit  (≤250 ms p95, fail-open)            │
-│    aelita-mcp-hook SessionStart      (warmup)                            │
-│    aelita-mcp-hook PostToolUse       (fire-and-forget)                   │
-│    aelita-mcp-hook Stop              (5 s drain)                         │
+│    captain-memo-hook UserPromptSubmit  (≤250 ms p95, fail-open)            │
+│    captain-memo-hook SessionStart      (warmup)                            │
+│    captain-memo-hook PostToolUse       (fire-and-forget)                   │
+│    captain-memo-hook Stop              (5 s drain)                         │
 └────────────────────────────────┬────────────────────────────────────────┘
                                  │ stdin: JSON payload
                                  ▼
@@ -4385,7 +4385,7 @@ queue row → status='done'
 - **Don't hard-code the model name in the summarizer prompt.** The runtime walks a configurable fallback chain on `model_not_found`; the prompt body must stay model-agnostic so it works against any current or future Haiku-class model.
 - **Don't store the Anthropic API key in `config.json`.** It comes from `ANTHROPIC_API_KEY` only. `config show` masks it.
 - **Don't write to `~/.claude/settings.json` directly** — go through `applyHookInstall`. Foreign hook entries must survive.
-- **Don't introduce new env-var prefixes.** Everything Plan-2 adds is `AELITA_MCP_*` except the SDK-conventional `ANTHROPIC_API_KEY`.
+- **Don't introduce new env-var prefixes.** Everything Plan-2 adds is `CAPTAIN_MEMO_*` except the SDK-conventional `ANTHROPIC_API_KEY`.
 - **Don't poll the observation queue from the CLI.** Use `flush` (one shot) for explicit drains; the worker tick handles the steady state.
 - **Don't recompute embeddings on Stop.** Stop drains the queue → summarizes → ingests once; nothing extra.
 
@@ -4405,7 +4405,7 @@ Run through these before declaring Plan 2 complete:
 - [ ] No-LLM-calls in any contract test (real Anthropic API is mocked or stubbed).
 - [ ] `applyHookInstall` is idempotent and preserves foreign entries — both verified by unit tests.
 - [ ] Plan-1 components (worker, MCP server, file watcher, IngestPipeline, CLI) are extended, not rewritten.
-- [ ] `bin/aelita-mcp-hook` is executable (`chmod +x`).
+- [ ] `bin/captain-memo-hook` is executable (`chmod +x`).
 - [ ] Every task ends with a commit step.
 - [ ] All commit messages follow the conventional prefix (feat/fix/test/docs/chore).
 - [ ] `bun run typecheck` passes after every task.
@@ -4422,7 +4422,7 @@ The following remain deferred:
 | Federation with remote MCPs (Aelita KB, circuit breakers) | Adds remote network risk to UserPromptSubmit; needs separate hardening pass. |
 | Duplicate cluster detection / `optimize` / `purge` / `forget` | Needs corpus to accumulate first; cheaper to design once Plan-2 has run for ~2 weeks. |
 | Retrieval-quality eval runner + golden queries | Depends on having a real corpus + observations to label. |
-| Local Voyage install script (`aelita-mcp install-voyage`) | Separate deployment workstream; can be hand-rolled until then. |
+| Local Voyage install script (`captain-memo install-voyage`) | Separate deployment workstream; can be hand-rolled until then. |
 | MEMORY.md transformation script (archive + new shape) | UX concern, not a runtime concern. Plan 2 doesn't need it. |
 
 Plan 2 explicitly does NOT touch any of the above.
@@ -4431,7 +4431,7 @@ Plan 2 explicitly does NOT touch any of the above.
 
 ## Execution Handoff
 
-Plan 2 is saved to `~/projects/aelita-mcp/docs/plans/2026-05-07-aelita-mcp-v1-plan-2-hooks-observations.md`.
+Plan 2 is saved to `~/projects/captain-memo/docs/plans/2026-05-07-captain-memo-v1-plan-2-hooks-observations.md`.
 
 **Recommended execution mode:** subagent-driven (one fresh subagent per task). Each task is self-contained — the subagent receives the plan, reads only the files listed under **Files:**, runs steps 1-N, and commits. No inter-task ambiguity.
 
@@ -4439,6 +4439,6 @@ Plan 2 is saved to `~/projects/aelita-mcp/docs/plans/2026-05-07-aelita-mcp-v1-pl
 
 **Order dependency:** Tasks 1-9 are mostly independent but Tasks 10-22 must run sequentially (each builds on the previous: summarizer wires into worker, hooks call worker endpoints, contract tests use real worker, release gate uses everything).
 
-**One mid-execution checkpoint** worth pausing for: after Task 11, the worker can serve `/inject/context` against a real Voyage instance. Run `aelita-mcp config show` and a manual `curl` smoke test against the worker before continuing into the hook scripts. If the envelope shape doesn't match the spec template exactly, the contract tests in Task 17 will fail loudly anyway.
+**One mid-execution checkpoint** worth pausing for: after Task 11, the worker can serve `/inject/context` against a real Voyage instance. Run `captain-memo config show` and a manual `curl` smoke test against the worker before continuing into the hook scripts. If the envelope shape doesn't match the spec template exactly, the contract tests in Task 17 will fail loudly anyway.
 
-**Plan-3 trigger:** Plan 2 is complete when `tests/integration/plan2-release-gate.test.ts` passes and `aelita-mcp install-hooks` registers all four hooks idempotently against a fresh `~/.claude/settings.json`. At that point Plan 3 (migration + federation + optimization + eval runner) becomes the next planning input.
+**Plan-3 trigger:** Plan 2 is complete when `tests/integration/plan2-release-gate.test.ts` passes and `captain-memo install-hooks` registers all four hooks idempotently against a fresh `~/.claude/settings.json`. At that point Plan 3 (migration + federation + optimization + eval runner) becomes the next planning input.

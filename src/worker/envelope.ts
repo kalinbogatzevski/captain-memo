@@ -91,7 +91,7 @@ export function formatEnvelope(opts: FormatEnvelopeOptions): FormatEnvelopeResul
   const flagAttrs = degradation_flags.length > 0
     ? ` ${degradation_flags.map(f => `flag="${f}"`).join(' ')}`
     : '';
-  const openTag = `<memory-context retrieved-by="aelita-mcp" project="${project_id}" k="${hits.length}" budget-tokens="${budget_tokens}"${flagAttrs}>`;
+  const openTag = `<memory-context retrieved-by="captain-memo" project="${project_id}" k="${hits.length}" budget-tokens="${budget_tokens}"${flagAttrs}>`;
   const closeTag = `</memory-context>`;
 
   const headerSection = HEADER_LINES.join('\n');

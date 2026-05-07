@@ -35,7 +35,7 @@ async function runHook(env: Record<string, string> = {}) {
   const proc = spawn({
     cmd: ['bun', HOOK_PATH],
     stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
-    env: { ...process.env, AELITA_MCP_WORKER_PORT: String(PORT), ...env },
+    env: { ...process.env, CAPTAIN_MEMO_WORKER_PORT: String(PORT), ...env },
   });
   proc.stdin.write(FIXTURE);
   proc.stdin.end();
@@ -61,7 +61,7 @@ test('Stop — completes within 5s when worker is fast', async () => {
 
 test('Stop — completes within ~5s budget when worker unreachable', async () => {
   const start = Date.now();
-  const { exitCode } = await runHook({ AELITA_MCP_WORKER_PORT: '1' });
+  const { exitCode } = await runHook({ CAPTAIN_MEMO_WORKER_PORT: '1' });
   const elapsed = Date.now() - start;
   expect(exitCode).toBe(0);
   expect(elapsed).toBeLessThan(7_000);

@@ -46,6 +46,6 @@ export async function observationCommand(args: string[]): Promise<number> {
     return 0;
   }
 
-  console.error('Usage: aelita-mcp observation <list|flush> [--limit N] [--session ID]');
+  console.error('Usage: captain-memo observation <list|flush> [--limit N] [--session ID]');
   return 2;
 }

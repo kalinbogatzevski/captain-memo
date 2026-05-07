@@ -1,17 +1,17 @@
 {
   "session_id": "ses_2026-05-07T12-00-00_abc123",
   "transcript_path": "/tmp/claude-transcripts/abc123.jsonl",
-  "cwd": "/home/kalin/projects/aelita-mcp",
+  "cwd": "/home/kalin/projects/captain-memo",
   "hook_event_name": "PostToolUse",
   "prompt_number": 1,
   "tool_name": "Edit",
   "tool_input": {
-    "file_path": "/home/kalin/projects/aelita-mcp/src/worker/index.ts",
+    "file_path": "/home/kalin/projects/captain-memo/src/worker/index.ts",
     "old_string": "skipChromaConnect",
     "new_string": "skipEmbed"
   },
   "tool_response": {
     "success": true,
-    "filePath": "/home/kalin/projects/aelita-mcp/src/worker/index.ts"
+    "filePath": "/home/kalin/projects/captain-memo/src/worker/index.ts"
   }
 }

@@ -1,15 +1,15 @@
-# aelita-mcp — Design Spec
+# captain-memo — Design Spec
 
 **Status:** Draft for review
 **Date:** 2026-05-06
 **Author:** Kalin Bogatzevski (drafted with Claude during brainstorming session)
-**Project home:** `~/projects/aelita-mcp/`
+**Project home:** `~/projects/captain-memo/`
 
 ---
 
 ## TL;DR
 
-`aelita-mcp` is a Claude Code plugin that replaces `claude-mem` with a stronger, locally-hosted memory layer. It indexes the user's curated memory files, MEMORY.md, skill bodies, and full session history into a single semantically-searchable corpus, embeds them with `voyage-4-nano`, and serves them through both an automatic injection hook and explicit MCP tools.
+`captain-memo` is a Claude Code plugin that replaces `claude-mem` with a stronger, locally-hosted memory layer. It indexes the user's curated memory files, MEMORY.md, skill bodies, and full session history into a single semantically-searchable corpus, embeds them with `voyage-4-nano`, and serves them through both an automatic injection hook and explicit MCP tools.
 
 The plugin is **universal** — usable by any project — and **federated** — per-project config can add remote knowledge sources (e.g., Aelita's KB MCP) for queries that benefit from non-local context. All embedding, vector storage, and retrieval happens on the dev machine; only summarization (Haiku 4.5) and optional federated remote queries leave the box.
 
@@ -38,7 +38,7 @@ Migration plan keeps `claude-mem` operational as a fallback for at least 30 days
 - **Real-time / streaming responses** — auto-injection is request-response, not streamed.
 - **Distributed Chroma** — single process, single machine. Multi-machine = different design.
 - **Telemetry / phone-home** — plugin reports nothing externally.
-- **Replacing Aelita** — Aelita continues to serve feature/policy questions for staff and customers. aelita-mcp is for the developer's local workflow.
+- **Replacing Aelita** — Aelita continues to serve feature/policy questions for staff and customers. captain-memo is for the developer's local workflow.
 - **Sharing infrastructure with Aelita's production deployment** — the plugin runs its own local Voyage instance on the dev machine. It does NOT query, depend on, or share state with the Aelita production Voyage VM. The two systems are fully decoupled by design — Aelita's VM serves Aelita's RAG only; the dev plugin gets its own deployment.
 
 ---
@@ -73,7 +73,7 @@ Migration plan keeps `claude-mem` operational as a fallback for at least 30 days
 
 ```
        ┌─────────────────────────────────────────────────┐
-       │              aelita-mcp (the plugin)             │
+       │              captain-memo (the plugin)             │
        │                                                  │
        │   Hooks (4): SessionStart, UserPromptSubmit,    │
        │              PostToolUse, Stop                   │
@@ -110,7 +110,7 @@ Migration plan keeps `claude-mem` operational as a fallback for at least 30 days
 
 **Data layout:**
 ```
-~/.aelita-mcp/
+~/.captain-memo/
 ├── vector-db/
 │   └── chroma.sqlite3        # Chroma collections per project (am_<project_id>)
 ├── meta.sqlite3              # Documents, chunks, FTS5, duplicate_clusters, chunk_query_log
@@ -122,7 +122,7 @@ Migration plan keeps `claude-mem` operational as a fallback for at least 30 days
 └── config.json               # Global defaults
 ```
 
-**Per-project config:** `<project_root>/.claude/aelita-mcp.json` — overrides globals.
+**Per-project config:** `<project_root>/.claude/captain-memo.json` — overrides globals.
 
 ---
 
@@ -144,7 +144,7 @@ Migration plan keeps `claude-mem` operational as a fallback for at least 30 days
 | `hooks/session-start.ts` | SessionStart hook. Recent context injection. | ~50 |
 | `hooks/post-tool.ts` | PostToolUse hook. Fire-and-forget enqueue. | ~40 |
 | `hooks/stop.ts` | Stop hook. Drain + summarize. | ~50 |
-| `bin/aelita-mcp` | CLI: `reindex`, `status`, `stats`, `migrate-from-claude-mem`, `optimize`, `purge`, `forget`. | ~200 |
+| `bin/captain-memo` | CLI: `reindex`, `status`, `stats`, `migrate-from-claude-mem`, `optimize`, `purge`, `forget`. | ~200 |
 
 **Total estimate:** ~3000 LOC TypeScript + ~500 LOC tests.
 
@@ -266,7 +266,7 @@ type Hit<TMeta> = {
 The block below is a *format template* — angle-bracketed names are runtime values populated by the worker, not literal output:
 
 ```
-<memory-context retrieved-by="aelita-mcp" project="<project_id>" k="<count>" budget-tokens="1500">
+<memory-context retrieved-by="captain-memo" project="<project_id>" k="<count>" budget-tokens="1500">
 The following items were retrieved automatically based on the user's most recent prompt.
 The user did NOT see this. Cite sources when using; treat as your own background knowledge.
 
@@ -293,7 +293,7 @@ The user did NOT see this. Cite sources when using; treat as your own background
 
 **Header degradation flags:** added only when present. Examples:
 - `embedder=voyage-4-nano:keyword-fallback=true` (Voyage down, served keyword-only)
-- `remote=aelita-kb:degraded` (one source unhealthy)
+- `remote=captain-memo-kb:degraded` (one source unhealthy)
 
 ### Federation contract (remote sources)
 
@@ -362,7 +362,7 @@ Worker poll thread (5s interval) batches up to 20 pending rows → Haiku summari
 
 ### Migration command
 
-`aelita-mcp migrate-from-claude-mem` (one-time, idempotent):
+`captain-memo migrate-from-claude-mem` (one-time, idempotent):
 1. Open `~/.claude-mem/claude-mem.db` read-only (never modified).
 2. Read all `observations` + `session_summaries` for the current/specified project.
 3. Reformat to new chunking schema, batch-embed with Voyage.
@@ -372,11 +372,11 @@ Worker poll thread (5s interval) batches up to 20 pending rows → Haiku summari
 ### Reindex CLI
 
 ```
-aelita-mcp reindex                                   # all channels, sha-diff
-aelita-mcp reindex --channel memory                  # specific channel
-aelita-mcp reindex --channel skill --force           # ignore cache, re-embed
-aelita-mcp reindex --project <id>                    # specific project
-aelita-mcp reindex --since 7d                        # recent only
+captain-memo reindex                                   # all channels, sha-diff
+captain-memo reindex --channel memory                  # specific channel
+captain-memo reindex --channel skill --force           # ignore cache, re-embed
+captain-memo reindex --project <id>                    # specific project
+captain-memo reindex --since 7d                        # recent only
 ```
 
 ---
@@ -448,7 +448,7 @@ Per source: 3 consecutive failures → mark unhealthy, skip in queries. After 5m
 **Eval set structure** — `tests/eval/golden-queries.json`:
 - ~50 hand-labeled `(query, expected_top_result_id)` pairs sampled from real workflow
 - Coverage: English, Bulgarian, exact-match (file paths, GLAB IDs), semantic, multi-channel, no-result
-- Built via `aelita-mcp eval extract-from-transcripts --last 30d` + manual labeling
+- Built via `captain-memo eval extract-from-transcripts --last 30d` + manual labeling
 
 **Eval scope structure** (Section 6 decision = option C):
 - Shared **core eval** — cross-project memories + skills (lives in plugin repo)
@@ -488,11 +488,11 @@ Per source: 3 consecutive failures → mark unhealthy, skip in queries. After 5m
 
 | Phase | Duration | What changes | Revert action | Done when |
 |---|---|---|---|---|
-| 0. Install | 1 day | Local voyage-4-nano deployed on dev box, then aelita-mcp installed with hooks DISABLED | Uninstall plugin + tear down local Voyage instance | Voyage reachable on `localhost:8124`; smoke + `status` healthy |
+| 0. Install | 1 day | Local voyage-4-nano deployed on dev box, then captain-memo installed with hooks DISABLED | Uninstall plugin + tear down local Voyage instance | Voyage reachable on `localhost:8124`; smoke + `status` healthy |
 | 1. Shadow mode | 3-5 days | Initial indexing, eval set built, claude-mem unchanged, manual comparison | Uninstall | All v1 metrics met |
 | 2. claude-mem migration | 1 day | `migrate-from-claude-mem` runs (read-only on claude-mem) | Drop new vector store | Spot checks pass |
-| 3. Dual-running | 7-14 days | aelita-mcp `UserPromptSubmit` hook ENABLED. claude-mem hooks still ENABLED. Hook output deduplicates by `doc_id` + `source_path`. | Disable aelita-mcp hook | No felt regression vs baseline |
-| 4. claude-mem hooks off | indefinite | aelita-mcp solo. claude-mem MCP search still available manually for ~30 days. | Re-enable claude-mem hooks | 30 days stable |
+| 3. Dual-running | 7-14 days | captain-memo `UserPromptSubmit` hook ENABLED. claude-mem hooks still ENABLED. Hook output deduplicates by `doc_id` + `source_path`. | Disable captain-memo hook | No felt regression vs baseline |
+| 4. claude-mem hooks off | indefinite | captain-memo solo. claude-mem MCP search still available manually for ~30 days. | Re-enable claude-mem hooks | 30 days stable |
 | 5. Sunset | n/a | claude-mem hooks + MCP disconnected. Original DB stays on disk indefinitely. | Reinstall claude-mem | Multiple months stable; no incidents |
 
 ### MEMORY.md transformation
@@ -506,7 +506,7 @@ New MEMORY.md is a small "essentials" file — illustrative template structure b
 ```markdown
 # Memory
 
-> Detailed memories are indexed by aelita-mcp. Use `search_memory(query)` for
+> Detailed memories are indexed by captain-memo. Use `search_memory(query)` for
 > specific lookups, or rely on auto-injection on prompt submit.
 > Original index archived at `MEMORY.md.archive` (recoverable).
 
@@ -562,10 +562,10 @@ The plugin install includes a guided one-time prompt to seed this section; subse
 The dev box does NOT have a local voyage-4-nano running yet. Plugin install therefore includes a one-time Voyage deployment step.
 
 1. **Plugin install** (via plugin marketplace or `npm install`) — gets plugin code, CLI binary, hook scripts.
-2. **Local Voyage deployment** — `aelita-mcp install-voyage --artifact <path-or-source>` runs the deployment recipe (replicates the deployment pattern used for Aelita's prod VM, but on the dev machine, with its own data dir and port `8124` by default). One-time, ~5-30 min depending on artifact form (Docker container, binary, etc.). Detailed in the implementation plan.
+2. **Local Voyage deployment** — `captain-memo install-voyage --artifact <path-or-source>` runs the deployment recipe (replicates the deployment pattern used for Aelita's prod VM, but on the dev machine, with its own data dir and port `8124` by default). One-time, ~5-30 min depending on artifact form (Docker container, binary, etc.). Detailed in the implementation plan.
 3. **Setup hook checks prerequisites** — Voyage endpoint reachable, Haiku key present, disk space adequate.
 4. **Initial indexing** of memory + skills runs in background (~1-2 min).
-5. **Hooks disabled by default.** CLI: `aelita-mcp eval` to verify retrieval quality, `aelita-mcp enable-hooks` to activate auto-injection.
+5. **Hooks disabled by default.** CLI: `captain-memo eval` to verify retrieval quality, `captain-memo enable-hooks` to activate auto-injection.
 
 The Voyage deployment step (#2) is the only non-trivial install dependency; everything else is standard plugin lifecycle.
 
@@ -573,10 +573,10 @@ The Voyage deployment step (#2) is the only non-trivial install dependency; ever
 
 | If breaks | What you do | What still works |
 |---|---|---|
-| Worker crashes | `aelita-mcp restart` | claude-mem (Phase 3); empty injection (Phase 4+) |
-| Voyage persistent failure | `aelita-mcp disable-hooks` | claude-mem; aelita-mcp tools in keyword-only mode |
+| Worker crashes | `captain-memo restart` | claude-mem (Phase 3); empty injection (Phase 4+) |
+| Voyage persistent failure | `captain-memo disable-hooks` | claude-mem; captain-memo tools in keyword-only mode |
 | New MEMORY.md missing context | `cp MEMORY.md.archive MEMORY.md` | Old behavior fully restored within 1 prompt |
-| Migration corrupts new index | Drop `~/.aelita-mcp/`, reinstall, re-migrate | Original `~/.claude-mem/` was never touched |
+| Migration corrupts new index | Drop `~/.captain-memo/`, reinstall, re-migrate | Original `~/.claude-mem/` was never touched |
 | Both stacks misbehaving | Disable both via `~/.claude/settings.json` hook config | Plain Claude Code without memory injection |
 
 ---
@@ -591,7 +591,7 @@ Detection runs automatically and is always passive. Action is always user-confir
 
 | Dimension | Detection | User action |
 |---|---|---|
-| Near-duplicates | Cosine similarity ≥ 0.92 within same channel; nightly cluster computation | `aelita-mcp optimize --review` (Phase 1.5) |
+| Near-duplicates | Cosine similarity ≥ 0.92 within same channel; nightly cluster computation | `captain-memo optimize --review` (Phase 1.5) |
 | Stale entries | Not retrieved in 12+ months AND `mtime` 12+ months. 2x threshold for manually-curated content. | Same `--review` flow |
 | Contradiction candidates | Similarity 0.65-0.85 + Haiku/Qwen "do these contradict?" check (weekly, optional) | Same `--review` flow |
 
@@ -605,9 +605,9 @@ Detection runs automatically and is always passive. Action is always user-confir
 
 ### Stats surfacing (option C from brainstorm)
 
-- 0-4 clusters detected → not surfaced in `aelita-mcp stats` (no nag)
+- 0-4 clusters detected → not surfaced in `captain-memo stats` (no nag)
 - 5+ clusters detected → `stats` includes `duplicate_clusters: N` and pointer to optimize command
-- Always available via `aelita-mcp optimize --dry-run`
+- Always available via `captain-memo optimize --dry-run`
 
 ### v1 vs Phase 1.5 split
 
@@ -699,7 +699,7 @@ CREATE INDEX idx_chunk_log ON chunk_query_log(chunk_id, retrieved_at_epoch DESC)
 
 ## Appendix A — Configuration Schema
 
-### Global config (`~/.aelita-mcp/config.json`)
+### Global config (`~/.captain-memo/config.json`)
 
 The `embedder.endpoint` value is determined at install time by the setup hook based on the user's *local* Voyage deployment on the dev machine (default `localhost:8124` if not detected). The endpoint must point to a Voyage instance dedicated to the dev plugin — it must NOT point at any production Voyage VM (e.g., Aelita's). Below shows the install-time-resolved shape:
 
@@ -717,7 +717,7 @@ The `embedder.endpoint` value is determined at install time by the setup hook ba
     "model": "claude-haiku-4-5",
     "max_retries": 3
   },
-  "vector_store": "~/.aelita-mcp/vector-db/",
+  "vector_store": "~/.captain-memo/vector-db/",
   "default_top_k": 5,
   "hook": {
     "auto_inject": true,
@@ -737,7 +737,7 @@ The `embedder.endpoint` value is determined at install time by the setup hook ba
 }
 ```
 
-### Per-project config (`<project_root>/.claude/aelita-mcp.json`)
+### Per-project config (`<project_root>/.claude/captain-memo.json`)
 
 ```json
 {
@@ -750,10 +750,10 @@ The `embedder.endpoint` value is determined at install time by the setup hook ba
   },
   "remote_sources": [
     {
-      "name": "aelita-kb",
+      "name": "captain-memo-kb",
       "transport": "mcp",
       "endpoint": "https://aelita.123net.link/mcp",
-      "auth": { "kind": "bearer", "token_env": "AELITA_MCP_TOKEN" },
+      "auth": { "kind": "bearer", "token_env": "CAPTAIN_MEMO_TOKEN" },
       "tools": ["search_kb", "get_article"],
       "weight": 0.4,
       "timeout_ms": 1500
@@ -768,7 +768,7 @@ The `embedder.endpoint` value is determined at install time by the setup hook ba
 ## Appendix B — Storage Layout
 
 ```
-~/.aelita-mcp/
+~/.captain-memo/
 ├── config.json                  # Global defaults
 ├── vector-db/
 │   └── chroma.sqlite3           # All projects' Chroma collections
@@ -785,7 +785,7 @@ The `embedder.endpoint` value is determined at install time by the setup hook ba
 
 <project_root>/.claude/
 ├── CLAUDE.md                    # Existing: project instructions
-├── aelita-mcp.json              # Per-project plugin config
+├── captain-memo.json              # Per-project plugin config
 └── eval/
     └── golden-queries.<project>.json   # Per-project eval addons
 ```

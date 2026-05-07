@@ -22,7 +22,7 @@ const ev = (overrides: Partial<RawObservationEvent> = {}): RawObservationEvent =
 });
 
 beforeEach(() => {
-  workDir = mkdtempSync(join(tmpdir(), 'aelita-q-'));
+  workDir = mkdtempSync(join(tmpdir(), 'captain-memo-q-'));
   queue = new ObservationQueue(join(workDir, 'queue.db'));
 });
 

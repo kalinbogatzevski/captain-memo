@@ -7,7 +7,7 @@ export async function statsCommand(): Promise<number> {
     project_id: string;
     embedder: { model: string; endpoint: string };
   };
-  console.log('aelita-mcp corpus statistics');
+  console.log('captain-memo corpus statistics');
   console.log('---');
   console.log(`Project:      ${stats.project_id}`);
   console.log(`Total chunks: ${stats.total_chunks}`);

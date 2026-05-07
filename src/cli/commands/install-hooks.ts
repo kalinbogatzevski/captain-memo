@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { homedir } from 'os';
 
-export const AELITA_HOOK_MARKER = 'aelita-mcp-hook-managed';
+export const CAPTAIN_MEMO_HOOK_MARKER = 'captain-memo-hook-managed';
 
 const EVENTS = ['UserPromptSubmit', 'SessionStart', 'PostToolUse', 'Stop'] as const;
 type EventName = typeof EVENTS[number];
@@ -34,7 +34,7 @@ export interface ApplyHookInstallResult {
 }
 
 function isOurEntry(entry: HookCommandEntry): boolean {
-  return typeof entry.command === 'string' && entry.command.includes(AELITA_HOOK_MARKER);
+  return typeof entry.command === 'string' && entry.command.includes(CAPTAIN_MEMO_HOOK_MARKER);
 }
 
 function readSettings(path: string): ClaudeSettings {
@@ -80,7 +80,7 @@ export function applyHookInstall(opts: ApplyHookInstallOptions): ApplyHookInstal
 
     const newEntry: HookCommandEntry = {
       type: 'command',
-      command: `${hookCommand} ${event} #${AELITA_HOOK_MARKER}`,
+      command: `${hookCommand} ${event} #${CAPTAIN_MEMO_HOOK_MARKER}`,
     };
     groups.push({ hooks: [newEntry] });
     settings.hooks[event] = groups;
@@ -103,7 +103,7 @@ export async function installHooksCommand(args: string[]): Promise<number> {
     ? join(cwd, '.claude', 'settings.json')
     : join(homedir(), '.claude', 'settings.json');
 
-  const hookCommand = resolve(import.meta.dir, '../../../bin/aelita-mcp-hook');
+  const hookCommand = resolve(import.meta.dir, '../../../bin/captain-memo-hook');
 
   console.log(`Installing hooks to: ${settingsPath}`);
   console.log(`Hook command:        ${hookCommand}`);

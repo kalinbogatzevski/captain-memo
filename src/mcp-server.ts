@@ -7,7 +7,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { DEFAULT_WORKER_PORT } from './shared/paths.ts';
 
-const WORKER_BASE = `http://localhost:${process.env.AELITA_MCP_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
+const WORKER_BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
 
 async function workerPost(path: string, body: unknown): Promise<unknown> {
   const res = await fetch(`${WORKER_BASE}${path}`, {
@@ -111,7 +111,7 @@ const TOOLS = [
 
 if (import.meta.main) {
   const server = new Server(
-    { name: 'aelita-mcp', version: '0.1.0-alpha' },
+    { name: 'captain-memo', version: '0.1.0-alpha' },
     { capabilities: { tools: {} } },
   );
 
@@ -155,5 +155,5 @@ if (import.meta.main) {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('aelita-mcp stdio MCP server connected');
+  console.error('captain-memo stdio MCP server connected');
 }
