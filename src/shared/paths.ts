@@ -30,12 +30,18 @@ export const DEFAULT_HAIKU_FALLBACKS: string[] = ['claude-haiku-4-5'];
 // Env-var names — keep all under AELITA_MCP_* except ANTHROPIC_API_KEY,
 // which intentionally matches the Anthropic SDK convention.
 export const ENV_ANTHROPIC_API_KEY = 'ANTHROPIC_API_KEY';
+export const ENV_SUMMARIZER_PROVIDER = 'AELITA_MCP_SUMMARIZER_PROVIDER';
 export const ENV_HAIKU_MODEL = 'AELITA_MCP_HAIKU_MODEL';
 export const ENV_HAIKU_FALLBACKS = 'AELITA_MCP_HAIKU_FALLBACKS';
 export const ENV_HOOK_BUDGET_TOKENS = 'AELITA_MCP_HOOK_BUDGET_TOKENS';
 export const ENV_HOOK_TIMEOUT_MS = 'AELITA_MCP_HOOK_TIMEOUT_MS';
 export const ENV_OBSERVATION_BATCH_SIZE = 'AELITA_MCP_OBSERVATION_BATCH_SIZE';
 export const ENV_OBSERVATION_TICK_MS = 'AELITA_MCP_OBSERVATION_TICK_MS';
+
+/** Summarizer transport providers. 'anthropic' = Anthropic SDK with API key
+ *  (default); 'claude-code' = `claude -p` subprocess (Max plan auth, no key). */
+export type SummarizerProvider = 'anthropic' | 'claude-code';
+export const DEFAULT_SUMMARIZER_PROVIDER: SummarizerProvider = 'anthropic';
 
 // Hard contracts from spec §5 — defaults if env not set.
 export const DEFAULT_HOOK_TIMEOUT_MS = 250;

@@ -87,20 +87,50 @@ AELITA_MCP_WATCH_MEMORY="/home/me/.claude/memory/*.md" bun run worker:start
 
 # aelita-mcp Plan-2 — Hooks + Observation Pipeline
 
-Plan 2 layers auto-injection hooks, the observation queue, and the Haiku
-summarizer on top of the Plan-1 foundation.
+Plan 2 layers auto-injection hooks, the observation queue, and a configurable
+Haiku-class summarizer on top of the Plan-1 foundation.
+
+## Summarizer auth — pick one
+
+The summarizer is what compresses raw tool-use events into structured observations. You choose how it authenticates with Anthropic via the `AELITA_MCP_SUMMARIZER_PROVIDER` env var:
+
+| Provider | How it authenticates | When to use |
+|---|---|---|
+| `claude-code` | Shells out to `claude -p`, uses your **Claude Code Max/Pro plan** quota | Recommended for individuals — zero setup, no API key, no separate billing |
+| `anthropic` (default) | Direct `@anthropic-ai/sdk` calls with `ANTHROPIC_API_KEY` | Recommended for teams / orgs that already have API billing or want metered call accounting |
+
+### Quick start — Max/Pro plan (no API key needed)
+
+```bash
+export AELITA_MCP_SUMMARIZER_PROVIDER=claude-code
+bun run worker:start
+```
+
+The worker subprocess invokes `claude -p --output-format json --model <haiku-model> ...` for every batch. Auth comes from your existing Claude Code login. Trade-off: ~1-2 s subprocess overhead per batch (vs ~200-400 ms for direct API), and calls count against your Max session rate limits.
+
+### Quick start — direct API
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+bun run worker:start
+```
+
+(Default `AELITA_MCP_SUMMARIZER_PROVIDER=anthropic`, no other config needed.)
 
 ## New prerequisites
 
 | Variable | Default | Required for |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | — | Observation summarization (Haiku-class small model). Without it the queue accepts events but `flush` returns 503. |
+| `AELITA_MCP_SUMMARIZER_PROVIDER` | `anthropic` | `anthropic` (API key) or `claude-code` (Max/Pro subprocess). |
+| `ANTHROPIC_API_KEY` | — | Required when `provider=anthropic`. Ignored under `claude-code`. |
 | `AELITA_MCP_HAIKU_MODEL` | `claude-haiku-4-6` | Primary summarizer model. Default is a 2026-05 snapshot — point it at any newer model when one ships (e.g. `claude-haiku-4-7`). |
 | `AELITA_MCP_HAIKU_FALLBACKS` | `claude-haiku-4-5` | Comma-separated fallback chain. Each model is tried in order on `model_not_found`; the first one that responds is cached for the worker's lifetime. |
 | `AELITA_MCP_HOOK_BUDGET_TOKENS` | `4000` | Hard cap on `<memory-context>` token budget. |
 | `AELITA_MCP_HOOK_TIMEOUT_MS` | `250` | UserPromptSubmit hard timeout. |
 | `AELITA_MCP_OBSERVATION_BATCH_SIZE` | `20` | Rows pulled per processor tick. |
 | `AELITA_MCP_OBSERVATION_TICK_MS` | `5000` | Interval for the auto-tick processor. |
+
+> If neither `AELITA_MCP_SUMMARIZER_PROVIDER=claude-code` nor `ANTHROPIC_API_KEY` is set, the queue accepts events but `flush` returns 503 (observations stay queued; nothing is dropped).
 
 ## Install hooks
 

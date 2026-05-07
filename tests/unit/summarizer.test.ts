@@ -100,9 +100,18 @@ test('HaikuSummarizer — empty events list returns empty narrative observation'
   expect(transport).not.toHaveBeenCalled();
 });
 
-test('HaikuSummarizer — missing API key throws on construction', () => {
+test('HaikuSummarizer — missing API key throws on construction (default transport)', () => {
+  // Without a custom transport, the default Anthropic SDK transport needs an
+  // apiKey. With one (e.g. the Claude Code subprocess transport), apiKey is
+  // not required because auth is handled inside the transport.
+  expect(() => new HaikuSummarizer({
+    apiKey: '', model: 'claude-haiku-4-6',
+  })).toThrow(/api[_ ]key|apiKey/i);
+});
+
+test('HaikuSummarizer — accepts empty apiKey when a custom transport is supplied', () => {
   expect(() => new HaikuSummarizer({
     apiKey: '', model: 'claude-haiku-4-6',
     transport: async () => ({ content: [{ type: 'text' as const, text: '{}' }], model: 'x' }),
-  })).toThrow(/api[_ ]key|apiKey/i);
+  })).not.toThrow();
 });

@@ -22,6 +22,9 @@ import {
   OBSERVATIONS_DB_PATH,
   PENDING_EMBED_DB_PATH,
   ENV_ANTHROPIC_API_KEY,
+  ENV_SUMMARIZER_PROVIDER,
+  DEFAULT_SUMMARIZER_PROVIDER,
+  type SummarizerProvider,
   ENV_HAIKU_MODEL,
   ENV_HAIKU_FALLBACKS,
   DEFAULT_HAIKU_MODEL,
@@ -804,19 +807,46 @@ if (import.meta.main) {
   const observationBatchSize = Number(process.env[ENV_OBSERVATION_BATCH_SIZE] ?? DEFAULT_OBSERVATION_BATCH_SIZE);
   const observationTickMs = Number(process.env[ENV_OBSERVATION_TICK_MS] ?? DEFAULT_OBSERVATION_TICK_MS);
 
-  const summarize = anthropicKey
-    ? (() => {
-        const summarizer = new HaikuSummarizer({
-          apiKey: anthropicKey,
-          model: haikuModel,
-          fallbackModels: haikuFallbacks,
-        });
-        return (events: import('../shared/types.ts').RawObservationEvent[]) =>
-          summarizer.summarize(events);
-      })()
-    : undefined;
-  if (!anthropicKey) {
-    console.error(`[worker] ${ENV_ANTHROPIC_API_KEY} not set — observation pipeline disabled`);
+  // Summarizer provider toggle. Two paths:
+  //   - 'anthropic' (default): direct SDK call, requires ANTHROPIC_API_KEY.
+  //     Per-call cost on Anthropic's API, sub-second latency.
+  //   - 'claude-code':         shells out to `claude -p`, uses your Max/Pro
+  //     plan (no API key needed). Higher latency (~1-2s subprocess overhead),
+  //     counts against Max session quota.
+  const providerRaw = (process.env[ENV_SUMMARIZER_PROVIDER] ?? DEFAULT_SUMMARIZER_PROVIDER).toLowerCase();
+  const provider: SummarizerProvider =
+    providerRaw === 'claude-code' ? 'claude-code' :
+    providerRaw === 'anthropic'  ? 'anthropic' :
+    (() => {
+      console.error(`[worker] unknown ${ENV_SUMMARIZER_PROVIDER}="${providerRaw}" — falling back to '${DEFAULT_SUMMARIZER_PROVIDER}'`);
+      return DEFAULT_SUMMARIZER_PROVIDER;
+    })();
+
+  let summarize: ((events: import('../shared/types.ts').RawObservationEvent[]) => Promise<import('./index.ts').SummarizerResult>) | undefined;
+  if (provider === 'claude-code') {
+    const { createClaudeCodeTransport } = await import('./summarizer-claude-code.ts');
+    const summarizer = new HaikuSummarizer({
+      apiKey: '', // unused under claude-code transport (auth via the CLI)
+      model: haikuModel,
+      fallbackModels: haikuFallbacks,
+      transport: createClaudeCodeTransport(),
+    });
+    summarize = (events) => summarizer.summarize(events);
+    console.error(`[worker] summarizer provider = claude-code (Max/Pro plan auth via 'claude -p')`);
+  } else if (anthropicKey) {
+    const summarizer = new HaikuSummarizer({
+      apiKey: anthropicKey,
+      model: haikuModel,
+      fallbackModels: haikuFallbacks,
+    });
+    summarize = (events) => summarizer.summarize(events);
+    console.error(`[worker] summarizer provider = anthropic (Anthropic API key)`);
+  } else {
+    console.error(
+      `[worker] observation summarizer disabled — set either:\n` +
+      `         - ${ENV_SUMMARIZER_PROVIDER}=claude-code (uses Max/Pro plan, no key)\n` +
+      `         - ${ENV_ANTHROPIC_API_KEY}=sk-... (direct API)`
+    );
   }
 
   const handle = await startWorker({

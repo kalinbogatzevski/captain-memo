@@ -1,5 +1,6 @@
 import {
   DEFAULT_WORKER_PORT, DEFAULT_VOYAGE_ENDPOINT,
+  DEFAULT_SUMMARIZER_PROVIDER,
   DEFAULT_HAIKU_MODEL, DEFAULT_HAIKU_FALLBACKS,
   DEFAULT_HOOK_BUDGET_TOKENS,
   DEFAULT_HOOK_TIMEOUT_MS, DEFAULT_OBSERVATION_BATCH_SIZE,
@@ -28,6 +29,7 @@ export async function configCommand(args: string[]): Promise<number> {
     `voyage_endpoint       ${process.env.AELITA_MCP_VOYAGE_ENDPOINT ?? DEFAULT_VOYAGE_ENDPOINT}`,
     `voyage_model          ${process.env.AELITA_MCP_VOYAGE_MODEL ?? 'voyage-4-nano'}`,
     `voyage_api_key        ${mask(process.env.AELITA_MCP_VOYAGE_API_KEY)}`,
+    `summarizer_provider   ${process.env.AELITA_MCP_SUMMARIZER_PROVIDER ?? DEFAULT_SUMMARIZER_PROVIDER}`,
     `haiku_model           ${process.env.AELITA_MCP_HAIKU_MODEL ?? DEFAULT_HAIKU_MODEL}`,
     `haiku_fallbacks       ${process.env.AELITA_MCP_HAIKU_FALLBACKS ?? DEFAULT_HAIKU_FALLBACKS.join(',')}`,
     `anthropic_api_key     ${mask(process.env.ANTHROPIC_API_KEY)}`,

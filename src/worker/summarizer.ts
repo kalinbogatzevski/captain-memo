@@ -81,7 +81,12 @@ export class HaikuSummarizer {
   private transport: SummarizerTransport;
 
   constructor(opts: HaikuSummarizerOptions) {
-    if (!opts.apiKey) throw new Error('HaikuSummarizer: apiKey required');
+    // apiKey is only required for the default Anthropic SDK transport.
+    // Custom transports (e.g. the Claude Code subprocess transport) authenticate
+    // via their own mechanism and pass apiKey='' or a placeholder.
+    if (!opts.transport && !opts.apiKey) {
+      throw new Error('HaikuSummarizer: apiKey required when using default transport');
+    }
     this.apiKey = opts.apiKey;
     this.primaryModel = opts.model ?? DEFAULT_HAIKU_MODEL;
     // De-dup the chain — if the caller put the primary into fallbacks too, drop it
