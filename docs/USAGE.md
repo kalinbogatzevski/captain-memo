@@ -82,3 +82,64 @@ AELITA_MCP_WATCH_MEMORY="/home/me/.claude/memory/*.md" bun run worker:start
 - Federation with remote MCPs (Plan 3)
 - Optimization / duplicate detection (Plan 3)
 - Voyage install script (Plan 3)
+
+---
+
+# aelita-mcp Plan-2 — Hooks + Observation Pipeline
+
+Plan 2 layers auto-injection hooks, the observation queue, and the Haiku
+summarizer on top of the Plan-1 foundation.
+
+## New prerequisites
+
+| Variable | Default | Required for |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | — | Observation summarization (Haiku-class small model). Without it the queue accepts events but `flush` returns 503. |
+| `AELITA_MCP_HAIKU_MODEL` | `claude-haiku-4-6` | Primary summarizer model. Default is a 2026-05 snapshot — point it at any newer model when one ships (e.g. `claude-haiku-4-7`). |
+| `AELITA_MCP_HAIKU_FALLBACKS` | `claude-haiku-4-5` | Comma-separated fallback chain. Each model is tried in order on `model_not_found`; the first one that responds is cached for the worker's lifetime. |
+| `AELITA_MCP_HOOK_BUDGET_TOKENS` | `4000` | Hard cap on `<memory-context>` token budget. |
+| `AELITA_MCP_HOOK_TIMEOUT_MS` | `250` | UserPromptSubmit hard timeout. |
+| `AELITA_MCP_OBSERVATION_BATCH_SIZE` | `20` | Rows pulled per processor tick. |
+| `AELITA_MCP_OBSERVATION_TICK_MS` | `5000` | Interval for the auto-tick processor. |
+
+## Install hooks
+
+```bash
+# User-scope (default) — registers in ~/.claude/settings.json
+aelita-mcp install-hooks
+
+# Project-scope — registers in <cwd>/.claude/settings.json
+aelita-mcp install-hooks --project
+```
+
+The command is idempotent — running it twice doesn't duplicate entries.
+Foreign hook entries (from other tools) are preserved.
+
+## CLI extensions (Plan 2)
+
+```bash
+aelita-mcp config show              # Effective config + masked secrets
+aelita-mcp observation list         # Recent observations
+aelita-mcp observation list --limit 50
+aelita-mcp observation flush        # Drain the whole queue
+aelita-mcp observation flush --session ses_xyz
+aelita-mcp install-hooks            # Register hooks in settings.json
+aelita-mcp install-hooks --project
+```
+
+## Hook contracts at a glance
+
+| Hook | Latency budget | Behavior on worker down |
+|---|---|---|
+| `UserPromptSubmit` | 250 ms p95 | No envelope; original prompt still passes through |
+| `SessionStart` | 250 ms p95 | Silent |
+| `PostToolUse` | 100 ms (fire-and-forget) | Event dropped |
+| `Stop` | 5 s drain | Queue persists for next session |
+
+## What's NOT in Plan 2
+
+- Migration from `claude-mem` (Plan 3)
+- Federation with remote MCPs (Plan 3)
+- `optimize` / `purge` / `forget` (Plan 3)
+- Retrieval-quality eval runner (Plan 3)
+- Local Voyage install script (Plan 3)
