@@ -4,6 +4,8 @@ import { MetaStore } from './meta.ts';
 import { VoyageEmbedder } from './embedder.ts';
 import { VectorStore } from './vector-store.ts';
 import { HybridSearcher } from './search.ts';
+import { IngestPipeline } from './ingest.ts';
+import { FileWatcher } from './watcher.ts';
 import {
   META_DB_PATH,
   VECTOR_DB_DIR,
@@ -21,6 +23,8 @@ export interface WorkerOptions {
   vectorDbPath: string;
   embeddingDimension: number;
   skipEmbed?: boolean;
+  watchPaths?: string[];
+  watchChannel?: 'memory' | 'skill';
 }
 
 export interface WorkerHandle {
@@ -85,6 +89,68 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     },
     keywordSearch: async (query, topK) => meta.searchKeyword(query, topK),
   });
+
+  const ingest = new IngestPipeline({
+    meta,
+    embedder: {
+      embed: async (texts) => {
+        if (opts.skipEmbed) {
+          return texts.map(() => new Array(opts.embeddingDimension).fill(0));
+        }
+        try {
+          return await embedder.embed(texts);
+        } catch {
+          // Embed failure → return zero-vectors so chunks still land in the vector table
+          // (keyword search still works; vector half degrades gracefully).
+          return texts.map(() => new Array(opts.embeddingDimension).fill(0));
+        }
+      },
+    },
+    vector,
+    collectionName,
+    projectId: opts.projectId,
+  });
+
+  const expandWatchPaths = async (patterns: string[]): Promise<string[]> => {
+    const out: string[] = [];
+    for (const pattern of patterns) {
+      const glob = new Bun.Glob(pattern);
+      for await (const file of glob.scan({ absolute: true, onlyFiles: true })) {
+        out.push(file);
+      }
+    }
+    return out;
+  };
+
+  let watcher: FileWatcher | null = null;
+  if (opts.watchPaths && opts.watchPaths.length > 0 && opts.watchChannel) {
+    const channel = opts.watchChannel;
+
+    // Initial indexing pass
+    const files = await expandWatchPaths(opts.watchPaths);
+    for (const file of files) {
+      try {
+        await ingest.indexFile(file, channel);
+      } catch (err) {
+        console.error(`[ingest] ${file}: ${(err as Error).message}`);
+      }
+    }
+
+    // Live watcher
+    watcher = new FileWatcher({
+      paths: opts.watchPaths,
+      debounceMs: 500,
+      onEvent: async (type, path) => {
+        try {
+          if (type === 'unlink') await ingest.deleteFile(path);
+          else await ingest.indexFile(path, channel);
+        } catch (err) {
+          console.error(`[watcher] ${type} ${path}: ${(err as Error).message}`);
+        }
+      },
+    });
+    await watcher.start();
+  }
 
   type ChannelFilters = {
     memory_type?: string;
@@ -154,11 +220,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         return Response.json({ healthy: true });
       }
       if (req.method === 'GET' && url.pathname === '/stats') {
-        // Stub — real corpus stats land in Task 26.
+        const { total_chunks, by_channel } = meta.stats();
         return Response.json({
-          total_chunks: 0,
-          by_channel: {},
+          total_chunks,
+          by_channel,
           project_id: opts.projectId,
+          embedder: { model: opts.embedderModel, endpoint: opts.embedderEndpoint },
         });
       }
       if (req.method === 'POST' && url.pathname === '/search/all') {
@@ -258,8 +325,35 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         if (!parsed.success) {
           return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
         }
-        // Stub — real reindex implementation in Task 25 (after watcher + ingest are wired into the worker).
-        return Response.json({ indexed: 0, skipped: 0, errors: 0 });
+
+        let indexed = 0;
+        let skipped = 0;
+        let errors = 0;
+
+        if (opts.watchPaths && opts.watchPaths.length > 0 && opts.watchChannel) {
+          const channelMatch =
+            parsed.data.channel === 'all' || parsed.data.channel === opts.watchChannel;
+          if (channelMatch) {
+            const files = await expandWatchPaths(opts.watchPaths);
+            for (const file of files) {
+              try {
+                if (parsed.data.force) {
+                  const existing = meta.getDocument(file);
+                  if (existing) meta.deleteDocument(file);
+                }
+                const before = meta.getDocument(file);
+                await ingest.indexFile(file, opts.watchChannel);
+                const after = meta.getDocument(file);
+                if (after && (!before || before.sha !== after.sha)) indexed++;
+                else skipped++;
+              } catch {
+                errors++;
+              }
+            }
+          }
+        }
+
+        return Response.json({ indexed, skipped, errors });
       }
       return new Response('Not Found', { status: 404 });
     } catch (err) {
@@ -276,6 +370,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   return {
     port: server.port ?? opts.port,
     stop: async () => {
+      if (watcher) await watcher.close();
       server.stop();
       vector.close();
       meta.close();

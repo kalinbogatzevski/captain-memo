@@ -199,6 +199,23 @@ export class MetaStore {
     };
   }
 
+  stats(): { total_chunks: number; by_channel: Record<string, number> } {
+    const total = this.db
+      .query('SELECT COUNT(*) AS n FROM chunks')
+      .get() as { n: number };
+    const rows = this.db
+      .query(
+        `SELECT documents.channel AS channel, COUNT(chunks.id) AS n
+         FROM chunks
+         JOIN documents ON documents.id = chunks.document_id
+         GROUP BY documents.channel`
+      )
+      .all() as Array<{ channel: string; n: number }>;
+    const by_channel: Record<string, number> = {};
+    for (const row of rows) by_channel[row.channel] = row.n;
+    return { total_chunks: total.n, by_channel };
+  }
+
   close(): void {
     this.db.close();
   }
