@@ -21,7 +21,19 @@ import {
   QUEUE_DB_PATH,
   OBSERVATIONS_DB_PATH,
   PENDING_EMBED_DB_PATH,
+  ENV_ANTHROPIC_API_KEY,
+  ENV_HAIKU_MODEL,
+  ENV_HAIKU_FALLBACKS,
+  DEFAULT_HAIKU_MODEL,
+  DEFAULT_HAIKU_FALLBACKS,
+  ENV_HOOK_BUDGET_TOKENS,
+  DEFAULT_HOOK_BUDGET_TOKENS,
+  ENV_OBSERVATION_BATCH_SIZE,
+  ENV_OBSERVATION_TICK_MS,
+  DEFAULT_OBSERVATION_BATCH_SIZE,
+  DEFAULT_OBSERVATION_TICK_MS,
 } from '../shared/paths.ts';
+import { HaikuSummarizer } from './summarizer.ts';
 
 export interface SummarizerResult {
   type: ObservationType;
@@ -111,6 +123,16 @@ const ObservationFlushSchema = z.object({
 const PendingEmbedRetrySchema = z.object({
   max: z.number().int().positive().max(500).default(50),
 });
+
+const InjectContextSchema = z.object({
+  prompt: z.string(),
+  top_k: z.number().int().positive().max(50).default(5),
+  channels: z.array(z.enum(['memory', 'skill', 'observation'])).optional(),
+  budget_tokens: z.number().int().positive().max(20_000).optional(),
+});
+
+const SHORT_PROMPT_THRESHOLD = 10;
+const NO_OP_TOKENS = new Set(['ok', 'continue', 'yes', 'go', 'next', 'sure']);
 
 export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   const meta = new MetaStore(opts.metaDbPath);
@@ -532,6 +554,89 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         return Response.json({ indexed, skipped, errors });
       }
 
+      if (req.method === 'POST' && url.pathname === '/inject/context') {
+        const startMs = Date.now();
+        const parsed = InjectContextSchema.safeParse(await req.json());
+        if (!parsed.success) {
+          return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
+        }
+        const { formatEnvelope } = await import('./envelope.ts');
+        const budget = parsed.data.budget_tokens ?? opts.hookBudgetTokens ?? 4000;
+
+        const trimmed = parsed.data.prompt.trim();
+        const isShort = trimmed.length < SHORT_PROMPT_THRESHOLD;
+        const isNoOp = NO_OP_TOKENS.has(trimmed.toLowerCase());
+
+        if (isShort || isNoOp) {
+          const empty = formatEnvelope({
+            project_id: opts.projectId,
+            budget_tokens: budget,
+            hits: [],
+            degradation_flags: [],
+          });
+          return Response.json({
+            envelope: empty.envelope,
+            hit_count: 0,
+            budget_tokens: budget,
+            used_tokens: empty.used_tokens,
+            channels_searched: [],
+            degradation_flags: ['skipped=short_or_no_op'],
+            elapsed_ms: Date.now() - startMs,
+          });
+        }
+
+        const flags: string[] = [];
+        let embedding: number[] = [];
+        if (!opts.skipEmbed) {
+          try {
+            const out = await embedder.embed([trimmed]);
+            embedding = out[0] ?? [];
+          } catch {
+            flags.push('embedder=voyage:keyword-fallback=true');
+          }
+        } else {
+          flags.push('embedder=skipped');
+        }
+
+        const fused = await searcher.search(embedding, trimmed, parsed.data.top_k * 3);
+        const channelsRequested: Array<'memory' | 'skill' | 'observation'> =
+          parsed.data.channels ?? ['memory', 'skill', 'observation'];
+        const hits: import('../shared/types.ts').EnvelopeHit[] = [];
+        for (const f of fused) {
+          const lookup = meta.getChunkById(f.id);
+          if (!lookup) continue;
+          if (!channelsRequested.includes(lookup.document.channel as 'memory' | 'skill' | 'observation')) continue;
+          const m = lookup.chunk.metadata as Record<string, unknown>;
+          hits.push({
+            doc_id: lookup.chunk.chunk_id,
+            channel: lookup.document.channel,
+            source_path: lookup.document.source_path,
+            title: (m.section_title ?? m.filename_id ?? m.title ?? 'Untitled') as string,
+            snippet: lookup.chunk.text.slice(0, 600),
+            score: f.score,
+            metadata: m,
+          });
+          if (hits.length >= parsed.data.top_k) break;
+        }
+
+        const result = formatEnvelope({
+          project_id: opts.projectId,
+          budget_tokens: budget,
+          hits,
+          degradation_flags: flags,
+        });
+
+        return Response.json({
+          envelope: result.envelope,
+          hit_count: result.hit_count,
+          budget_tokens: budget,
+          used_tokens: result.used_tokens,
+          channels_searched: channelsRequested,
+          degradation_flags: flags,
+          elapsed_ms: Date.now() - startMs,
+        });
+      }
+
       if (req.method === 'POST' && url.pathname === '/observation/enqueue') {
         if (!obsQueue) return Response.json({ error: 'observation_pipeline_disabled' }, { status: 503 });
         const parsed = ObservationEnqueueSchema.safeParse(await req.json());
@@ -633,6 +738,31 @@ if (import.meta.main) {
     watchChannel = 'skill';
   }
 
+  const anthropicKey = process.env[ENV_ANTHROPIC_API_KEY];
+  const haikuModel = process.env[ENV_HAIKU_MODEL] ?? DEFAULT_HAIKU_MODEL;
+  const haikuFallbacksRaw = process.env[ENV_HAIKU_FALLBACKS];
+  const haikuFallbacks = haikuFallbacksRaw
+    ? haikuFallbacksRaw.split(',').map(s => s.trim()).filter(Boolean)
+    : DEFAULT_HAIKU_FALLBACKS;
+  const hookBudgetTokens = Number(process.env[ENV_HOOK_BUDGET_TOKENS] ?? DEFAULT_HOOK_BUDGET_TOKENS);
+  const observationBatchSize = Number(process.env[ENV_OBSERVATION_BATCH_SIZE] ?? DEFAULT_OBSERVATION_BATCH_SIZE);
+  const observationTickMs = Number(process.env[ENV_OBSERVATION_TICK_MS] ?? DEFAULT_OBSERVATION_TICK_MS);
+
+  const summarize = anthropicKey
+    ? (() => {
+        const summarizer = new HaikuSummarizer({
+          apiKey: anthropicKey,
+          model: haikuModel,
+          fallbackModels: haikuFallbacks,
+        });
+        return (events: import('../shared/types.ts').RawObservationEvent[]) =>
+          summarizer.summarize(events);
+      })()
+    : undefined;
+  if (!anthropicKey) {
+    console.error(`[worker] ${ENV_ANTHROPIC_API_KEY} not set — observation pipeline disabled`);
+  }
+
   const handle = await startWorker({
     port,
     projectId,
@@ -646,6 +776,10 @@ if (import.meta.main) {
     observationQueueDbPath: QUEUE_DB_PATH,
     observationsDbPath: OBSERVATIONS_DB_PATH,
     pendingEmbedDbPath: PENDING_EMBED_DB_PATH,
+    hookBudgetTokens,
+    observationBatchSize,
+    observationTickMs,
+    ...(summarize !== undefined && { summarize }),
   });
   console.log(`[worker] listening on http://localhost:${handle.port}`);
 
