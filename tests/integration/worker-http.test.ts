@@ -49,3 +49,35 @@ test('worker — /search/all returns hybrid results structure', async () => {
   expect(body).toHaveProperty('by_channel');
   expect(Array.isArray(body.results)).toBe(true);
 });
+
+test('worker — /search/memory accepts type filter', async () => {
+  const res = await fetch(`http://localhost:${PORT}/search/memory`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ query: 'test', type: 'feedback', top_k: 5 }),
+  });
+  expect(res.status).toBe(200);
+});
+
+test('worker — /search/skill accepts skill_id filter', async () => {
+  const res = await fetch(`http://localhost:${PORT}/search/skill`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ query: 'test', skill_id: 'erp-coding-standards', top_k: 3 }),
+  });
+  expect(res.status).toBe(200);
+});
+
+test('worker — /search/observations accepts type and files filters', async () => {
+  const res = await fetch(`http://localhost:${PORT}/search/observations`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      query: 'bug',
+      type: 'bugfix',
+      files: ['core/inc/forms.php'],
+      top_k: 5,
+    }),
+  });
+  expect(res.status).toBe(200);
+});

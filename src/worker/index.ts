@@ -34,6 +34,28 @@ const SearchRequestSchema = z.object({
   channels: z.array(z.enum(['memory', 'skill', 'observation', 'remote'])).optional(),
 });
 
+const MemorySearchSchema = z.object({
+  query: z.string(),
+  type: z.enum(['user', 'feedback', 'project', 'reference']).optional(),
+  project: z.string().optional(),
+  top_k: z.number().int().positive().max(50).default(5),
+});
+
+const SkillSearchSchema = z.object({
+  query: z.string(),
+  skill_id: z.string().optional(),
+  top_k: z.number().int().positive().max(50).default(3),
+});
+
+const ObservationSearchSchema = z.object({
+  query: z.string(),
+  type: z.enum(['bugfix', 'feature', 'refactor', 'discovery', 'decision', 'change']).optional(),
+  files: z.array(z.string()).optional(),
+  since: z.string().optional(),
+  project: z.string().optional(),
+  top_k: z.number().int().positive().max(50).default(5),
+});
+
 export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   const meta = new MetaStore(opts.metaDbPath);
   const embedder = new VoyageEmbedder({
@@ -57,6 +79,67 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     },
     keywordSearch: async (query, topK) => meta.searchKeyword(query, topK),
   });
+
+  type ChannelFilters = {
+    memory_type?: string;
+    skill_id?: string;
+    obs_type?: string;
+    files?: string[];
+  };
+
+  const searchByChannel = async (
+    query: string,
+    channel: 'memory' | 'skill' | 'observation',
+    topK: number,
+    filters: ChannelFilters,
+  ) => {
+    let embedding: number[] = [];
+    if (!opts.skipEmbed) {
+      try {
+        const out = await embedder.embed([query]);
+        embedding = out[0] ?? [];
+      } catch {
+        // fall back to keyword-only on embed failure
+      }
+    }
+    const fused = await searcher.search(embedding, query, topK * 3);
+    const results: Array<{
+      doc_id: string;
+      source_path: string;
+      title: string;
+      snippet: string;
+      score: number;
+      channel: string;
+      metadata: Record<string, unknown>;
+    }> = [];
+    for (const f of fused) {
+      const lookup = meta.getChunkById(f.id);
+      if (!lookup) continue;
+      if (lookup.document.channel !== channel) continue;
+
+      const m = lookup.chunk.metadata as Record<string, unknown>;
+      if (filters.memory_type !== undefined && m.memory_type !== filters.memory_type) continue;
+      if (filters.skill_id !== undefined && m.skill_id !== filters.skill_id) continue;
+      if (filters.obs_type !== undefined && m.type !== filters.obs_type) continue;
+      if (filters.files !== undefined && filters.files.length > 0) {
+        const filesList = (m.files_modified ?? m.files_read ?? []) as string[];
+        const hasMatch = filters.files.some(file => filesList.includes(file));
+        if (!hasMatch) continue;
+      }
+
+      results.push({
+        doc_id: lookup.chunk.chunk_id,
+        source_path: lookup.document.source_path,
+        title: (m.section_title ?? m.filename_id ?? m.title ?? 'Untitled') as string,
+        snippet: lookup.chunk.text.slice(0, 600),
+        score: f.score,
+        channel: lookup.document.channel,
+        metadata: m,
+      });
+      if (results.length >= topK) break;
+    }
+    return results;
+  };
 
   const handler = async (req: Request): Promise<Response> => {
     try {
@@ -110,6 +193,39 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         const by_channel: Record<string, number> = {};
         for (const r of results) by_channel[r.channel] = (by_channel[r.channel] ?? 0) + 1;
         return Response.json({ results, by_channel });
+      }
+      if (req.method === 'POST' && url.pathname === '/search/memory') {
+        const parsed = MemorySearchSchema.safeParse(await req.json());
+        if (!parsed.success) {
+          return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
+        }
+        const filters: ChannelFilters = {};
+        if (parsed.data.type !== undefined) filters.memory_type = parsed.data.type;
+        const results = await searchByChannel(parsed.data.query, 'memory', parsed.data.top_k, filters);
+        return Response.json({ results });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/search/skill') {
+        const parsed = SkillSearchSchema.safeParse(await req.json());
+        if (!parsed.success) {
+          return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
+        }
+        const filters: ChannelFilters = {};
+        if (parsed.data.skill_id !== undefined) filters.skill_id = parsed.data.skill_id;
+        const results = await searchByChannel(parsed.data.query, 'skill', parsed.data.top_k, filters);
+        return Response.json({ results });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/search/observations') {
+        const parsed = ObservationSearchSchema.safeParse(await req.json());
+        if (!parsed.success) {
+          return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
+        }
+        const filters: ChannelFilters = {};
+        if (parsed.data.type !== undefined) filters.obs_type = parsed.data.type;
+        if (parsed.data.files !== undefined) filters.files = parsed.data.files;
+        const results = await searchByChannel(parsed.data.query, 'observation', parsed.data.top_k, filters);
+        return Response.json({ results });
       }
       return new Response('Not Found', { status: 404 });
     } catch (err) {
