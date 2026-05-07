@@ -1,7 +1,9 @@
 import { test, expect, beforeAll, afterAll } from 'bun:test';
 import { join } from 'path';
-import { readFileSync } from 'fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
 import { spawn } from 'bun';
+import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
 
 const PORT = 39903;
 const FIXTURE = readFileSync(
@@ -92,4 +94,65 @@ test('UserPromptSubmit — respects AELITA_MCP_HOOK_TIMEOUT_MS', async () => {
 test('UserPromptSubmit — empty stdin is tolerated', async () => {
   const { exitCode } = await runHook('');
   expect(exitCode).toBe(0);
+});
+
+test('UserPromptSubmit — envelope conforms to spec §3 template', async () => {
+  const PORT2 = 39907;
+  const workDir = mkdtempSync(join(tmpdir(), 'aelita-hook-contract-'));
+  const memDir = join(workDir, 'memory');
+  mkdirSync(memDir, { recursive: true });
+  writeFileSync(
+    join(memDir, 'feedback_no_null.md'),
+    `---\ntype: feedback\ndescription: No NULL\n---\nNo NULL — use 0 / "" sentinels.`,
+  );
+
+  const worker: WorkerHandle = await startWorker({
+    port: PORT2,
+    projectId: 'contract-test',
+    metaDbPath: ':memory:',
+    embedderEndpoint: 'http://localhost:0/unused',
+    embedderModel: 'voyage-4-nano',
+    vectorDbPath: join(workDir, 'vec.db'),
+    embeddingDimension: 8,
+    skipEmbed: true,
+    watchPaths: [join(memDir, '*.md')],
+    watchChannel: 'memory',
+    hookBudgetTokens: 2000,
+  });
+  await new Promise(r => setTimeout(r, 500));
+
+  try {
+    const fixture = JSON.stringify({
+      ...JSON.parse(FIXTURE),
+      prompt: 'when do I use NULL in this codebase?',
+    });
+    const proc = spawn({
+      cmd: ['bun', HOOK_PATH],
+      stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
+      env: {
+        ...process.env,
+        AELITA_MCP_WORKER_PORT: String(PORT2),
+        // Bun cold-start + fetch can exceed 250ms on the dev box; loosen for
+        // this specific contract test (production cap is unchanged).
+        AELITA_MCP_HOOK_TIMEOUT_MS: '2000',
+      },
+    });
+    proc.stdin.write(fixture);
+    proc.stdin.end();
+    const stdout = await new Response(proc.stdout).text();
+    await proc.exited;
+
+    // Spec §3 — envelope template assertions.
+    expect(stdout).toMatch(/<memory-context retrieved-by="aelita-mcp"/);
+    expect(stdout).toMatch(/project="contract-test"/);
+    expect(stdout).toMatch(/k="\d+"/);
+    expect(stdout).toMatch(/budget-tokens="2000"/);
+    expect(stdout).toMatch(/The user did NOT see this/);
+    expect(stdout).toMatch(/<\/memory-context>/);
+    expect(stdout).toMatch(/## Local memory \(\d+ results\)/);
+    expect(stdout).toMatch(/\[full: get_full\("memory:/);
+  } finally {
+    await worker.stop();
+    rmSync(workDir, { recursive: true, force: true });
+  }
 });

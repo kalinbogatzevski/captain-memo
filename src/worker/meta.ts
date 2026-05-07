@@ -167,8 +167,13 @@ export class MetaStore {
   }
 
   searchKeyword(query: string, topK: number): KeywordHit[] {
-    // FTS5 MATCH expects a term — we sanitize by escaping double quotes and wrapping
-    const safeQuery = `"${query.replace(/"/g, '""')}"`;
+    // Tokenize natural-language queries on non-word boundaries (Unicode-aware
+    // so Bulgarian/etc. tokens survive), then OR the tokens so any-overlap
+    // matches rather than requiring full-phrase. Each token is double-quoted
+    // so FTS5 doesn't interpret special characters as syntax.
+    const tokens = query.match(/[\p{L}\p{N}_]+/gu) ?? [];
+    if (tokens.length === 0) return [];
+    const safeQuery = tokens.map(t => `"${t.replace(/"/g, '""')}"`).join(' OR ');
     const rows = this.db
       .query(
         `SELECT chunks.chunk_id AS chunk_id, chunks_fts.rank AS rank
