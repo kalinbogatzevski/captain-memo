@@ -34,3 +34,46 @@ export function reciprocalRankFusion(rankedLists: string[][], k: number): FusedI
   items.sort((a, b) => b.score - a.score);
   return items;
 }
+
+export interface VectorHit {
+  id: string;
+  distance: number;
+}
+
+export interface KeywordHit {
+  chunk_id: string;
+}
+
+export interface HybridSearcherOptions {
+  vectorSearch: (embedding: number[], topK: number) => Promise<VectorHit[]>;
+  keywordSearch: (query: string, topK: number) => Promise<KeywordHit[]>;
+  rrfK?: number;
+  perStrategyTopK?: number;
+}
+
+export class HybridSearcher {
+  private vectorSearch: HybridSearcherOptions['vectorSearch'];
+  private keywordSearch: HybridSearcherOptions['keywordSearch'];
+  private rrfK: number;
+  private perStrategyTopK: number;
+
+  constructor(opts: HybridSearcherOptions) {
+    this.vectorSearch = opts.vectorSearch;
+    this.keywordSearch = opts.keywordSearch;
+    this.rrfK = opts.rrfK ?? 60;
+    this.perStrategyTopK = opts.perStrategyTopK ?? 25;
+  }
+
+  async search(embedding: number[], query: string, topK: number): Promise<FusedItem[]> {
+    const [vectorResults, keywordResults] = await Promise.all([
+      this.vectorSearch(embedding, this.perStrategyTopK).catch(() => []),
+      this.keywordSearch(query, this.perStrategyTopK).catch(() => []),
+    ]);
+
+    const vectorIds = vectorResults.map(r => r.id);
+    const keywordIds = keywordResults.map(r => r.chunk_id);
+
+    const fused = reciprocalRankFusion([vectorIds, keywordIds], this.rrfK);
+    return fused.slice(0, topK);
+  }
+}

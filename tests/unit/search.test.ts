@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { reciprocalRankFusion } from '../../src/worker/search.ts';
+import { reciprocalRankFusion, HybridSearcher } from '../../src/worker/search.ts';
 
 test('reciprocalRankFusion — single ranked list returns same order', () => {
   const fused = reciprocalRankFusion([['a', 'b', 'c']], 60);
@@ -36,4 +36,52 @@ test('reciprocalRankFusion — fused scores normalized to 0-1 range', () => {
   }
   // Top item should have highest score
   expect(fused[0]!.score).toBeGreaterThanOrEqual(fused[1]!.score);
+});
+
+test('HybridSearcher — fuses vector + keyword results', async () => {
+  const searcher = new HybridSearcher({
+    vectorSearch: async () => [
+      { id: 'a', distance: 0.1 },
+      { id: 'b', distance: 0.2 },
+      { id: 'c', distance: 0.3 },
+    ],
+    keywordSearch: async () => [
+      { chunk_id: 'b' },
+      { chunk_id: 'a' },
+    ],
+    rrfK: 60,
+  });
+  const fused = await searcher.search([0, 0], 'query', 5);
+  expect(fused.length).toBeGreaterThan(0);
+  // Items in both lists should rank above items in only one
+  const ids = fused.map(f => f.id);
+  expect(ids.indexOf('a')).toBeLessThan(ids.indexOf('c'));
+  expect(ids.indexOf('b')).toBeLessThan(ids.indexOf('c'));
+});
+
+test('HybridSearcher — limits results to topK', async () => {
+  const searcher = new HybridSearcher({
+    vectorSearch: async () => [
+      { id: 'a', distance: 0.1 },
+      { id: 'b', distance: 0.2 },
+      { id: 'c', distance: 0.3 },
+      { id: 'd', distance: 0.4 },
+      { id: 'e', distance: 0.5 },
+    ],
+    keywordSearch: async () => [],
+    rrfK: 60,
+  });
+  const fused = await searcher.search([0, 0], 'q', 3);
+  expect(fused).toHaveLength(3);
+});
+
+test('HybridSearcher — falls back gracefully when keyword search fails', async () => {
+  const searcher = new HybridSearcher({
+    vectorSearch: async () => [{ id: 'a', distance: 0.1 }],
+    keywordSearch: async () => { throw new Error('FTS5 broke'); },
+    rrfK: 60,
+  });
+  const fused = await searcher.search([0, 0], 'q', 5);
+  expect(fused).toHaveLength(1);
+  expect(fused[0]!.id).toBe('a');
 });
