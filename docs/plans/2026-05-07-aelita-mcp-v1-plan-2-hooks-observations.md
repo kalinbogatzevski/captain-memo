@@ -5,7 +5,9 @@
 **Date:** 2026-05-07
 **Builds on:** Plan 1 (foundation — already shipped, see `2026-05-06-aelita-mcp-v1-plan-1-foundation.md`)
 
-**Goal:** Layer auto-injection hooks, the PostToolUse → Stop observation pipeline, and the Haiku 4.5/4.6 summarizer on top of the Plan-1 foundation. After Plan 2, `aelita-mcp` becomes a *running* memory layer: the four Claude Code hooks fire, every user prompt is enriched with a `<memory-context>` envelope, every tool use feeds an observation queue, and Haiku-summarized observations are ingested through the existing `IngestPipeline` with full sha-diff and vector-store discipline.
+**Goal:** Layer auto-injection hooks, the PostToolUse → Stop observation pipeline, and a configurable Haiku-class summarizer on top of the Plan-1 foundation. After Plan 2, `aelita-mcp` becomes a *running* memory layer: the four Claude Code hooks fire, every user prompt is enriched with a `<memory-context>` envelope, every tool use feeds an observation queue, and summarized observations are ingested through the existing `IngestPipeline` with full sha-diff and vector-store discipline.
+
+The summarizer is **model-agnostic** — primary model + ordered fallback chain, both env-configurable. Defaults are a 2026-05 snapshot (`claude-haiku-4-6` primary, `claude-haiku-4-5` fallback); point them at any newer Haiku-class model when one ships, no code changes required.
 
 **Architecture:** Plan 2 adds three thin layers on top of the existing worker:
 1. **Worker support endpoints** — `/inject/context`, `/observation/enqueue`, `/observation/flush`, `/pending_embed/retry`. All thin glue around stores already implemented in Plan 1.
@@ -19,7 +21,7 @@
 - Embedding failures → `pending_embed` queue, never dropped.
 
 **Tech additions on top of Plan 1:**
-- `@anthropic-ai/sdk` — Haiku 4.5/4.6 summarizer (with auto-fallback 4.6 → 4.5 if 4.6 unavailable).
+- `@anthropic-ai/sdk` — observation summarizer. Primary model + ordered fallback chain, both env-configurable. Defaults are 2026-05 snapshot values; the worker walks the chain on `model_not_found` and caches the first model that responds.
 - No other new runtime deps. Hooks are bun scripts; HTTP, SQLite, zod, file-watching, vector store all reused.
 
 Spec reference: `~/projects/aelita-mcp/docs/specs/2026-05-06-aelita-mcp-design.md` (Sections 3-6 + Decision Log D8, D14).
@@ -38,7 +40,7 @@ Spec reference: `~/projects/aelita-mcp/docs/specs/2026-05-06-aelita-mcp-design.m
 | §5 — Hook timeout budget (UserPromptSubmit ≤250ms p95) | Hard cap + fail-open + skip-rules | Tasks 7, 12 |
 | §5 — Embedding failure → queue, don't drop | `pending_embed` retry queue | Task 6 |
 | §6 — Hook contract tests | Fixture-driven, no LLM calls | Task 17 |
-| Decision Log D8 | Haiku 4.5/4.6 summarizer with structured output | Tasks 10, 11 |
+| Decision Log D8 | Configurable Haiku-class summarizer (primary + fallback chain) with structured output | Tasks 10, 11 |
 | Decision Log D14 | Envelope shows scores; degradation flags only when present | Task 8 |
 
 ### Out of scope — deferred to Plan 3
@@ -72,7 +74,7 @@ Plan-2 must NOT modify Plan-1 components except where explicitly noted (worker `
 │   │   ├── observation-queue.ts              # NEW — SQLite WAL queue store
 │   │   ├── observations-store.ts             # NEW — final observations table + chunkObservation glue
 │   │   ├── pending-embed-queue.ts            # NEW — failed-embed retry queue
-│   │   ├── summarizer.ts                     # NEW — Haiku 4.5/4.6 Anthropic client
+│   │   ├── summarizer.ts                     # NEW — Haiku-class Anthropic client (configurable model + fallback chain)
 │   │   ├── envelope.ts                       # NEW — <memory-context> formatter, token budget
 │   │   ├── observation-batch-processor.ts    # NEW — drain queue → summarize → ingest
 │   │   └── observation-ingest.ts             # NEW — chunkObservation → vector-store glue (delegates to IngestPipeline)
@@ -261,13 +263,21 @@ Append to `src/shared/paths.ts`:
 ```typescript
 // Plan-2 additions ─────────────────────────────────────────────────────
 
+// Snapshot of "current best small/fast Claude" at 2026-05. Override via env
+// when newer Haiku-class models ship — the worker doesn't care about the version,
+// only that the configured model speaks the Anthropic Messages API.
 export const DEFAULT_HAIKU_MODEL = 'claude-haiku-4-6';
-export const FALLBACK_HAIKU_MODEL = 'claude-haiku-4-5';
+
+// Ordered fallback chain — each model is tried on `model_not_found` from the
+// previous one. The first successful model is cached for the worker's lifetime.
+// Override via AELITA_MCP_HAIKU_FALLBACKS (comma-separated list).
+export const DEFAULT_HAIKU_FALLBACKS: string[] = ['claude-haiku-4-5'];
 
 // Env-var names — keep all under AELITA_MCP_* except ANTHROPIC_API_KEY,
 // which intentionally matches the Anthropic SDK convention.
 export const ENV_ANTHROPIC_API_KEY = 'ANTHROPIC_API_KEY';
 export const ENV_HAIKU_MODEL = 'AELITA_MCP_HAIKU_MODEL';
+export const ENV_HAIKU_FALLBACKS = 'AELITA_MCP_HAIKU_FALLBACKS';
 export const ENV_HOOK_BUDGET_TOKENS = 'AELITA_MCP_HOOK_BUDGET_TOKENS';
 export const ENV_HOOK_TIMEOUT_MS = 'AELITA_MCP_HOOK_TIMEOUT_MS';
 export const ENV_OBSERVATION_BATCH_SIZE = 'AELITA_MCP_OBSERVATION_BATCH_SIZE';
@@ -1919,7 +1929,7 @@ git commit -m "feat(worker): observation endpoints + queue/store/pending-embed w
 - Create: `src/worker/summarizer.ts`
 - Create: `tests/unit/summarizer.test.ts`
 
-> Anthropic API key handling: `ANTHROPIC_API_KEY` env var (matches the SDK convention). Default model `claude-haiku-4-6`; if the API returns a 404/`model_not_found` error, fall back to `claude-haiku-4-5` automatically and remember the working model for the rest of the worker's lifetime.
+> Anthropic API key handling: `ANTHROPIC_API_KEY` env var (matches the SDK convention). Default primary model `claude-haiku-4-6`; default fallback chain `[claude-haiku-4-5]`. Both are configurable via `AELITA_MCP_HAIKU_MODEL` and `AELITA_MCP_HAIKU_FALLBACKS` (comma-separated chain). On `model_not_found` for any candidate, the next entry in the chain is tried; the first model that responds successfully is cached for the worker's lifetime. The defaults reflect the 2026-05 model lineup — point them at newer models as they ship without touching code.
 
 The summarizer takes a window of `RawObservationEvent` rows and returns a structured `SummarizerResult`. Output is constrained via a JSON schema embedded in the prompt; on parse failure the summarizer raises (caller in `processBatch` will mark the batch failed → retry).
 
@@ -1965,7 +1975,7 @@ test('HaikuSummarizer — happy path returns parsed structured summary', async (
   expect(transport).toHaveBeenCalledTimes(1);
 });
 
-test('HaikuSummarizer — falls back from 4.6 to 4.5 on model_not_found', async () => {
+test('HaikuSummarizer — walks fallback chain on model_not_found', async () => {
   let calls = 0;
   const transport = mock(async (_args: any) => {
     calls++;
@@ -1983,7 +1993,7 @@ test('HaikuSummarizer — falls back from 4.6 to 4.5 on model_not_found', async 
   });
   const s = new HaikuSummarizer({
     apiKey: 'test-key', model: 'claude-haiku-4-6',
-    fallbackModel: 'claude-haiku-4-5',
+    fallbackModels: ['claude-haiku-4-5'],
     transport,
   });
   const res = await s.summarize([ev()]);
@@ -2050,7 +2060,7 @@ Expected: module not found.
 import { z } from 'zod';
 import type { RawObservationEvent } from '../shared/types.ts';
 import type { SummarizerResult } from './index.ts';
-import { DEFAULT_HAIKU_MODEL, FALLBACK_HAIKU_MODEL } from '../shared/paths.ts';
+import { DEFAULT_HAIKU_MODEL, DEFAULT_HAIKU_FALLBACKS } from '../shared/paths.ts';
 
 const ObservationTypes = ['bugfix', 'feature', 'refactor', 'discovery', 'decision', 'change'] as const;
 
@@ -2078,8 +2088,14 @@ export type SummarizerTransport = (args: SummarizerTransportArgs) => Promise<Sum
 
 export interface HaikuSummarizerOptions {
   apiKey: string;
-  model?: string;             // Default: claude-haiku-4-6
-  fallbackModel?: string;     // Default: claude-haiku-4-5
+  /** Primary model. Default: DEFAULT_HAIKU_MODEL (snapshot of current best small Claude). */
+  model?: string;
+  /**
+   * Ordered fallback chain. Each entry is tried in turn on `model_not_found`
+   * from the previous one. The first model that responds successfully is
+   * cached for the worker's lifetime. Default: DEFAULT_HAIKU_FALLBACKS.
+   */
+  fallbackModels?: string[];
   maxTokens?: number;
   transport?: SummarizerTransport;
 }
@@ -2118,7 +2134,7 @@ function buildUserPrompt(events: RawObservationEvent[]): string {
 export class HaikuSummarizer {
   private apiKey: string;
   private primaryModel: string;
-  private fallbackModel: string | null;
+  private fallbackModels: string[];
   private activeModel: string;
   private maxTokens: number;
   private transport: SummarizerTransport;
@@ -2127,7 +2143,10 @@ export class HaikuSummarizer {
     if (!opts.apiKey) throw new Error('HaikuSummarizer: apiKey required');
     this.apiKey = opts.apiKey;
     this.primaryModel = opts.model ?? DEFAULT_HAIKU_MODEL;
-    this.fallbackModel = opts.fallbackModel ?? FALLBACK_HAIKU_MODEL;
+    // De-dup the chain — if the caller put the primary into fallbacks too, drop it
+    // (calling the same model twice on a 404 just wastes a request).
+    const rawChain = opts.fallbackModels ?? DEFAULT_HAIKU_FALLBACKS;
+    this.fallbackModels = rawChain.filter(m => m && m !== this.primaryModel);
     this.activeModel = this.primaryModel;
     this.maxTokens = opts.maxTokens ?? 800;
     this.transport = opts.transport ?? this.defaultTransport.bind(this);
@@ -2170,21 +2189,35 @@ export class HaikuSummarizer {
       max_tokens: this.maxTokens,
     };
 
-    let response: SummarizerTransportResult;
-    try {
-      response = await this.transport(args);
-    } catch (err) {
+    // Try the active model, then walk the fallback chain on `model_not_found`.
+    // On the first success, cache `activeModel` for the worker's lifetime.
+    const isModelMissing = (err: unknown): boolean => {
       const e = err as Error & { status?: number; error?: { type?: string } };
-      const isModelMissing =
+      return (
         e.status === 404 ||
-        /model_not_found|not_found/.test(e.message) ||
-        e.error?.type === 'not_found_error';
-      if (isModelMissing && this.fallbackModel && this.activeModel !== this.fallbackModel) {
-        this.activeModel = this.fallbackModel;
-        response = await this.transport({ ...args, model: this.activeModel });
-      } else {
-        throw err;
+        /model_not_found|not_found/.test(e.message ?? '') ||
+        e.error?.type === 'not_found_error'
+      );
+    };
+
+    const candidates = [this.activeModel, ...this.fallbackModels];
+    let response: SummarizerTransportResult | null = null;
+    let lastErr: unknown = null;
+    for (const candidate of candidates) {
+      try {
+        response = await this.transport({ ...args, model: candidate });
+        this.activeModel = candidate;
+        break;
+      } catch (err) {
+        lastErr = err;
+        if (!isModelMissing(err)) throw err;
+        // Try the next candidate.
       }
+    }
+    if (response === null) {
+      throw lastErr instanceof Error
+        ? lastErr
+        : new Error(`HaikuSummarizer: no model in chain succeeded — ${candidates.join(', ')}`);
     }
 
     const textBlock = response.content.find(c => c.type === 'text');
@@ -2224,7 +2257,7 @@ Expected: `6 pass, 0 fail`.
 
 ```bash
 git add src/worker/summarizer.ts tests/unit/summarizer.test.ts
-git commit -m "feat(worker): HaikuSummarizer — Anthropic client with 4.6→4.5 fallback + zod-validated JSON output"
+git commit -m "feat(worker): HaikuSummarizer — Anthropic client with configurable fallback chain + zod-validated JSON output"
 ```
 
 ---
@@ -2439,7 +2472,8 @@ Inside the `if (import.meta.main)` block, add (before `const handle = await star
 import { HaikuSummarizer } from './summarizer.ts';
 import {
   ENV_ANTHROPIC_API_KEY, DEFAULT_HAIKU_MODEL,
-  ENV_HAIKU_MODEL, ENV_HOOK_BUDGET_TOKENS,
+  ENV_HAIKU_MODEL, ENV_HAIKU_FALLBACKS, DEFAULT_HAIKU_FALLBACKS,
+  ENV_HOOK_BUDGET_TOKENS,
   DEFAULT_HOOK_BUDGET_TOKENS,
   ENV_OBSERVATION_BATCH_SIZE, ENV_OBSERVATION_TICK_MS,
   DEFAULT_OBSERVATION_BATCH_SIZE, DEFAULT_OBSERVATION_TICK_MS,
@@ -2447,13 +2481,21 @@ import {
 
 const anthropicKey = process.env[ENV_ANTHROPIC_API_KEY];
 const haikuModel = process.env[ENV_HAIKU_MODEL] ?? DEFAULT_HAIKU_MODEL;
+const haikuFallbacksRaw = process.env[ENV_HAIKU_FALLBACKS];
+const haikuFallbacks = haikuFallbacksRaw
+  ? haikuFallbacksRaw.split(',').map(s => s.trim()).filter(Boolean)
+  : DEFAULT_HAIKU_FALLBACKS;
 const hookBudgetTokens = Number(process.env[ENV_HOOK_BUDGET_TOKENS] ?? DEFAULT_HOOK_BUDGET_TOKENS);
 const observationBatchSize = Number(process.env[ENV_OBSERVATION_BATCH_SIZE] ?? DEFAULT_OBSERVATION_BATCH_SIZE);
 const observationTickMs = Number(process.env[ENV_OBSERVATION_TICK_MS] ?? DEFAULT_OBSERVATION_TICK_MS);
 
 const summarize = anthropicKey
   ? (() => {
-      const summarizer = new HaikuSummarizer({ apiKey: anthropicKey, model: haikuModel });
+      const summarizer = new HaikuSummarizer({
+        apiKey: anthropicKey,
+        model: haikuModel,
+        fallbackModels: haikuFallbacks,
+      });
       return (events: import('../shared/types.ts').RawObservationEvent[]) =>
         summarizer.summarize(events);
     })()
@@ -3527,7 +3569,8 @@ Prints the effective configuration the worker would resolve from env + defaults 
 // src/cli/commands/config.ts
 import {
   DEFAULT_WORKER_PORT, DEFAULT_VOYAGE_ENDPOINT,
-  DEFAULT_HAIKU_MODEL, DEFAULT_HOOK_BUDGET_TOKENS,
+  DEFAULT_HAIKU_MODEL, DEFAULT_HAIKU_FALLBACKS,
+  DEFAULT_HOOK_BUDGET_TOKENS,
   DEFAULT_HOOK_TIMEOUT_MS, DEFAULT_OBSERVATION_BATCH_SIZE,
   DEFAULT_OBSERVATION_TICK_MS, DATA_DIR,
 } from '../../shared/paths.ts';
@@ -3555,6 +3598,7 @@ export async function configCommand(args: string[]): Promise<number> {
     `voyage_model          ${process.env.AELITA_MCP_VOYAGE_MODEL ?? 'voyage-4-nano'}`,
     `voyage_api_key        ${mask(process.env.AELITA_MCP_VOYAGE_API_KEY)}`,
     `haiku_model           ${process.env.AELITA_MCP_HAIKU_MODEL ?? DEFAULT_HAIKU_MODEL}`,
+    `haiku_fallbacks       ${process.env.AELITA_MCP_HAIKU_FALLBACKS ?? DEFAULT_HAIKU_FALLBACKS.join(',')}`,
     `anthropic_api_key     ${mask(process.env.ANTHROPIC_API_KEY)}`,
     `hook_budget_tokens    ${process.env.AELITA_MCP_HOOK_BUDGET_TOKENS ?? DEFAULT_HOOK_BUDGET_TOKENS}`,
     `hook_timeout_ms       ${process.env.AELITA_MCP_HOOK_TIMEOUT_MS ?? DEFAULT_HOOK_TIMEOUT_MS}`,
@@ -4193,8 +4237,9 @@ summarizer on top of the Plan-1 foundation.
 
 | Variable | Default | Required for |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | — | Observation summarization (Haiku 4.5/4.6). Without it the queue accepts events but `flush` returns 503. |
-| `AELITA_MCP_HAIKU_MODEL` | `claude-haiku-4-6` | Override the summarizer model. Falls back to `claude-haiku-4-5` automatically on 404. |
+| `ANTHROPIC_API_KEY` | — | Observation summarization (Haiku-class small model). Without it the queue accepts events but `flush` returns 503. |
+| `AELITA_MCP_HAIKU_MODEL` | `claude-haiku-4-6` | Primary summarizer model. Default is a 2026-05 snapshot — point it at any newer model when one ships (e.g. `claude-haiku-4-7`). |
+| `AELITA_MCP_HAIKU_FALLBACKS` | `claude-haiku-4-5` | Comma-separated fallback chain. Each model is tried in order on `model_not_found`; the first one that responds is cached for the worker's lifetime. |
 | `AELITA_MCP_HOOK_BUDGET_TOKENS` | `4000` | Hard cap on `<memory-context>` token budget. |
 | `AELITA_MCP_HOOK_TIMEOUT_MS` | `250` | UserPromptSubmit hard timeout. |
 | `AELITA_MCP_OBSERVATION_BATCH_SIZE` | `20` | Rows pulled per processor tick. |
@@ -4298,7 +4343,7 @@ git commit -m "docs(usage): plan-2 section — hooks, observations, install-hook
 │                                                                          │
 │  External calls:                                                         │
 │    Voyage     (embedding — already exists in Plan 1)                     │
-│    **Anthropic Haiku 4.6/4.5 — via @anthropic-ai/sdk**                   │
+│    **Anthropic Haiku-class (configurable) — via @anthropic-ai/sdk**      │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -4337,7 +4382,7 @@ queue row → status='done'
 - **Don't drop events on embed failure** — push to `PendingEmbedQueue` instead. Spec §5: "queue, don't drop".
 - **Don't bypass the existing IngestPipeline** for memory/skill files. Observations have their own ingestion path because they synthesize a `source_path` and need their own chunker; everything else still flows through Plan-1 code.
 - **Don't spread `undefined` into worker options** — `exactOptionalPropertyTypes` will reject it. Use the `...(value !== undefined && { key: value })` pattern (already used throughout Plan 1).
-- **Don't hard-code the model name in the summarizer prompt.** The runtime model can fall back from 4.6 to 4.5; the prompt body is model-agnostic.
+- **Don't hard-code the model name in the summarizer prompt.** The runtime walks a configurable fallback chain on `model_not_found`; the prompt body must stay model-agnostic so it works against any current or future Haiku-class model.
 - **Don't store the Anthropic API key in `config.json`.** It comes from `ANTHROPIC_API_KEY` only. `config show` masks it.
 - **Don't write to `~/.claude/settings.json` directly** — go through `applyHookInstall`. Foreign hook entries must survive.
 - **Don't introduce new env-var prefixes.** Everything Plan-2 adds is `AELITA_MCP_*` except the SDK-conventional `ANTHROPIC_API_KEY`.
@@ -4356,7 +4401,7 @@ Run through these before declaring Plan 2 complete:
 - [ ] No `chromaDataDir` / `skipChromaConnect` / `ChromaClient` references anywhere in Plan 2 (Plan-1 pivoted to `VectorStore` already).
 - [ ] `<memory-context>` envelope template matches spec §3 verbatim — opening/closing tags, header, per-channel sections, `[full: get_full(...)]` hints.
 - [ ] Anthropic API key handling is `ANTHROPIC_API_KEY` only; `config show` masks it.
-- [ ] Haiku model fallback (4.6 → 4.5) is exercised in a unit test.
+- [ ] Summarizer fallback chain walks correctly on `model_not_found` (exercised in a unit test). The unit test uses literal model names (`claude-haiku-4-6` → `claude-haiku-4-5`) since they're the current snapshot defaults — update both the test and the `DEFAULT_HAIKU_*` constants together if newer models become the canonical defaults.
 - [ ] No-LLM-calls in any contract test (real Anthropic API is mocked or stubbed).
 - [ ] `applyHookInstall` is idempotent and preserves foreign entries — both verified by unit tests.
 - [ ] Plan-1 components (worker, MCP server, file watcher, IngestPipeline, CLI) are extended, not rewritten.
