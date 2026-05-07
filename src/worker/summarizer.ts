@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { RawObservationEvent } from '../shared/types.ts';
 import type { SummarizerResult } from './index.ts';
-import { DEFAULT_HAIKU_MODEL, DEFAULT_HAIKU_FALLBACKS } from '../shared/paths.ts';
+import { DEFAULT_SUMMARIZER_MODEL, DEFAULT_SUMMARIZER_FALLBACKS } from '../shared/paths.ts';
 
 const ObservationTypes = ['bugfix', 'feature', 'refactor', 'discovery', 'decision', 'change'] as const;
 
@@ -27,14 +27,14 @@ export interface SummarizerTransportResult {
 
 export type SummarizerTransport = (args: SummarizerTransportArgs) => Promise<SummarizerTransportResult>;
 
-export interface HaikuSummarizerOptions {
+export interface SummarizerOptions {
   apiKey: string;
-  /** Primary model. Default: DEFAULT_HAIKU_MODEL (snapshot of current best small Claude). */
+  /** Primary model. Default: DEFAULT_SUMMARIZER_MODEL (snapshot of current best small Claude). */
   model?: string;
   /**
    * Ordered fallback chain. Each entry is tried in turn on `model_not_found`
    * from the previous one. The first model that responds successfully is
-   * cached for the worker's lifetime. Default: DEFAULT_HAIKU_FALLBACKS.
+   * cached for the worker's lifetime. Default: DEFAULT_SUMMARIZER_FALLBACKS.
    */
   fallbackModels?: string[];
   maxTokens?: number;
@@ -72,7 +72,7 @@ function buildUserPrompt(events: RawObservationEvent[]): string {
   return lines.join('\n');
 }
 
-export class HaikuSummarizer {
+export class Summarizer {
   private apiKey: string;
   private primaryModel: string;
   private fallbackModels: string[];
@@ -80,18 +80,18 @@ export class HaikuSummarizer {
   private maxTokens: number;
   private transport: SummarizerTransport;
 
-  constructor(opts: HaikuSummarizerOptions) {
+  constructor(opts: SummarizerOptions) {
     // apiKey is only required for the default Anthropic SDK transport.
     // Custom transports (e.g. the Claude Code subprocess transport) authenticate
     // via their own mechanism and pass apiKey='' or a placeholder.
     if (!opts.transport && !opts.apiKey) {
-      throw new Error('HaikuSummarizer: apiKey required when using default transport');
+      throw new Error('Summarizer: apiKey required when using default transport');
     }
     this.apiKey = opts.apiKey;
-    this.primaryModel = opts.model ?? DEFAULT_HAIKU_MODEL;
+    this.primaryModel = opts.model ?? DEFAULT_SUMMARIZER_MODEL;
     // De-dup the chain — if the caller put the primary into fallbacks too, drop it
     // (calling the same model twice on a 404 just wastes a request).
-    const rawChain = opts.fallbackModels ?? DEFAULT_HAIKU_FALLBACKS;
+    const rawChain = opts.fallbackModels ?? DEFAULT_SUMMARIZER_FALLBACKS;
     this.fallbackModels = rawChain.filter(m => m && m !== this.primaryModel);
     this.activeModel = this.primaryModel;
     this.maxTokens = opts.maxTokens ?? 800;
@@ -164,23 +164,23 @@ export class HaikuSummarizer {
     if (response === null) {
       throw lastErr instanceof Error
         ? lastErr
-        : new Error(`HaikuSummarizer: no model in chain succeeded — ${candidates.join(', ')}`);
+        : new Error(`Summarizer: no model in chain succeeded — ${candidates.join(', ')}`);
     }
 
     const textBlock = response.content.find(c => c.type === 'text');
-    if (!textBlock) throw new Error('HaikuSummarizer: response had no text block');
+    if (!textBlock) throw new Error('Summarizer: response had no text block');
 
     let json: unknown;
     try {
       const match = /\{[\s\S]*\}/.exec(textBlock.text);
       json = JSON.parse(match ? match[0] : textBlock.text);
     } catch (err) {
-      throw new Error(`HaikuSummarizer: failed to parse JSON: ${(err as Error).message}`);
+      throw new Error(`Summarizer: failed to parse JSON: ${(err as Error).message}`);
     }
 
     const parsed = SummaryJsonSchema.safeParse(json);
     if (!parsed.success) {
-      throw new Error(`HaikuSummarizer: response failed schema validation: ${parsed.error.message}`);
+      throw new Error(`Summarizer: response failed schema validation: ${parsed.error.message}`);
     }
     return parsed.data;
   }

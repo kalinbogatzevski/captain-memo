@@ -1,4 +1,4 @@
-// Claude Code subprocess transport for HaikuSummarizer.
+// Claude Code subprocess transport for Summarizer.
 //
 // Lets Max-plan users skip ANTHROPIC_API_KEY entirely — the `claude` CLI
 // authenticates via OAuth/keychain and counts against the user's Max quota.
@@ -9,7 +9,7 @@
 //   - Errors come back as `{is_error: true, result: "<message>"}` rather
 //     than HTTP 4xx; the parser maps "model_not_found"/"not_found" into a
 //     synthetic `Error` with `status: 404` so the existing fallback chain
-//     in HaikuSummarizer continues to walk.
+//     in Summarizer continues to walk.
 
 import type { SummarizerTransport, SummarizerTransportArgs, SummarizerTransportResult } from './summarizer.ts';
 
@@ -50,7 +50,7 @@ export interface ClaudeCodeTransportOptions {
  * Build a SummarizerTransport that shells out to `claude -p` with the
  * configured model and prompt. JSON output is parsed and re-shaped into
  * the same `{ content, model }` form the SDK transport returns, so the
- * rest of HaikuSummarizer is unchanged.
+ * rest of Summarizer is unchanged.
  */
 export function createClaudeCodeTransport(opts: ClaudeCodeTransportOptions = {}): SummarizerTransport {
   const spawnFn: SpawnFn = opts.spawn ?? (Bun.spawn as unknown as SpawnFn);
@@ -84,7 +84,7 @@ export function createClaudeCodeTransport(opts: ClaudeCodeTransportOptions = {})
     if (envelope.is_error) {
       const message = envelope.result || `claude-code transport: error (exit ${exitCode})`;
       const e = new Error(message) as Error & { status?: number };
-      // Map model-not-found to status=404 so HaikuSummarizer's fallback chain
+      // Map model-not-found to status=404 so Summarizer's fallback chain
       // walker treats it the same way it treats SDK 404s.
       if (/model_not_found|not_found|invalid.*model/i.test(message)) {
         e.status = 404;

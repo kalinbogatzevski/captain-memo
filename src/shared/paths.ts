@@ -17,22 +17,23 @@ export const DEFAULT_VOYAGE_ENDPOINT = 'http://localhost:8124/v1/embeddings';
 
 // Plan-2 additions ─────────────────────────────────────────────────────
 
-// Snapshot of "current best small/fast Claude" at 2026-05. Override via env
-// when newer Haiku-class models ship — the worker doesn't care about the version,
-// only that the configured model speaks the Anthropic Messages API.
-export const DEFAULT_HAIKU_MODEL = 'claude-haiku-4-6';
+// Snapshot model name — what the summarizer asks the configured provider for.
+// At time of writing (2026-05) this is a small/fast Anthropic Haiku, but the
+// summarizer is provider-agnostic: set this to whatever model your endpoint
+// serves (e.g. `gpt-4o-mini`, `qwen2.5:14b`, `claude-haiku-4-7`, etc.).
+export const DEFAULT_SUMMARIZER_MODEL = 'claude-haiku-4-6';
 
 // Ordered fallback chain — each model is tried on `model_not_found` from the
 // previous one. The first successful model is cached for the worker's lifetime.
-// Override via AELITA_MCP_HAIKU_FALLBACKS (comma-separated list).
-export const DEFAULT_HAIKU_FALLBACKS: string[] = ['claude-haiku-4-5'];
+// Override via AELITA_MCP_SUMMARIZER_FALLBACKS (comma-separated list).
+export const DEFAULT_SUMMARIZER_FALLBACKS: string[] = ['claude-haiku-4-5'];
 
 // Env-var names — keep all under AELITA_MCP_* except ANTHROPIC_API_KEY,
 // which intentionally matches the Anthropic SDK convention.
 export const ENV_ANTHROPIC_API_KEY = 'ANTHROPIC_API_KEY';
 export const ENV_SUMMARIZER_PROVIDER = 'AELITA_MCP_SUMMARIZER_PROVIDER';
-export const ENV_HAIKU_MODEL = 'AELITA_MCP_HAIKU_MODEL';
-export const ENV_HAIKU_FALLBACKS = 'AELITA_MCP_HAIKU_FALLBACKS';
+export const ENV_SUMMARIZER_MODEL = 'AELITA_MCP_SUMMARIZER_MODEL';
+export const ENV_SUMMARIZER_FALLBACKS = 'AELITA_MCP_SUMMARIZER_FALLBACKS';
 export const ENV_HOOK_BUDGET_TOKENS = 'AELITA_MCP_HOOK_BUDGET_TOKENS';
 export const ENV_HOOK_TIMEOUT_MS = 'AELITA_MCP_HOOK_TIMEOUT_MS';
 export const ENV_OBSERVATION_BATCH_SIZE = 'AELITA_MCP_OBSERVATION_BATCH_SIZE';

@@ -67,7 +67,7 @@ Plan-2 must NOT modify Plan-1 components except where explicitly noted (worker `
 ├── src/
 │   ├── shared/
 │   │   ├── types.ts                          # +RawObservationEvent, +Observation, +EnvelopePayload
-│   │   ├── paths.ts                          # +ANTHROPIC_API_KEY env name, +DEFAULT_HAIKU_MODEL constant
+│   │   ├── paths.ts                          # +ANTHROPIC_API_KEY env name, +DEFAULT_SUMMARIZER_MODEL constant
 │   │   └── tokens.ts                         # (existing — reused by envelope budget)
 │   ├── worker/
 │   │   ├── index.ts                          # +observation/inject/pending_embed endpoints, summarizer wiring
@@ -266,18 +266,18 @@ Append to `src/shared/paths.ts`:
 // Snapshot of "current best small/fast Claude" at 2026-05. Override via env
 // when newer Haiku-class models ship — the worker doesn't care about the version,
 // only that the configured model speaks the Anthropic Messages API.
-export const DEFAULT_HAIKU_MODEL = 'claude-haiku-4-6';
+export const DEFAULT_SUMMARIZER_MODEL = 'claude-haiku-4-6';
 
 // Ordered fallback chain — each model is tried on `model_not_found` from the
 // previous one. The first successful model is cached for the worker's lifetime.
-// Override via AELITA_MCP_HAIKU_FALLBACKS (comma-separated list).
-export const DEFAULT_HAIKU_FALLBACKS: string[] = ['claude-haiku-4-5'];
+// Override via AELITA_MCP_SUMMARIZER_FALLBACKS (comma-separated list).
+export const DEFAULT_SUMMARIZER_FALLBACKS: string[] = ['claude-haiku-4-5'];
 
 // Env-var names — keep all under AELITA_MCP_* except ANTHROPIC_API_KEY,
 // which intentionally matches the Anthropic SDK convention.
 export const ENV_ANTHROPIC_API_KEY = 'ANTHROPIC_API_KEY';
-export const ENV_HAIKU_MODEL = 'AELITA_MCP_HAIKU_MODEL';
-export const ENV_HAIKU_FALLBACKS = 'AELITA_MCP_HAIKU_FALLBACKS';
+export const ENV_SUMMARIZER_MODEL = 'AELITA_MCP_SUMMARIZER_MODEL';
+export const ENV_SUMMARIZER_FALLBACKS = 'AELITA_MCP_SUMMARIZER_FALLBACKS';
 export const ENV_HOOK_BUDGET_TOKENS = 'AELITA_MCP_HOOK_BUDGET_TOKENS';
 export const ENV_HOOK_TIMEOUT_MS = 'AELITA_MCP_HOOK_TIMEOUT_MS';
 export const ENV_OBSERVATION_BATCH_SIZE = 'AELITA_MCP_OBSERVATION_BATCH_SIZE';
@@ -1929,7 +1929,7 @@ git commit -m "feat(worker): observation endpoints + queue/store/pending-embed w
 - Create: `src/worker/summarizer.ts`
 - Create: `tests/unit/summarizer.test.ts`
 
-> Anthropic API key handling: `ANTHROPIC_API_KEY` env var (matches the SDK convention). Default primary model `claude-haiku-4-6`; default fallback chain `[claude-haiku-4-5]`. Both are configurable via `AELITA_MCP_HAIKU_MODEL` and `AELITA_MCP_HAIKU_FALLBACKS` (comma-separated chain). On `model_not_found` for any candidate, the next entry in the chain is tried; the first model that responds successfully is cached for the worker's lifetime. The defaults reflect the 2026-05 model lineup — point them at newer models as they ship without touching code.
+> Anthropic API key handling: `ANTHROPIC_API_KEY` env var (matches the SDK convention). Default primary model `claude-haiku-4-6`; default fallback chain `[claude-haiku-4-5]`. Both are configurable via `AELITA_MCP_SUMMARIZER_MODEL` and `AELITA_MCP_SUMMARIZER_FALLBACKS` (comma-separated chain). On `model_not_found` for any candidate, the next entry in the chain is tried; the first model that responds successfully is cached for the worker's lifetime. The defaults reflect the 2026-05 model lineup — point them at newer models as they ship without touching code.
 
 The summarizer takes a window of `RawObservationEvent` rows and returns a structured `SummarizerResult`. Output is constrained via a JSON schema embedded in the prompt; on parse failure the summarizer raises (caller in `processBatch` will mark the batch failed → retry).
 
@@ -1938,7 +1938,7 @@ The summarizer takes a window of `RawObservationEvent` rows and returns a struct
 ```typescript
 // tests/unit/summarizer.test.ts
 import { test, expect, mock } from 'bun:test';
-import { HaikuSummarizer } from '../../src/worker/summarizer.ts';
+import { Summarizer } from '../../src/worker/summarizer.ts';
 import type { RawObservationEvent } from '../../src/shared/types.ts';
 
 const ev = (over: Partial<RawObservationEvent> = {}): RawObservationEvent => ({
@@ -1950,7 +1950,7 @@ const ev = (over: Partial<RawObservationEvent> = {}): RawObservationEvent => ({
   ...over,
 });
 
-test('HaikuSummarizer — happy path returns parsed structured summary', async () => {
+test('Summarizer — happy path returns parsed structured summary', async () => {
   const transport = mock(async () => ({
     content: [{
       type: 'text',
@@ -1964,7 +1964,7 @@ test('HaikuSummarizer — happy path returns parsed structured summary', async (
     }],
     model: 'claude-haiku-4-6',
   }));
-  const s = new HaikuSummarizer({
+  const s = new Summarizer({
     apiKey: 'test-key', model: 'claude-haiku-4-6',
     transport,
   });
@@ -1975,7 +1975,7 @@ test('HaikuSummarizer — happy path returns parsed structured summary', async (
   expect(transport).toHaveBeenCalledTimes(1);
 });
 
-test('HaikuSummarizer — walks fallback chain on model_not_found', async () => {
+test('Summarizer — walks fallback chain on model_not_found', async () => {
   let calls = 0;
   const transport = mock(async (_args: any) => {
     calls++;
@@ -1991,7 +1991,7 @@ test('HaikuSummarizer — walks fallback chain on model_not_found', async () => 
       model: 'claude-haiku-4-5',
     };
   });
-  const s = new HaikuSummarizer({
+  const s = new Summarizer({
     apiKey: 'test-key', model: 'claude-haiku-4-6',
     fallbackModels: ['claude-haiku-4-5'],
     transport,
@@ -2004,33 +2004,33 @@ test('HaikuSummarizer — walks fallback chain on model_not_found', async () => 
   expect(transport).toHaveBeenCalledTimes(3);
 });
 
-test('HaikuSummarizer — invalid JSON in response raises', async () => {
+test('Summarizer — invalid JSON in response raises', async () => {
   const transport = mock(async () => ({
     content: [{ type: 'text', text: 'not json' }],
     model: 'claude-haiku-4-6',
   }));
-  const s = new HaikuSummarizer({
+  const s = new Summarizer({
     apiKey: 'test-key', model: 'claude-haiku-4-6', transport,
   });
   await expect(s.summarize([ev()])).rejects.toThrow(/JSON|parse/i);
 });
 
-test('HaikuSummarizer — type field validated against ObservationType enum', async () => {
+test('Summarizer — type field validated against ObservationType enum', async () => {
   const transport = mock(async () => ({
     content: [{ type: 'text', text: JSON.stringify({
       type: 'INVALID_TYPE', title: 't', narrative: 'n', facts: [], concepts: [],
     })}],
     model: 'claude-haiku-4-6',
   }));
-  const s = new HaikuSummarizer({
+  const s = new Summarizer({
     apiKey: 'test-key', model: 'claude-haiku-4-6', transport,
   });
   await expect(s.summarize([ev()])).rejects.toThrow(/type|enum/i);
 });
 
-test('HaikuSummarizer — empty events list returns empty narrative observation', async () => {
+test('Summarizer — empty events list returns empty narrative observation', async () => {
   const transport = mock(async () => { throw new Error('should not be called'); });
-  const s = new HaikuSummarizer({
+  const s = new Summarizer({
     apiKey: 'test-key', model: 'claude-haiku-4-6', transport,
   });
   const res = await s.summarize([]);
@@ -2038,8 +2038,8 @@ test('HaikuSummarizer — empty events list returns empty narrative observation'
   expect(transport).not.toHaveBeenCalled();
 });
 
-test('HaikuSummarizer — missing API key throws on construction', () => {
-  expect(() => new HaikuSummarizer({
+test('Summarizer — missing API key throws on construction', () => {
+  expect(() => new Summarizer({
     apiKey: '', model: 'claude-haiku-4-6',
     transport: async () => ({ content: [{ type: 'text', text: '{}' }], model: 'x' }),
   })).toThrow(/api[_ ]key|apiKey/i);
@@ -2053,14 +2053,14 @@ bun test tests/unit/summarizer.test.ts
 ```
 Expected: module not found.
 
-- [ ] **Step 3: Implement `HaikuSummarizer`**
+- [ ] **Step 3: Implement `Summarizer`**
 
 ```typescript
 // src/worker/summarizer.ts
 import { z } from 'zod';
 import type { RawObservationEvent } from '../shared/types.ts';
 import type { SummarizerResult } from './index.ts';
-import { DEFAULT_HAIKU_MODEL, DEFAULT_HAIKU_FALLBACKS } from '../shared/paths.ts';
+import { DEFAULT_SUMMARIZER_MODEL, DEFAULT_SUMMARIZER_FALLBACKS } from '../shared/paths.ts';
 
 const ObservationTypes = ['bugfix', 'feature', 'refactor', 'discovery', 'decision', 'change'] as const;
 
@@ -2086,14 +2086,14 @@ export interface SummarizerTransportResult {
 
 export type SummarizerTransport = (args: SummarizerTransportArgs) => Promise<SummarizerTransportResult>;
 
-export interface HaikuSummarizerOptions {
+export interface SummarizerOptions {
   apiKey: string;
-  /** Primary model. Default: DEFAULT_HAIKU_MODEL (snapshot of current best small Claude). */
+  /** Primary model. Default: DEFAULT_SUMMARIZER_MODEL (snapshot of current best small Claude). */
   model?: string;
   /**
    * Ordered fallback chain. Each entry is tried in turn on `model_not_found`
    * from the previous one. The first model that responds successfully is
-   * cached for the worker's lifetime. Default: DEFAULT_HAIKU_FALLBACKS.
+   * cached for the worker's lifetime. Default: DEFAULT_SUMMARIZER_FALLBACKS.
    */
   fallbackModels?: string[];
   maxTokens?: number;
@@ -2131,7 +2131,7 @@ function buildUserPrompt(events: RawObservationEvent[]): string {
   return lines.join('\n');
 }
 
-export class HaikuSummarizer {
+export class Summarizer {
   private apiKey: string;
   private primaryModel: string;
   private fallbackModels: string[];
@@ -2139,13 +2139,13 @@ export class HaikuSummarizer {
   private maxTokens: number;
   private transport: SummarizerTransport;
 
-  constructor(opts: HaikuSummarizerOptions) {
-    if (!opts.apiKey) throw new Error('HaikuSummarizer: apiKey required');
+  constructor(opts: SummarizerOptions) {
+    if (!opts.apiKey) throw new Error('Summarizer: apiKey required');
     this.apiKey = opts.apiKey;
-    this.primaryModel = opts.model ?? DEFAULT_HAIKU_MODEL;
+    this.primaryModel = opts.model ?? DEFAULT_SUMMARIZER_MODEL;
     // De-dup the chain — if the caller put the primary into fallbacks too, drop it
     // (calling the same model twice on a 404 just wastes a request).
-    const rawChain = opts.fallbackModels ?? DEFAULT_HAIKU_FALLBACKS;
+    const rawChain = opts.fallbackModels ?? DEFAULT_SUMMARIZER_FALLBACKS;
     this.fallbackModels = rawChain.filter(m => m && m !== this.primaryModel);
     this.activeModel = this.primaryModel;
     this.maxTokens = opts.maxTokens ?? 800;
@@ -2217,11 +2217,11 @@ export class HaikuSummarizer {
     if (response === null) {
       throw lastErr instanceof Error
         ? lastErr
-        : new Error(`HaikuSummarizer: no model in chain succeeded — ${candidates.join(', ')}`);
+        : new Error(`Summarizer: no model in chain succeeded — ${candidates.join(', ')}`);
     }
 
     const textBlock = response.content.find(c => c.type === 'text');
-    if (!textBlock) throw new Error('HaikuSummarizer: response had no text block');
+    if (!textBlock) throw new Error('Summarizer: response had no text block');
 
     let json: unknown;
     try {
@@ -2229,12 +2229,12 @@ export class HaikuSummarizer {
       const match = /\{[\s\S]*\}/.exec(textBlock.text);
       json = JSON.parse(match ? match[0] : textBlock.text);
     } catch (err) {
-      throw new Error(`HaikuSummarizer: failed to parse JSON: ${(err as Error).message}`);
+      throw new Error(`Summarizer: failed to parse JSON: ${(err as Error).message}`);
     }
 
     const parsed = SummaryJsonSchema.safeParse(json);
     if (!parsed.success) {
-      throw new Error(`HaikuSummarizer: response failed schema validation: ${parsed.error.message}`);
+      throw new Error(`Summarizer: response failed schema validation: ${parsed.error.message}`);
     }
     return parsed.data;
   }
@@ -2257,7 +2257,7 @@ Expected: `6 pass, 0 fail`.
 
 ```bash
 git add src/worker/summarizer.ts tests/unit/summarizer.test.ts
-git commit -m "feat(worker): HaikuSummarizer — Anthropic client with configurable fallback chain + zod-validated JSON output"
+git commit -m "feat(worker): Summarizer — Anthropic client with configurable fallback chain + zod-validated JSON output"
 ```
 
 ---
@@ -2268,7 +2268,7 @@ git commit -m "feat(worker): HaikuSummarizer — Anthropic client with configura
 - Modify: `src/worker/index.ts`
 - Create: `tests/integration/worker-inject-context.test.ts`
 
-This task lands `/inject/context` (the endpoint UserPromptSubmit calls) and wires the standalone-mode worker to construct a `HaikuSummarizer` from `ANTHROPIC_API_KEY`.
+This task lands `/inject/context` (the endpoint UserPromptSubmit calls) and wires the standalone-mode worker to construct a `Summarizer` from `ANTHROPIC_API_KEY`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2469,10 +2469,10 @@ if (req.method === 'POST' && url.pathname === '/inject/context') {
 Inside the `if (import.meta.main)` block, add (before `const handle = await startWorker(...)`):
 
 ```typescript
-import { HaikuSummarizer } from './summarizer.ts';
+import { Summarizer } from './summarizer.ts';
 import {
-  ENV_ANTHROPIC_API_KEY, DEFAULT_HAIKU_MODEL,
-  ENV_HAIKU_MODEL, ENV_HAIKU_FALLBACKS, DEFAULT_HAIKU_FALLBACKS,
+  ENV_ANTHROPIC_API_KEY, DEFAULT_SUMMARIZER_MODEL,
+  ENV_SUMMARIZER_MODEL, ENV_SUMMARIZER_FALLBACKS, DEFAULT_SUMMARIZER_FALLBACKS,
   ENV_HOOK_BUDGET_TOKENS,
   DEFAULT_HOOK_BUDGET_TOKENS,
   ENV_OBSERVATION_BATCH_SIZE, ENV_OBSERVATION_TICK_MS,
@@ -2480,21 +2480,21 @@ import {
 } from '../shared/paths.ts';
 
 const anthropicKey = process.env[ENV_ANTHROPIC_API_KEY];
-const haikuModel = process.env[ENV_HAIKU_MODEL] ?? DEFAULT_HAIKU_MODEL;
-const haikuFallbacksRaw = process.env[ENV_HAIKU_FALLBACKS];
-const haikuFallbacks = haikuFallbacksRaw
-  ? haikuFallbacksRaw.split(',').map(s => s.trim()).filter(Boolean)
-  : DEFAULT_HAIKU_FALLBACKS;
+const summarizerModel = process.env[ENV_SUMMARIZER_MODEL] ?? DEFAULT_SUMMARIZER_MODEL;
+const summarizerFallbacksRaw = process.env[ENV_SUMMARIZER_FALLBACKS];
+const summarizerFallbacks = summarizerFallbacksRaw
+  ? summarizerFallbacksRaw.split(',').map(s => s.trim()).filter(Boolean)
+  : DEFAULT_SUMMARIZER_FALLBACKS;
 const hookBudgetTokens = Number(process.env[ENV_HOOK_BUDGET_TOKENS] ?? DEFAULT_HOOK_BUDGET_TOKENS);
 const observationBatchSize = Number(process.env[ENV_OBSERVATION_BATCH_SIZE] ?? DEFAULT_OBSERVATION_BATCH_SIZE);
 const observationTickMs = Number(process.env[ENV_OBSERVATION_TICK_MS] ?? DEFAULT_OBSERVATION_TICK_MS);
 
 const summarize = anthropicKey
   ? (() => {
-      const summarizer = new HaikuSummarizer({
+      const summarizer = new Summarizer({
         apiKey: anthropicKey,
-        model: haikuModel,
-        fallbackModels: haikuFallbacks,
+        model: summarizerModel,
+        fallbackModels: summarizerFallbacks,
       });
       return (events: import('../shared/types.ts').RawObservationEvent[]) =>
         summarizer.summarize(events);
@@ -3569,7 +3569,7 @@ Prints the effective configuration the worker would resolve from env + defaults 
 // src/cli/commands/config.ts
 import {
   DEFAULT_WORKER_PORT, DEFAULT_VOYAGE_ENDPOINT,
-  DEFAULT_HAIKU_MODEL, DEFAULT_HAIKU_FALLBACKS,
+  DEFAULT_SUMMARIZER_MODEL, DEFAULT_SUMMARIZER_FALLBACKS,
   DEFAULT_HOOK_BUDGET_TOKENS,
   DEFAULT_HOOK_TIMEOUT_MS, DEFAULT_OBSERVATION_BATCH_SIZE,
   DEFAULT_OBSERVATION_TICK_MS, DATA_DIR,
@@ -3597,8 +3597,8 @@ export async function configCommand(args: string[]): Promise<number> {
     `voyage_endpoint       ${process.env.AELITA_MCP_VOYAGE_ENDPOINT ?? DEFAULT_VOYAGE_ENDPOINT}`,
     `voyage_model          ${process.env.AELITA_MCP_VOYAGE_MODEL ?? 'voyage-4-nano'}`,
     `voyage_api_key        ${mask(process.env.AELITA_MCP_VOYAGE_API_KEY)}`,
-    `haiku_model           ${process.env.AELITA_MCP_HAIKU_MODEL ?? DEFAULT_HAIKU_MODEL}`,
-    `haiku_fallbacks       ${process.env.AELITA_MCP_HAIKU_FALLBACKS ?? DEFAULT_HAIKU_FALLBACKS.join(',')}`,
+    `summarizer_model           ${process.env.AELITA_MCP_SUMMARIZER_MODEL ?? DEFAULT_SUMMARIZER_MODEL}`,
+    `summarizer_fallbacks       ${process.env.AELITA_MCP_SUMMARIZER_FALLBACKS ?? DEFAULT_SUMMARIZER_FALLBACKS.join(',')}`,
     `anthropic_api_key     ${mask(process.env.ANTHROPIC_API_KEY)}`,
     `hook_budget_tokens    ${process.env.AELITA_MCP_HOOK_BUDGET_TOKENS ?? DEFAULT_HOOK_BUDGET_TOKENS}`,
     `hook_timeout_ms       ${process.env.AELITA_MCP_HOOK_TIMEOUT_MS ?? DEFAULT_HOOK_TIMEOUT_MS}`,
@@ -4238,8 +4238,8 @@ summarizer on top of the Plan-1 foundation.
 | Variable | Default | Required for |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — | Observation summarization (Haiku-class small model). Without it the queue accepts events but `flush` returns 503. |
-| `AELITA_MCP_HAIKU_MODEL` | `claude-haiku-4-6` | Primary summarizer model. Default is a 2026-05 snapshot — point it at any newer model when one ships (e.g. `claude-haiku-4-7`). |
-| `AELITA_MCP_HAIKU_FALLBACKS` | `claude-haiku-4-5` | Comma-separated fallback chain. Each model is tried in order on `model_not_found`; the first one that responds is cached for the worker's lifetime. |
+| `AELITA_MCP_SUMMARIZER_MODEL` | `claude-haiku-4-6` | Primary summarizer model. Default is a 2026-05 snapshot — point it at any newer model when one ships (e.g. `claude-haiku-4-7`). |
+| `AELITA_MCP_SUMMARIZER_FALLBACKS` | `claude-haiku-4-5` | Comma-separated fallback chain. Each model is tried in order on `model_not_found`; the first one that responds is cached for the worker's lifetime. |
 | `AELITA_MCP_HOOK_BUDGET_TOKENS` | `4000` | Hard cap on `<memory-context>` token budget. |
 | `AELITA_MCP_HOOK_TIMEOUT_MS` | `250` | UserPromptSubmit hard timeout. |
 | `AELITA_MCP_OBSERVATION_BATCH_SIZE` | `20` | Rows pulled per processor tick. |
@@ -4359,7 +4359,7 @@ POST /observation/enqueue
 Observation processor tick (every 5 s) OR Stop hook → /observation/flush
    │ takeBatch(20) → group by (session, prompt_number)
    ▼
-HaikuSummarizer.summarize(events)
+Summarizer.summarize(events)
    │ JSON object → SummarizerResult
    ▼
 ObservationsStore.insert(observation)
@@ -4401,7 +4401,7 @@ Run through these before declaring Plan 2 complete:
 - [ ] No `chromaDataDir` / `skipChromaConnect` / `ChromaClient` references anywhere in Plan 2 (Plan-1 pivoted to `VectorStore` already).
 - [ ] `<memory-context>` envelope template matches spec §3 verbatim — opening/closing tags, header, per-channel sections, `[full: get_full(...)]` hints.
 - [ ] Anthropic API key handling is `ANTHROPIC_API_KEY` only; `config show` masks it.
-- [ ] Summarizer fallback chain walks correctly on `model_not_found` (exercised in a unit test). The unit test uses literal model names (`claude-haiku-4-6` → `claude-haiku-4-5`) since they're the current snapshot defaults — update both the test and the `DEFAULT_HAIKU_*` constants together if newer models become the canonical defaults.
+- [ ] Summarizer fallback chain walks correctly on `model_not_found` (exercised in a unit test). The unit test uses literal model names (`claude-haiku-4-6` → `claude-haiku-4-5`) since they're the current snapshot defaults — update both the test and the `DEFAULT_SUMMARIZER_*` constants together if newer models become the canonical defaults.
 - [ ] No-LLM-calls in any contract test (real Anthropic API is mocked or stubbed).
 - [ ] `applyHookInstall` is idempotent and preserves foreign entries — both verified by unit tests.
 - [ ] Plan-1 components (worker, MCP server, file watcher, IngestPipeline, CLI) are extended, not rewritten.

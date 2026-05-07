@@ -116,7 +116,7 @@ Auth comes from your existing Claude Code login. Trade-off: ~1-2 s subprocess ov
 ollama pull qwen2.5:14b-instruct
 export AELITA_MCP_SUMMARIZER_PROVIDER=openai-compatible
 export AELITA_MCP_OPENAI_ENDPOINT=http://localhost:11434/v1/chat/completions
-export AELITA_MCP_HAIKU_MODEL=qwen2.5:14b-instruct   # whatever your endpoint serves
+export AELITA_MCP_SUMMARIZER_MODEL=qwen2.5:14b-instruct   # whatever your endpoint serves
 bun run worker:start
 ```
 
@@ -128,7 +128,7 @@ No API key needed for local servers. The same pattern works for **LM Studio** (p
 export AELITA_MCP_SUMMARIZER_PROVIDER=openai-compatible
 export AELITA_MCP_OPENAI_ENDPOINT=https://api.openai.com/v1/chat/completions
 export AELITA_MCP_OPENAI_API_KEY=sk-...
-export AELITA_MCP_HAIKU_MODEL=gpt-4o-mini
+export AELITA_MCP_SUMMARIZER_MODEL=gpt-4o-mini
 bun run worker:start
 ```
 
@@ -151,8 +151,8 @@ bun run worker:start
 | `ANTHROPIC_API_KEY` | — | Required when `provider=anthropic`. Ignored under other providers. |
 | `AELITA_MCP_OPENAI_ENDPOINT` | — | Required when `provider=openai-compatible`. Full URL to `/v1/chat/completions`. |
 | `AELITA_MCP_OPENAI_API_KEY` | — | Optional bearer token for `provider=openai-compatible`. Local servers (Ollama, LM Studio) typically don't need it. |
-| `AELITA_MCP_HAIKU_MODEL` | `claude-haiku-4-6` | Primary summarizer model. The name is historical (originally targeted Anthropic Haiku) but applies to whatever provider you pick — set it to whatever model your endpoint serves. |
-| `AELITA_MCP_HAIKU_FALLBACKS` | `claude-haiku-4-5` | Comma-separated fallback chain. Each model is tried in order on `model_not_found`; the first one that responds is cached for the worker's lifetime. |
+| `AELITA_MCP_SUMMARIZER_MODEL` | `claude-haiku-4-6` | Primary summarizer model. Provider-agnostic — set it to whatever model your endpoint serves (e.g. `gpt-4o-mini`, `qwen2.5:14b`, `deepseek-chat`, etc.). |
+| `AELITA_MCP_SUMMARIZER_FALLBACKS` | `claude-haiku-4-5` | Comma-separated fallback chain. Each model is tried in order on `model_not_found`; the first one that responds is cached for the worker's lifetime. |
 | `AELITA_MCP_HOOK_BUDGET_TOKENS` | `4000` | Hard cap on `<memory-context>` token budget. |
 | `AELITA_MCP_HOOK_TIMEOUT_MS` | `250` | UserPromptSubmit hard timeout. |
 | `AELITA_MCP_OBSERVATION_BATCH_SIZE` | `20` | Rows pulled per processor tick. |

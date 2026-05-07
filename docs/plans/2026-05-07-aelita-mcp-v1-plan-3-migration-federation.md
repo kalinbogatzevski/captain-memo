@@ -46,7 +46,7 @@ After Plan 3 ships, the system meets the v1 release gate (Spec §6) and is ready
 |---|---|
 | `UserPromptSubmit` / `SessionStart` / `PostToolUse` / `Stop` hooks | Plan 2 |
 | Observation queue (SQLite WAL, channel `observation`) | Plan 2 |
-| Haiku-class summarizer (configurable model + fallback chain via `AELITA_MCP_HAIKU_MODEL` / `AELITA_MCP_HAIKU_FALLBACKS`) | Plan 2 |
+| Provider-agnostic summarizer (Anthropic / Claude Code / OpenAI-compatible; model + fallback chain via `AELITA_MCP_SUMMARIZER_MODEL` / `AELITA_MCP_SUMMARIZER_FALLBACKS`) | Plan 2 |
 | `<memory-context>` envelope formatting | Plan 2 |
 | `/inject/context` worker endpoint | Plan 2 |
 | Worker / MCP / CLI plumbing (search, ingest, watcher, FTS5) | Plan 1 |

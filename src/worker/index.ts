@@ -27,10 +27,10 @@ import {
   type SummarizerProvider,
   ENV_OPENAI_ENDPOINT,
   ENV_OPENAI_API_KEY,
-  ENV_HAIKU_MODEL,
-  ENV_HAIKU_FALLBACKS,
-  DEFAULT_HAIKU_MODEL,
-  DEFAULT_HAIKU_FALLBACKS,
+  ENV_SUMMARIZER_MODEL,
+  ENV_SUMMARIZER_FALLBACKS,
+  DEFAULT_SUMMARIZER_MODEL,
+  DEFAULT_SUMMARIZER_FALLBACKS,
   ENV_HOOK_BUDGET_TOKENS,
   DEFAULT_HOOK_BUDGET_TOKENS,
   ENV_OBSERVATION_BATCH_SIZE,
@@ -38,7 +38,7 @@ import {
   DEFAULT_OBSERVATION_BATCH_SIZE,
   DEFAULT_OBSERVATION_TICK_MS,
 } from '../shared/paths.ts';
-import { HaikuSummarizer } from './summarizer.ts';
+import { Summarizer } from './summarizer.ts';
 
 export interface SummarizerResult {
   type: ObservationType;
@@ -800,11 +800,11 @@ if (import.meta.main) {
   }
 
   const anthropicKey = process.env[ENV_ANTHROPIC_API_KEY];
-  const haikuModel = process.env[ENV_HAIKU_MODEL] ?? DEFAULT_HAIKU_MODEL;
-  const haikuFallbacksRaw = process.env[ENV_HAIKU_FALLBACKS];
-  const haikuFallbacks = haikuFallbacksRaw
-    ? haikuFallbacksRaw.split(',').map(s => s.trim()).filter(Boolean)
-    : DEFAULT_HAIKU_FALLBACKS;
+  const summarizerModel = process.env[ENV_SUMMARIZER_MODEL] ?? DEFAULT_SUMMARIZER_MODEL;
+  const summarizerFallbacksRaw = process.env[ENV_SUMMARIZER_FALLBACKS];
+  const summarizerFallbacks = summarizerFallbacksRaw
+    ? summarizerFallbacksRaw.split(',').map(s => s.trim()).filter(Boolean)
+    : DEFAULT_SUMMARIZER_FALLBACKS;
   const hookBudgetTokens = Number(process.env[ENV_HOOK_BUDGET_TOKENS] ?? DEFAULT_HOOK_BUDGET_TOKENS);
   const observationBatchSize = Number(process.env[ENV_OBSERVATION_BATCH_SIZE] ?? DEFAULT_OBSERVATION_BATCH_SIZE);
   const observationTickMs = Number(process.env[ENV_OBSERVATION_TICK_MS] ?? DEFAULT_OBSERVATION_TICK_MS);
@@ -828,10 +828,10 @@ if (import.meta.main) {
   let summarize: ((events: import('../shared/types.ts').RawObservationEvent[]) => Promise<import('./index.ts').SummarizerResult>) | undefined;
   if (provider === 'claude-code') {
     const { createClaudeCodeTransport } = await import('./summarizer-claude-code.ts');
-    const summarizer = new HaikuSummarizer({
+    const summarizer = new Summarizer({
       apiKey: '', // unused under claude-code transport (auth via the CLI)
-      model: haikuModel,
-      fallbackModels: haikuFallbacks,
+      model: summarizerModel,
+      fallbackModels: summarizerFallbacks,
       transport: createClaudeCodeTransport(),
     });
     summarize = (events) => summarizer.summarize(events);
@@ -846,10 +846,10 @@ if (import.meta.main) {
     } else {
       const apiKey = process.env[ENV_OPENAI_API_KEY];
       const { createOpenAITransport } = await import('./summarizer-openai.ts');
-      const summarizer = new HaikuSummarizer({
+      const summarizer = new Summarizer({
         apiKey: '', // unused — openai transport carries its own optional key
-        model: haikuModel,
-        fallbackModels: haikuFallbacks,
+        model: summarizerModel,
+        fallbackModels: summarizerFallbacks,
         transport: createOpenAITransport({
           endpoint,
           ...(apiKey !== undefined && { apiKey }),
@@ -859,10 +859,10 @@ if (import.meta.main) {
       console.error(`[worker] summarizer provider = openai-compatible (${endpoint})${apiKey ? ' [auth]' : ' [no auth]'}`);
     }
   } else if (anthropicKey) {
-    const summarizer = new HaikuSummarizer({
+    const summarizer = new Summarizer({
       apiKey: anthropicKey,
-      model: haikuModel,
-      fallbackModels: haikuFallbacks,
+      model: summarizerModel,
+      fallbackModels: summarizerFallbacks,
     });
     summarize = (events) => summarizer.summarize(events);
     console.error(`[worker] summarizer provider = anthropic (Anthropic API key)`);

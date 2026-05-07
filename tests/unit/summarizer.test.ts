@@ -1,5 +1,5 @@
 import { test, expect, mock } from 'bun:test';
-import { HaikuSummarizer } from '../../src/worker/summarizer.ts';
+import { Summarizer } from '../../src/worker/summarizer.ts';
 import type { RawObservationEvent } from '../../src/shared/types.ts';
 
 const ev = (over: Partial<RawObservationEvent> = {}): RawObservationEvent => ({
@@ -11,7 +11,7 @@ const ev = (over: Partial<RawObservationEvent> = {}): RawObservationEvent => ({
   ...over,
 });
 
-test('HaikuSummarizer — happy path returns parsed structured summary', async () => {
+test('Summarizer — happy path returns parsed structured summary', async () => {
   const transport = mock(async () => ({
     content: [{
       type: 'text' as const,
@@ -25,7 +25,7 @@ test('HaikuSummarizer — happy path returns parsed structured summary', async (
     }],
     model: 'claude-haiku-4-6',
   }));
-  const s = new HaikuSummarizer({
+  const s = new Summarizer({
     apiKey: 'test-key', model: 'claude-haiku-4-6',
     transport,
   });
@@ -36,7 +36,7 @@ test('HaikuSummarizer — happy path returns parsed structured summary', async (
   expect(transport).toHaveBeenCalledTimes(1);
 });
 
-test('HaikuSummarizer — walks fallback chain on model_not_found', async () => {
+test('Summarizer — walks fallback chain on model_not_found', async () => {
   let calls = 0;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const transport = mock(async (_args: any) => {
@@ -53,7 +53,7 @@ test('HaikuSummarizer — walks fallback chain on model_not_found', async () => 
       model: 'claude-haiku-4-5',
     };
   });
-  const s = new HaikuSummarizer({
+  const s = new Summarizer({
     apiKey: 'test-key', model: 'claude-haiku-4-6',
     fallbackModels: ['claude-haiku-4-5'],
     transport,
@@ -66,33 +66,33 @@ test('HaikuSummarizer — walks fallback chain on model_not_found', async () => 
   expect(transport).toHaveBeenCalledTimes(3);
 });
 
-test('HaikuSummarizer — invalid JSON in response raises', async () => {
+test('Summarizer — invalid JSON in response raises', async () => {
   const transport = mock(async () => ({
     content: [{ type: 'text' as const, text: 'not json' }],
     model: 'claude-haiku-4-6',
   }));
-  const s = new HaikuSummarizer({
+  const s = new Summarizer({
     apiKey: 'test-key', model: 'claude-haiku-4-6', transport,
   });
   await expect(s.summarize([ev()])).rejects.toThrow(/JSON|parse/i);
 });
 
-test('HaikuSummarizer — type field validated against ObservationType enum', async () => {
+test('Summarizer — type field validated against ObservationType enum', async () => {
   const transport = mock(async () => ({
     content: [{ type: 'text' as const, text: JSON.stringify({
       type: 'INVALID_TYPE', title: 't', narrative: 'n', facts: [], concepts: [],
     })}],
     model: 'claude-haiku-4-6',
   }));
-  const s = new HaikuSummarizer({
+  const s = new Summarizer({
     apiKey: 'test-key', model: 'claude-haiku-4-6', transport,
   });
   await expect(s.summarize([ev()])).rejects.toThrow(/type|enum|invalid/i);
 });
 
-test('HaikuSummarizer — empty events list returns empty narrative observation', async () => {
+test('Summarizer — empty events list returns empty narrative observation', async () => {
   const transport = mock(async () => { throw new Error('should not be called'); });
-  const s = new HaikuSummarizer({
+  const s = new Summarizer({
     apiKey: 'test-key', model: 'claude-haiku-4-6', transport,
   });
   const res = await s.summarize([]);
@@ -100,17 +100,17 @@ test('HaikuSummarizer — empty events list returns empty narrative observation'
   expect(transport).not.toHaveBeenCalled();
 });
 
-test('HaikuSummarizer — missing API key throws on construction (default transport)', () => {
+test('Summarizer — missing API key throws on construction (default transport)', () => {
   // Without a custom transport, the default Anthropic SDK transport needs an
   // apiKey. With one (e.g. the Claude Code subprocess transport), apiKey is
   // not required because auth is handled inside the transport.
-  expect(() => new HaikuSummarizer({
+  expect(() => new Summarizer({
     apiKey: '', model: 'claude-haiku-4-6',
   })).toThrow(/api[_ ]key|apiKey/i);
 });
 
-test('HaikuSummarizer — accepts empty apiKey when a custom transport is supplied', () => {
-  expect(() => new HaikuSummarizer({
+test('Summarizer — accepts empty apiKey when a custom transport is supplied', () => {
+  expect(() => new Summarizer({
     apiKey: '', model: 'claude-haiku-4-6',
     transport: async () => ({ content: [{ type: 'text' as const, text: '{}' }], model: 'x' }),
   })).not.toThrow();
