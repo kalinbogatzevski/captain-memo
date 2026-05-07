@@ -350,6 +350,52 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     }, tickMs);
   }
 
+  const PENDING_RETRY_TICK_MS = 60_000;
+  const PENDING_BATCH = 25;
+
+  async function processPendingEmbed(limit: number): Promise<{ retried: number; embedded: number }> {
+    if (!pendingEmbed) return { retried: 0, embedded: 0 };
+    const due = pendingEmbed.listDue(limit);
+    if (due.length === 0) return { retried: 0, embedded: 0 };
+
+    // Look up the chunk text from meta. Stale rows (chunk no longer exists)
+    // are dropped; remaining rows are re-embedded as a single batch.
+    const staleIds: number[] = [];
+    const liveRows: typeof due = [];
+    const texts: string[] = [];
+    for (const row of due) {
+      const lookup = meta.getChunkById(row.chunk_id);
+      if (!lookup) {
+        staleIds.push(row.id);
+        continue;
+      }
+      liveRows.push(row);
+      texts.push(lookup.chunk.text);
+    }
+    if (staleIds.length > 0) pendingEmbed.markEmbedded(staleIds);
+    if (liveRows.length === 0) return { retried: due.length, embedded: 0 };
+
+    try {
+      const embeddings = await embedder.embed(texts);
+      await vector.add(
+        collectionName,
+        liveRows.map((row, i) => ({ id: row.chunk_id, embedding: embeddings[i]! })),
+      );
+      pendingEmbed.markEmbedded(liveRows.map(r => r.id));
+      return { retried: due.length, embedded: liveRows.length };
+    } catch {
+      pendingEmbed.markRetried(liveRows.map(r => r.id), PENDING_RETRY_TICK_MS);
+      return { retried: due.length, embedded: 0 };
+    }
+  }
+
+  let pendingTickTimer: ReturnType<typeof setInterval> | null = null;
+  if (pendingEmbed && !opts.skipEmbed) {
+    pendingTickTimer = setInterval(() => {
+      processPendingEmbed(PENDING_BATCH).catch(err => console.error('[pe-tick]', err));
+    }, PENDING_RETRY_TICK_MS);
+  }
+
   type ChannelFilters = {
     memory_type?: string;
     skill_id?: string;
@@ -709,6 +755,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     port: server.port ?? opts.port,
     stop: async () => {
       if (tickTimer) clearInterval(tickTimer);
+      if (pendingTickTimer) clearInterval(pendingTickTimer);
       if (watcher) await watcher.close();
       server.stop(true);
       if (obsQueue) obsQueue.close();
