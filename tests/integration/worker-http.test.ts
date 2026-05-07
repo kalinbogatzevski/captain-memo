@@ -13,6 +13,7 @@ beforeAll(async () => {
     embedderModel: 'voyage-4-nano',
     vectorDbPath: ':memory:',
     embeddingDimension: 1024,
+    skipEmbed: true,
   });
 });
 
@@ -34,4 +35,17 @@ test('worker — responds to /stats with corpus info', async () => {
   const body = await res.json();
   expect(body).toHaveProperty('total_chunks');
   expect(body).toHaveProperty('by_channel');
+});
+
+test('worker — /search/all returns hybrid results structure', async () => {
+  const res = await fetch(`http://localhost:${PORT}/search/all`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ query: 'test', top_k: 5 }),
+  });
+  expect(res.status).toBe(200);
+  const body = await res.json() as any;
+  expect(body).toHaveProperty('results');
+  expect(body).toHaveProperty('by_channel');
+  expect(Array.isArray(body.results)).toBe(true);
 });
