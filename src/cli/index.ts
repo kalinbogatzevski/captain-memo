@@ -3,6 +3,7 @@ import { statsCommand } from './commands/stats.ts';
 import { reindexCommand } from './commands/reindex.ts';
 import { observationCommand } from './commands/observation.ts';
 import { configCommand } from './commands/config.ts';
+import { installHooksCommand } from './commands/install-hooks.ts';
 
 const HELP = `aelita-mcp — local memory layer for Claude Code
 
@@ -15,6 +16,7 @@ Commands:
   reindex      Re-embed corpus content (optionally scoped to a channel)
   observation  list|flush — manage observation queue (--limit N, --session ID)
   config       show — print effective config (env + defaults, secrets masked)
+  install-hooks Register the four Claude Code hooks (--project for project-scoped settings)
   help         Show this message
 
 Examples:
@@ -45,6 +47,9 @@ export async function main(args: string[]): Promise<void> {
       break;
     case 'config':
       exit = await configCommand(args.slice(1));
+      break;
+    case 'install-hooks':
+      exit = await installHooksCommand(args.slice(1));
       break;
     case 'help':
     case '--help':
