@@ -18,15 +18,19 @@ export const DEFAULT_VOYAGE_ENDPOINT = 'http://localhost:8124/v1/embeddings';
 // Plan-2 additions ─────────────────────────────────────────────────────
 
 // Snapshot model name — what the summarizer asks the configured provider for.
-// At time of writing (2026-05) this is a small/fast Anthropic Haiku, but the
-// summarizer is provider-agnostic: set this to whatever model your endpoint
-// serves (e.g. `gpt-4o-mini`, `qwen2.5:14b`, `claude-haiku-4-7`, etc.).
-export const DEFAULT_SUMMARIZER_MODEL = 'claude-haiku-4-6';
+// Default reflects the most-available small Anthropic model at time of writing
+// (2026-05). The summarizer is provider-agnostic: set this to whatever model
+// your endpoint serves (e.g. `gpt-4o-mini`, `qwen2.5:14b`, future Haikus).
+// When newer Haiku models ship, prefer pointing the env var at them rather
+// than editing this constant — that way users on different access tiers can
+// each pick what works for them.
+export const DEFAULT_SUMMARIZER_MODEL = 'claude-haiku-4-5';
 
 // Ordered fallback chain — each model is tried on `model_not_found` from the
 // previous one. The first successful model is cached for the worker's lifetime.
-// Override via CAPTAIN_MEMO_SUMMARIZER_FALLBACKS (comma-separated list).
-export const DEFAULT_SUMMARIZER_FALLBACKS: string[] = ['claude-haiku-4-5'];
+// Default tries the next-newer release for forward-compat, then the safe
+// `haiku` alias as a last resort. Override via CAPTAIN_MEMO_SUMMARIZER_FALLBACKS.
+export const DEFAULT_SUMMARIZER_FALLBACKS: string[] = ['claude-haiku-4-6', 'haiku'];
 
 // Env-var names — keep all under CAPTAIN_MEMO_* except ANTHROPIC_API_KEY,
 // which intentionally matches the Anthropic SDK convention.

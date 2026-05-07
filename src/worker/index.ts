@@ -773,6 +773,16 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 }
 
 if (import.meta.main) {
+  const { mkdirSync } = await import('fs');
+  const { dirname } = await import('path');
+  const { DATA_DIR } = await import('../shared/paths.ts');
+
+  // Ensure data directories exist on first run — every store opens a SQLite
+  // file inside DATA_DIR, and bun:sqlite won't create missing parent dirs.
+  mkdirSync(DATA_DIR, { recursive: true });
+  mkdirSync(VECTOR_DB_DIR, { recursive: true });
+  mkdirSync(dirname(META_DB_PATH), { recursive: true });
+
   const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
   const projectId = process.env.CAPTAIN_MEMO_PROJECT_ID ?? 'default';
   const embedderEndpoint = process.env.CAPTAIN_MEMO_VOYAGE_ENDPOINT ?? DEFAULT_VOYAGE_ENDPOINT;

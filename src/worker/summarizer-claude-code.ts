@@ -84,9 +84,16 @@ export function createClaudeCodeTransport(opts: ClaudeCodeTransportOptions = {})
     if (envelope.is_error) {
       const message = envelope.result || `claude-code transport: error (exit ${exitCode})`;
       const e = new Error(message) as Error & { status?: number };
-      // Map model-not-found to status=404 so Summarizer's fallback chain
-      // walker treats it the same way it treats SDK 404s.
-      if (/model_not_found|not_found|invalid.*model/i.test(message)) {
+      // Map model-not-found-style errors to status=404 so the Summarizer's
+      // fallback chain walker treats them the same way it treats SDK 404s.
+      // The Claude Code CLI surfaces several phrasings for "this model isn't
+      // available to you" — catch all of them.
+      if (
+        /model_not_found|not_found|invalid.*model/i.test(message) ||
+        /issue with.*model/i.test(message) ||
+        /model.*may not (exist|have access)/i.test(message) ||
+        /pick a different model/i.test(message)
+      ) {
         e.status = 404;
       }
       throw e;

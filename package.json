@@ -1,6 +1,6 @@
 {
   "name": "captain-memo",
-  "version": "0.1.0-alpha",
+  "version": "1.0.0",
   "description": "Local memory layer for Claude Code — Voyage-embedded, hybrid search, federated remotes",
   "type": "module",
   "private": true,
