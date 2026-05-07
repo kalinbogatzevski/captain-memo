@@ -386,6 +386,25 @@ if (import.meta.main) {
   const embedderApiKey = process.env.AELITA_MCP_VOYAGE_API_KEY;
   const vectorDbPath = join(VECTOR_DB_DIR, 'embeddings.db');
 
+  const watchMemory = process.env.AELITA_MCP_WATCH_MEMORY;
+  const watchSkills = process.env.AELITA_MCP_WATCH_SKILLS;
+
+  let watchPaths: string[] | undefined;
+  let watchChannel: 'memory' | 'skill' | undefined;
+  if (watchMemory) {
+    watchPaths = watchMemory.split(',').map(s => s.trim()).filter(Boolean);
+    watchChannel = 'memory';
+    if (watchSkills) {
+      console.error(
+        '[worker] both AELITA_MCP_WATCH_MEMORY and AELITA_MCP_WATCH_SKILLS set; ' +
+        'Plan-1 supports one channel per worker — using memory'
+      );
+    }
+  } else if (watchSkills) {
+    watchPaths = watchSkills.split(',').map(s => s.trim()).filter(Boolean);
+    watchChannel = 'skill';
+  }
+
   const handle = await startWorker({
     port,
     projectId,
@@ -395,6 +414,7 @@ if (import.meta.main) {
     ...(embedderApiKey !== undefined && { embedderApiKey }),
     vectorDbPath,
     embeddingDimension: 1024,
+    ...(watchPaths !== undefined && watchChannel !== undefined && { watchPaths, watchChannel }),
   });
   console.log(`[worker] listening on http://localhost:${handle.port}`);
 
