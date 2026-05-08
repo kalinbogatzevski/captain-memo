@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite';
 import { newChunkId } from '../shared/id.ts';
 import { sha256Hex } from '../shared/sha.ts';
 import { fmtElapsed } from '../shared/format.ts';
-import { bold, cyan, cyanBold, isTTY } from '../shared/ansi.ts';
+import { bold, boldRed, cyan, cyanBold, isTTY } from '../shared/ansi.ts';
 import {
   transformObservation,
   transformSessionSummary,
@@ -234,7 +234,7 @@ export async function runMigration(
     opts.onProgress?.(renderProgress(lastKind));
   } catch (err) {
     result.errors++;
-    opts.onProgress?.(`migration error: ${(err as Error).message}`);
+    opts.onProgress?.(`${boldRed('migration error:')} ${(err as Error).message}`);
   } finally {
     if (ticker) clearInterval(ticker);
     src.close();

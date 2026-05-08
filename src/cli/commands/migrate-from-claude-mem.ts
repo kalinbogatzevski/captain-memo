@@ -14,7 +14,29 @@ import {
   DEFAULT_VOYAGE_ENDPOINT,
 } from '../../shared/paths.ts';
 import { fmtBytes } from '../../shared/format.ts';
+import { boldRed, dim as dimText, green, yellow } from '../../shared/ansi.ts';
 import { printMiniBanner } from '../banner.ts';
+
+async function discoverEmbeddingDim(endpoint: string): Promise<number> {
+  // Explicit override wins.
+  const envDim = process.env.CAPTAIN_MEMO_EMBEDDING_DIM;
+  if (envDim) return Number(envDim);
+  // Probe the sidecar's /health (Captain Memo convention; remote OpenAI-compatible
+  // endpoints won't have this and will fall through to the default).
+  try {
+    const healthUrl = endpoint.replace(/\/v1\/embeddings\/?$/, '/health');
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 2000);
+    const res = await fetch(healthUrl, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (res.ok) {
+      const j = (await res.json()) as { dim?: number };
+      if (typeof j.dim === 'number' && j.dim > 0) return j.dim;
+    }
+  } catch { /* fall through */ }
+  // voyage-4-nano open-weights native size.
+  return 2048;
+}
 
 // Portable across GNU/BSD/macOS (`du -sb` is GNU-only; `-sk` is POSIX).
 function dirSize(path: string): number {
@@ -157,9 +179,12 @@ export async function migrateFromClaudeMemCommand(args: string[]): Promise<numbe
     embedderOpts.apiKey = process.env.CAPTAIN_MEMO_VOYAGE_API_KEY;
   }
   const embedder = new Embedder(embedderOpts);
+  const dim = await discoverEmbeddingDim(embedderOpts.endpoint);
+  console.log(`Embedding dim: ${dim}`);
+  console.log('');
   const vector = new VectorStore({
     dbPath: join(VECTOR_DB_DIR, 'embeddings.db'),
-    dimension: 1024,
+    dimension: dim,
   });
   const collectionName = `am_${flags.projectId}`;
   await vector.ensureCollection(collectionName);
@@ -191,13 +216,17 @@ export async function migrateFromClaudeMemCommand(args: string[]): Promise<numbe
     runOpts,
   );
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+  const verdict = result.errors > 0 ? yellow('partial') : green('complete');
+  const errLine = result.errors > 0
+    ? `  errors:                ${boldRed(String(result.errors))}`
+    : `  errors:                ${result.errors}`;
   console.log('');
-  console.log(`Migration ${flags.dryRun ? 'preview' : 'complete'} in ${elapsed}s:`);
+  console.log(`Migration ${flags.dryRun ? 'preview' : verdict} in ${elapsed}s:`);
   console.log(`  observations migrated: ${result.observations_migrated}`);
   console.log(`  observations skipped:  ${result.observations_skipped}`);
   console.log(`  summaries migrated:    ${result.summaries_migrated}`);
   console.log(`  summaries skipped:     ${result.summaries_skipped}`);
-  console.log(`  errors:                ${result.errors}`);
+  console.log(errLine);
   console.log('');
 
   // Side-by-side: claude-mem source DB vs Captain Memo data dir, after the run.
@@ -246,7 +275,7 @@ function printComparison(
     for (const line of channelLines) console.log(line);
   }
   console.log('');
-  console.log(`  Source path: ${sourceDbPath}`);
-  console.log(`  Target path: ${DATA_DIR}/`);
+  console.log(dimText(`  Source path: ${sourceDbPath}`));
+  console.log(dimText(`  Target path: ${DATA_DIR}/`));
   console.log('');
 }
