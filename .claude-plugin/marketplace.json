@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "Captain Memo — local memory layer for AI coding agents. Hybrid search, three summarizer providers, self-hosted embedder.",
-    "homepage": "https://github.com/kalin/captain-memo"
+    "homepage": "https://github.com/kalinbogatzevski/captain-memo"
   },
   "plugins": [
     {
