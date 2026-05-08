@@ -1,31 +1,31 @@
 // captain-memo uninstall — clean removal of all installed pieces.
 //
-// Stops + removes systemd units, /etc/captain-memo, ~/.claude/plugins/captain-memo
-// symlink, and the captain-memo-embed user. Does NOT delete ~/.captain-memo
-// (your data) by default — pass --purge for that.
+// Auto-detects user-mode and system-mode installs. Removes whichever (or both)
+// it finds. Does NOT delete ~/.captain-memo (your data) by default — pass
+// --purge for that.
 
 import { existsSync, unlinkSync, lstatSync, rmSync } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { spawnSync } from 'child_process';
 
-const ETC_DIR = '/etc/captain-memo';
-const SYSTEMD_DIR = '/etc/systemd/system';
 const WORKER_UNIT = 'captain-memo-worker.service';
 const EMBED_UNIT = 'captain-memo-embed.service';
+
+// User-mode locations
+const USER_SYSTEMD_DIR = join(homedir(), '.config/systemd/user');
+const USER_ETC_FILE = join(homedir(), '.config/captain-memo/worker.env');
+const USER_EMBED_DIR = join(homedir(), '.captain-memo/embed');
+
+// System-mode locations
+const SYS_SYSTEMD_DIR = '/etc/systemd/system';
+const SYS_ETC_DIR = '/etc/captain-memo';
+const SYS_EMBED_DIR = '/opt/captain-memo-embed';
 
 function header(s: string): void { console.log(`\n\x1b[1;36m${s}\x1b[0m\n${'─'.repeat(s.length)}`); }
 function ok(s: string): void   { console.log(`  \x1b[32m✓\x1b[0m ${s}`); }
 function info(s: string): void { console.log(`  ${s}`); }
 function warn(s: string): void { console.log(`  \x1b[33m!\x1b[0m ${s}`); }
-
-function ensureSudo(): void {
-  if (process.getuid && process.getuid() === 0) return;
-  console.log();
-  warn('Re-running with sudo (needed to stop systemd units and remove /etc/captain-memo)...');
-  const r = spawnSync('sudo', ['-E', process.execPath, ...process.argv.slice(1)], { stdio: 'inherit' });
-  process.exit(r.status ?? 1);
-}
 
 function realHome(): string {
   const u = process.env.SUDO_USER ?? process.env.USER ?? '';
@@ -34,71 +34,94 @@ function realHome(): string {
   return (r.stdout.split(':')[5] ?? homedir()).trim();
 }
 
-export async function uninstallCommand(args: string[]): Promise<number> {
-  const purge = args.includes('--purge');
-  if (args.includes('--help') || args.includes('-h')) {
-    console.log(`Usage: captain-memo uninstall [--purge]
+function detectInstalls(): { user: boolean; system: boolean } {
+  return {
+    user: existsSync(join(USER_SYSTEMD_DIR, WORKER_UNIT)) ||
+          existsSync(join(USER_SYSTEMD_DIR, EMBED_UNIT)) ||
+          existsSync(USER_EMBED_DIR),
+    system: existsSync(join(SYS_SYSTEMD_DIR, WORKER_UNIT)) ||
+            existsSync(join(SYS_SYSTEMD_DIR, EMBED_UNIT)) ||
+            existsSync(SYS_EMBED_DIR),
+  };
+}
 
-Stops and removes:
-  - captain-memo-worker.service (systemd)
-  - captain-memo-embed.service  (systemd) + /opt/captain-memo-embed
-  - /etc/captain-memo/
-  - ~/.claude/plugins/captain-memo symlink
-  - captain-memo-embed system user
-
-Without --purge: leaves ~/.captain-memo/ (your indexed data) intact.
-With    --purge: also deletes ~/.captain-memo/ entirely.`);
-    return 0;
+function removeUserMode(): void {
+  header('Removing user-mode install');
+  for (const u of [WORKER_UNIT, EMBED_UNIT]) {
+    spawnSync('systemctl', ['--user', 'stop', u], { stdio: 'ignore' });
+    spawnSync('systemctl', ['--user', 'disable', u], { stdio: 'ignore' });
+    const path = join(USER_SYSTEMD_DIR, u);
+    if (existsSync(path)) { unlinkSync(path); ok(`removed ${path}`); }
   }
+  spawnSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' });
+  if (existsSync(USER_ETC_FILE)) { unlinkSync(USER_ETC_FILE); ok(`removed ${USER_ETC_FILE}`); }
+  if (existsSync(USER_EMBED_DIR)) { rmSync(USER_EMBED_DIR, { recursive: true, force: true }); ok(`removed ${USER_EMBED_DIR}`); }
+}
 
-  ensureSudo();
-
-  // 1. worker service
-  header('Stopping worker service');
-  spawnSync('systemctl', ['stop', WORKER_UNIT], { stdio: 'inherit' });
-  spawnSync('systemctl', ['disable', WORKER_UNIT], { stdio: 'inherit' });
-  const wUnit = join(SYSTEMD_DIR, WORKER_UNIT);
-  if (existsSync(wUnit)) { unlinkSync(wUnit); ok(`removed ${wUnit}`); }
-
-  // 2. embedder service via the install script's --uninstall path
-  header('Removing embedder sidecar');
-  const repoRoot = process.cwd().replace(/\/scripts$/, '');
-  const embedScript = join(repoRoot, 'scripts/install-embedder.sh');
-  if (existsSync(embedScript)) {
-    spawnSync('bash', [embedScript, '--uninstall'], { stdio: 'inherit' });
-  } else {
-    spawnSync('systemctl', ['stop', EMBED_UNIT], { stdio: 'inherit' });
-    spawnSync('systemctl', ['disable', EMBED_UNIT], { stdio: 'inherit' });
-    const eUnit = join(SYSTEMD_DIR, EMBED_UNIT);
-    if (existsSync(eUnit)) { unlinkSync(eUnit); ok(`removed ${eUnit}`); }
-    if (existsSync('/opt/captain-memo-embed')) {
-      rmSync('/opt/captain-memo-embed', { recursive: true, force: true });
-      ok('removed /opt/captain-memo-embed');
-    }
-    spawnSync('userdel', ['captain-memo-embed'], { stdio: 'ignore' });
+function removeSystemMode(): void {
+  if (process.getuid && process.getuid() !== 0) {
+    warn('System-mode install detected but not running as root.');
+    info('Re-running with sudo to remove it...');
+    const r = spawnSync('sudo', ['-E', process.execPath, ...process.argv.slice(1), '--system-only'], { stdio: 'inherit' });
+    if (r.status !== 0) warn('system-mode removal aborted');
+    return;
   }
-  spawnSync('systemctl', ['daemon-reload'], { stdio: 'inherit' });
-
-  // 3. /etc/captain-memo
-  header('Removing config');
-  if (existsSync(ETC_DIR)) {
-    rmSync(ETC_DIR, { recursive: true, force: true });
-    ok(`removed ${ETC_DIR}`);
+  header('Removing system-mode install');
+  for (const u of [WORKER_UNIT, EMBED_UNIT]) {
+    spawnSync('systemctl', ['stop', u], { stdio: 'ignore' });
+    spawnSync('systemctl', ['disable', u], { stdio: 'ignore' });
+    const path = join(SYS_SYSTEMD_DIR, u);
+    if (existsSync(path)) { unlinkSync(path); ok(`removed ${path}`); }
   }
+  spawnSync('systemctl', ['daemon-reload'], { stdio: 'ignore' });
+  if (existsSync(SYS_ETC_DIR)) { rmSync(SYS_ETC_DIR, { recursive: true, force: true }); ok(`removed ${SYS_ETC_DIR}`); }
+  if (existsSync(SYS_EMBED_DIR)) { rmSync(SYS_EMBED_DIR, { recursive: true, force: true }); ok(`removed ${SYS_EMBED_DIR}`); }
+  spawnSync('userdel', ['captain-memo-embed'], { stdio: 'ignore' });
+}
 
-  // 4. plugin symlink
+function removePlugin(): void {
   header('Unregistering Claude Code plugin');
   const link = join(realHome(), '.claude', 'plugins', 'captain-memo');
-  if (existsSync(link) || (() => { try { lstatSync(link); return true; } catch { return false; } })()) {
+  let exists = false;
+  try { lstatSync(link); exists = true; } catch { /* not present */ }
+  if (exists) {
     try {
       unlinkSync(link);
       ok(`removed ${link}`);
     } catch (e) {
       warn(`could not remove ${link}: ${(e as Error).message}`);
     }
+  } else {
+    info(`(no plugin symlink found at ${link})`);
+  }
+}
+
+export async function uninstallCommand(args: string[]): Promise<number> {
+  const purge = args.includes('--purge');
+  const userOnly = args.includes('--user');
+  const systemOnly = args.includes('--system') || args.includes('--system-only');
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`Usage: captain-memo uninstall [--user|--system] [--purge]
+
+Auto-detects user-mode and/or system-mode installs and removes whatever it
+finds. Restrict to one with --user or --system.
+
+Without --purge: ~/.captain-memo/ (your indexed data) is preserved.
+With    --purge: also deletes ~/.captain-memo/ entirely.`);
+    return 0;
   }
 
-  // 5. data dir (only with --purge)
+  const found = detectInstalls();
+  if (!found.user && !found.system) {
+    info('No Captain Memo install detected. Nothing to do.');
+    return 0;
+  }
+
+  if (found.user && !systemOnly) removeUserMode();
+  if (found.system && !userOnly) removeSystemMode();
+
+  removePlugin();
+
   if (purge) {
     header('Purging data');
     const dataDir = join(realHome(), '.captain-memo');

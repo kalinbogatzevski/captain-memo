@@ -22,13 +22,26 @@ const checks: Check[] = [];
 function record(c: Check): void { checks.push(c); }
 
 function svcActive(name: string): boolean {
-  const r = spawnSync('systemctl', ['is-active', name], { encoding: 'utf-8' });
-  return r.stdout.trim() === 'active';
+  // Try user-level first, then system. Either being active means we're up.
+  const userR = spawnSync('systemctl', ['--user', 'is-active', name], { encoding: 'utf-8' });
+  if (userR.stdout.trim() === 'active') return true;
+  const sysR = spawnSync('systemctl', ['is-active', name], { encoding: 'utf-8' });
+  return sysR.stdout.trim() === 'active';
 }
 
 function svcExists(name: string): boolean {
-  const r = spawnSync('systemctl', ['list-unit-files', name], { encoding: 'utf-8' });
-  return r.stdout.includes(name);
+  const userR = spawnSync('systemctl', ['--user', 'list-unit-files', name], { encoding: 'utf-8' });
+  if (userR.stdout.includes(name)) return true;
+  const sysR = spawnSync('systemctl', ['list-unit-files', name], { encoding: 'utf-8' });
+  return sysR.stdout.includes(name);
+}
+
+function svcMode(name: string): 'user' | 'system' | null {
+  const userR = spawnSync('systemctl', ['--user', 'list-unit-files', name], { encoding: 'utf-8' });
+  if (userR.stdout.includes(name)) return 'user';
+  const sysR = spawnSync('systemctl', ['list-unit-files', name], { encoding: 'utf-8' });
+  if (sysR.stdout.includes(name)) return 'system';
+  return null;
 }
 
 function curlJson(url: string, timeoutMs = 3000): { ok: boolean; body: unknown } {
@@ -101,9 +114,12 @@ function checkWorker(): void {
 }
 
 function checkConfig(): void {
-  const path = '/etc/captain-memo/worker.env';
-  if (!existsSync(path)) {
-    record({ name: 'worker config', status: 'FAIL', detail: `${path} missing`,
+  // Look for worker.env in both user-mode and system-mode locations.
+  const userPath = join(homedir(), '.config/captain-memo/worker.env');
+  const sysPath = '/etc/captain-memo/worker.env';
+  const path = existsSync(userPath) ? userPath : existsSync(sysPath) ? sysPath : null;
+  if (!path) {
+    record({ name: 'worker config', status: 'FAIL', detail: `not found at ${userPath} or ${sysPath}`,
              remedy: 'captain-memo install' });
     return;
   }

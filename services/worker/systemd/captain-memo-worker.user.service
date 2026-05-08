@@ -1,0 +1,16 @@
+[Unit]
+Description=Captain Memo worker (user-level, HTTP search + observation pipeline)
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=__INSTALL_DIR__
+EnvironmentFile=-__ENV_FILE__
+ExecStart=__BUN__ src/worker/index.ts
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
