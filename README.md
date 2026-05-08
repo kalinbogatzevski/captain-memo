@@ -35,6 +35,21 @@ So I sat down to build that "something different" for myself, and ended up with 
 
 ---
 
+## Requirements
+
+| Component | Minimum | Recommended | Notes |
+|---|---|---|---|
+| OS | Linux (systemd) | Debian 13 / Ubuntu 24.04 | macOS / Windows port not yet implemented |
+| CPU | x86_64, SSE4.2 | x86_64 with **AVX2** | The local embedder is ~10× faster on AVX2 hardware (most CPUs since ~2014). Pre-AVX2 still works via `numpy<2`. |
+| RAM | 2 GB | 4 GB+ | Embedder + worker peak ~3 GB during indexing. |
+| Disk | 5 GB free in `/opt` | 10 GB | Python venv ~3 GB + voyage-4-nano model ~250 MB + your vector DB. |
+| Python | 3.11+ | 3.11–3.13 | Only required if installing the local embedder. |
+| Bun | ≥ 1.1.14 | latest | https://bun.com |
+| Sudo | required | — | For `/opt/captain-memo-embed`, systemd units, `/etc/captain-memo`. |
+| Network | outbound HTTPS | — | First-time install pulls ~3.3 GB from PyPI + HuggingFace. |
+
+The wizard runs **pre-flight checks** before touching anything — it tells you exactly which requirement is unmet and how to fix it. If your hardware can't run the local embedder (e.g. low RAM / no disk), the wizard offers to use a remote `/v1/embeddings` endpoint instead, so Captain Memo still works.
+
 ## Install (one command)
 
 ```bash
@@ -115,6 +130,8 @@ The metaphor extends throughout the codebase: memory files = logbook entries, ob
 The people most likely to benefit are people working the way I work — alone or in small teams, on real systems, in languages other than English, with budgets that don't include a per-call billing line. The same shape of problem keeps showing up: *my AI forgets between sessions and I'm tired of re-saying the same things*. If you've felt that, this is the tool I wish I'd had a year earlier.
 
 MIT-licensed. Run it locally, point it at any LLM you have, and tell it nothing it doesn't need to know. Captain Memo logs the voyage; you stay the captain.
+
+> By day I work on the commercial side — [**ISPCQ**](https://ispcq.com), the multi-tenant ERP platform Captain Memo's engineering DNA came from. Different product, same approach to careful, locally-sovereign software. If you run an ISP and want a turnkey ERP with the same care put into it, that's where to look.
 
 ## Contributing
 

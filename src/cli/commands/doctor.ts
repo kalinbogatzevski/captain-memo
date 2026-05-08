@@ -74,15 +74,29 @@ function checkWorker(): void {
   if (h.ok && (h.body as { healthy?: boolean }).healthy) {
     const s = curlJson('http://127.0.0.1:39888/stats');
     if (s.ok) {
-      const b = s.body as { total_chunks?: number; by_channel?: Record<string, number>; project_id?: string };
-      record({ name: 'worker service', status: 'PASS',
-               detail: `:39888 healthy · ${b.total_chunks} chunks · project=${b.project_id}` });
+      const b = s.body as {
+        total_chunks?: number; project_id?: string;
+        indexing?: { status?: string; done?: number; total?: number; percent?: number; errors?: number };
+        observations?: { total?: number };
+      };
+      const idx = b.indexing;
+      if (idx?.status === 'indexing') {
+        record({ name: 'worker service', status: 'PASS',
+                 detail: `:39888 ready · indexing ${idx.done}/${idx.total} (${idx.percent}%) · ${b.total_chunks} chunks so far` });
+      } else if (idx?.status === 'error') {
+        record({ name: 'worker service', status: 'WARN',
+                 detail: `:39888 reachable but indexing reported error (chunks=${b.total_chunks})`,
+                 remedy: 'journalctl -u captain-memo-worker -n 30 --no-pager' });
+      } else {
+        record({ name: 'worker service', status: 'PASS',
+                 detail: `:39888 healthy · ${b.total_chunks} chunks · ${b.observations?.total ?? 0} observations · project=${b.project_id}` });
+      }
     } else {
       record({ name: 'worker service', status: 'WARN', detail: ':39888 healthy but /stats failed' });
     }
   } else {
     record({ name: 'worker service', status: 'FAIL', detail: 'systemd active but /health not responding',
-             remedy: 'journalctl -u captain-memo-worker -n 30 --no-pager   (initial indexing on a large corpus can take minutes)' });
+             remedy: 'journalctl -u captain-memo-worker -n 30 --no-pager' });
   }
 }
 

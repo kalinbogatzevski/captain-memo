@@ -195,34 +195,73 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     return out;
   };
 
+  // Indexing status — exposed via /stats so users (and `captain-memo doctor`)
+  // can see initial-pass progress instead of "worker not responding".
+  type IndexingStatus = 'idle' | 'indexing' | 'ready' | 'error';
+  const indexingState: {
+    status: IndexingStatus;
+    total: number;
+    done: number;
+    errors: number;
+    started_at_epoch: number;
+    finished_at_epoch: number;
+    last_error: string | null;
+  } = {
+    status: 'idle', total: 0, done: 0, errors: 0,
+    started_at_epoch: 0, finished_at_epoch: 0, last_error: null,
+  };
+
   let watcher: FileWatcher | null = null;
   if (opts.watchPaths && opts.watchPaths.length > 0 && opts.watchChannel) {
     const channel = opts.watchChannel;
+    const watchPaths = opts.watchPaths;
 
-    // Initial indexing pass
-    const files = await expandWatchPaths(opts.watchPaths);
-    for (const file of files) {
+    // Run the initial indexing pass in the background — the HTTP server
+    // starts immediately and reports progress via /stats. Watcher attaches
+    // after the initial pass so we don't double-index files we just hit.
+    indexingState.status = 'indexing';
+    indexingState.started_at_epoch = Math.floor(Date.now() / 1000);
+    void (async () => {
       try {
-        await ingest.indexFile(file, channel);
-      } catch (err) {
-        console.error(`[ingest] ${file}: ${(err as Error).message}`);
-      }
-    }
-
-    // Live watcher
-    watcher = new FileWatcher({
-      paths: opts.watchPaths,
-      debounceMs: 500,
-      onEvent: async (type, path) => {
-        try {
-          if (type === 'unlink') await ingest.deleteFile(path);
-          else await ingest.indexFile(path, channel);
-        } catch (err) {
-          console.error(`[watcher] ${type} ${path}: ${(err as Error).message}`);
+        const files = await expandWatchPaths(watchPaths);
+        indexingState.total = files.length;
+        for (const file of files) {
+          try {
+            await ingest.indexFile(file, channel);
+            indexingState.done++;
+          } catch (err) {
+            indexingState.errors++;
+            indexingState.last_error = (err as Error).message;
+            console.error(`[ingest] ${file}: ${(err as Error).message}`);
+          }
         }
-      },
-    });
-    await watcher.start();
+        // Live watcher attaches AFTER initial indexing finishes (so chokidar's
+        // own add events don't re-fire indexFile on every file we just wrote).
+        watcher = new FileWatcher({
+          paths: watchPaths,
+          debounceMs: 500,
+          onEvent: async (type, path) => {
+            try {
+              if (type === 'unlink') await ingest.deleteFile(path);
+              else await ingest.indexFile(path, channel);
+            } catch (err) {
+              console.error(`[watcher] ${type} ${path}: ${(err as Error).message}`);
+            }
+          },
+        });
+        await watcher.start();
+        indexingState.status = 'ready';
+        indexingState.finished_at_epoch = Math.floor(Date.now() / 1000);
+        const elapsed = indexingState.finished_at_epoch - indexingState.started_at_epoch;
+        console.error(`[worker] initial indexing complete: ${indexingState.done} files (${indexingState.errors} errors) in ${elapsed}s`);
+      } catch (err) {
+        indexingState.status = 'error';
+        indexingState.last_error = (err as Error).message;
+        console.error(`[worker] initial indexing failed: ${(err as Error).message}`);
+      }
+    })();
+  } else {
+    indexingState.status = 'ready'; // no watch paths configured
   }
 
   // ─────────────────────────────────────────────────────────────────────
@@ -470,9 +509,25 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       }
       if (req.method === 'GET' && url.pathname === '/stats') {
         const { total_chunks, by_channel } = meta.stats();
+        const obsTotal = obsStore ? obsStore.countAll() : 0;
+        const queuePending = obsQueue ? obsQueue.pendingCount() : 0;
+        const queueProcessing = obsQueue ? obsQueue.processingCount() : 0;
         return Response.json({
           total_chunks,
           by_channel,
+          observations: {
+            total: obsTotal,
+            queue_pending: queuePending,
+            queue_processing: queueProcessing,
+          },
+          indexing: {
+            ...indexingState,
+            // Convenience computed fields
+            elapsed_s: indexingState.started_at_epoch > 0
+              ? (indexingState.finished_at_epoch || Math.floor(Date.now() / 1000)) - indexingState.started_at_epoch
+              : 0,
+            percent: indexingState.total > 0 ? Math.round((indexingState.done / indexingState.total) * 100) : 100,
+          },
           project_id: opts.projectId,
           embedder: { model: opts.embedderModel, endpoint: opts.embedderEndpoint },
         });

@@ -87,10 +87,137 @@ function askYesNo(question: string, defaultYes = true): boolean {
   return trimmed === 'y' || trimmed === 'yes';
 }
 
+interface PreflightResult {
+  name: string;
+  status: 'OK' | 'WARN' | 'FAIL';
+  detail: string;
+  remedy?: string;
+}
+
+function preflight(opts: { wantLocalEmbedder: boolean }): PreflightResult[] {
+  const out: PreflightResult[] = [];
+
+  // OS
+  const osRes = spawnSync('uname', ['-s'], { encoding: 'utf-8' });
+  const os = osRes.stdout.trim();
+  if (os === 'Linux') out.push({ name: 'OS', status: 'OK', detail: 'Linux' });
+  else out.push({ name: 'OS', status: 'FAIL', detail: `${os} (Linux required for systemd-based install)`,
+                  remedy: 'macOS / Windows support not yet implemented' });
+
+  // systemd
+  const systemctl = spawnSync('which', ['systemctl'], { encoding: 'utf-8' });
+  if (systemctl.status === 0) out.push({ name: 'systemd', status: 'OK', detail: 'systemctl on PATH' });
+  else out.push({ name: 'systemd', status: 'FAIL', detail: 'systemctl not found',
+                  remedy: 'install on a systemd-based distro (Debian/Ubuntu/Fedora/Arch/etc.)' });
+
+  // Python (only relevant if installing local embedder)
+  if (opts.wantLocalEmbedder) {
+    const pyRes = spawnSync('python3', ['--version'], { encoding: 'utf-8' });
+    const pyOut = (pyRes.stdout || pyRes.stderr).trim();
+    const m = pyOut.match(/Python (\d+)\.(\d+)/);
+    if (m) {
+      const major = Number(m[1]);
+      const minor = Number(m[2]);
+      if (major >= 3 && minor >= 11) {
+        out.push({ name: 'Python', status: 'OK', detail: pyOut });
+      } else {
+        out.push({ name: 'Python', status: 'FAIL', detail: `${pyOut} (3.11+ required for local embedder)`,
+                   remedy: 'apt install python3.11-venv python3.11   (or pick a non-local embedder)' });
+      }
+    } else {
+      out.push({ name: 'Python', status: 'FAIL', detail: 'python3 not found',
+                 remedy: 'apt install python3 python3-venv python3-pip   (needed only for local embedder)' });
+    }
+  }
+
+  // CPU instruction set (informational; numpy<2 path works without AVX2)
+  const cpu = readFileSync('/proc/cpuinfo', 'utf-8');
+  const flags = (cpu.match(/^flags\s*:\s*(.+)/m) ?? [])[1] ?? '';
+  const hasAVX2 = /\bavx2\b/.test(flags);
+  const hasSSE4 = /\bsse4_2\b/.test(flags);
+  if (hasAVX2) {
+    out.push({ name: 'CPU', status: 'OK', detail: 'x86_64 with AVX2 (fast path)' });
+  } else if (hasSSE4) {
+    out.push({ name: 'CPU', status: 'WARN', detail: 'x86_64 with SSE4.2 but no AVX2 (slower embedder, ~10x)',
+               remedy: 'embedder still works (uses numpy<2). For best speed run on AVX2-capable hardware (most CPUs since ~2014).' });
+  } else {
+    out.push({ name: 'CPU', status: 'WARN', detail: 'old x86_64 (no AVX2/SSE4) — embedder will be very slow' });
+  }
+
+  // RAM
+  const meminfo = readFileSync('/proc/meminfo', 'utf-8');
+  const memTotalKb = Number((meminfo.match(/^MemTotal:\s+(\d+)\s+kB/m) ?? [])[1] ?? '0');
+  const memTotalGb = memTotalKb / 1024 / 1024;
+  if (memTotalGb >= 4) {
+    out.push({ name: 'RAM', status: 'OK', detail: `${memTotalGb.toFixed(1)} GB` });
+  } else if (memTotalGb >= 2) {
+    out.push({ name: 'RAM', status: 'WARN', detail: `${memTotalGb.toFixed(1)} GB (4 GB+ recommended; embedder + worker peak ~3 GB)` });
+  } else {
+    out.push({ name: 'RAM', status: 'FAIL', detail: `${memTotalGb.toFixed(1)} GB (insufficient for local embedder)`,
+               remedy: 'use a remote embedder (provider=openai-compatible) or upgrade RAM' });
+  }
+
+  // Disk in /opt (target dir for embedder venv + model)
+  if (opts.wantLocalEmbedder) {
+    const dfRes = spawnSync('df', ['-BM', '/opt'], { encoding: 'utf-8' });
+    const dfMatch = dfRes.stdout.match(/(\d+)M\s+(\d+)M\s+(\d+)M/);
+    const availMb = Number(dfMatch?.[3] ?? 0);
+    const availGb = availMb / 1024;
+    if (availGb >= 5) out.push({ name: 'Disk (/opt)', status: 'OK', detail: `${availGb.toFixed(1)} GB free` });
+    else if (availGb >= 3) out.push({ name: 'Disk (/opt)', status: 'WARN', detail: `${availGb.toFixed(1)} GB free (5 GB+ recommended; embedder venv + model = ~3.3 GB)` });
+    else out.push({ name: 'Disk (/opt)', status: 'FAIL', detail: `${availGb.toFixed(1)} GB free (need ≥3 GB for local embedder)`,
+                    remedy: 'free up disk in /opt or pick a remote embedder' });
+  }
+
+  // Bun (already checked in whichBun, but report it cleanly)
+  try {
+    const bun = whichBun();
+    out.push({ name: 'bun', status: 'OK', detail: bun });
+  } catch { /* whichBun fails inside its own path; we'll catch this in the main flow */ }
+
+  // Network (if local embedder, we'll need PyPI + HuggingFace)
+  if (opts.wantLocalEmbedder) {
+    const net = spawnSync('curl', ['-s', '-m', '3', '-o', '/dev/null', '-w', '%{http_code}', 'https://pypi.org/'], { encoding: 'utf-8' });
+    const code = Number(net.stdout || '0');
+    if (code >= 200 && code < 400) out.push({ name: 'Network', status: 'OK', detail: 'pypi.org reachable' });
+    else out.push({ name: 'Network', status: 'WARN', detail: `pypi.org returned HTTP ${code} (will retry during pip install)` });
+  }
+
+  return out;
+}
+
+function printPreflight(results: PreflightResult[]): boolean {
+  console.log();
+  console.log('\x1b[1mPre-flight checks\x1b[0m');
+  for (const r of results) {
+    const icon = r.status === 'OK' ? '\x1b[32m✓\x1b[0m'
+               : r.status === 'WARN' ? '\x1b[33m!\x1b[0m'
+               : '\x1b[31m✗\x1b[0m';
+    console.log(`  ${icon} ${r.name.padEnd(13)} ${r.detail}`);
+    if (r.remedy && r.status !== 'OK') console.log(`      \x1b[2m→ ${r.remedy}\x1b[0m`);
+  }
+  const fails = results.filter(r => r.status === 'FAIL').length;
+  return fails === 0;
+}
+
 function whichBun(): string {
+  // Prefer PATH; sudo often strips it, so also probe SUDO_USER's local install.
   const r = spawnSync('which', ['bun'], { encoding: 'utf-8' });
-  if (r.status !== 0) fail('`bun` not found on PATH. Install bun (https://bun.com) first.');
-  return r.stdout.trim();
+  if (r.status === 0 && r.stdout.trim()) return r.stdout.trim();
+
+  const candidates: string[] = [];
+  const sudoUser = process.env.SUDO_USER;
+  if (sudoUser) {
+    const userHome = (spawnSync('getent', ['passwd', sudoUser], { encoding: 'utf-8' })
+      .stdout.split(':')[5] ?? '').trim();
+    if (userHome) candidates.push(`${userHome}/.bun/bin/bun`);
+  }
+  candidates.push('/usr/local/bin/bun', '/usr/bin/bun', '/opt/bun/bin/bun');
+
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
+  }
+  fail(`\`bun\` not found. Tried: PATH, ${candidates.join(', ')}.\n  Install bun (https://bun.com) first, then re-run.`);
 }
 
 function ensureSudo(): void {
@@ -304,6 +431,17 @@ Re-running reconfigures. To remove everything: captain-memo uninstall`);
   info(`summarizer:  ${cfg.summarizer} (model=${cfg.summarizerModel})`);
   info(`embedder:    ${cfg.embedder} ${cfg.embedder === 'local-sidecar' ? '' : `(${cfg.embedderEndpoint})`}`);
   info(`watch:       ${cfg.watchMemory || '(none)'}`);
+  // Pre-flight checks based on choices the user just made.
+  const pf = preflight({ wantLocalEmbedder: cfg.embedder === 'local-sidecar' });
+  const pfOk = printPreflight(pf);
+  if (!pfOk) {
+    console.log();
+    if (!askYesNo('Some checks failed. Continue anyway?', false)) {
+      info('aborted.');
+      return 1;
+    }
+  }
+
   console.log();
   if (!askYesNo('Proceed with install?', true)) {
     info('aborted; nothing changed.');
