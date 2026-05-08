@@ -53,8 +53,12 @@ export interface MigrationResult {
 
 const DEFAULT_BATCH = 64;
 
-async function commitDocument(
+// Persist a doc's meta + chunks + vectors. Pure local I/O — does NOT call
+// the embedder. The caller supplies the embeddings (typically obtained from
+// a single batched call across multiple docs to amortize HTTP overhead).
+async function writeDocWithEmbeddings(
   doc: MigrationDocument,
+  embeddings: number[][],
   deps: MigrationDeps,
 ): Promise<void> {
   if (doc.chunks.length === 0) return;
@@ -76,7 +80,6 @@ async function commitDocument(
     metadata: c.metadata,
   }));
 
-  const embeddings = await deps.embedder.embed(chunksWithIds.map(c => c.text));
   const documentId = deps.meta.upsertDocument({
     source_path: doc.source_path,
     channel: doc.channel,
@@ -90,6 +93,17 @@ async function commitDocument(
     deps.collectionName,
     chunksWithIds.map((c, i) => ({ id: c.chunk_id, embedding: embeddings[i]! })),
   );
+}
+
+// Per-doc fallback: embed this doc's chunks alone, then write. Used when
+// a batched embed call fails — isolates which doc is the problem.
+async function commitDocument(
+  doc: MigrationDocument,
+  deps: MigrationDeps,
+): Promise<void> {
+  if (doc.chunks.length === 0) return;
+  const embeddings = await deps.embedder.embed(doc.chunks.map(c => c.text));
+  return writeDocWithEmbeddings(doc, embeddings, deps);
 }
 
 export async function runMigration(
@@ -160,32 +174,68 @@ export async function runMigration(
     let batch: Array<{ doc: MigrationDocument; kind: 'observation' | 'summary' }> = [];
     const flush = async (): Promise<void> => {
       if (batch.length === 0) return;
-      // Per-item try/catch so one slow / failing document doesn't abort the
-      // whole migration. The failed row is left out of migration_progress, so
-      // a re-run will reattempt it. errors counter accumulates so partial
-      // success is visible in the final summary.
-      for (const item of batch) {
-        if (!dry) {
-          try {
-            await commitDocument(item.doc, deps);
-            const sourceId = (item.kind === 'observation'
-              ? item.doc.metadata.observation_id
-              : item.doc.metadata.summary_id) as number;
-            deps.meta.markMigrationDone(
-              item.kind,
-              sourceId,
-              migrationDocumentSha(item.doc),
-            );
-          } catch (err) {
-            result.errors++;
-            opts.onProgress?.(
-              `${boldRed('skip')} ${item.kind} ${(item.doc.metadata.source_id ?? '?')}: ${(err as Error).message}`,
-            );
-            continue;
-          }
+
+      // Dry-run: count without writing or embedding.
+      if (dry) {
+        for (const item of batch) {
+          if (item.kind === 'observation') result.observations_migrated++;
+          else result.summaries_migrated++;
         }
-        if (item.kind === 'observation') result.observations_migrated++;
-        else result.summaries_migrated++;
+        batch = [];
+        return;
+      }
+
+      // Fast path: batch-embed every chunk across every doc in one HTTP call.
+      // ~10-30x throughput vs per-doc embedding because we amortize the
+      // round-trip across the whole batch. The Embedder client auto-splits
+      // into 128-text sub-batches for the API limit.
+      const allTexts: string[] = [];
+      const docOffsets: number[] = [];
+      for (const item of batch) {
+        docOffsets.push(allTexts.length);
+        for (const c of item.doc.chunks) allTexts.push(c.text);
+      }
+
+      let batchedEmbeddings: number[][] | null = null;
+      if (allTexts.length > 0) {
+        try {
+          batchedEmbeddings = await deps.embedder.embed(allTexts);
+        } catch (err) {
+          // Fall back to per-doc embed so one bad doc doesn't kill 64 good ones.
+          opts.onProgress?.(
+            `batch embed failed (${(err as Error).message}); falling back per-doc`,
+          );
+        }
+      }
+
+      for (let i = 0; i < batch.length; i++) {
+        const item = batch[i]!;
+        try {
+          if (batchedEmbeddings) {
+            const start = docOffsets[i]!;
+            const docEmbeddings = batchedEmbeddings.slice(start, start + item.doc.chunks.length);
+            await writeDocWithEmbeddings(item.doc, docEmbeddings, deps);
+          } else {
+            // Per-doc fallback: isolates the problem doc's failure.
+            await commitDocument(item.doc, deps);
+          }
+          const sourceId = (item.kind === 'observation'
+            ? item.doc.metadata.observation_id
+            : item.doc.metadata.summary_id) as number;
+          deps.meta.markMigrationDone(
+            item.kind,
+            sourceId,
+            migrationDocumentSha(item.doc),
+          );
+          if (item.kind === 'observation') result.observations_migrated++;
+          else result.summaries_migrated++;
+        } catch (err) {
+          result.errors++;
+          opts.onProgress?.(
+            `${boldRed('skip')} ${item.kind} ${(item.doc.metadata.source_id ?? '?')}: ${(err as Error).message}`,
+          );
+          continue;
+        }
       }
       batch = [];
     };
