@@ -969,6 +969,7 @@ export async function runWorkerCli(): Promise<void> {
   //     counts against Max session quota.
   const providerRaw = (process.env[ENV_SUMMARIZER_PROVIDER] ?? DEFAULT_SUMMARIZER_PROVIDER).toLowerCase();
   const provider: SummarizerProvider =
+    providerRaw === 'claude-oauth'                               ? 'claude-oauth' :
     providerRaw === 'claude-code'                                ? 'claude-code' :
     providerRaw === 'openai-compatible' || providerRaw === 'openai' ? 'openai-compatible' :
     providerRaw === 'anthropic'                                  ? 'anthropic' :
@@ -978,7 +979,30 @@ export async function runWorkerCli(): Promise<void> {
     })();
 
   let summarize: ((events: import('../shared/types.ts').RawObservationEvent[]) => Promise<import('./index.ts').SummarizerResult>) | undefined;
-  if (provider === 'claude-code') {
+  if (provider === 'claude-oauth') {
+    const { createClaudeOauthTransport, readClaudeOauthToken } = await import('./summarizer-claude-oauth.ts');
+    const probe = readClaudeOauthToken();
+    if (!probe) {
+      console.error(
+        `[worker] summarizer provider = claude-oauth, but no OAuth token found ` +
+        `at ~/.claude/.credentials.json. Run \`claude login\` to authenticate, ` +
+        `or pick a different ${ENV_SUMMARIZER_PROVIDER}.`,
+      );
+    } else {
+      const summarizer = new Summarizer({
+        apiKey: '', // unused — OAuth transport carries the bearer token
+        model: summarizerModel,
+        fallbackModels: summarizerFallbacks,
+        transport: createClaudeOauthTransport(),
+      });
+      summarize = (events) => summarizer.summarize(events);
+      const expiresIn = Math.floor((probe.expiresAt - Date.now()) / 60_000);
+      console.error(
+        `[worker] summarizer provider = claude-oauth ` +
+        `(direct api.anthropic.com, no API key, no subprocess; token expires in ~${expiresIn} min)`,
+      );
+    }
+  } else if (provider === 'claude-code') {
     const { createClaudeCodeTransport } = await import('./summarizer-claude-code.ts');
     const summarizer = new Summarizer({
       apiKey: '', // unused under claude-code transport (auth via the CLI)

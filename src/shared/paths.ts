@@ -44,13 +44,19 @@ export const ENV_OBSERVATION_BATCH_SIZE = 'CAPTAIN_MEMO_OBSERVATION_BATCH_SIZE';
 export const ENV_OBSERVATION_TICK_MS = 'CAPTAIN_MEMO_OBSERVATION_TICK_MS';
 
 /** Summarizer transport providers.
- *  - 'anthropic'         (default) — Anthropic SDK + ANTHROPIC_API_KEY
- *  - 'claude-code'       — `claude -p` subprocess; uses your Claude Code Max/Pro plan, no API key
+ *  - 'claude-oauth'      — Direct HTTPS to api.anthropic.com using the OAuth
+ *                          access token Claude Code stored in ~/.claude/.credentials.json
+ *                          (or the OS keychain on macOS/Windows). No API key, no
+ *                          subprocess, no startup overhead. Requires `claude login`.
+ *  - 'anthropic'         — Anthropic SDK + ANTHROPIC_API_KEY (explicit billing).
+ *  - 'claude-code'       — `claude -p` subprocess; uses Max/Pro plan but pays
+ *                          per-call subprocess startup cost (5–15 s). Useful if
+ *                          OAuth token storage is unavailable.
  *  - 'openai-compatible' — POST /v1/chat/completions to CAPTAIN_MEMO_OPENAI_ENDPOINT;
  *                          works with Ollama, LM Studio, vLLM, llama.cpp, OpenAI,
  *                          OpenRouter, Together, Groq, DeepSeek, Mistral, etc. */
-export type SummarizerProvider = 'anthropic' | 'claude-code' | 'openai-compatible';
-export const DEFAULT_SUMMARIZER_PROVIDER: SummarizerProvider = 'anthropic';
+export type SummarizerProvider = 'claude-oauth' | 'anthropic' | 'claude-code' | 'openai-compatible';
+export const DEFAULT_SUMMARIZER_PROVIDER: SummarizerProvider = 'claude-oauth';
 
 /** Endpoint URL for openai-compatible provider. Required when provider=openai-compatible. */
 export const ENV_OPENAI_ENDPOINT = 'CAPTAIN_MEMO_OPENAI_ENDPOINT';
