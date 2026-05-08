@@ -11,7 +11,7 @@ const EVENTS: Record<string, string> = {
   Stop:             '../hooks/stop.ts',
 };
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const event =
     process.argv[2] ??
     process.env.CLAUDE_HOOK_EVENT_NAME ??
@@ -23,7 +23,16 @@ async function main(): Promise<void> {
 
   const target = EVENTS[event]!;
   try {
-    await import(target);
+    // Dynamic import returns the module's exported names; call its main()
+    // explicitly. The handler files no longer rely on `import.meta.main`
+    // (which is FALSE here because the dispatcher is the actual entry, not
+    // the handler) — they export `main` and we invoke it.
+    const mod = await import(target) as { main?: () => Promise<void> };
+    if (typeof mod.main === 'function') {
+      await mod.main();
+    } else {
+      logHookError(event, new Error(`hook handler ${target} has no exported main()`));
+    }
   } catch (err) {
     logHookError(event, err);
     process.exit(0);

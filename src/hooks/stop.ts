@@ -6,7 +6,7 @@ interface StopPayload {
   stop_hook_active?: boolean;
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   let payload: StopPayload = {};
   try { payload = await readStdinJson<StopPayload>(); } catch { return; }
   if (!payload.session_id) return;

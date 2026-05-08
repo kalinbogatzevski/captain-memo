@@ -1,3 +1,14 @@
 #!/usr/bin/env bun
-// bin/captain-memo-hook
-import '../src/hooks/dispatcher.ts';
+// bin/captain-memo-hook — entry point spawned by Claude Code's hook engine.
+// Always invokes the dispatcher's main() explicitly. Don't rely on
+// `import.meta.main` here: when bun runs this file as the entry, the
+// `dispatcher.ts` it imports is NOT the main module, so any guard like
+// `if (import.meta.main)` inside dispatcher would silently skip its main()
+// — which is exactly the bug we hit.
+import { main } from '../src/hooks/dispatcher.ts';
+import { logHookError } from '../src/hooks/shared.ts';
+
+main().catch((err) => {
+  logHookError(process.argv[2] ?? 'unknown', err);
+  process.exit(0);
+});

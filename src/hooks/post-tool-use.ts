@@ -30,7 +30,7 @@ function extractFiles(input: unknown, response: unknown): { read: string[]; modi
   return { read, modified };
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   let payload: PostToolUsePayload = {};
   try { payload = await readStdinJson<PostToolUsePayload>(); } catch { return; }
 

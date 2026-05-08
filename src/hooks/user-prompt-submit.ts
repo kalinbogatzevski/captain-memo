@@ -9,7 +9,7 @@ interface UserPromptSubmitPayload {
   hook_event_name?: string;
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   let payload: UserPromptSubmitPayload = {};
   try {
     payload = await readStdinJson<UserPromptSubmitPayload>();

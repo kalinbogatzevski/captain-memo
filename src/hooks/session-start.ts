@@ -7,7 +7,7 @@ interface SessionStartPayload {
   source?: 'startup' | 'resume' | 'compact' | string;
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   try { await readStdinJson<SessionStartPayload>(); } catch { /* ignore */ }
   const timeoutMs = Number(process.env[ENV_HOOK_TIMEOUT_MS] ?? DEFAULT_HOOK_TIMEOUT_MS);
 
