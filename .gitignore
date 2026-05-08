@@ -1,7 +1,8 @@
 node_modules/
 bun.lockb
 dist/
-.aelita-mcp/
+.captain-memo/
+.captain-memo.dev/
 *.tsbuildinfo
 .DS_Store
 *.log

@@ -1,0 +1,20 @@
+[Unit]
+Description=Captain Memo worker (HTTP search + observation pipeline)
+After=network-online.target captain-memo-embed.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__GROUP__
+WorkingDirectory=__INSTALL_DIR__
+EnvironmentFile=-/etc/captain-memo/worker.env
+ExecStart=__BUN__ src/worker/index.ts
+Restart=on-failure
+RestartSec=5
+# Log to stderr → systemd journal.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

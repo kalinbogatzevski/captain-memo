@@ -4,6 +4,9 @@ import { reindexCommand } from './commands/reindex.ts';
 import { observationCommand } from './commands/observation.ts';
 import { configCommand } from './commands/config.ts';
 import { installHooksCommand } from './commands/install-hooks.ts';
+import { installCommand } from './commands/install.ts';
+import { uninstallCommand } from './commands/uninstall.ts';
+import { doctorCommand } from './commands/doctor.ts';
 
 const HELP = `captain-memo — local memory layer for Claude Code
 
@@ -16,7 +19,10 @@ Commands:
   reindex      Re-embed corpus content (optionally scoped to a channel)
   observation  list|flush — manage observation queue (--limit N, --session ID)
   config       show — print effective config (env + defaults, secrets masked)
-  install-hooks Register the four Claude Code hooks (--project for project-scoped settings)
+  install      Interactive wizard — installs everything (embedder, worker, plugin)
+  uninstall    Clean removal of everything (--purge for data too)
+  doctor       Health probe across embedder / worker / plugin
+  install-hooks Register hooks manually (advanced — \`install\` does this for you)
   help         Show this message
 
 Examples:
@@ -50,6 +56,15 @@ export async function main(args: string[]): Promise<void> {
       break;
     case 'install-hooks':
       exit = await installHooksCommand(args.slice(1));
+      break;
+    case 'install':
+      exit = await installCommand(args.slice(1));
+      break;
+    case 'uninstall':
+      exit = await uninstallCommand(args.slice(1));
+      break;
+    case 'doctor':
+      exit = await doctorCommand(args.slice(1));
       break;
     case 'help':
     case '--help':
