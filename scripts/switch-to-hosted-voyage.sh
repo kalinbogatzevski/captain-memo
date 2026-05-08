@@ -90,9 +90,11 @@ if [[ -f "$WORKER_ENV" ]]; then
   ok "backed up existing worker.env"
 fi
 # Preserve unrelated keys (summarizer, watch paths, etc.); only replace embedder-related lines.
+# Source the existing worker.env (not a glob to .bak.* — bash [[ -f glob ]] does
+# NOT expand wildcards). Filter out the embedder-related lines, then append new ones.
 {
-  if [[ -f "$WORKER_ENV.bak."* ]]; then
-    grep -vE '^(CAPTAIN_MEMO_EMBEDDER_|CAPTAIN_MEMO_EMBEDDING_DIM=)' "$WORKER_ENV" 2>/dev/null || true
+  if [[ -f "$WORKER_ENV" ]]; then
+    grep -vE '^(CAPTAIN_MEMO_EMBEDDER_|CAPTAIN_MEMO_EMBEDDING_DIM=)' "$WORKER_ENV" || true
   fi
   echo "# --- Voyage hosted API (switched $(date -Iseconds)) ---"
   echo "CAPTAIN_MEMO_EMBEDDER_ENDPOINT=https://api.voyageai.com/v1/embeddings"
