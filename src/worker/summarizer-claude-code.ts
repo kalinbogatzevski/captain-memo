@@ -67,8 +67,24 @@ export function createClaudeCodeTransport(opts: ClaudeCodeTransportOptions = {})
       args.user,
     ];
     const proc = spawnFn({ cmd, stdout: 'pipe', stderr: 'pipe' });
+    // Without a timeout, a hung claude-p subprocess (rare but real — slow
+    // models, network blip, prompt edge cases) freezes the worker forever:
+    // `await proc.exited` never resolves, `processBatch` never returns,
+    // the in-flight guard stays set, the queue stops draining. Cap each
+    // call at CAPTAIN_MEMO_SUMMARIZER_TIMEOUT_MS (default 60 s) and let
+    // the surrounding catch handle it as a transient failure.
+    const timeoutMs = Number(process.env.CAPTAIN_MEMO_SUMMARIZER_TIMEOUT_MS ?? 60_000);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { proc.kill?.(); } catch { /* already exited */ }
+    }, timeoutMs);
     const stdoutText = await new Response(proc.stdout).text();
     const exitCode = await proc.exited;
+    clearTimeout(timer);
+    if (timedOut) {
+      throw new Error(`claude-code transport: timed out after ${timeoutMs}ms`);
+    }
 
     if (!stdoutText.trim()) {
       throw new Error(`claude-code transport: empty stdout (exit ${exitCode})`);
