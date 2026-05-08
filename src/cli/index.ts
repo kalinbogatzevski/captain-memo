@@ -7,6 +7,7 @@ import { installHooksCommand } from './commands/install-hooks.ts';
 import { installCommand } from './commands/install.ts';
 import { uninstallCommand } from './commands/uninstall.ts';
 import { doctorCommand } from './commands/doctor.ts';
+import { inspectClaudeMemCommand } from './commands/inspect-claude-mem.ts';
 
 const HELP = `captain-memo — local memory layer for Claude Code
 
@@ -23,6 +24,7 @@ Commands:
   uninstall    Clean removal of everything (--purge for data too)
   doctor       Health probe across embedder / worker / plugin
   install-hooks Register hooks manually (advanced — \`install\` does this for you)
+  inspect-claude-mem  Print row counts of ~/.claude-mem/claude-mem.db (read-only).
   help         Show this message
 
 Examples:
@@ -65,6 +67,9 @@ export async function main(args: string[]): Promise<void> {
       break;
     case 'doctor':
       exit = await doctorCommand(args.slice(1));
+      break;
+    case 'inspect-claude-mem':
+      exit = await inspectClaudeMemCommand(args.slice(1));
       break;
     case 'help':
     case '--help':
