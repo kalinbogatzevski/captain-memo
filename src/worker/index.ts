@@ -1,7 +1,7 @@
 import { join } from 'path';
 import { z } from 'zod';
 import { MetaStore } from './meta.ts';
-import { VoyageEmbedder } from './embedder.ts';
+import { Embedder } from './embedder.ts';
 import { VectorStore } from './vector-store.ts';
 import { HybridSearcher } from './search.ts';
 import { IngestPipeline } from './ingest.ts';
@@ -141,7 +141,7 @@ const NO_OP_TOKENS = new Set(['ok', 'continue', 'yes', 'go', 'next', 'sure']);
 
 export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   const meta = new MetaStore(opts.metaDbPath);
-  const embedder = new VoyageEmbedder({
+  const embedder = new Embedder({
     endpoint: opts.embedderEndpoint,
     model: opts.embedderModel,
     ...(opts.embedderApiKey !== undefined && { apiKey: opts.embedderApiKey }),
@@ -785,9 +785,9 @@ if (import.meta.main) {
 
   const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
   const projectId = process.env.CAPTAIN_MEMO_PROJECT_ID ?? 'default';
-  const embedderEndpoint = process.env.CAPTAIN_MEMO_VOYAGE_ENDPOINT ?? DEFAULT_VOYAGE_ENDPOINT;
-  const embedderModel = process.env.CAPTAIN_MEMO_VOYAGE_MODEL ?? 'voyage-4-nano';
-  const embedderApiKey = process.env.CAPTAIN_MEMO_VOYAGE_API_KEY;
+  const embedderEndpoint = process.env.CAPTAIN_MEMO_EMBEDDER_ENDPOINT ?? DEFAULT_VOYAGE_ENDPOINT;
+  const embedderModel = process.env.CAPTAIN_MEMO_EMBEDDER_MODEL ?? 'voyageai/voyage-4-nano';
+  const embedderApiKey = process.env.CAPTAIN_MEMO_EMBEDDER_API_KEY;
   const vectorDbPath = join(VECTOR_DB_DIR, 'embeddings.db');
 
   const watchMemory = process.env.CAPTAIN_MEMO_WATCH_MEMORY;
@@ -893,7 +893,7 @@ if (import.meta.main) {
     embedderModel,
     ...(embedderApiKey !== undefined && { embedderApiKey }),
     vectorDbPath,
-    embeddingDimension: 1024,
+    embeddingDimension: 2048,
     ...(watchPaths !== undefined && watchChannel !== undefined && { watchPaths, watchChannel }),
     observationQueueDbPath: QUEUE_DB_PATH,
     observationsDbPath: OBSERVATIONS_DB_PATH,

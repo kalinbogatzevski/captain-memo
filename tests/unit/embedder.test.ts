@@ -1,5 +1,5 @@
 import { test, expect, beforeAll, afterAll } from 'bun:test';
-import { VoyageEmbedder } from '../../src/worker/embedder.ts';
+import { Embedder } from '../../src/worker/embedder.ts';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let mockServer: ReturnType<typeof Bun.serve>;
@@ -28,8 +28,8 @@ afterAll(() => {
   mockServer.stop();
 });
 
-test('VoyageEmbedder — embeds a single text', async () => {
-  const embedder = new VoyageEmbedder({
+test('Embedder — embeds a single text', async () => {
+  const embedder = new Embedder({
     endpoint: `http://localhost:${mockPort}/v1/embeddings`,
     model: 'voyage-4-nano',
     apiKey: 'test-key',
@@ -41,8 +41,8 @@ test('VoyageEmbedder — embeds a single text', async () => {
   expect(lastRequestBody.model).toBe('voyage-4-nano');
 });
 
-test('VoyageEmbedder — embeds multiple texts', async () => {
-  const embedder = new VoyageEmbedder({
+test('Embedder — embeds multiple texts', async () => {
+  const embedder = new Embedder({
     endpoint: `http://localhost:${mockPort}/v1/embeddings`,
     model: 'voyage-4-nano',
     apiKey: 'test-key',
@@ -51,7 +51,7 @@ test('VoyageEmbedder — embeds multiple texts', async () => {
   expect(result).toHaveLength(3);
 });
 
-test('VoyageEmbedder — sends auth header when apiKey provided', async () => {
+test('Embedder — sends auth header when apiKey provided', async () => {
   let capturedAuth: string | null = null;
   const authServer = Bun.serve({
     port: 0,
@@ -60,7 +60,7 @@ test('VoyageEmbedder — sends auth header when apiKey provided', async () => {
       return new Response(JSON.stringify({ data: [{ embedding: [0], index: 0 }], model: 'x' }));
     },
   });
-  const embedder = new VoyageEmbedder({
+  const embedder = new Embedder({
     endpoint: `http://localhost:${authServer.port}/v1/embeddings`,
     model: 'voyage-4-nano',
     apiKey: 'secret-key',
@@ -70,7 +70,7 @@ test('VoyageEmbedder — sends auth header when apiKey provided', async () => {
   authServer.stop();
 });
 
-test('VoyageEmbedder — retries on 5xx with exponential backoff', async () => {
+test('Embedder — retries on 5xx with exponential backoff', async () => {
   let callCount = 0;
   const flakyServer = Bun.serve({
     port: 0,
@@ -85,7 +85,7 @@ test('VoyageEmbedder — retries on 5xx with exponential backoff', async () => {
       }));
     },
   });
-  const embedder = new VoyageEmbedder({
+  const embedder = new Embedder({
     endpoint: `http://localhost:${flakyServer.port}/v1/embeddings`,
     model: 'voyage-4-nano',
     maxRetries: 3,
@@ -96,12 +96,12 @@ test('VoyageEmbedder — retries on 5xx with exponential backoff', async () => {
   flakyServer.stop();
 });
 
-test('VoyageEmbedder — gives up after maxRetries', async () => {
+test('Embedder — gives up after maxRetries', async () => {
   const brokenServer = Bun.serve({
     port: 0,
     fetch: () => new Response('server error', { status: 503 }),
   });
-  const embedder = new VoyageEmbedder({
+  const embedder = new Embedder({
     endpoint: `http://localhost:${brokenServer.port}/v1/embeddings`,
     model: 'voyage-4-nano',
     maxRetries: 2,
@@ -110,7 +110,7 @@ test('VoyageEmbedder — gives up after maxRetries', async () => {
   brokenServer.stop();
 });
 
-test('VoyageEmbedder — does NOT retry on 4xx', async () => {
+test('Embedder — does NOT retry on 4xx', async () => {
   let callCount = 0;
   const fourFourServer = Bun.serve({
     port: 0,
@@ -119,7 +119,7 @@ test('VoyageEmbedder — does NOT retry on 4xx', async () => {
       return new Response('bad request', { status: 400 });
     },
   });
-  const embedder = new VoyageEmbedder({
+  const embedder = new Embedder({
     endpoint: `http://localhost:${fourFourServer.port}/v1/embeddings`,
     model: 'voyage-4-nano',
     maxRetries: 5,

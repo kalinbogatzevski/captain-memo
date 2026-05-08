@@ -1,4 +1,4 @@
-export interface VoyageEmbedderOptions {
+export interface EmbedderOptions {
   endpoint: string;
   model: string;
   apiKey?: string;
@@ -12,7 +12,7 @@ interface VoyageResponse {
   model: string;
 }
 
-export class VoyageEmbedder {
+export class Embedder {
   private endpoint: string;
   private model: string;
   private apiKey: string | undefined;
@@ -20,7 +20,7 @@ export class VoyageEmbedder {
   private maxBatchSize: number;
   private maxRetries: number;
 
-  constructor(opts: VoyageEmbedderOptions) {
+  constructor(opts: EmbedderOptions) {
     this.endpoint = opts.endpoint;
     this.model = opts.model;
     this.apiKey = opts.apiKey;

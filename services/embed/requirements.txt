@@ -1,0 +1,17 @@
+# Captain Memo embedder sidecar deps.
+# Versions chosen for broad CPU compat (numpy<2 runs on any x86_64 CPU,
+# including pre-AVX2 hardware from before 2014). Aelita's prod uses
+# numpy 2.x on AVX2-capable VMs — this OSS install is one notch behind
+# numpy major to maximize compatibility. Performance impact is minor.
+fastapi>=0.115.0,<1.0
+uvicorn[standard]>=0.32.0,<1.0
+# voyage-4-nano was rebuilt mid-2026 to require sentence-transformers 5.x
+# and torch >=2.6 (uses or_mask_function from the transformers masking API).
+sentence-transformers>=5.0.0,<6.0.0
+torch>=2.6.0,<3.0.0
+transformers>=4.46.0,<6.0.0
+# numpy<2.0 = works on any x86_64 CPU (no AVX2 required).
+# Modern sentence-transformers 5.x is fine with numpy 1.26.
+# Bump to >=2.0,<3.0 if you want slight perf on AVX2 hardware.
+numpy>=1.26.0,<2.0.0
+pydantic>=2.0.0,<3.0.0
