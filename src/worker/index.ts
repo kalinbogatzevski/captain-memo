@@ -437,21 +437,30 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     return { processed: batch.length, observations_created };
   }
 
+  // Worker-wide processBatch lock. Prevents overlapping invocations from
+  // any caller (the regular tick AND /observation/flush from Stop hooks).
+  // Without it, a Stop hook firing during an active tick spawns concurrent
+  // takeBatch claims, accumulating rows in 'processing' state across many
+  // sessions — exactly the runaway pattern. The queue is durable so calls
+  // that get queued behind the lock aren't lost: they just have to wait.
+  let processBatchPromise: Promise<unknown> | null = null;
+  async function processBatchSerialized(limit: number): Promise<{ processed: number; observations_created: number }> {
+    while (processBatchPromise) {
+      try { await processBatchPromise; } catch { /* tracked separately */ }
+    }
+    const p = processBatch(limit);
+    processBatchPromise = p.finally(() => { processBatchPromise = null; });
+    return p;
+  }
+
   let tickTimer: ReturnType<typeof setInterval> | null = null;
-  // Guard against overlapping batches: setInterval doesn't wait for the
-  // previous async callback to finish, so a slow tick (e.g. summarizer
-  // subprocess takes 30 s while tickMs is 5 s) lets multiple processBatch
-  // calls run concurrently, spawning N parallel claude-p subprocesses and
-  // saturating the event loop. The flag holds the next tick if one is
-  // still in flight; the queue is durable so missed ticks aren't lost.
-  let tickInFlight = false;
   if (tickMs > 0 && obsQueue && obsStore && summarize) {
     tickTimer = setInterval(() => {
-      if (tickInFlight) return;
-      tickInFlight = true;
-      processBatch(batchSize)
-        .catch(err => console.error('[obs-tick]', err))
-        .finally(() => { tickInFlight = false; });
+      // Skip — not queue — if another invocation is in flight. setInterval
+      // already calls us every tickMs; piling up missed ticks isn't useful.
+      if (processBatchPromise) return;
+      processBatchSerialized(batchSize)
+        .catch(err => console.error('[obs-tick]', err));
     }, tickMs);
   }
 
@@ -842,7 +851,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         let total_created = 0;
         while (total_processed < parsed.data.max) {
           const remaining = parsed.data.max - total_processed;
-          const result = await processBatch(Math.min(batchSize, remaining));
+          // Use the serialized wrapper so flush calls from Stop hooks don't
+          // race the regular tick — both share the same in-flight guard.
+          const result = await processBatchSerialized(Math.min(batchSize, remaining));
           if (result.processed === 0) break;
           total_processed += result.processed;
           total_created += result.observations_created;

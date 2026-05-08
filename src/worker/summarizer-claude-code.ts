@@ -36,6 +36,9 @@ export type SpawnFn = (args: {
   stdout: ReadableStream;
   stderr: ReadableStream;
   exited: Promise<number>;
+  // Bun.Subprocess exposes kill(); keep optional so tests can stub a
+  // simpler shape without implementing it.
+  kill?: (signal?: string | number) => void;
 };
 
 export interface ClaudeCodeTransportOptions {
