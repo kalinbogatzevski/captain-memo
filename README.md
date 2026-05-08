@@ -54,7 +54,13 @@ So I sat down to build that "something different" for myself, and ended up with 
 
 The wizard runs **pre-flight checks** before touching anything — it tells you exactly which requirement is unmet and how to fix it. If your hardware can't run the local embedder (e.g. low RAM / no disk), the wizard offers to use a remote `/v1/embeddings` endpoint instead, so Captain Memo still works.
 
-## Install (one command, no sudo)
+## Install — pick a path
+
+Three install methods, all leading to the same plugin loaded into Claude Code. Pick the one that matches your situation.
+
+### Method 1 — Recommended (full local stack, no sudo)
+
+For most users. Clone the repo, run the wizard, done. Sets up the local embedder + worker + plugin registration. Everything runs as your user; no sudo needed.
 
 ```bash
 git clone https://github.com/<your-account>/captain-memo
@@ -63,27 +69,52 @@ bun install
 ./bin/captain-memo install
 ```
 
-That's it. The `install` command runs an interactive wizard — asks which summarizer + embedder you want, where to find your memory files, then sets up:
-
+The wizard asks which summarizer + embedder to use, then sets up:
 - **Embedder sidecar** at `~/.captain-memo/embed/` (user-level systemd, voyage-4-nano on port 8124)
-- **Worker daemon** managed via `~/.config/systemd/user/captain-memo-worker.service` (port 39888)
-- **Claude Code plugin registration** via `claude plugin marketplace add` + `claude plugin install` (the wizard runs both for you — your hooks, MCP server, and slash commands all auto-register)
+- **Worker daemon** at `~/.config/systemd/user/captain-memo-worker.service` (port 39888)
+- **Plugin registration** via `claude plugin marketplace add` + `claude plugin install` (the wizard runs both for you — your hooks, MCP server, and slash commands all auto-register)
 - **Config** at `~/.config/captain-memo/worker.env`
 
-After the wizard, **fully restart Claude Code** (quit the `claude` process, not just the session) for the plugin to load. Hooks then fire automatically in every future session.
+After the wizard, **fully restart Claude Code** (quit the `claude` process, not just the session) for the plugin to load.
 
-### `--system` mode (optional)
+### Method 2 — Plugin only (BYO embedder + summarizer)
 
-For headless servers, multi-user dev boxes, or "always-on regardless of who's logged in":
+If you already have an OpenAI-compatible embeddings endpoint (Ollama, Voyage cloud, OpenAI, etc.) AND you don't want to run a local Python sidecar, you can skip the heavy install. The wizard will ask, and you point it at your endpoint:
+
+```bash
+git clone https://github.com/<your-account>/captain-memo
+cd captain-memo
+bun install
+./bin/captain-memo install   # pick "External /v1/embeddings" when asked
+```
+
+Same outcome (plugin registered, worker running, hooks firing) — just no Python venv, no voyage-4-nano local, no ~3 GB pip download. Trade-off: every embedding call goes over the network to your chosen provider.
+
+### Method 3 — System-wide (headless servers, multi-user)
+
+For headless boxes, multi-user dev servers, or "always-on regardless of who's logged in":
 
 ```bash
 sudo ./bin/captain-memo install --system
 ```
 
-Installs to `/opt/captain-memo-embed/` + `/etc/systemd/system/` + `/etc/captain-memo/` instead. Same wizard, same result, just at system scope.
+Installs to `/opt/captain-memo-embed/` + `/etc/systemd/system/` + `/etc/captain-memo/` instead of `$HOME`. Same wizard, same result, just at system scope. Survives any user logout.
+
+### One-step from a published repo (after we ship)
+
+Once Captain Memo is on GitHub, OSS users can register the plugin in two commands without cloning:
 
 ```bash
-captain-memo doctor              # check status across all components
+claude plugin marketplace add github.com/<your-account>/captain-memo
+claude plugin install captain-memo@captain-memo
+```
+
+That gets you the **plugin pieces** (hooks, MCP server, slash commands) registered with Claude Code. To actually run the search + observations pipeline you still need the worker + embedder — clone the repo and run `./bin/captain-memo install` for that. We'll improve this gap in a future release (probably bundle a smaller npm package).
+
+---
+
+```bash
+captain-memo doctor              # health check across all components
 captain-memo uninstall           # clean removal (--purge for data too)
 captain-memo uninstall --system  # for the system-mode install
 ```
