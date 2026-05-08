@@ -8,6 +8,7 @@ import { installCommand } from './commands/install.ts';
 import { uninstallCommand } from './commands/uninstall.ts';
 import { doctorCommand } from './commands/doctor.ts';
 import { inspectClaudeMemCommand } from './commands/inspect-claude-mem.ts';
+import { migrateFromClaudeMemCommand } from './commands/migrate-from-claude-mem.ts';
 
 const HELP = `captain-memo — local memory layer for Claude Code
 
@@ -25,6 +26,7 @@ Commands:
   doctor       Health probe across embedder / worker / plugin
   install-hooks Register hooks manually (advanced — \`install\` does this for you)
   inspect-claude-mem  Print row counts of ~/.claude-mem/claude-mem.db (read-only).
+  migrate-from-claude-mem  One-time migration of ~/.claude-mem/claude-mem.db (read-only)
   help         Show this message
 
 Examples:
@@ -70,6 +72,9 @@ export async function main(args: string[]): Promise<void> {
       break;
     case 'inspect-claude-mem':
       exit = await inspectClaudeMemCommand(args.slice(1));
+      break;
+    case 'migrate-from-claude-mem':
+      exit = await migrateFromClaudeMemCommand(args.slice(1));
       break;
     case 'help':
     case '--help':
