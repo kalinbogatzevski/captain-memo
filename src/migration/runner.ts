@@ -100,6 +100,29 @@ export async function runMigration(
 
   const src = new Database(deps.sourceDbPath, { readonly: true });
   try {
+    // Pre-flight totals (informational — used to render % / ETA in progress lines)
+    const obsTotal = (src.query(
+      `SELECT COUNT(*) AS n FROM observations WHERE id >= ?`,
+    ).get(fromId) as { n: number } | undefined)?.n ?? 0;
+    const sumTotal = (src.query(
+      `SELECT COUNT(*) AS n FROM session_summaries WHERE id >= ?`,
+    ).get(fromId) as { n: number } | undefined)?.n ?? 0;
+    const grandTotal = Math.min(limit, obsTotal + sumTotal);
+    const startedAtMs = Date.now();
+    const fmtElapsed = (s: number): string =>
+      s < 60 ? `${s.toFixed(0)}s`
+      : s < 3600 ? `${Math.floor(s / 60)}m ${(s % 60).toFixed(0)}s`
+      : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+    const renderProgress = (kind: 'obs' | 'sum'): string => {
+      const done = result.observations_migrated + result.observations_skipped
+                 + result.summaries_migrated + result.summaries_skipped;
+      const elapsedS = (Date.now() - startedAtMs) / 1000;
+      const rate = elapsedS > 0 ? done / elapsedS : 0;
+      const etaS = rate > 0 ? Math.ceil((grandTotal - done) / rate) : 0;
+      const pct = grandTotal > 0 ? Math.round((done / grandTotal) * 100) : 100;
+      return `${kind} ${done}/${grandTotal} (${pct}%)  rate=${rate.toFixed(1)}/s  ETA=${fmtElapsed(etaS)}`;
+    };
+
     // Observations first, then summaries — chronological order maximises continuity
     const obsRows = src
       .query(
@@ -145,9 +168,7 @@ export async function runMigration(
       result.observations_migrated++;
       processed++;
       if (batch.length >= batchSize) await flush();
-      opts.onProgress?.(
-        `obs ${result.observations_migrated} migrated, ${result.observations_skipped} skipped`,
-      );
+      opts.onProgress?.(renderProgress('obs'));
     }
     await flush();
 
@@ -177,9 +198,7 @@ export async function runMigration(
         result.summaries_migrated++;
         processed++;
         if (batch.length >= batchSize) await flush();
-        opts.onProgress?.(
-          `sum ${result.summaries_migrated} migrated, ${result.summaries_skipped} skipped`,
-        );
+        opts.onProgress?.(renderProgress('sum'));
       }
       await flush();
     }
