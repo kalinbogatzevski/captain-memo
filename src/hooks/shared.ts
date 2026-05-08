@@ -9,17 +9,31 @@
 // ~/.captain-memo/logs/hook.log via logHookError below; CAPTAIN_MEMO_HOOK_DEBUG=1
 // also tees them to stderr.
 
-import { appendFileSync, mkdirSync } from 'fs';
+import { appendFileSync, mkdirSync, statSync, renameSync, existsSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { DEFAULT_WORKER_PORT } from '../shared/paths.ts';
 
 const HOOK_LOG_DIR = join(homedir(), '.captain-memo', 'logs');
 const HOOK_LOG_FILE = join(HOOK_LOG_DIR, 'hook.log');
+const HOOK_LOG_ROTATE_BYTES = 10 * 1024 * 1024; // 10 MB
+
+function rotateIfNeeded(): void {
+  try {
+    if (!existsSync(HOOK_LOG_FILE)) return;
+    const sz = statSync(HOOK_LOG_FILE).size;
+    if (sz < HOOK_LOG_ROTATE_BYTES) return;
+    // Single-step rollover (lossy is fine for debug logs): hook.log → hook.log.1
+    renameSync(HOOK_LOG_FILE, HOOK_LOG_FILE + '.1');
+  } catch {
+    // rotation failure is non-fatal — keep going on the original file
+  }
+}
 
 export function logHookError(event: string, err: unknown): void {
   try {
     mkdirSync(HOOK_LOG_DIR, { recursive: true });
+    rotateIfNeeded();
     const e = err as Error;
     const line = `${new Date().toISOString()} [${event}] ${e?.name ?? 'Error'}: ${e?.message ?? String(err)}\n${e?.stack ?? ''}\n`;
     appendFileSync(HOOK_LOG_FILE, line);

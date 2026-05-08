@@ -104,9 +104,9 @@ function removePlugin(): void {
     return spawnSync(cmd, args, { stdio: 'inherit' });
   };
 
-  // Best-effort: ignore exit codes (the user may already have removed it manually).
-  runAsUser('claude', ['plugin', 'uninstall', 'captain-memo@captain-memo']);
-  runAsUser('claude', ['plugin', 'marketplace', 'remove', 'captain-memo']);
+  // Capture exit codes so we don't lie with `ok(...)` if both calls fail.
+  const r1 = runAsUser('claude', ['plugin', 'uninstall', 'captain-memo@captain-memo']);
+  const r2 = runAsUser('claude', ['plugin', 'marketplace', 'remove', 'captain-memo']);
 
   // Also clean up any leftover symlink from the older install method.
   const link = join(realHome(), '.claude', 'plugins', 'captain-memo');
@@ -115,7 +115,12 @@ function removePlugin(): void {
   if (exists) {
     try { unlinkSync(link); ok(`removed legacy symlink ${link}`); } catch { /* fine */ }
   }
-  ok('plugin unregistered');
+  if (r1.status !== 0 && r2.status !== 0) {
+    warn(`'claude plugin uninstall' AND 'marketplace remove' both failed`);
+    info('Run manually: claude plugin uninstall captain-memo@captain-memo');
+  } else {
+    ok('plugin unregistered');
+  }
 }
 
 export async function uninstallCommand(args: string[]): Promise<number> {

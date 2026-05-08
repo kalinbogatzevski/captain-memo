@@ -111,7 +111,11 @@ export class Embedder {
         signal: controller.signal,
       });
       if (!res.ok) {
-        throw new Error(`Embedder HTTP ${res.status}: ${await res.text()}`);
+        const body = await res.text().catch(e => {
+          console.error(`[embedder] body-read failed for HTTP ${res.status}:`, (e as Error).message);
+          return '';
+        });
+        throw new Error(`Embedder HTTP ${res.status}: ${body}`);
       }
       if (this.apiFormat === 'aelita') {
         const json = (await res.json()) as AelitaResponse;

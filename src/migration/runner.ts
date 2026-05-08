@@ -126,6 +126,8 @@ export async function runMigration(
 
   const src = new Database(deps.sourceDbPath, { readonly: true });
   let ticker: ReturnType<typeof setInterval> | undefined;
+  // Hoisted so the outer catch can introspect what was in-flight at error time.
+  let batch: Array<{ doc: MigrationDocument; kind: 'observation' | 'summary' }> = [];
   try {
     // Pre-flight totals (informational — used to render % / ETA in progress lines)
     const obsTotal = (src.query(
@@ -171,7 +173,6 @@ export async function runMigration(
       )
       .all(fromId) as ClaudeMemObservationRow[];
 
-    let batch: Array<{ doc: MigrationDocument; kind: 'observation' | 'summary' }> = [];
     const flush = async (): Promise<void> => {
       if (batch.length === 0) return;
 
@@ -296,7 +297,16 @@ export async function runMigration(
     opts.onProgress?.(renderProgress(lastKind));
   } catch (err) {
     result.errors++;
-    opts.onProgress?.(`${boldRed('migration error:')} ${(err as Error).message}`);
+    // Surface the in-flight batch contents so the user can correlate "errors: 1"
+    // with the specific source rows that were mid-stream when this fired.
+    const inFlight = batch
+      .map(item => `${item.kind}/${item.doc.metadata.source_id ?? '?'}`)
+      .slice(0, 10);
+    const trailer = batch.length > 10 ? ` …+${batch.length - 10} more` : '';
+    opts.onProgress?.(
+      `${boldRed('migration error:')} ${(err as Error).message}` +
+      (inFlight.length > 0 ? `\n  in-flight at error: ${inFlight.join(', ')}${trailer}` : ''),
+    );
   } finally {
     if (ticker) clearInterval(ticker);
     src.close();

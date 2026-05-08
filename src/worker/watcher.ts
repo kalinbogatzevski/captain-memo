@@ -1,5 +1,5 @@
 import chokidar, { type FSWatcher } from 'chokidar';
-import { dirname, basename, extname } from 'path';
+import { dirname, basename, extname, join } from 'path';
 
 export type WatcherEvent = 'add' | 'change' | 'unlink';
 
@@ -17,22 +17,70 @@ interface WatchTarget {
 
 /**
  * Resolve a list of paths (which may include glob-like patterns such as
- * `/some/dir/*.md`) into { dir, extFilter } watch targets.
+ * `/some/dir/*.md` or `~/.claude/projects/* /memory/*.md`) into concrete
+ * { dir, extFilter } watch targets.
  *
- * Note: chokidar v4 removed glob support, so we watch the parent directory
- * and filter events by extension ourselves.
+ * chokidar v4 removed glob support, so we expand `*` segments at start time
+ * via Bun.Glob, then watch each concrete leaf dir directly. Caveat: dirs
+ * created AFTER startup are not watched until the worker restarts.
  */
 function resolveTargets(paths: string[]): WatchTarget[] {
-  return paths.map(p => {
+  const targets: WatchTarget[] = [];
+  for (const p of paths) {
     const base = basename(p);
-    if (base.startsWith('*')) {
-      // e.g. "*.md" → extFilter = '.md', or "*" → no filter
-      const ext = base.replace(/^\*/, ''); // "*.md" → ".md", "*" → ""
-      return { dir: dirname(p), extFilter: ext || null };
+    const extFilter = base.startsWith('*')
+      ? (base.replace(/^\*/, '') || null) // "*.md" → ".md"
+      : (extname(p) || null);
+
+    const dir = dirname(p);
+
+    // If only the basename has a glob (e.g., "/some/dir/*.md"), the dirname is
+    // already concrete — watch it directly. New files matching the extFilter
+    // will fire on chokidar's `add` event even if the dir was empty at start.
+    if (!dir.includes('*')) {
+      targets.push({ dir, extFilter });
+      continue;
     }
-    // Exact file path — watch its directory, filter to that exact file
-    return { dir: dirname(p), extFilter: extname(p) || null };
-  });
+
+    // Otherwise (e.g., "~/.claude/projects/* /memory/*.md"), find the longest
+    // non-glob ancestor as the scan root, then ask Bun.Glob to enumerate
+    // matches under it. The matches' dirnames are the concrete directories
+    // we hand to chokidar.
+    const segments = p.split('/');
+    const rootSegments: string[] = [];
+    const patternSegments: string[] = [];
+    for (const seg of segments) {
+      if (patternSegments.length > 0 || seg.includes('*')) {
+        patternSegments.push(seg);
+      } else {
+        rootSegments.push(seg);
+      }
+    }
+    const root = rootSegments.join('/') || '/';
+    const pattern = patternSegments.join('/');
+
+    const dirs = new Set<string>();
+    try {
+      const glob = new Bun.Glob(pattern);
+      for (const rel of glob.scanSync({ cwd: root, dot: false })) {
+        dirs.add(dirname(join(root, rel)));
+      }
+    } catch (err) {
+      console.error(`[FileWatcher] glob expansion failed for ${p}:`, err);
+      continue;
+    }
+
+    if (dirs.size === 0) {
+      console.error(
+        `[FileWatcher] glob ${p} matched no files at startup — ` +
+        `nothing to watch yet (will need a worker restart once files exist)`,
+      );
+      continue;
+    }
+
+    for (const d of dirs) targets.push({ dir: d, extFilter });
+  }
+  return targets;
 }
 
 export class FileWatcher {

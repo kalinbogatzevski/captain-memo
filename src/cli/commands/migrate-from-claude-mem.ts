@@ -48,7 +48,14 @@ async function discoverEmbeddingDim(
     if (vecs[0] && vecs[0].length > 0) return vecs[0].length;
   } catch { /* fall through */ }
 
-  // 4. voyage-4-nano open-weights native size — last-resort default.
+  // 4. Last-resort default. Warn loudly — silently using a fallback dim is
+  //    how a corrupted vector store sneaks in.
+  console.error(
+    `[migrate] Could not determine embedding dim from env, /health, or a probe ` +
+    `embedding. Falling back to 2048 (voyage-4-nano open-weights native). ` +
+    `If your embedder uses a different dim, set CAPTAIN_MEMO_EMBEDDING_DIM=<n> ` +
+    `explicitly to avoid corruption.`,
+  );
   return 2048;
 }
 

@@ -109,7 +109,10 @@ const TOOLS = [
   },
 ];
 
-if (import.meta.main) {
+// Exported so a future bin shim (`bin/captain-memo-mcp`) can call this
+// explicitly. Don't gate on `import.meta.main` only — that's the trap that
+// silently broke the hook dispatcher when a bin script imported it.
+export async function runMcpServer(): Promise<void> {
   const server = new Server(
     { name: 'captain-memo', version: '0.1.0-alpha' },
     { capabilities: { tools: {} } },
@@ -156,4 +159,14 @@ if (import.meta.main) {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('captain-memo stdio MCP server connected');
+}
+
+// Run when invoked directly (e.g. `bun src/mcp-server.ts`). Keep the
+// `import.meta.main` guard for direct-invocation convenience, but the function
+// is exported above so wrapper scripts don't need this guard to be true.
+if (import.meta.main) {
+  runMcpServer().catch((err) => {
+    console.error('captain-memo MCP server failed:', err);
+    process.exit(1);
+  });
 }

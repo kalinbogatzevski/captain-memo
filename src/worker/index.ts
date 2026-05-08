@@ -154,6 +154,29 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   const collectionName = `am_${opts.projectId}`;
   await vector.ensureCollection(collectionName);
 
+  // Boot-time dim probe — catch the dim-mismatch trap (where vector store
+  // expects N but embedder returns M) BEFORE any chunk hits vector.add().
+  // Skip when the user opted into keyword-only mode.
+  if (!opts.skipEmbed) {
+    try {
+      const probe = await embedder.embed(['probe']);
+      const actualDim = probe[0]?.length ?? 0;
+      if (actualDim !== opts.embeddingDimension) {
+        console.error(
+          `[worker] DIM MISMATCH: VectorStore expects ${opts.embeddingDimension} but embedder returns ${actualDim}. ` +
+          `Set CAPTAIN_MEMO_EMBEDDING_DIM=${actualDim} (or pick a model that returns ${opts.embeddingDimension}-dim) ` +
+          `then restart the worker. Current state will fail at every vector.add() call.`,
+        );
+      } else {
+        console.log(`[worker] embedder probe OK (dim=${actualDim})`);
+      }
+    } catch (err) {
+      console.error(`[worker] embedder probe failed at boot:`, (err as Error).message);
+      // Don't crash the worker — keyword search still works; vector half will
+      // log per-call errors via the new search.ts error visibility.
+    }
+  }
+
   const searcher = new HybridSearcher({
     vectorSearch: async (embedding, topK) => {
       if (opts.skipEmbed || embedding.length === 0) return [];
@@ -297,11 +320,21 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       metadata: c.metadata,
     }));
 
-    const embeddings: number[][] = await (async () => {
-      if (opts.skipEmbed) return chunksWithIds.map(() => new Array(opts.embeddingDimension).fill(0));
+    // Embed → write meta + vectors. If embed fails, write meta (so keyword
+    // search still works on this doc) but DO NOT write zero-vectors to the
+    // vector store. Zero-vectors poison vector retrieval for the lifetime
+    // of the row (cosine sim with zeros is undefined / 0). Instead we queue
+    // the chunks for retry; processPendingEmbed will insert real vectors.
+    let embeddings: number[][] | null = null;
+    if (opts.skipEmbed) {
+      // Keyword-only mode — write zero-vectors deliberately (the user opted
+      // out of vector search entirely; nothing in the vector half will rank).
+      embeddings = chunksWithIds.map(() => new Array(opts.embeddingDimension).fill(0));
+    } else {
       try {
-        return await embedder.embed(chunksWithIds.map(c => c.text));
-      } catch {
+        embeddings = await embedder.embed(chunksWithIds.map(c => c.text));
+      } catch (err) {
+        console.error('[ingest-obs] embed failed; queueing for retry:', (err as Error).message);
         if (pendingEmbed) {
           for (const c of chunksWithIds) {
             pendingEmbed.enqueue({
@@ -310,9 +343,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             });
           }
         }
-        return chunksWithIds.map(() => new Array(opts.embeddingDimension).fill(0));
+        // embeddings stays null → skip vector.add below
       }
-    })();
+    }
 
     const documentId = meta.upsertDocument({
       source_path: synthesizedPath,
@@ -329,10 +362,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       },
     });
     meta.replaceChunksForDocument(documentId, chunksWithIds);
-    await vector.add(
-      collectionName,
-      chunksWithIds.map((c, i) => ({ id: c.chunk_id, embedding: embeddings[i]! })),
-    );
+    if (embeddings) {
+      await vector.add(
+        collectionName,
+        chunksWithIds.map((c, i) => ({ id: c.chunk_id, embedding: embeddings![i]! })),
+      );
+    }
   }
 
   async function processBatch(limit: number): Promise<{ processed: number; observations_created: number }> {
@@ -352,6 +387,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     let observations_created = 0;
     const doneIds: number[] = [];
     const failedIds: number[] = [];
+    const permanentIds: number[] = [];
+    let retryReason = '';
+    let permanentReason = '';
 
     for (const groupRows of groups.values()) {
       const events = groupRows.map(r => r.payload);
@@ -376,13 +414,25 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         observations_created++;
         doneIds.push(...groupRows.map(r => r.id));
       } catch (err) {
-        console.error(`[obs-batch] summarize failed: ${(err as Error).message}`);
-        failedIds.push(...groupRows.map(r => r.id));
+        const msg = (err as Error).message ?? String(err);
+        console.error(`[obs-batch] summarize failed: ${msg}`);
+        // Permanent failures (auth, schema, 400) shouldn't loop. Distinguish
+        // by error shape — these will never succeed on retry, so retrying
+        // burns API quota for nothing.
+        const permanent = /401|403|invalid api key|invalid x-api-key|authentication|unauthorized|400|schema|invalid request/i.test(msg);
+        if (permanent) {
+          permanentIds.push(...groupRows.map(r => r.id));
+          permanentReason = msg.slice(0, 200);
+        } else {
+          failedIds.push(...groupRows.map(r => r.id));
+          retryReason = msg.slice(0, 200);
+        }
       }
     }
 
     obsQueue.markDone(doneIds);
-    obsQueue.markFailed(failedIds);
+    if (failedIds.length > 0) obsQueue.markFailed(failedIds, 3, retryReason);
+    if (permanentIds.length > 0) obsQueue.markPermanent(permanentIds, permanentReason);
 
     return { processed: batch.length, observations_created };
   }
@@ -827,7 +877,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   };
 }
 
-if (import.meta.main) {
+// Exported so a future `bin/captain-memo-worker` shim can invoke this
+// explicitly. Don't rely on `import.meta.main` — that was the trap that
+// silently broke the hook dispatcher when a bin script imported it.
+export async function runWorkerCli(): Promise<void> {
   const { mkdirSync } = await import('fs');
   const { dirname } = await import('path');
   const { DATA_DIR } = await import('../shared/paths.ts');
@@ -844,6 +897,9 @@ if (import.meta.main) {
   const embedderModel = process.env.CAPTAIN_MEMO_EMBEDDER_MODEL ?? 'voyageai/voyage-4-nano';
   const embedderApiKey = process.env.CAPTAIN_MEMO_EMBEDDER_API_KEY;
   const embeddingDimension = Number(process.env.CAPTAIN_MEMO_EMBEDDING_DIM ?? 2048);
+  // Honor the install wizard's keyword-only mode — without this read, a user
+  // who picked "skip embedder" still gets every chunk silently zero-vectored.
+  const skipEmbed = process.env.CAPTAIN_MEMO_SKIP_EMBED === '1';
   const vectorDbPath = join(VECTOR_DB_DIR, 'embeddings.db');
 
   const watchMemory = process.env.CAPTAIN_MEMO_WATCH_MEMORY;
@@ -950,6 +1006,7 @@ if (import.meta.main) {
     ...(embedderApiKey !== undefined && { embedderApiKey }),
     vectorDbPath,
     embeddingDimension,
+    skipEmbed,
     ...(watchPaths !== undefined && watchChannel !== undefined && { watchPaths, watchChannel }),
     observationQueueDbPath: QUEUE_DB_PATH,
     observationsDbPath: OBSERVATIONS_DB_PATH,
@@ -967,4 +1024,13 @@ if (import.meta.main) {
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+}
+
+// Direct invocation (`bun src/worker/index.ts` from systemd unit). Keep the
+// guard for convenience but the function is exported above for wrappers.
+if (import.meta.main) {
+  runWorkerCli().catch((err) => {
+    console.error('[worker] startup failed:', err);
+    process.exit(1);
+  });
 }

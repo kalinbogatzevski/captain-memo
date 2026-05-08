@@ -9,12 +9,16 @@ CREATE TABLE IF NOT EXISTS observation_queue (
   payload TEXT NOT NULL,
   status TEXT NOT NULL,
   retries INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
   created_at_epoch INTEGER NOT NULL,
   processed_at_epoch INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_obsq_status ON observation_queue(status, created_at_epoch);
 CREATE INDEX IF NOT EXISTS idx_obsq_session ON observation_queue(session_id, status);
 `;
+// Schema-evolution: add last_error column if upgrading from v0 schema. SQLite
+// doesn't have IF NOT EXISTS for columns; we accept the error if it's already there.
+const ALTER = `ALTER TABLE observation_queue ADD COLUMN last_error TEXT`;
 
 export interface ObservationQueueRow {
   id: number;
@@ -33,6 +37,11 @@ export class ObservationQueue {
     this.db = new Database(path);
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec(SCHEMA);
+    try { this.db.exec(ALTER); } catch { /* column already exists */ }
+    // Startup recovery: rows stuck in 'processing' from a worker crash should
+    // be retried, not abandoned. Without this, the queue.processing counter
+    // grows monotonically across restarts.
+    this.db.exec(`UPDATE observation_queue SET status = 'pending' WHERE status = 'processing'`);
   }
 
   enqueue(event: RawObservationEvent): number {
@@ -99,9 +108,10 @@ export class ObservationQueue {
 
   /**
    * Increment retries; if retries < maxRetries flip back to pending,
-   * otherwise mark failed permanently.
+   * otherwise mark failed permanently. Stores the most recent error message
+   * so /stats and doctor can surface why a row failed.
    */
-  markFailed(ids: number[], maxRetries = 3): void {
+  markFailed(ids: number[], maxRetries = 3, errorMessage?: string): void {
     if (ids.length === 0) return;
     const tx = this.db.transaction(() => {
       for (const id of ids) {
@@ -110,18 +120,26 @@ export class ObservationQueue {
           .get(id) as { retries: number } | undefined;
         if (!row) continue;
         const next = row.retries + 1;
-        if (next >= maxRetries) {
-          this.db
-            .query(`UPDATE observation_queue SET status = 'failed', retries = ? WHERE id = ?`)
-            .run(next, id);
-        } else {
-          this.db
-            .query(`UPDATE observation_queue SET status = 'pending', retries = ? WHERE id = ?`)
-            .run(next, id);
-        }
+        const status = next >= maxRetries ? 'failed' : 'pending';
+        this.db
+          .query(`UPDATE observation_queue SET status = ?, retries = ?, last_error = ? WHERE id = ?`)
+          .run(status, next, errorMessage ?? null, id);
       }
     });
     tx();
+  }
+
+  /**
+   * Mark rows as permanently failed regardless of retries — for errors that
+   * would never succeed on retry (auth failure, schema rejection, etc.).
+   * Stops the retry-storm pattern that would otherwise burn API quota.
+   */
+  markPermanent(ids: number[], errorMessage: string): void {
+    if (ids.length === 0) return;
+    const placeholders = ids.map(() => '?').join(',');
+    this.db
+      .query(`UPDATE observation_queue SET status = 'failed', last_error = ? WHERE id IN (${placeholders})`)
+      .run(errorMessage, ...ids);
   }
 
   pendingCount(): number {

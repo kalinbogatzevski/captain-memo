@@ -58,7 +58,11 @@ export const ENV_OPENAI_ENDPOINT = 'CAPTAIN_MEMO_OPENAI_ENDPOINT';
 export const ENV_OPENAI_API_KEY = 'CAPTAIN_MEMO_OPENAI_API_KEY';
 
 // Hard contracts from spec §5 — defaults if env not set.
-export const DEFAULT_HOOK_TIMEOUT_MS = 250;
+// 250 ms was too tight on slow CPUs — UserPromptSubmit silently aborted via
+// AbortController, dropping the memory envelope with no signal. 1500 ms gives
+// margin for embed + RRF fusion + envelope build. The user is already waiting
+// for the model anyway, so a few hundred extra ms here is invisible.
+export const DEFAULT_HOOK_TIMEOUT_MS = 1500;
 export const DEFAULT_STOP_DRAIN_BUDGET_MS = 5_000;
 export const DEFAULT_HOOK_BUDGET_TOKENS = 4_000;
 export const DEFAULT_OBSERVATION_BATCH_SIZE = 20;

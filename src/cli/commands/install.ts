@@ -376,15 +376,25 @@ function writeWorkerEnv(cfg: WizardConfig, paths: ModePaths): void {
     `CAPTAIN_MEMO_PROJECT_ID=default`,
     `CAPTAIN_MEMO_WORKER_PORT=39888`,
     `CAPTAIN_MEMO_HOOK_TIMEOUT_MS=${cfg.hookTimeoutMs}`,
-    `CAPTAIN_MEMO_SUMMARIZER_PROVIDER=${cfg.summarizer === 'skip' ? 'anthropic' : cfg.summarizer}`,
-    `CAPTAIN_MEMO_SUMMARIZER_MODEL=${cfg.summarizerModel}`,
   ];
-  if (cfg.summarizer === 'anthropic' && cfg.anthropicApiKey) {
-    lines.push(`ANTHROPIC_API_KEY=${cfg.anthropicApiKey}`);
-  }
-  if (cfg.summarizer === 'openai-compatible') {
-    lines.push(`CAPTAIN_MEMO_OPENAI_ENDPOINT=${cfg.summarizerOpenaiEndpoint}`);
-    if (cfg.summarizerOpenaiKey) lines.push(`CAPTAIN_MEMO_OPENAI_API_KEY=${cfg.summarizerOpenaiKey}`);
+  if (cfg.summarizer === 'skip') {
+    // User explicitly opted out of summarization. Don't lie to the worker by
+    // writing 'anthropic' — it would log "summarizer disabled" anyway because
+    // ANTHROPIC_API_KEY isn't set, but the user's intent should be honored
+    // explicitly. The worker silently drops queue events when no provider
+    // resolves, which matches the "skip" semantic; document it in worker.env.
+    lines.push(`# Summarizer disabled by install wizard — observations queue but no summary chunk is produced.`);
+    lines.push(`# Re-enable later by replacing this block with one of: claude-code | anthropic | openai-compatible.`);
+  } else {
+    lines.push(`CAPTAIN_MEMO_SUMMARIZER_PROVIDER=${cfg.summarizer}`);
+    lines.push(`CAPTAIN_MEMO_SUMMARIZER_MODEL=${cfg.summarizerModel}`);
+    if (cfg.summarizer === 'anthropic' && cfg.anthropicApiKey) {
+      lines.push(`ANTHROPIC_API_KEY=${cfg.anthropicApiKey}`);
+    }
+    if (cfg.summarizer === 'openai-compatible') {
+      lines.push(`CAPTAIN_MEMO_OPENAI_ENDPOINT=${cfg.summarizerOpenaiEndpoint}`);
+      if (cfg.summarizerOpenaiKey) lines.push(`CAPTAIN_MEMO_OPENAI_API_KEY=${cfg.summarizerOpenaiKey}`);
+    }
   }
   if (cfg.embedder === 'skip') {
     lines.push(`CAPTAIN_MEMO_SKIP_EMBED=1`);

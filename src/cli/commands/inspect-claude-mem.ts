@@ -30,6 +30,7 @@ export async function inspectClaudeMemCommand(args: string[]): Promise<number> {
   const presentTables = new Set(masterRows.map(r => r.name));
 
   let missing = 0;
+  let tableErrors = 0;
   for (const expected of CLAUDE_MEM_TABLES) {
     const present = presentTables.has(expected) ? 'OK' : 'MISSING';
     if (!presentTables.has(expected)) missing++;
@@ -41,7 +42,9 @@ export async function inspectClaudeMemCommand(args: string[]): Promise<number> {
           .get() as { n: number };
         count = row.n;
       } catch (err) {
-        // table exists but querying fails (rare) — surface raw error
+        // Table exists but querying fails (locked, corrupted). Don't lie
+        // with exit 0 — count it as an error so callers (CI, doctor) react.
+        tableErrors++;
         console.log(
           `${expected.padEnd(20)} present, count error: ${(err as Error).message}`,
         );
@@ -56,9 +59,13 @@ export async function inspectClaudeMemCommand(args: string[]): Promise<number> {
     console.log(
       `Warning: ${missing} expected table(s) missing — migration may need a schema bump.`,
     );
+  } else if (tableErrors > 0) {
+    console.log(
+      `Warning: ${tableErrors} table(s) errored on count — DB may be locked or corrupted.`,
+    );
   } else {
     console.log('All expected tables present. Safe to run migrate-from-claude-mem.');
   }
   db.close();
-  return missing > 0 ? 1 : 0;
+  return (missing > 0 || tableErrors > 0) ? 1 : 0;
 }

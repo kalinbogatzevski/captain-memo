@@ -65,9 +65,18 @@ export class HybridSearcher {
   }
 
   async search(embedding: number[], query: string, topK: number): Promise<FusedItem[]> {
+    // Each half logs its own error so silent degradation is debuggable —
+    // before, both halves could fail and the user got an empty result with
+    // no signal. Now journalctl shows which half (vector / keyword) broke.
     const [vectorResults, keywordResults] = await Promise.all([
-      this.vectorSearch(embedding, this.perStrategyTopK).catch(() => []),
-      this.keywordSearch(query, this.perStrategyTopK).catch(() => []),
+      this.vectorSearch(embedding, this.perStrategyTopK).catch(err => {
+        console.error('[search] vector half failed:', (err as Error).message);
+        return [];
+      }),
+      this.keywordSearch(query, this.perStrategyTopK).catch(err => {
+        console.error('[search] keyword half failed:', (err as Error).message);
+        return [];
+      }),
     ]);
 
     const vectorIds = vectorResults.map(r => r.id);
