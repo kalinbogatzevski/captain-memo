@@ -10,8 +10,7 @@ const FIXTURE = readFileSync(
 );
 const HOOK_PATH = join(import.meta.dir, '../../src/hooks/session-start.ts');
 
-let healthCalls = 0;
-let injectCalls: unknown[] = [];
+let statsCalls = 0;
 let server: ReturnType<typeof Bun.serve>;
 
 beforeAll(() => {
@@ -19,17 +18,15 @@ beforeAll(() => {
     port: PORT,
     async fetch(req) {
       const url = new URL(req.url);
-      if (url.pathname === '/health') {
-        healthCalls++;
-        return Response.json({ healthy: true });
-      }
-      if (url.pathname === '/inject/context') {
-        const body = await req.json();
-        injectCalls.push(body);
+      if (url.pathname === '/stats') {
+        statsCalls++;
         return Response.json({
-          envelope: '<memory-context project="t" k="0" budget-tokens="3000"></memory-context>',
-          hit_count: 0, budget_tokens: 3000, used_tokens: 0,
-          channels_searched: [], degradation_flags: [], elapsed_ms: 0,
+          total_chunks: 1234,
+          by_channel: { memory: 100, observation: 1134 },
+          observations: { total: 5, queue_pending: 0, queue_processing: 0 },
+          indexing: { status: 'ready', total: 100, done: 100, errors: 0, percent: 100 },
+          project_id: 'test',
+          embedder: { model: 'voyage-4-lite', endpoint: 'https://api.voyageai.com/v1/embeddings' },
         });
       }
       return new Response('nf', { status: 404 });
@@ -52,10 +49,15 @@ async function runHook(env: Record<string, string> = {}) {
   return { stdout, exitCode };
 }
 
-test('SessionStart — calls /health to warm worker', async () => {
-  healthCalls = 0; injectCalls = [];
-  await runHook();
-  expect(healthCalls).toBeGreaterThanOrEqual(1);
+test('SessionStart — fetches /stats and prints corpus banner', async () => {
+  statsCalls = 0;
+  const { stdout, exitCode } = await runHook();
+  expect(exitCode).toBe(0);
+  expect(statsCalls).toBeGreaterThanOrEqual(1);
+  expect(stdout).toContain('Captain Memo');
+  expect(stdout).toContain('1,234 chunks');
+  expect(stdout).toContain('memory=100');
+  expect(stdout).toContain('voyage-4-lite');
 });
 
 test('SessionStart — exits 0 even when worker unreachable', async () => {
