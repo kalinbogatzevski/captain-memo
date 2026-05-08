@@ -6,6 +6,10 @@
 
 <p align="center"><em>Your AI coding agent's logbook — local memory, kept in sync, retrieved on every prompt.</em></p>
 
+<p align="center">
+  Built by <a href="https://github.com/kalinbogatzevski">Kalin Bogatzevski</a> · <a href="LICENSE">MIT</a> · <a href="https://github.com/kalinbogatzevski/captain-memo/issues">Issues</a>
+</p>
+
 Captain Memo is a Claude Code plugin (and a self-contained local-memory layer for any AI coding agent that speaks the standard hook + MCP shapes). Every session leaves a wake; Captain Memo keeps the log so the next session sails with what was learned in the last one.
 
 ---
