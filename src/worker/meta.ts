@@ -44,6 +44,15 @@ CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
   INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES ('delete', old.id, old.text);
   INSERT INTO chunks_fts(rowid, text) VALUES (new.id, new.text);
 END;
+
+CREATE TABLE IF NOT EXISTS migration_progress (
+  source_kind TEXT NOT NULL,         -- 'observation' | 'summary'
+  source_id INTEGER NOT NULL,
+  doc_sha TEXT NOT NULL,
+  migrated_at_epoch INTEGER NOT NULL,
+  PRIMARY KEY (source_kind, source_id)
+);
+CREATE INDEX IF NOT EXISTS idx_migration_kind ON migration_progress(source_kind);
 `;
 
 export interface UpsertDocumentInput {
@@ -219,6 +228,42 @@ export class MetaStore {
     const by_channel: Record<string, number> = {};
     for (const row of rows) by_channel[row.channel] = row.n;
     return { total_chunks: total.n, by_channel };
+  }
+
+  isMigrationDone(kind: 'observation' | 'summary', sourceId: number): boolean {
+    const row = this.db
+      .query('SELECT 1 AS ok FROM migration_progress WHERE source_kind = ? AND source_id = ?')
+      .get(kind, sourceId) as { ok: number } | undefined;
+    return row?.ok === 1;
+  }
+
+  markMigrationDone(
+    kind: 'observation' | 'summary',
+    sourceId: number,
+    docSha: string,
+  ): void {
+    const now = Math.floor(Date.now() / 1000);
+    this.db
+      .query(
+        `INSERT OR REPLACE INTO migration_progress
+           (source_kind, source_id, doc_sha, migrated_at_epoch)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .run(kind, sourceId, docSha, now);
+  }
+
+  migrationCounts(): { observation: number; summary: number } {
+    const rows = this.db
+      .query(
+        `SELECT source_kind AS kind, COUNT(*) AS n
+         FROM migration_progress GROUP BY source_kind`,
+      )
+      .all() as Array<{ kind: string; n: number }>;
+    const out = { observation: 0, summary: 0 };
+    for (const r of rows) {
+      if (r.kind === 'observation' || r.kind === 'summary') out[r.kind] = r.n;
+    }
+    return out;
   }
 
   close(): void {

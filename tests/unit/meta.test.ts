@@ -146,3 +146,22 @@ test('MetaStore — getChunkById returns chunk + parent document', () => {
   expect(result!.chunk.text).toBe('hello');
   expect(result!.document.metadata.description).toBe('doc-meta');
 });
+
+test('MetaStore — migration progress: mark + skip', () => {
+  // Initially no rows are marked
+  expect(store.isMigrationDone('observation', 1)).toBe(false);
+  store.markMigrationDone('observation', 1, 'sha-abc');
+  expect(store.isMigrationDone('observation', 1)).toBe(true);
+  // Different table or different id
+  expect(store.isMigrationDone('observation', 2)).toBe(false);
+  expect(store.isMigrationDone('summary', 1)).toBe(false);
+});
+
+test('MetaStore — migration progress: counts', () => {
+  store.markMigrationDone('observation', 1, 's1');
+  store.markMigrationDone('observation', 2, 's2');
+  store.markMigrationDone('summary', 1, 's3');
+  const counts = store.migrationCounts();
+  expect(counts.observation).toBe(2);
+  expect(counts.summary).toBe(1);
+});
