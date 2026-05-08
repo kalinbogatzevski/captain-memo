@@ -160,7 +160,28 @@ captain-memo config show         # effective config (secrets masked)
 captain-memo doctor              # component health probe
 captain-memo install             # interactive install wizard
 captain-memo uninstall           # clean removal
+captain-memo inspect-claude-mem        # read-only row counts of ~/.claude-mem/
+captain-memo migrate-from-claude-mem   # one-time migration (--dry-run for preview)
 ```
+
+## Migrating from claude-mem
+
+If you've been using [`claude-mem`](https://github.com/thedotmack/claude-mem) and want to bring your existing observations and session summaries into Captain Memo, the migration is one command. Your claude-mem install stays intact — Captain Memo only **reads** from `~/.claude-mem/claude-mem.db`, never modifies it.
+
+```bash
+# Preview what would migrate (no writes)
+captain-memo migrate-from-claude-mem --dry-run
+
+# Run the actual migration
+captain-memo migrate-from-claude-mem
+
+# Flags:
+#   --dry-run             preview only, no writes
+#   --limit N             cap at N observations (useful for testing)
+#   --from-id <obs_id>    resume from a specific observation
+```
+
+The migration is **idempotent** (re-runs skip already-migrated rows via a progress table) and **resumable** (interrupt + resume via `--from-id`). Both claude-mem and Captain Memo can coexist running side-by-side after migration.
 
 ---
 
@@ -186,9 +207,10 @@ Detailed docs: [`docs/USAGE.md`](docs/USAGE.md).
 |---|---|---|
 | 1 | Worker, MCP server, CLI, hybrid search, file watcher, ingest pipeline | Shipped |
 | 2 | Hooks + observation pipeline + 3-provider summarizer + local embedder | Shipped |
-| 3 | claude-mem migration · federation client · optimize/purge/forget · retrieval-quality eval · doctor | Drafted in [`docs/plans/`](docs/plans/) |
+| 3 — Layer A | **claude-mem migration** (`inspect-claude-mem`, `migrate-from-claude-mem`) | Shipped |
+| 3 — Layers B-G | MEMORY.md transformation · federation client · optimize/purge/forget · retrieval-quality eval · Voyage installer · doctor enhancements | Drafted in [`docs/plans/`](docs/plans/) |
 
-148 tests pass. Typecheck clean. Bun ≥ 1.1.14, TypeScript strict.
+167 tests pass. Typecheck clean. Bun ≥ 1.1.14, TypeScript strict.
 
 ---
 
