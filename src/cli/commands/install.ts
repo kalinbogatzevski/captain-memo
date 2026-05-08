@@ -20,6 +20,7 @@ import { existsSync, mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFile
 import { dirname, join, resolve } from 'path';
 import { homedir } from 'os';
 import { spawnSync } from 'child_process';
+import { printMiniBanner } from '../banner.ts';
 
 const REPO_ROOT = resolve(import.meta.dir, '../../..');
 const WORKER_UNIT_NAME = 'captain-memo-worker.service';
@@ -482,6 +483,8 @@ WITH --system (sudo): for headless servers / multi-user / always-on boxes.
 Both modes: idempotent re-runs reconfigure. To remove: captain-memo uninstall`);
     return 0;
   }
+
+  printMiniBanner();
 
   // Mode: explicit flag wins; otherwise auto-detect (root → ask, non-root → user)
   let mode: InstallMode;

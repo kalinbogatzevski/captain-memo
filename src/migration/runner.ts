@@ -1,6 +1,8 @@
 import { Database } from 'bun:sqlite';
 import { newChunkId } from '../shared/id.ts';
 import { sha256Hex } from '../shared/sha.ts';
+import { fmtElapsed } from '../shared/format.ts';
+import { bold, cyan, cyanBold, isTTY } from '../shared/ansi.ts';
 import {
   transformObservation,
   transformSessionSummary,
@@ -13,6 +15,16 @@ import type {
 } from './claude-mem-schema.ts';
 import type { MetaStore } from '../worker/meta.ts';
 import type { VectorStore } from '../worker/vector-store.ts';
+
+const SPINNER = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
+const BAR_WIDTH = 24;
+
+function progressBar(done: number, total: number): string {
+  const filled = total > 0
+    ? Math.min(BAR_WIDTH, Math.round((done / total) * BAR_WIDTH))
+    : BAR_WIDTH;
+  return '█'.repeat(filled) + '░'.repeat(BAR_WIDTH - filled);
+}
 
 export interface MigrationDeps {
   meta: MetaStore;
@@ -99,6 +111,7 @@ export async function runMigration(
   let processed = 0;
 
   const src = new Database(deps.sourceDbPath, { readonly: true });
+  let ticker: ReturnType<typeof setInterval> | undefined;
   try {
     // Pre-flight totals (informational — used to render % / ETA in progress lines)
     const obsTotal = (src.query(
@@ -109,19 +122,33 @@ export async function runMigration(
     ).get(fromId) as { n: number } | undefined)?.n ?? 0;
     const grandTotal = Math.min(limit, obsTotal + sumTotal);
     const startedAtMs = Date.now();
-    const fmtElapsed = (s: number): string =>
-      s < 60 ? `${s.toFixed(0)}s`
-      : s < 3600 ? `${Math.floor(s / 60)}m ${(s % 60).toFixed(0)}s`
-      : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+    let spinnerIdx = 0;
+    let lastKind: 'obs' | 'sum' = 'obs';
+
     const renderProgress = (kind: 'obs' | 'sum'): string => {
+      lastKind = kind;
       const done = result.observations_migrated + result.observations_skipped
                  + result.summaries_migrated + result.summaries_skipped;
       const elapsedS = (Date.now() - startedAtMs) / 1000;
       const rate = elapsedS > 0 ? done / elapsedS : 0;
       const etaS = rate > 0 ? Math.ceil((grandTotal - done) / rate) : 0;
-      const pct = grandTotal > 0 ? Math.round((done / grandTotal) * 100) : 100;
-      return `${kind} ${done}/${grandTotal} (${pct}%)  rate=${rate.toFixed(1)}/s  ETA=${fmtElapsed(etaS)}`;
+      const pct = grandTotal > 0 ? Math.min(100, Math.round((done / grandTotal) * 100)) : 100;
+      const spinner = cyan(SPINNER[spinnerIdx % SPINNER.length] ?? '⠋');
+      const bar = cyanBold(progressBar(done, grandTotal));
+      const total = grandTotal.toLocaleString('en-US');
+      const doneFmt = done.toLocaleString('en-US');
+      return `${spinner} ${bold(kind)} ${bar} ${doneFmt}/${total} (${pct}%)  ${rate.toFixed(1)}/s  ETA ${fmtElapsed(etaS)}`;
     };
+
+    // Steady-cadence repaint so the spinner keeps animating even when the row
+    // loop stalls inside an embedder call. Skipped on non-TTY: piped output
+    // would otherwise capture ~12 near-identical lines per second.
+    if (isTTY()) {
+      ticker = setInterval(() => {
+        spinnerIdx = (spinnerIdx + 1) % SPINNER.length;
+        opts.onProgress?.(renderProgress(lastKind));
+      }, 80);
+    }
 
     // Observations first, then summaries — chronological order maximises continuity
     const obsRows = src
@@ -151,6 +178,7 @@ export async function runMigration(
 
     for (const row of obsRows) {
       if (processed >= limit) break;
+      lastKind = 'obs';
       if (deps.meta.isMigrationDone('observation', row.id)) {
         result.observations_skipped++;
         continue;
@@ -168,7 +196,6 @@ export async function runMigration(
       result.observations_migrated++;
       processed++;
       if (batch.length >= batchSize) await flush();
-      opts.onProgress?.(renderProgress('obs'));
     }
     await flush();
 
@@ -182,6 +209,7 @@ export async function runMigration(
 
       for (const row of sumRows) {
         if (processed >= limit) break;
+        lastKind = 'sum';
         if (deps.meta.isMigrationDone('summary', row.id)) {
           result.summaries_skipped++;
           continue;
@@ -198,14 +226,17 @@ export async function runMigration(
         result.summaries_migrated++;
         processed++;
         if (batch.length >= batchSize) await flush();
-        opts.onProgress?.(renderProgress('sum'));
       }
       await flush();
     }
+    // Final paint so the bar always lands at 100%, even if the run finished
+    // between interval ticks.
+    opts.onProgress?.(renderProgress(lastKind));
   } catch (err) {
     result.errors++;
     opts.onProgress?.(`migration error: ${(err as Error).message}`);
   } finally {
+    if (ticker) clearInterval(ticker);
     src.close();
   }
 

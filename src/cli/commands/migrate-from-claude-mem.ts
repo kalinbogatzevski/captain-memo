@@ -1,5 +1,7 @@
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, statSync } from 'fs';
 import { join } from 'path';
+import { spawnSync } from 'child_process';
+import { Database } from 'bun:sqlite';
 import { MetaStore } from '../../worker/meta.ts';
 import { Embedder } from '../../worker/embedder.ts';
 import { VectorStore } from '../../worker/vector-store.ts';
@@ -11,6 +13,70 @@ import {
   VECTOR_DB_DIR,
   DEFAULT_VOYAGE_ENDPOINT,
 } from '../../shared/paths.ts';
+import { fmtBytes } from '../../shared/format.ts';
+import { printMiniBanner } from '../banner.ts';
+
+// Portable across GNU/BSD/macOS (`du -sb` is GNU-only; `-sk` is POSIX).
+function dirSize(path: string): number {
+  if (!existsSync(path)) return 0;
+  const r = spawnSync('du', ['-sk', path], { encoding: 'utf-8' });
+  if (r.status !== 0) return 0;
+  const m = r.stdout.match(/^(\d+)/);
+  return m ? Number(m[1]) * 1024 : 0;
+}
+
+function fmtDate(epochS: number): string {
+  return new Date(epochS * 1000).toISOString().slice(0, 10);
+}
+
+interface SourceStats {
+  dbSize: number;
+  observations: number;
+  summaries: number;
+  userPrompts: number;
+  pendingMessages: number;
+  obsRange: string;
+}
+
+function gatherSourceStats(dbPath: string): SourceStats {
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    const count = (table: string): number =>
+      ((db.query(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number } | undefined)?.n ?? 0);
+    // claude-mem stores created_at_epoch in milliseconds.
+    const range = db.query(
+      `SELECT MIN(created_at_epoch) AS lo, MAX(created_at_epoch) AS hi FROM observations`,
+    ).get() as { lo: number; hi: number } | undefined;
+    const obsRange = range && range.lo && range.hi
+      ? `${fmtDate(Math.floor(range.lo / 1000))} → ${fmtDate(Math.floor(range.hi / 1000))}`
+      : '(empty)';
+    return {
+      dbSize: statSync(dbPath).size,
+      observations: count('observations'),
+      summaries: count('session_summaries'),
+      userPrompts: count('user_prompts'),
+      pendingMessages: count('pending_messages'),
+      obsRange,
+    };
+  } finally {
+    db.close();
+  }
+}
+
+interface TargetStats {
+  dataDirSize: number;
+  totalChunks: number;
+  byChannel: Record<string, number>;
+}
+
+function gatherTargetStats(meta: MetaStore): TargetStats {
+  const stats = meta.stats();
+  return {
+    dataDirSize: dirSize(DATA_DIR),
+    totalChunks: stats.total_chunks,
+    byChannel: stats.by_channel,
+  };
+}
 
 interface CliFlags {
   dryRun: boolean;
@@ -54,6 +120,11 @@ export async function migrateFromClaudeMemCommand(args: string[]): Promise<numbe
     return 1;
   }
 
+  printMiniBanner();
+
+  // Snapshot source state up-front so we can show before/after numbers.
+  const sourceStats = gatherSourceStats(flags.dbPath);
+
   console.log(`Migrating from: ${flags.dbPath}`);
   console.log(`Project:        ${flags.projectId}`);
   console.log(`Dry-run:        ${flags.dryRun}`);
@@ -81,9 +152,16 @@ export async function migrateFromClaudeMemCommand(args: string[]): Promise<numbe
   await vector.ensureCollection(collectionName);
 
   const start = Date.now();
+  // TTY: clear-line + repaint on top. Pipe/file: pad-with-spaces so the same
+  // approach works in plain output even though the spinner frame still appears
+  // in each line.
+  const isTTY = process.stdout.isTTY === true;
+  const renderLine = isTTY
+    ? (msg: string) => process.stdout.write(`\r\x1b[2K${msg}`)
+    : (msg: string) => process.stdout.write(`\r${msg}                `);
   const runOpts: Parameters<typeof runMigration>[1] = {
     dryRun: flags.dryRun,
-    onProgress: (msg) => process.stdout.write(`\r${msg}        `),
+    onProgress: renderLine,
   };
   if (flags.limit !== undefined) runOpts.limit = flags.limit;
   if (flags.fromId !== undefined) runOpts.fromId = flags.fromId;
@@ -108,7 +186,14 @@ export async function migrateFromClaudeMemCommand(args: string[]): Promise<numbe
   console.log(`  summaries skipped:     ${result.summaries_skipped}`);
   console.log(`  errors:                ${result.errors}`);
   console.log('');
-  if (flags.dryRun) {
+
+  // Side-by-side: claude-mem source DB vs Captain Memo data dir, after the run.
+  // (Skipped on dry-run — the target dir wouldn't reflect what migration would
+  //  produce, so the comparison would mislead.)
+  if (!flags.dryRun) {
+    const targetStats = gatherTargetStats(meta);
+    printComparison(flags.dbPath, sourceStats, targetStats);
+  } else {
     console.log(`Dry-run only — nothing written. Re-run without --dry-run to apply.`);
   }
   console.log(`Original ${flags.dbPath} was NOT modified or deleted.`);
@@ -116,4 +201,39 @@ export async function migrateFromClaudeMemCommand(args: string[]): Promise<numbe
   vector.close();
   meta.close();
   return result.errors > 0 ? 1 : 0;
+}
+
+function printComparison(
+  sourceDbPath: string,
+  source: SourceStats,
+  target: TargetStats,
+): void {
+  const row = (label: string, value: string, rLabel = '', rValue = ''): string => {
+    const left = `  ${label.padEnd(18)} ${value.padEnd(18)}`;
+    const right = rLabel ? `${rLabel.padEnd(18)} ${rValue}` : '';
+    return left + right;
+  };
+
+  const num = (n: number): string => n.toLocaleString('en-US');
+  const channelLines = Object.entries(target.byChannel)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([ch, n]) => `    ${ch.padEnd(16)} ${num(n)}`);
+
+  console.log(`Source (claude-mem)                 Target (captain-memo)`);
+  console.log(`────────────────────                ─────────────────────`);
+  console.log(row('DB size:',         fmtBytes(source.dbSize),     'Data dir size:', fmtBytes(target.dataDirSize)));
+  console.log(row('Observations:',    num(source.observations),    'Total chunks:',  num(target.totalChunks)));
+  console.log(row('Summaries:',       num(source.summaries)));
+  console.log(row('User prompts:',    num(source.userPrompts)));
+  console.log(row('Pending messages:',num(source.pendingMessages)));
+  console.log(row('Date range:',      source.obsRange));
+  if (channelLines.length > 0) {
+    console.log('');
+    console.log(`  By channel:`);
+    for (const line of channelLines) console.log(line);
+  }
+  console.log('');
+  console.log(`  Source path: ${sourceDbPath}`);
+  console.log(`  Target path: ${DATA_DIR}/`);
+  console.log('');
 }

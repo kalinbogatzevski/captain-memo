@@ -9,6 +9,8 @@ import { uninstallCommand } from './commands/uninstall.ts';
 import { doctorCommand } from './commands/doctor.ts';
 import { inspectClaudeMemCommand } from './commands/inspect-claude-mem.ts';
 import { migrateFromClaudeMemCommand } from './commands/migrate-from-claude-mem.ts';
+import { printBanner } from './banner.ts';
+import pkg from '../../package.json' with { type: 'json' };
 
 const HELP = `captain-memo — local memory layer for Claude Code
 
@@ -79,6 +81,7 @@ export async function main(args: string[]): Promise<void> {
     case 'help':
     case '--help':
     case '-h':
+      printBanner(`v${pkg.version}`);
       console.log(HELP);
       break;
     default:

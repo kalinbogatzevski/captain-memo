@@ -1,4 +1,5 @@
 import { workerGet } from '../client.ts';
+import { fmtElapsed } from '../../shared/format.ts';
 
 interface StatsResponse {
   total_chunks: number;
@@ -19,23 +20,17 @@ interface StatsResponse {
   embedder: { model: string; endpoint: string };
 }
 
-function formatElapsed(s: number): string {
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
-  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
-}
-
 function indexingLine(idx: StatsResponse['indexing']): string {
   if (idx.status === 'idle') return 'idle (no watch paths configured)';
   if (idx.status === 'indexing') {
     const rate = idx.elapsed_s > 0 ? (idx.done / idx.elapsed_s).toFixed(2) : '?';
     const remaining = (idx.total - idx.done) > 0 && idx.done > 0
-      ? formatElapsed(Math.ceil((idx.total - idx.done) * idx.elapsed_s / idx.done))
+      ? fmtElapsed(Math.ceil((idx.total - idx.done) * idx.elapsed_s / idx.done))
       : '?';
     return `\x1b[33mindexing\x1b[0m  ${idx.done}/${idx.total} (${idx.percent}%)  rate=${rate}/s  ETA=${remaining}`;
   }
   if (idx.status === 'ready') {
-    return `\x1b[32mready\x1b[0m  indexed ${idx.done}/${idx.total} in ${formatElapsed(idx.elapsed_s)}${idx.errors > 0 ? `  \x1b[31m${idx.errors} errors\x1b[0m` : ''}`;
+    return `\x1b[32mready\x1b[0m  indexed ${idx.done}/${idx.total} in ${fmtElapsed(idx.elapsed_s)}${idx.errors > 0 ? `  \x1b[31m${idx.errors} errors\x1b[0m` : ''}`;
   }
   return `\x1b[31merror\x1b[0m  ${idx.last_error ?? 'unknown'}`;
 }
