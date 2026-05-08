@@ -57,7 +57,16 @@ function formatBanner(stats: StatsResponse): string {
 
 export async function main(): Promise<void> {
   try { await readStdinJson<SessionStartPayload>(); } catch { /* ignore */ }
-  const timeoutMs = Number(process.env[ENV_HOOK_TIMEOUT_MS] ?? DEFAULT_HOOK_TIMEOUT_MS);
+  // SessionStart isn't on a hot path — it fires once per session, not per
+  // prompt. Use a much more generous timeout than the hook default so the
+  // banner appears even when the worker is heavily contended (summarizer
+  // draining a backlog, embedder under load, etc.). Override available via
+  // CAPTAIN_MEMO_SESSION_START_TIMEOUT_MS for very slow installs.
+  const timeoutMs = Number(
+    process.env.CAPTAIN_MEMO_SESSION_START_TIMEOUT_MS
+    ?? process.env[ENV_HOOK_TIMEOUT_MS]
+    ?? 10_000,
+  );
 
   // Fetch corpus stats and print a one-paragraph banner. SessionStart's stdout
   // becomes a system-reminder shown to both user and model.

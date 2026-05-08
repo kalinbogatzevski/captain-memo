@@ -438,9 +438,20 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   }
 
   let tickTimer: ReturnType<typeof setInterval> | null = null;
+  // Guard against overlapping batches: setInterval doesn't wait for the
+  // previous async callback to finish, so a slow tick (e.g. summarizer
+  // subprocess takes 30 s while tickMs is 5 s) lets multiple processBatch
+  // calls run concurrently, spawning N parallel claude-p subprocesses and
+  // saturating the event loop. The flag holds the next tick if one is
+  // still in flight; the queue is durable so missed ticks aren't lost.
+  let tickInFlight = false;
   if (tickMs > 0 && obsQueue && obsStore && summarize) {
     tickTimer = setInterval(() => {
-      processBatch(batchSize).catch(err => console.error('[obs-tick]', err));
+      if (tickInFlight) return;
+      tickInFlight = true;
+      processBatch(batchSize)
+        .catch(err => console.error('[obs-tick]', err))
+        .finally(() => { tickInFlight = false; });
     }, tickMs);
   }
 

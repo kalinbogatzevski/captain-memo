@@ -7,7 +7,13 @@
 import { main } from '../src/hooks/dispatcher.ts';
 import { logHookError } from '../src/hooks/shared.ts';
 
-main().catch((err) => {
+// Top-level await ensures the runtime waits for the dispatcher chain to
+// complete before exiting. Without it, slow async work (e.g., a multi-second
+// /stats fetch under worker contention) can race the natural end-of-script
+// and the process exits before stdout is flushed.
+try {
+  await main();
+} catch (err) {
   logHookError(process.argv[2] ?? 'unknown', err);
   process.exit(0);
-});
+}
