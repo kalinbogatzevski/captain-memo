@@ -417,7 +417,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     let embedding: number[] = [];
     if (!opts.skipEmbed) {
       try {
-        const out = await embedder.embed([query]);
+        const out = await embedder.embed([query], 'query');
         embedding = out[0] ?? [];
       } catch {
         // fall back to keyword-only on embed failure
@@ -498,7 +498,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         let embedding: number[] = [];
         if (!opts.skipEmbed) {
           try {
-            const out = await embedder.embed([query]);
+            const out = await embedder.embed([query], 'query');
             embedding = out[0] ?? [];
           } catch {
             // Fall back to keyword-only on embed failure (logged by embedder itself)
@@ -649,7 +649,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         let embedding: number[] = [];
         if (!opts.skipEmbed) {
           try {
-            const out = await embedder.embed([trimmed]);
+            const out = await embedder.embed([trimmed], 'query');
             embedding = out[0] ?? [];
           } catch {
             flags.push('embedder=voyage:keyword-fallback=true');

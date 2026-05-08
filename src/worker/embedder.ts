@@ -7,6 +7,17 @@ export interface EmbedderOptions {
   maxRetries?: number;
 }
 
+/**
+ * Whether the input is being embedded as a search query (we want a vector
+ * close to relevant *documents*) or as a document (we want a vector close
+ * to relevant *queries*). Voyage and other retrieval-tuned embedders apply
+ * different prefixes per type — using the wrong one tanks similarity.
+ *
+ * Compatibility: OpenAI / Cohere / many local servers ignore this hint
+ * silently. Captain Memo's own sidecar honors it. Default: 'document'.
+ */
+export type InputType = 'query' | 'document';
+
 interface VoyageResponse {
   data: Array<{ embedding: number[]; index: number }>;
   model: string;
@@ -29,24 +40,24 @@ export class Embedder {
     this.maxRetries = opts.maxRetries ?? 3;
   }
 
-  async embed(texts: string[]): Promise<number[][]> {
+  async embed(texts: string[], inputType: InputType = 'document'): Promise<number[][]> {
     if (texts.length === 0) return [];
     const all: number[][] = [];
     for (let i = 0; i < texts.length; i += this.maxBatchSize) {
       const batch = texts.slice(i, i + this.maxBatchSize);
-      const embeddings = await this.embedBatch(batch);
+      const embeddings = await this.embedBatch(batch, inputType);
       all.push(...embeddings);
     }
     return all;
   }
 
-  private async embedBatch(texts: string[]): Promise<number[][]> {
+  private async embedBatch(texts: string[], inputType: InputType): Promise<number[][]> {
     let attempt = 0;
     let lastErr: Error | null = null;
 
     while (attempt < this.maxRetries) {
       try {
-        return await this.embedBatchOnce(texts);
+        return await this.embedBatchOnce(texts, inputType);
       } catch (err) {
         const e = err as Error;
         lastErr = e;
@@ -63,7 +74,7 @@ export class Embedder {
     throw lastErr ?? new Error('embedBatch: unreachable');
   }
 
-  private async embedBatchOnce(texts: string[]): Promise<number[][]> {
+  private async embedBatchOnce(texts: string[], inputType: InputType): Promise<number[][]> {
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (this.apiKey) headers.authorization = `Bearer ${this.apiKey}`;
 
@@ -74,11 +85,13 @@ export class Embedder {
       const res = await fetch(this.endpoint, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ input: texts, model: this.model }),
+        // input_type is a Captain Memo / Voyage extension; OpenAI-compatible
+        // endpoints ignore unknown fields, so this is safe across all providers.
+        body: JSON.stringify({ input: texts, model: this.model, input_type: inputType }),
         signal: controller.signal,
       });
       if (!res.ok) {
-        throw new Error(`Voyage HTTP ${res.status}: ${await res.text()}`);
+        throw new Error(`Embedder HTTP ${res.status}: ${await res.text()}`);
       }
       const json = (await res.json()) as VoyageResponse;
       return json.data
