@@ -109,9 +109,10 @@ const TOOLS = [
   },
 ];
 
-// Exported so a future bin shim (`bin/captain-memo-mcp`) can call this
-// explicitly. Don't gate on `import.meta.main` only — that's the trap that
-// silently broke the hook dispatcher when a bin script imported it.
+// Exported so a `bin/captain-memo-mcp` shim can call this explicitly.
+// Avoid gating on `import.meta.main` alone: when this file is imported
+// (rather than invoked directly), `import.meta.main` is false and the
+// server would silently never start.
 export async function runMcpServer(): Promise<void> {
   const server = new Server(
     { name: 'captain-memo', version: '0.1.0-alpha' },

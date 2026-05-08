@@ -63,6 +63,10 @@ export function transformObservation(
     files_modified: filesModified,
     created_at_epoch: mtime,
     prompt_number: row.prompt_number ?? 0,
+    // Tokens originally spent producing this observation (claude-mem's own
+    // accounting). Used downstream to compute "savings" stats — work cost vs
+    // recall cost. Defaulting to 0 if absent (older claude-mem rows).
+    discovery_tokens: row.discovery_tokens ?? 0,
     migrated_from: 'claude-mem',
   };
 
@@ -117,6 +121,7 @@ export function transformSessionSummary(
     source_project: row.project,
     created_at_epoch: mtime,
     prompt_number: row.prompt_number ?? 0,
+    discovery_tokens: row.discovery_tokens ?? 0,
     migrated_from: 'claude-mem',
   };
 

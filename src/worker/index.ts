@@ -512,7 +512,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // fall back to keyword-only on embed failure
       }
     }
-    const fused = await searcher.search(embedding, query, topK * 3);
+    // Channel-scoped search filters POST-fusion. With ~87K observations and
+    // only ~279 memory chunks, a 3x multiplier rarely surfaces ANY memory in
+    // the candidate pool — we'd ask for top-15 globally and get all
+    // observations, leaving 0 after the channel filter. Pull a much larger
+    // candidate pool so small channels still get representation. TODO: push
+    // channel filter down to SQL/vector layer for proper efficiency.
+    const candidatePool = Math.max(topK * 20, 200);
+    const fused = await searcher.search(embedding, query, candidatePool);
     const results: Array<{
       doc_id: string;
       source_path: string;
@@ -877,9 +884,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   };
 }
 
-// Exported so a future `bin/captain-memo-worker` shim can invoke this
-// explicitly. Don't rely on `import.meta.main` — that was the trap that
-// silently broke the hook dispatcher when a bin script imported it.
+// Exported so a `bin/captain-memo-worker` shim can call this explicitly.
+// Avoid gating on `import.meta.main` alone: when this file is imported
+// (rather than invoked directly), `import.meta.main` is false and the
+// startup body would silently no-op.
 export async function runWorkerCli(): Promise<void> {
   const { mkdirSync } = await import('fs');
   const { dirname } = await import('path');

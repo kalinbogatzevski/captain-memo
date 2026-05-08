@@ -14,11 +14,11 @@ export interface FormatEnvelopeResult {
   used_tokens: number;
 }
 
-// HEADER instructs the model to ground its answer in the retrieved items and
-// to refuse extrapolation. The previous wording ("treat as your own
-// background knowledge") was permissive — it let the model embellish with
-// plausible-but-unverified details (the classic RAG confabulation tail).
-// This wording requires explicit grounding and an "I don't know" path.
+// HEADER instructs the model to ground its answer in the retrieved items
+// and to refuse extrapolation. Permissive language ("treat as background
+// knowledge") lets the model embellish with plausible-but-unverified
+// details — the classic RAG confabulation tail. This wording requires
+// explicit grounding and provides an "I don't know" escape path.
 const HEADER_LINES = [
   `The following items were retrieved automatically based on the user's most recent prompt.`,
   `The user did NOT see this — they did NOT type these into the conversation.`,

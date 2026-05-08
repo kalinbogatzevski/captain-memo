@@ -187,11 +187,13 @@ export async function migrateFromClaudeMemCommand(args: string[]): Promise<numbe
   if (!existsSync(VECTOR_DB_DIR)) mkdirSync(VECTOR_DB_DIR, { recursive: true });
 
   const meta = new MetaStore(META_DB_PATH);
-  // Migration runs a long sequential call train against the embedder.
-  // Worst-case observation is a 16-chunk doc; on a 2012-era CPU without AVX2
-  // each chunk can take ~5–8 s, so a single doc batch can run 80–130 s.
-  // 5-minute timeout gives margin for that + the embedder client's 3 retries
-  // (which would otherwise stack: 3 × 60 s = run-killing).
+  // Migration runs a long sequential call train against the embedder. Per-
+  // call latency varies wildly across hardware: on a CPU-only sidecar with a
+  // 16-chunk document, a single embed batch can run >60 s. Default to 5 min
+  // so a slow but progressing call doesn't get clipped by the embedder
+  // client's retry budget (3 × 60 s would otherwise stack to run-killing).
+  // Override with CAPTAIN_MEMO_VOYAGE_TIMEOUT_MS for hosted-API usage where
+  // a much shorter ceiling is fine.
   const timeoutMs = Number(process.env.CAPTAIN_MEMO_VOYAGE_TIMEOUT_MS ?? 300_000);
   const apiFormat = process.env.CAPTAIN_MEMO_VOYAGE_API_FORMAT === 'aelita'
     ? 'aelita'

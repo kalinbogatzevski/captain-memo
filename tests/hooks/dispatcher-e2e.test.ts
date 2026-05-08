@@ -1,12 +1,13 @@
-// End-to-end test for the dispatcher chain that production uses:
+// End-to-end test for the production hook entry chain:
 //   bin/captain-memo-hook EVENT  →  src/hooks/dispatcher.ts  →  src/hooks/<event>.ts
 //
-// The existing per-handler tests spawn `bun src/hooks/<event>.ts` directly,
-// so `import.meta.main` is true in the handler and main() runs. That hid
-// the bug where the dispatcher's dynamic import didn't actually invoke the
-// handlers' main() because import.meta.main was false. THIS test invokes
-// `bin/captain-memo-hook` exactly as Claude Code does and asserts the
-// production wiring still delivers the payload to the worker.
+// Per-handler tests spawn `bun src/hooks/<event>.ts` directly, which makes
+// the handler the main module — its `import.meta.main` guard is true and
+// main() runs as a side-effect of import. That code path is NOT what runs
+// in production. This test invokes `bin/captain-memo-hook` exactly as
+// Claude Code does and asserts the dispatcher chain delivers payloads to
+// the worker, catching any regression where dynamic-import + main-guard
+// shape break the wiring.
 
 import { test, expect, beforeAll, afterAll } from 'bun:test';
 import { join } from 'path';
