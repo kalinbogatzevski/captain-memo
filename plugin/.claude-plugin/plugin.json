@@ -1,8 +1,8 @@
 {
   "name": "captain-memo",
-  "version": "1.0.0-pre",
+  "version": "0.1.0",
   "description": "Local memory layer for Claude Code — hybrid search, three summarizer providers, self-hosted embedder. Replaces claude-mem.",
-  "author": "Kalin Bogatzevski",
+  "author": { "name": "Kalin Bogatzevski" },
   "license": "MIT",
   "homepage": "https://github.com/kalin/captain-memo",
   "mcpServers": {
