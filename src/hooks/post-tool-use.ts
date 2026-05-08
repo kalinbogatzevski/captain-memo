@@ -1,4 +1,4 @@
-import { readStdinJson, workerFetch, summarize, resolveProjectId } from './shared.ts';
+import { readStdinJson, workerFetch, summarize, resolveProjectId, logHookError } from './shared.ts';
 import type { RawObservationEvent } from '../shared/types.ts';
 
 interface PostToolUsePayload {
@@ -10,7 +10,12 @@ interface PostToolUsePayload {
   tool_response?: unknown;
 }
 
-const HOOK_TIMEOUT_MS = 100;
+// PostToolUse blocks Claude Code's tool-use hot path, so we want a tight
+// budget — but 100 ms was so tight that on slower CPUs (or under embedder
+// load) every enqueue silently aborted via AbortController, leaving the
+// observations queue forever empty. 1 s gives realistic margin for a
+// localhost POST + sqlite append, and is overridable via env.
+const HOOK_TIMEOUT_MS = Number(process.env.CAPTAIN_MEMO_POST_TOOL_USE_TIMEOUT_MS ?? 1000);
 
 function extractFiles(input: unknown, response: unknown): { read: string[]; modified: string[] } {
   const read: string[] = [];
@@ -52,5 +57,8 @@ async function main(): Promise<void> {
 }
 
 if (import.meta.main) {
-  main().catch(() => process.exit(0));
+  main().catch((err) => {
+    logHookError('PostToolUse', err);
+    process.exit(0);
+  });
 }

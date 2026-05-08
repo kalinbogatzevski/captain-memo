@@ -1,4 +1,4 @@
-import { readStdinJson, writeStdout, workerFetch } from './shared.ts';
+import { readStdinJson, writeStdout, workerFetch, logHookError } from './shared.ts';
 import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS } from '../shared/paths.ts';
 import type { EnvelopePayload } from '../shared/types.ts';
 
@@ -33,7 +33,8 @@ async function main(): Promise<void> {
 }
 
 if (import.meta.main) {
-  main().catch(() => {
+  main().catch((err) => {
+    logHookError('UserPromptSubmit', err);
     process.exit(0);
   });
 }

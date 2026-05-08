@@ -1,4 +1,4 @@
-import { readStdinJson, workerFetch } from './shared.ts';
+import { readStdinJson, workerFetch, logHookError } from './shared.ts';
 import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS } from '../shared/paths.ts';
 
 interface SessionStartPayload {
@@ -18,5 +18,8 @@ async function main(): Promise<void> {
 }
 
 if (import.meta.main) {
-  main().catch(() => process.exit(0));
+  main().catch((err) => {
+    logHookError('SessionStart', err);
+    process.exit(0);
+  });
 }

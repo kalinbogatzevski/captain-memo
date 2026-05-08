@@ -1,5 +1,8 @@
 // Single shebang shim → routes to the correct hook handler based on
-// argv[2] or $CLAUDE_HOOK_EVENT_NAME.
+// argv[2] or $CLAUDE_HOOK_EVENT_NAME. Logs unhandled errors via logHookError
+// so silent timeouts are debuggable after-the-fact.
+
+import { logHookError } from './shared.ts';
 
 const EVENTS: Record<string, string> = {
   UserPromptSubmit: '../hooks/user-prompt-submit.ts',
@@ -19,9 +22,17 @@ async function main(): Promise<void> {
   }
 
   const target = EVENTS[event]!;
-  await import(target);
+  try {
+    await import(target);
+  } catch (err) {
+    logHookError(event, err);
+    process.exit(0);
+  }
 }
 
 if (import.meta.main) {
-  main().catch(() => process.exit(0));
+  main().catch((err) => {
+    logHookError(process.argv[2] ?? 'unknown', err);
+    process.exit(0);
+  });
 }

@@ -4,8 +4,32 @@
 // to stdin, and reads the hook's stdout. Errors should NEVER cause the hook
 // to print stack traces — fail-open is the contract. The script's job is to
 // pass through (UserPromptSubmit appends the envelope; others just log).
+//
+// To make "fail-open" debuggable, all hooks log unhandled errors to
+// ~/.captain-memo/logs/hook.log via logHookError below; CAPTAIN_MEMO_HOOK_DEBUG=1
+// also tees them to stderr.
 
+import { appendFileSync, mkdirSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
 import { DEFAULT_WORKER_PORT } from '../shared/paths.ts';
+
+const HOOK_LOG_DIR = join(homedir(), '.captain-memo', 'logs');
+const HOOK_LOG_FILE = join(HOOK_LOG_DIR, 'hook.log');
+
+export function logHookError(event: string, err: unknown): void {
+  try {
+    mkdirSync(HOOK_LOG_DIR, { recursive: true });
+    const e = err as Error;
+    const line = `${new Date().toISOString()} [${event}] ${e?.name ?? 'Error'}: ${e?.message ?? String(err)}\n${e?.stack ?? ''}\n`;
+    appendFileSync(HOOK_LOG_FILE, line);
+    if (process.env.CAPTAIN_MEMO_HOOK_DEBUG === '1') {
+      process.stderr.write(line);
+    }
+  } catch {
+    // last-ditch — fs failed; nothing left to do without violating the hook contract.
+  }
+}
 
 const WORKER_BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
 

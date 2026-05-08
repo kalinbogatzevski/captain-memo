@@ -843,6 +843,7 @@ if (import.meta.main) {
   const embedderEndpoint = process.env.CAPTAIN_MEMO_EMBEDDER_ENDPOINT ?? DEFAULT_VOYAGE_ENDPOINT;
   const embedderModel = process.env.CAPTAIN_MEMO_EMBEDDER_MODEL ?? 'voyageai/voyage-4-nano';
   const embedderApiKey = process.env.CAPTAIN_MEMO_EMBEDDER_API_KEY;
+  const embeddingDimension = Number(process.env.CAPTAIN_MEMO_EMBEDDING_DIM ?? 2048);
   const vectorDbPath = join(VECTOR_DB_DIR, 'embeddings.db');
 
   const watchMemory = process.env.CAPTAIN_MEMO_WATCH_MEMORY;
@@ -948,7 +949,7 @@ if (import.meta.main) {
     embedderModel,
     ...(embedderApiKey !== undefined && { embedderApiKey }),
     vectorDbPath,
-    embeddingDimension: 2048,
+    embeddingDimension,
     ...(watchPaths !== undefined && watchChannel !== undefined && { watchPaths, watchChannel }),
     observationQueueDbPath: QUEUE_DB_PATH,
     observationsDbPath: OBSERVATIONS_DB_PATH,

@@ -1,4 +1,4 @@
-import { readStdinJson, workerFetch } from './shared.ts';
+import { readStdinJson, workerFetch, logHookError } from './shared.ts';
 import { DEFAULT_STOP_DRAIN_BUDGET_MS } from '../shared/paths.ts';
 
 interface StopPayload {
@@ -19,5 +19,8 @@ async function main(): Promise<void> {
 }
 
 if (import.meta.main) {
-  main().catch(() => process.exit(0));
+  main().catch((err) => {
+    logHookError('Stop', err);
+    process.exit(0);
+  });
 }
