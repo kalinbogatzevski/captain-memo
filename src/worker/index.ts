@@ -419,7 +419,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // Permanent failures (auth, schema, 400) shouldn't loop. Distinguish
         // by error shape — these will never succeed on retry, so retrying
         // burns API quota for nothing.
-        const permanent = /401|403|invalid api key|invalid x-api-key|authentication|unauthorized|400|schema|invalid request/i.test(msg);
+        const permanent = /401|403|invalid api key|invalid x-api-key|authentication|unauthorized|400|schema|invalid request|executable not found|enoent|command not found/i.test(msg);
         if (permanent) {
           permanentIds.push(...groupRows.map(r => r.id));
           permanentReason = msg.slice(0, 200);
