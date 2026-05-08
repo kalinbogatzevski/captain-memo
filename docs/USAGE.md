@@ -194,9 +194,79 @@ captain-memo install-hooks --project
 | `PostToolUse` | 100 ms (fire-and-forget) | Event dropped |
 | `Stop` | 5 s drain | Queue persists for next session |
 
+## Migrating from claude-mem
+
+Plan-3 ships a one-time, **read-only** migration command that imports your
+existing `~/.claude-mem/claude-mem.db` into the Captain Memo corpus. The
+source database is opened with `readonly: true` and is never modified or
+deleted — claude-mem keeps running side-by-side for as long as you want it to.
+
+```bash
+# 1. Inspect first (zero-risk — prints row counts only):
+captain-memo inspect-claude-mem
+
+# 2. Preview what would migrate (no writes):
+captain-memo migrate-from-claude-mem --dry-run
+
+# 3. Real migration (writes to ~/.captain-memo/, never to ~/.claude-mem/):
+captain-memo migrate-from-claude-mem --project erp-platform
+
+# Resumable / partial:
+captain-memo migrate-from-claude-mem --limit 1000        # process first 1000 rows then stop
+captain-memo migrate-from-claude-mem --from-id 12000     # resume from observation/summary id
+captain-memo migrate-from-claude-mem --db /custom/path/claude-mem.db
+```
+
+### Flags
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--dry-run` | off | Walk the source DB, transform every row, but never write to the meta DB or vector store. Reports the same counts a real run would. |
+| `--limit N` | unlimited | Cap the number of new rows processed this run. Already-migrated rows still count as `skipped`, not `migrated`. |
+| `--from-id N` | `0` | Only consider source rows with `id >= N`. Useful for sharding very large migrations. |
+| `--project ID` | `$CAPTAIN_MEMO_PROJECT_ID` or `default` | Project namespace for the migrated corpus. |
+| `--db PATH` | `~/.claude-mem/claude-mem.db` | Override the source database path. |
+| `--keep-original` | always on | Documented for clarity — Captain Memo never deletes the source DB. |
+
+### Safety contract
+
+- `~/.claude-mem/claude-mem.db` is opened with `readonly: true` and never
+  written to or deleted.
+- Migration is **idempotent**: a `migration_progress` table inside
+  `~/.captain-memo/meta.sqlite3` tracks every `(source_kind, source_id)` pair
+  processed. Re-running the command picks up only new rows; previously
+  migrated rows show up as `skipped`.
+- Re-running with `--dry-run` always reports the count of rows that *would*
+  be migrated — it does not write progress, so it remains a true preview.
+- claude-mem continues running side by side for the dual-running phase
+  (Spec §7 Phase 3). You can keep both installed indefinitely.
+
+### Rollback
+
+```bash
+# Drop the captain-memo data directory (vector + meta DB + queues):
+rm -rf ~/.captain-memo
+
+# Reinstall:
+captain-memo install
+```
+
+claude-mem keeps working independently — its database, vector store, and
+hooks are completely untouched by Captain Memo.
+
+### What gets migrated
+
+| Source table | Destination | Notes |
+|---|---|---|
+| `observations` | One `Document` per row, channel `observation` | `narrative` becomes one chunk, each non-empty entry in `facts[]` becomes another chunk. Empty rows are marked done and skipped. |
+| `session_summaries` | One `Document` per row, channel `observation` | One chunk per non-empty field across `request`, `investigated`, `learned`, `completed`, `next_steps`, `notes`. |
+| `sdk_sessions` / `user_prompts` / `pending_messages` | not migrated | Session/prompt logs are session-bound and not useful as cross-session memory. |
+
+Each migrated chunk carries `metadata.migrated_from = "claude-mem"` plus the
+original `observation_id` / `summary_id` for traceability.
+
 ## What's NOT in Plan 2
 
-- Migration from `claude-mem` (Plan 3)
 - Federation with remote MCPs (Plan 3)
 - `optimize` / `purge` / `forget` (Plan 3)
 - Retrieval-quality eval runner (Plan 3)
