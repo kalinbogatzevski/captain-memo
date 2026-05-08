@@ -172,10 +172,14 @@ export async function migrateFromClaudeMemCommand(args: string[]): Promise<numbe
   // 5-minute timeout gives margin for that + the embedder client's 3 retries
   // (which would otherwise stack: 3 × 60 s = run-killing).
   const timeoutMs = Number(process.env.CAPTAIN_MEMO_VOYAGE_TIMEOUT_MS ?? 300_000);
+  const apiFormat = process.env.CAPTAIN_MEMO_VOYAGE_API_FORMAT === 'aelita'
+    ? 'aelita'
+    : 'openai';
   const embedderOpts: ConstructorParameters<typeof Embedder>[0] = {
     endpoint: process.env.CAPTAIN_MEMO_VOYAGE_ENDPOINT ?? DEFAULT_VOYAGE_ENDPOINT,
     model: process.env.CAPTAIN_MEMO_VOYAGE_MODEL ?? 'voyage-4-nano',
     timeoutMs,
+    apiFormat,
   };
   if (process.env.CAPTAIN_MEMO_VOYAGE_API_KEY) {
     embedderOpts.apiKey = process.env.CAPTAIN_MEMO_VOYAGE_API_KEY;

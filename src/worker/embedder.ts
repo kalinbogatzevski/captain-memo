@@ -1,3 +1,5 @@
+export type ApiFormat = 'openai' | 'aelita';
+
 export interface EmbedderOptions {
   endpoint: string;
   model: string;
@@ -5,6 +7,11 @@ export interface EmbedderOptions {
   timeoutMs?: number;
   maxBatchSize?: number;
   maxRetries?: number;
+  // 'openai' (default): POST /v1/embeddings — { input, model, input_type } →
+  //   { data: [{ embedding, index }] }; auth via `Authorization: Bearer …`.
+  // 'aelita':           POST /embed       — { texts, input_type }           →
+  //   { embeddings: [[…], …] };           auth via `x-aelita-token: …`.
+  apiFormat?: ApiFormat;
 }
 
 /**
@@ -23,6 +30,10 @@ interface VoyageResponse {
   model: string;
 }
 
+interface AelitaResponse {
+  embeddings: number[][];
+}
+
 export class Embedder {
   private endpoint: string;
   private model: string;
@@ -30,6 +41,7 @@ export class Embedder {
   private timeoutMs: number;
   private maxBatchSize: number;
   private maxRetries: number;
+  private apiFormat: ApiFormat;
 
   constructor(opts: EmbedderOptions) {
     this.endpoint = opts.endpoint;
@@ -38,6 +50,7 @@ export class Embedder {
     this.timeoutMs = opts.timeoutMs ?? 1500;
     this.maxBatchSize = opts.maxBatchSize ?? 128;
     this.maxRetries = opts.maxRetries ?? 3;
+    this.apiFormat = opts.apiFormat ?? 'openai';
   }
 
   async embed(texts: string[], inputType: InputType = 'document'): Promise<number[][]> {
@@ -76,7 +89,16 @@ export class Embedder {
 
   private async embedBatchOnce(texts: string[], inputType: InputType): Promise<number[][]> {
     const headers: Record<string, string> = { 'content-type': 'application/json' };
-    if (this.apiKey) headers.authorization = `Bearer ${this.apiKey}`;
+    let body: string;
+    if (this.apiFormat === 'aelita') {
+      if (this.apiKey) headers['x-aelita-token'] = this.apiKey;
+      body = JSON.stringify({ texts, input_type: inputType });
+    } else {
+      if (this.apiKey) headers.authorization = `Bearer ${this.apiKey}`;
+      // input_type is a Captain Memo / Voyage extension; OpenAI-compatible
+      // endpoints ignore unknown fields, so this is safe across all providers.
+      body = JSON.stringify({ input: texts, model: this.model, input_type: inputType });
+    }
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -85,13 +107,15 @@ export class Embedder {
       const res = await fetch(this.endpoint, {
         method: 'POST',
         headers,
-        // input_type is a Captain Memo / Voyage extension; OpenAI-compatible
-        // endpoints ignore unknown fields, so this is safe across all providers.
-        body: JSON.stringify({ input: texts, model: this.model, input_type: inputType }),
+        body,
         signal: controller.signal,
       });
       if (!res.ok) {
         throw new Error(`Embedder HTTP ${res.status}: ${await res.text()}`);
+      }
+      if (this.apiFormat === 'aelita') {
+        const json = (await res.json()) as AelitaResponse;
+        return json.embeddings;
       }
       const json = (await res.json()) as VoyageResponse;
       return json.data
