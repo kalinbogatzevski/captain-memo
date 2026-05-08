@@ -17,24 +17,38 @@ import { fmtBytes } from '../../shared/format.ts';
 import { boldRed, dim as dimText, green, yellow } from '../../shared/ansi.ts';
 import { printMiniBanner } from '../banner.ts';
 
-async function discoverEmbeddingDim(endpoint: string): Promise<number> {
-  // Explicit override wins.
+async function discoverEmbeddingDim(
+  endpoint: string,
+  embedder: { embed: (texts: string[]) => Promise<number[][]> },
+): Promise<number> {
+  // 1. Explicit override wins (always honored).
   const envDim = process.env.CAPTAIN_MEMO_EMBEDDING_DIM;
   if (envDim) return Number(envDim);
-  // Probe the sidecar's /health (Captain Memo convention; remote OpenAI-compatible
-  // endpoints won't have this and will fall through to the default).
+
+  // 2. Probe the sidecar's /health (Captain Memo + Aelita convention).
   try {
-    const healthUrl = endpoint.replace(/\/v1\/embeddings\/?$/, '/health');
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 2000);
-    const res = await fetch(healthUrl, { signal: ctrl.signal });
-    clearTimeout(t);
-    if (res.ok) {
-      const j = (await res.json()) as { dim?: number };
-      if (typeof j.dim === 'number' && j.dim > 0) return j.dim;
+    const healthUrl = endpoint.replace(/\/v1\/embeddings\/?$|\/embed\/?$/, '/health');
+    if (healthUrl !== endpoint) {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 2000);
+      const res = await fetch(healthUrl, { signal: ctrl.signal });
+      clearTimeout(t);
+      if (res.ok) {
+        const j = (await res.json()) as { dim?: number };
+        if (typeof j.dim === 'number' && j.dim > 0) return j.dim;
+      }
     }
   } catch { /* fall through */ }
-  // voyage-4-nano open-weights native size.
+
+  // 3. Real embedding probe — works for any provider (Voyage hosted has no
+  //    /health, OpenAI doesn't either). Costs one tiny token but is
+  //    authoritative: the dim we get back is the dim we'll write.
+  try {
+    const vecs = await embedder.embed(['ok']);
+    if (vecs[0] && vecs[0].length > 0) return vecs[0].length;
+  } catch { /* fall through */ }
+
+  // 4. voyage-4-nano open-weights native size — last-resort default.
   return 2048;
 }
 
@@ -185,7 +199,7 @@ export async function migrateFromClaudeMemCommand(args: string[]): Promise<numbe
     embedderOpts.apiKey = process.env.CAPTAIN_MEMO_VOYAGE_API_KEY;
   }
   const embedder = new Embedder(embedderOpts);
-  const dim = await discoverEmbeddingDim(embedderOpts.endpoint);
+  const dim = await discoverEmbeddingDim(embedderOpts.endpoint, embedder);
   console.log(`Embedding dim: ${dim}`);
   console.log('');
 
