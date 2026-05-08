@@ -4,6 +4,30 @@
   "description": "Local memory layer for Claude Code — Voyage-embedded, hybrid search, federated remotes",
   "type": "module",
   "private": true,
+  "license": "MIT",
+  "author": {
+    "name": "Kalin Bogatzevski",
+    "url": "https://github.com/kalin"
+  },
+  "homepage": "https://github.com/kalin/captain-memo",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kalin/captain-memo.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kalin/captain-memo/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "claude-code-plugin",
+    "memory",
+    "rag",
+    "embeddings",
+    "voyage-ai",
+    "sqlite-vec",
+    "mcp",
+    "anthropic"
+  ],
   "engines": {
     "bun": ">=1.1.14"
   },

@@ -25,6 +25,14 @@ function dirSize(path: string): number {
   return m ? Number(m[1]) * 1024 : 0;
 }
 
+// Captain Memo corpus only — excludes the embedder venv + model weights, which
+// dominate ~/.captain-memo/ but aren't memory storage.
+function corpusSize(): number {
+  const total = dirSize(DATA_DIR);
+  const embedDir = join(DATA_DIR, 'embed');
+  return Math.max(0, total - dirSize(embedDir));
+}
+
 function fmtDate(epochS: number): string {
   return new Date(epochS * 1000).toISOString().slice(0, 10);
 }
@@ -72,7 +80,7 @@ interface TargetStats {
 function gatherTargetStats(meta: MetaStore): TargetStats {
   const stats = meta.stats();
   return {
-    dataDirSize: dirSize(DATA_DIR),
+    dataDirSize: corpusSize(),
     totalChunks: stats.total_chunks,
     byChannel: stats.by_channel,
   };
@@ -136,9 +144,14 @@ export async function migrateFromClaudeMemCommand(args: string[]): Promise<numbe
   if (!existsSync(VECTOR_DB_DIR)) mkdirSync(VECTOR_DB_DIR, { recursive: true });
 
   const meta = new MetaStore(META_DB_PATH);
+  // Migration runs a long sequential call train against the embedder.
+  // The default 1.5s timeout is tuned for live single-document queries; bump it
+  // here so a single slow response doesn't abort a multi-thousand-row run.
+  const timeoutMs = Number(process.env.CAPTAIN_MEMO_VOYAGE_TIMEOUT_MS ?? 60_000);
   const embedderOpts: ConstructorParameters<typeof Embedder>[0] = {
     endpoint: process.env.CAPTAIN_MEMO_VOYAGE_ENDPOINT ?? DEFAULT_VOYAGE_ENDPOINT,
     model: process.env.CAPTAIN_MEMO_VOYAGE_MODEL ?? 'voyage-4-nano',
+    timeoutMs,
   };
   if (process.env.CAPTAIN_MEMO_VOYAGE_API_KEY) {
     embedderOpts.apiKey = process.env.CAPTAIN_MEMO_VOYAGE_API_KEY;
@@ -221,7 +234,7 @@ function printComparison(
 
   console.log(`Source (claude-mem)                 Target (captain-memo)`);
   console.log(`────────────────────                ─────────────────────`);
-  console.log(row('DB size:',         fmtBytes(source.dbSize),     'Data dir size:', fmtBytes(target.dataDirSize)));
+  console.log(row('DB size:',         fmtBytes(source.dbSize),     'Corpus size:',   fmtBytes(target.dataDirSize)));
   console.log(row('Observations:',    num(source.observations),    'Total chunks:',  num(target.totalChunks)));
   console.log(row('Summaries:',       num(source.summaries)));
   console.log(row('User prompts:',    num(source.userPrompts)));

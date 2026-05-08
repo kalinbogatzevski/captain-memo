@@ -16,7 +16,7 @@
 //
 // Idempotent: re-running reconfigures rather than crashes.
 
-import { existsSync, mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync, statSync, chmodSync, readdirSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync, statSync, chmodSync, readdirSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { homedir } from 'os';
 import { spawnSync } from 'child_process';
@@ -426,6 +426,34 @@ function installWorkerService(paths: ModePaths, bunPath: string): void {
   ok(`worker service enabled + started (${paths.mode === 'user' ? 'systemctl --user' : 'systemctl'} ${WORKER_UNIT_NAME})`);
 }
 
+function installCliShim(mode: InstallMode): void {
+  // System mode: /usr/local/bin (universal PATH).
+  // User mode:   ~/.local/bin (on PATH on every modern Linux desktop via
+  //              ~/.profile; we still warn if the user has an unusual setup).
+  const linkDir = mode === 'system'
+    ? '/usr/local/bin'
+    : join(homedir(), '.local/bin');
+  const linkPath = join(linkDir, 'captain-memo');
+  const target = join(REPO_ROOT, 'bin/captain-memo');
+
+  if (!existsSync(linkDir)) mkdirSync(linkDir, { recursive: true });
+
+  // Idempotent — drop any existing entry (regular file, symlink, or broken link)
+  // before re-linking so re-running the wizard never fails on EEXIST.
+  try { lstatSync(linkPath); unlinkSync(linkPath); } catch { /* not present */ }
+
+  symlinkSync(target, linkPath);
+  ok(`linked ${linkPath} → ${target}`);
+
+  if (mode === 'user') {
+    const pathParts = (process.env.PATH ?? '').split(':');
+    if (!pathParts.includes(linkDir)) {
+      warn(`${linkDir} is not on your PATH; add this to ~/.bashrc or ~/.zshrc:`);
+      info(`  export PATH="$HOME/.local/bin:$PATH"`);
+    }
+  }
+}
+
 function registerPlugin(mode: InstallMode): void {
   // Run `claude plugin marketplace add <repo> && claude plugin install captain-memo@captain-memo`
   // — that's how Claude Code actually picks up the plugin (manifest, hooks,
@@ -558,6 +586,9 @@ Both modes: idempotent re-runs reconfigure. To remove: captain-memo uninstall`);
 
   header('Registering Claude Code plugin');
   registerPlugin(mode);
+
+  header('Linking CLI shim');
+  installCliShim(mode);
 
   header('Health probe');
   probeHealth();

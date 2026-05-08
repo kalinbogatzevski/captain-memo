@@ -79,6 +79,20 @@ function removeSystemMode(): void {
   spawnSync('userdel', ['captain-memo-embed'], { stdio: 'ignore' });
 }
 
+function removeCliShim(): void {
+  const candidates = [
+    '/usr/local/bin/captain-memo',
+    join(realHome(), '.local/bin/captain-memo'),
+  ];
+  for (const link of candidates) {
+    let exists = false;
+    try { lstatSync(link); exists = true; } catch { /* not present */ }
+    if (exists) {
+      try { unlinkSync(link); ok(`removed CLI shim ${link}`); } catch { /* fine */ }
+    }
+  }
+}
+
 function removePlugin(): void {
   header('Unregistering Claude Code plugin');
 
@@ -128,6 +142,7 @@ With    --purge: also deletes ~/.captain-memo/ entirely.`);
   if (found.user && !systemOnly) removeUserMode();
   if (found.system && !userOnly) removeSystemMode();
 
+  removeCliShim();
   removePlugin();
 
   if (purge) {
