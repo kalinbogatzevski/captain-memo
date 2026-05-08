@@ -81,19 +81,27 @@ function removeSystemMode(): void {
 
 function removePlugin(): void {
   header('Unregistering Claude Code plugin');
+
+  const runAsUser = (cmd: string, args: string[]) => {
+    const sudoUser = process.env.SUDO_USER;
+    if (sudoUser && process.getuid && process.getuid() === 0) {
+      return spawnSync('sudo', ['-u', sudoUser, '-E', cmd, ...args], { stdio: 'inherit' });
+    }
+    return spawnSync(cmd, args, { stdio: 'inherit' });
+  };
+
+  // Best-effort: ignore exit codes (the user may already have removed it manually).
+  runAsUser('claude', ['plugin', 'uninstall', 'captain-memo@captain-memo']);
+  runAsUser('claude', ['plugin', 'marketplace', 'remove', 'captain-memo']);
+
+  // Also clean up any leftover symlink from the older install method.
   const link = join(realHome(), '.claude', 'plugins', 'captain-memo');
   let exists = false;
   try { lstatSync(link); exists = true; } catch { /* not present */ }
   if (exists) {
-    try {
-      unlinkSync(link);
-      ok(`removed ${link}`);
-    } catch (e) {
-      warn(`could not remove ${link}: ${(e as Error).message}`);
-    }
-  } else {
-    info(`(no plugin symlink found at ${link})`);
+    try { unlinkSync(link); ok(`removed legacy symlink ${link}`); } catch { /* fine */ }
   }
+  ok('plugin unregistered');
 }
 
 export async function uninstallCommand(args: string[]): Promise<number> {

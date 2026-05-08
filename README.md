@@ -46,47 +46,89 @@ So I sat down to build that "something different" for myself, and ended up with 
 | OS | Linux (systemd) | Debian 13 / Ubuntu 24.04 | macOS / Windows port not yet implemented |
 | CPU | x86_64, SSE4.2 | x86_64 with **AVX2** | The local embedder is ~10× faster on AVX2 hardware (most CPUs since ~2014). Pre-AVX2 still works via `numpy<2`. |
 | RAM | 2 GB | 4 GB+ | Embedder + worker peak ~3 GB during indexing. |
-| Disk | 5 GB free in `/opt` | 10 GB | Python venv ~3 GB + voyage-4-nano model ~250 MB + your vector DB. |
+| Disk | 5 GB free in `$HOME` | 10 GB | Python venv ~3 GB + voyage-4-nano model ~250 MB + your vector DB. |
 | Python | 3.11+ | 3.11–3.13 | Only required if installing the local embedder. |
 | Bun | ≥ 1.1.14 | latest | https://bun.com |
-| Sudo | required | — | For `/opt/captain-memo-embed`, systemd units, `/etc/captain-memo`. |
+| Sudo | **not required** | — | The default install runs entirely as your user. Sudo is only needed if you opt into `--system` (multi-user / always-on server) or want `loginctl enable-linger` to keep services running across logouts. |
 | Network | outbound HTTPS | — | First-time install pulls ~3.3 GB from PyPI + HuggingFace. |
 
 The wizard runs **pre-flight checks** before touching anything — it tells you exactly which requirement is unmet and how to fix it. If your hardware can't run the local embedder (e.g. low RAM / no disk), the wizard offers to use a remote `/v1/embeddings` endpoint instead, so Captain Memo still works.
 
-## Install (one command)
+## Install (one command, no sudo)
 
 ```bash
 git clone https://github.com/<your-account>/captain-memo
 cd captain-memo
 bun install
-sudo ./bin/captain-memo install
+./bin/captain-memo install
 ```
 
-The `install` command runs an interactive wizard — asks which summarizer + embedder you want, where to find your memory files, then sets up:
+That's it. The `install` command runs an interactive wizard — asks which summarizer + embedder you want, where to find your memory files, then sets up:
 
-- Embedder sidecar (systemd, runs voyage-4-nano locally on port 8124)
-- Worker daemon (systemd, search + observation pipeline on port 39888)
-- Claude Code plugin registration (`~/.claude/plugins/captain-memo` symlink)
-- `/etc/captain-memo/worker.env` with your chosen config
+- **Embedder sidecar** at `~/.captain-memo/embed/` (user-level systemd, voyage-4-nano on port 8124)
+- **Worker daemon** managed via `~/.config/systemd/user/captain-memo-worker.service` (port 39888)
+- **Claude Code plugin registration** via `claude plugin marketplace add` + `claude plugin install` (the wizard runs both for you — your hooks, MCP server, and slash commands all auto-register)
+- **Config** at `~/.config/captain-memo/worker.env`
 
-After the wizard, restart any open Claude Code sessions. Hooks fire automatically in every future session.
+After the wizard, **fully restart Claude Code** (quit the `claude` process, not just the session) for the plugin to load. Hooks then fire automatically in every future session.
+
+### `--system` mode (optional)
+
+For headless servers, multi-user dev boxes, or "always-on regardless of who's logged in":
 
 ```bash
-captain-memo doctor    # check status across all components
-captain-memo uninstall # clean removal (--purge for data too)
+sudo ./bin/captain-memo install --system
 ```
 
-## Quick reference
+Installs to `/opt/captain-memo-embed/` + `/etc/systemd/system/` + `/etc/captain-memo/` instead. Same wizard, same result, just at system scope.
+
+```bash
+captain-memo doctor              # check status across all components
+captain-memo uninstall           # clean removal (--purge for data too)
+captain-memo uninstall --system  # for the system-mode install
+```
+
+## Inside Claude Code
+
+After install + a full Claude Code restart, the plugin exposes two layers to every session:
+
+### 5 slash commands you can type directly
+
+```
+/captain-memo:search <query>      # hybrid search across memory + skills + observations, top 5 hits
+/captain-memo:recall <doc_id>     # full content of a hit (use the doc_id from a search result)
+/captain-memo:observations        # recent captured session observations (--limit N optional)
+/captain-memo:stats               # corpus stats inline in chat
+/captain-memo:doctor              # health probe inline in chat
+```
+
+### 8 MCP tools the model calls automatically
+
+These fire when the model decides retrieval would help your prompt — no slash command required. List them anytime with `/mcp`:
+
+| Tool | Purpose |
+|---|---|
+| `search_all` | Hybrid search across all channels |
+| `search_memory` | Curated memory only (filter: type, project) |
+| `search_skill` | Skill bodies only (filter: skill_id) |
+| `search_observations` | Past session observations (filter: type, files, since) |
+| `get_full` | Full content of a hit by `doc_id` |
+| `reindex` | Trigger re-embed |
+| `stats` | Corpus stats |
+| `status` | Worker health |
+
+## CLI commands (any terminal)
 
 ```bash
 captain-memo status              # is the worker reachable?
-captain-memo stats               # corpus stats by channel
+captain-memo stats               # corpus stats by channel + indexing progress
 captain-memo reindex             # cheap sha-diff reindex (or --force to re-embed)
 captain-memo observation list    # recent captured observations
 captain-memo observation flush   # force-drain the queue
 captain-memo config show         # effective config (secrets masked)
 captain-memo doctor              # component health probe
+captain-memo install             # interactive install wizard
+captain-memo uninstall           # clean removal
 ```
 
 ---

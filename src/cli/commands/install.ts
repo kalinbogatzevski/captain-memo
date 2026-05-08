@@ -425,21 +425,39 @@ function installWorkerService(paths: ModePaths, bunPath: string): void {
   ok(`worker service enabled + started (${paths.mode === 'user' ? 'systemctl --user' : 'systemctl'} ${WORKER_UNIT_NAME})`);
 }
 
-function registerPlugin(): void {
-  const home = process.env.SUDO_USER ? realUserAndGroup().home : homedir();
-  const pluginsDir = join(home, '.claude', 'plugins');
-  const link = join(pluginsDir, 'captain-memo');
-  if (!existsSync(pluginsDir)) mkdirSync(pluginsDir, { recursive: true });
-  if (existsSync(link)) {
-    try { unlinkSync(link); } catch {/* may be a real dir; require manual remove */}
+function registerPlugin(mode: InstallMode): void {
+  // Run `claude plugin marketplace add <repo> && claude plugin install captain-memo@captain-memo`
+  // — that's how Claude Code actually picks up the plugin (manifest, hooks,
+  // MCP server, slash commands). The earlier symlink-into-~/.claude/plugins/
+  // approach didn't register the plugin in Claude Code's internal catalog.
+  //
+  // In user mode we just run `claude` directly. In system mode, the wizard is
+  // running as root — we drop privileges to SUDO_USER so claude reads/writes
+  // the user's settings, not root's.
+  const runAsUser = (cmd: string, args: string[]) => {
+    if (mode === 'system' && process.env.SUDO_USER) {
+      return spawnSync('sudo', ['-u', process.env.SUDO_USER, '-E', cmd, ...args], { stdio: 'inherit' });
+    }
+    return spawnSync(cmd, args, { stdio: 'inherit' });
+  };
+
+  // Idempotent — if the marketplace already exists, claude prints a notice and exits 0.
+  const r1 = runAsUser('claude', ['plugin', 'marketplace', 'add', REPO_ROOT]);
+  if (r1.status !== 0) {
+    warn(`'claude plugin marketplace add' failed (exit ${r1.status})`);
+    info('You can register manually later:');
+    info(`  claude plugin marketplace add ${REPO_ROOT}`);
+    info(`  claude plugin install captain-memo@captain-memo`);
+    return;
   }
-  symlinkSync(REPO_ROOT, link);
-  // chown only matters when re-execed under sudo (we'd be writing as root into user's home)
-  if (process.env.SUDO_USER) {
-    const { user, group } = realUserAndGroup();
-    spawnSync('chown', ['-h', `${user}:${group}`, link], { stdio: 'inherit' });
+
+  const r2 = runAsUser('claude', ['plugin', 'install', 'captain-memo@captain-memo']);
+  if (r2.status !== 0) {
+    warn(`'claude plugin install' failed (exit ${r2.status})`);
+    info('You can install manually later: claude plugin install captain-memo@captain-memo');
+    return;
   }
-  ok(`registered plugin: ${link} -> ${REPO_ROOT}`);
+  ok('plugin registered with Claude Code (captain-memo@captain-memo · enabled · scope: user)');
 }
 
 function probeHealth(): void {
@@ -536,7 +554,7 @@ Both modes: idempotent re-runs reconfigure. To remove: captain-memo uninstall`);
   installWorkerService(paths, bunPath);
 
   header('Registering Claude Code plugin');
-  registerPlugin();
+  registerPlugin(mode);
 
   header('Health probe');
   probeHealth();
