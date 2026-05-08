@@ -182,6 +182,15 @@ export async function migrateFromClaudeMemCommand(args: string[]): Promise<numbe
   const dim = await discoverEmbeddingDim(embedderOpts.endpoint);
   console.log(`Embedding dim: ${dim}`);
   console.log('');
+
+  // Pre-flight snapshot — so the user can watch the target grow against a
+  // known baseline even before the final comparison block prints.
+  const numFmt = (n: number): string => n.toLocaleString('en-US');
+  const initialTarget = gatherTargetStats(meta);
+  console.log(`Source: ${fmtBytes(sourceStats.dbSize)} · ${numFmt(sourceStats.observations)} obs · ${numFmt(sourceStats.summaries)} sums · ${numFmt(sourceStats.userPrompts)} prompts · ${sourceStats.obsRange}`);
+  console.log(`Target: ${fmtBytes(initialTarget.dataDirSize)} corpus · ${numFmt(initialTarget.totalChunks)} chunks (starting state)`);
+  console.log('');
+
   const vector = new VectorStore({
     dbPath: join(VECTOR_DB_DIR, 'embeddings.db'),
     dimension: dim,
