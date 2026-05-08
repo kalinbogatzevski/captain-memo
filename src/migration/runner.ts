@@ -160,8 +160,11 @@ export async function runMigration(
     let batch: Array<{ doc: MigrationDocument; kind: 'observation' | 'summary' }> = [];
     const flush = async (): Promise<void> => {
       if (batch.length === 0) return;
-      if (!dry) {
-        for (const item of batch) {
+      // Increment per-item AFTER each commit succeeds (or in dry-run, per item
+      // queued) so the live progress counter reflects committed work, not just
+      // documents read from the source.
+      for (const item of batch) {
+        if (!dry) {
           await commitDocument(item.doc, deps);
           const sourceId = (item.kind === 'observation'
             ? item.doc.metadata.observation_id
@@ -172,6 +175,8 @@ export async function runMigration(
             migrationDocumentSha(item.doc),
           );
         }
+        if (item.kind === 'observation') result.observations_migrated++;
+        else result.summaries_migrated++;
       }
       batch = [];
     };
@@ -193,7 +198,6 @@ export async function runMigration(
         continue;
       }
       batch.push({ doc, kind: 'observation' });
-      result.observations_migrated++;
       processed++;
       if (batch.length >= batchSize) await flush();
     }
@@ -223,7 +227,6 @@ export async function runMigration(
           continue;
         }
         batch.push({ doc, kind: 'summary' });
-        result.summaries_migrated++;
         processed++;
         if (batch.length >= batchSize) await flush();
       }
