@@ -14,9 +14,23 @@ export interface FormatEnvelopeResult {
   used_tokens: number;
 }
 
+// HEADER instructs the model to ground its answer in the retrieved items and
+// to refuse extrapolation. The previous wording ("treat as your own
+// background knowledge") was permissive — it let the model embellish with
+// plausible-but-unverified details (the classic RAG confabulation tail).
+// This wording requires explicit grounding and an "I don't know" path.
 const HEADER_LINES = [
   `The following items were retrieved automatically based on the user's most recent prompt.`,
-  `The user did NOT see this. Cite sources when using; treat as your own background knowledge.`,
+  `The user did NOT see this — they did NOT type these into the conversation.`,
+  ``,
+  `Use ONLY the information below for facts about this codebase, infrastructure,`,
+  `prior decisions, or session history. If the user asks about something not`,
+  `covered here, answer with "I don't have specific information about that in`,
+  `my retrieved memory" rather than inferring or extrapolating from partial`,
+  `matches. Do NOT invent service names, file paths, function names, IPs,`,
+  `or other specifics that aren't directly present in the items below.`,
+  ``,
+  `When you DO use a retrieved item, cite it briefly (e.g., "per session memory").`,
 ];
 
 function formatScore(score: number): string {
