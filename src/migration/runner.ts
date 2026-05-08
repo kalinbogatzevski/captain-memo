@@ -160,20 +160,29 @@ export async function runMigration(
     let batch: Array<{ doc: MigrationDocument; kind: 'observation' | 'summary' }> = [];
     const flush = async (): Promise<void> => {
       if (batch.length === 0) return;
-      // Increment per-item AFTER each commit succeeds (or in dry-run, per item
-      // queued) so the live progress counter reflects committed work, not just
-      // documents read from the source.
+      // Per-item try/catch so one slow / failing document doesn't abort the
+      // whole migration. The failed row is left out of migration_progress, so
+      // a re-run will reattempt it. errors counter accumulates so partial
+      // success is visible in the final summary.
       for (const item of batch) {
         if (!dry) {
-          await commitDocument(item.doc, deps);
-          const sourceId = (item.kind === 'observation'
-            ? item.doc.metadata.observation_id
-            : item.doc.metadata.summary_id) as number;
-          deps.meta.markMigrationDone(
-            item.kind,
-            sourceId,
-            migrationDocumentSha(item.doc),
-          );
+          try {
+            await commitDocument(item.doc, deps);
+            const sourceId = (item.kind === 'observation'
+              ? item.doc.metadata.observation_id
+              : item.doc.metadata.summary_id) as number;
+            deps.meta.markMigrationDone(
+              item.kind,
+              sourceId,
+              migrationDocumentSha(item.doc),
+            );
+          } catch (err) {
+            result.errors++;
+            opts.onProgress?.(
+              `${boldRed('skip')} ${item.kind} ${(item.doc.metadata.source_id ?? '?')}: ${(err as Error).message}`,
+            );
+            continue;
+          }
         }
         if (item.kind === 'observation') result.observations_migrated++;
         else result.summaries_migrated++;

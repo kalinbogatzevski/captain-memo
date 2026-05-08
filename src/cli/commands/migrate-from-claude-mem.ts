@@ -167,9 +167,11 @@ export async function migrateFromClaudeMemCommand(args: string[]): Promise<numbe
 
   const meta = new MetaStore(META_DB_PATH);
   // Migration runs a long sequential call train against the embedder.
-  // The default 1.5s timeout is tuned for live single-document queries; bump it
-  // here so a single slow response doesn't abort a multi-thousand-row run.
-  const timeoutMs = Number(process.env.CAPTAIN_MEMO_VOYAGE_TIMEOUT_MS ?? 60_000);
+  // Worst-case observation is a 16-chunk doc; on a 2012-era CPU without AVX2
+  // each chunk can take ~5–8 s, so a single doc batch can run 80–130 s.
+  // 5-minute timeout gives margin for that + the embedder client's 3 retries
+  // (which would otherwise stack: 3 × 60 s = run-killing).
+  const timeoutMs = Number(process.env.CAPTAIN_MEMO_VOYAGE_TIMEOUT_MS ?? 300_000);
   const embedderOpts: ConstructorParameters<typeof Embedder>[0] = {
     endpoint: process.env.CAPTAIN_MEMO_VOYAGE_ENDPOINT ?? DEFAULT_VOYAGE_ENDPOINT,
     model: process.env.CAPTAIN_MEMO_VOYAGE_MODEL ?? 'voyage-4-nano',
