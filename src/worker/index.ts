@@ -518,6 +518,38 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     files?: string[];
   };
 
+  // Recency decay for the OBSERVATION channel only — memory and skill
+  // are user-authored canonical knowledge that doesn't go stale, but
+  // auto-captured session observations do (yesterday's "we use voyage-4-nano"
+  // is superseded by today's "we switched to voyage-4-lite"). Half-life
+  // controls how quickly old chunks lose ranking weight without disappearing.
+  // Default 90 days = an observation from 90 days ago competes with one from
+  // today at 50% of its semantic score. Set to 0 to disable.
+  const HALF_LIFE_DAYS = Number(process.env.CAPTAIN_MEMO_OBSERVATION_HALF_LIFE_DAYS ?? 90);
+  const HALF_LIFE_MS = HALF_LIFE_DAYS * 24 * 3600 * 1000;
+  const applyRecencyDecay = <T extends { id: string; score: number }>(items: T[]): T[] => {
+    if (HALF_LIFE_DAYS <= 0) return items;
+    const now = Date.now();
+    const decayed = items.map(item => {
+      const lookup = meta.getChunkById(item.id);
+      if (!lookup || lookup.document.channel !== 'observation') return item;
+      const m = lookup.chunk.metadata as Record<string, unknown>;
+      const epochS = (typeof m.created_at_epoch === 'number' ? m.created_at_epoch : null)
+        ?? lookup.document.mtime_epoch;
+      if (!epochS) return item;
+      const ageMs = now - epochS * 1000;
+      if (ageMs <= 0) return item;
+      const decay = Math.exp(-Math.LN2 * ageMs / HALF_LIFE_MS);
+      return { ...item, score: item.score * decay };
+    });
+    decayed.sort((a, b) => b.score - a.score);
+    return decayed;
+  };
+  const searchWithRecency = async (embedding: number[], query: string, k: number) => {
+    const raw = await searcher.search(embedding, query, k);
+    return applyRecencyDecay(raw);
+  };
+
   const searchByChannel = async (
     query: string,
     channel: 'memory' | 'skill' | 'observation',
@@ -540,7 +572,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     // candidate pool so small channels still get representation. TODO: push
     // channel filter down to SQL/vector layer for proper efficiency.
     const candidatePool = Math.max(topK * 20, 200);
-    const fused = await searcher.search(embedding, query, candidatePool);
+    const fused = await searchWithRecency(embedding, query, candidatePool);
     const results: Array<{
       doc_id: string;
       source_path: string;
@@ -638,7 +670,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             // Fall back to keyword-only on embed failure (logged by embedder itself)
           }
         }
-        const fused = await searcher.search(embedding, query, top_k);
+        const fused = await searchWithRecency(embedding, query, top_k);
         const results = fused.map(f => {
           const lookup = meta.getChunkById(f.id);
           if (!lookup) return null;
@@ -792,7 +824,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           flags.push('embedder=skipped');
         }
 
-        const fused = await searcher.search(embedding, trimmed, parsed.data.top_k * 3);
+        const fused = await searchWithRecency(embedding, trimmed, parsed.data.top_k * 3);
         const channelsRequested: Array<'memory' | 'skill' | 'observation'> =
           parsed.data.channels ?? ['memory', 'skill', 'observation'];
         const hits: import('../shared/types.ts').EnvelopeHit[] = [];
