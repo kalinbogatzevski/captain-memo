@@ -28,68 +28,71 @@ function fmtNum(n: number): string {
 }
 
 function formatBanner(stats: StatsResponse): string {
-  const lines: string[] = [];
   const ver = stats.version ? ` v${stats.version}` : '';
-  lines.push(`⚓ Captain Memo${ver} · ${stats.project_id} · ${fmtNum(stats.total_chunks)} chunks indexed`);
+  const lines: string[] = [
+    '',
+    '',
+    `⚓ Captain Memo${ver}`,
+    '─'.repeat(60),
+  ];
+
   const byCh = Object.entries(stats.by_channel)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([k, v]) => `${k}=${fmtNum(v)}`)
     .join(', ');
-  if (byCh) lines.push(`  channels: ${byCh}`);
+  const corpusLine = byCh
+    ? `${fmtNum(stats.total_chunks)} chunks (${byCh})`
+    : `${fmtNum(stats.total_chunks)} chunks`;
 
+  const host = stats.embedder.endpoint.replace(/^https?:\/\//, '').split('/')[0] ?? '?';
+
+  lines.push(`  Project    ${stats.project_id}`);
+  lines.push(`  Corpus     ${corpusLine}`);
+  lines.push(`  Embedder   ${stats.embedder.model} @ ${host}`);
+  lines.push(`  Retrieval  silent envelope on each prompt (top-5)`);
+
+  // Conditional lines — only show when there's something to flag
   const idx = stats.indexing;
   if (idx.status === 'indexing') {
-    lines.push(`  indexing: ${fmtNum(idx.done)}/${fmtNum(idx.total)} (${idx.percent}%)`);
+    lines.push(`  Indexing   ${fmtNum(idx.done)}/${fmtNum(idx.total)} (${idx.percent}%)`);
   } else if (idx.status === 'error') {
-    lines.push(`  indexing: error — ${idx.errors} files failed`);
+    lines.push(`  Indexing   error — ${idx.errors} files failed`);
   }
-  // 'ready' / 'idle' don't add a noisy line
-
   const o = stats.observations;
   if (o.queue_pending > 0 || o.queue_processing > 0) {
-    lines.push(`  obs queue: pending=${o.queue_pending} processing=${o.queue_processing} (drains every 5s)`);
+    lines.push(`  Obs queue  pending=${o.queue_pending} processing=${o.queue_processing} (drains every 5s)`);
   }
 
-  // Embedder line only shows host (not full URL with secrets)
-  const host = stats.embedder.endpoint.replace(/^https?:\/\//, '').split('/')[0] ?? '?';
-  lines.push(`  embedder: ${stats.embedder.model} @ ${host}`);
-  lines.push(`  retrieval: silent envelope on each prompt (top-5)`);
+  lines.push('');
   return lines.join('\n');
 }
 
 export async function main(): Promise<void> {
-  // Diagnostic: confirm hook fires regardless of downstream success.
-  // Removed once SessionStart firing is verified stable across plugin versions.
-  try {
-    const { appendFileSync, mkdirSync } = await import('fs');
-    const { homedir } = await import('os');
-    const { join } = await import('path');
-    const dir = join(homedir(), '.captain-memo', 'logs');
-    mkdirSync(dir, { recursive: true });
-    appendFileSync(join(dir, 'session-start-fired.log'),
-      `${new Date().toISOString()} pid=${process.pid}\n`);
-  } catch { /* fire-detector failure must not break the hook */ }
-
   try { await readStdinJson<SessionStartPayload>(); } catch { /* ignore */ }
+
   // SessionStart isn't on a hot path — it fires once per session, not per
-  // prompt. Use a much more generous timeout than the hook default so the
-  // banner appears even when the worker is heavily contended (summarizer
-  // draining a backlog, embedder under load, etc.). Override available via
-  // CAPTAIN_MEMO_SESSION_START_TIMEOUT_MS for very slow installs.
+  // prompt. Use a generous timeout so the banner appears even when the
+  // worker is heavily contended. Override via CAPTAIN_MEMO_SESSION_START_TIMEOUT_MS.
   const timeoutMs = Number(
     process.env.CAPTAIN_MEMO_SESSION_START_TIMEOUT_MS
     ?? process.env[ENV_HOOK_TIMEOUT_MS]
     ?? 10_000,
   );
 
-  // Fetch corpus stats and print a one-paragraph banner. SessionStart's stdout
-  // becomes a system-reminder shown to both user and model.
   const stats = await workerFetch<StatsResponse>('/stats', {
     method: 'GET',
     timeoutMs,
   });
+
   if (stats.ok && stats.body) {
-    writeStdout(formatBanner(stats.body));
+    // Claude Code's SessionStart hook protocol expects a JSON envelope on
+    // stdout. The `systemMessage` field becomes the visible banner shown
+    // to both user and model under "SessionStart:startup says: …". Plain
+    // text on stdout is silently discarded.
+    writeStdout(JSON.stringify({
+      continue: true,
+      systemMessage: formatBanner(stats.body),
+    }));
   }
 }
 
