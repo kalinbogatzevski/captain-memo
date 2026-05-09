@@ -171,6 +171,15 @@ function preflight(opts: { wantLocalEmbedder: boolean }): PreflightResult[] {
     }
   }
 
+  // The remaining hardware checks (CPU SIMD, RAM, disk for the venv,
+  // outbound network for PyPI/HuggingFace) only matter for the local
+  // embedder. With a hosted backend, the embedding actually happens on
+  // someone else's GPUs — local CPU/RAM/disk are irrelevant. Gate so we
+  // don't scare hosted-path users with warnings that don't apply.
+  if (!opts.wantLocalEmbedder) {
+    return out;
+  }
+
   // CPU instruction set (informational; numpy<2 path works without AVX2)
   const cpu = readFileSync('/proc/cpuinfo', 'utf-8');
   const flags = (cpu.match(/^flags\s*:\s*(.+)/m) ?? [])[1] ?? '';

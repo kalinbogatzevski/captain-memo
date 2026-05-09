@@ -3,10 +3,24 @@
 // Reports PASS / WARN / FAIL for each component and prints a one-line
 // remediation hint when something's wrong. Read-only — never changes state.
 
-import { existsSync, readFileSync, lstatSync, readlinkSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { spawnSync } from 'child_process';
+
+// Lookup a single key from worker.env (user-mode first, then system-mode).
+function readWorkerEnvVar(key: string): string | null {
+  const candidates = [
+    join(homedir(), '.config', 'captain-memo', 'worker.env'),
+    '/etc/captain-memo/worker.env',
+  ];
+  for (const path of candidates) {
+    if (!existsSync(path)) continue;
+    const m = readFileSync(path, 'utf-8').match(new RegExp(`^${key}=(.+)$`, 'm'));
+    if (m) return m[1] ?? null;
+  }
+  return null;
+}
 
 type Status = 'PASS' | 'WARN' | 'FAIL';
 
@@ -52,9 +66,19 @@ function curlJson(url: string, timeoutMs = 3000): { ok: boolean; body: unknown }
 }
 
 function checkEmbedder(): void {
+  // Read worker.env to figure out what backend the user actually picked.
+  // Hosted Voyage / OpenAI / aelita endpoints are normal — not warnings.
+  const endpoint = readWorkerEnvVar('CAPTAIN_MEMO_EMBEDDER_ENDPOINT') ?? '';
+  const isLocal = endpoint.startsWith('http://127.0.0.1:8124')
+               || endpoint.startsWith('http://localhost:8124');
+  if (!isLocal) {
+    const host = endpoint.replace(/^https?:\/\//, '').split('/')[0] || '?';
+    record({ name: 'embedder backend', status: 'PASS', detail: `external endpoint @ ${host}` });
+    return;
+  }
   if (!svcExists('captain-memo-embed.service')) {
-    record({ name: 'embedder service', status: 'WARN', detail: 'not installed (using external embedder?)',
-             remedy: 'captain-memo install   (pick "local sidecar")' });
+    record({ name: 'embedder service', status: 'FAIL', detail: 'worker.env points at local sidecar but the service is not installed',
+             remedy: 'captain-memo install   (pick "local sidecar"), or change CAPTAIN_MEMO_EMBEDDER_ENDPOINT to a hosted backend' });
     return;
   }
   if (!svcActive('captain-memo-embed.service')) {
@@ -132,43 +156,51 @@ function checkConfig(): void {
 }
 
 function checkPluginRegistration(): void {
-  const link = join(homedir(), '.claude', 'plugins', 'captain-memo');
-  let stat;
-  try { stat = lstatSync(link); }
-  catch {
-    record({ name: 'plugin registration', status: 'FAIL', detail: `${link} missing`,
-             remedy: 'captain-memo install' });
+  // Plugins are registered with Claude Code's marketplace, not as a symlink
+  // under ~/.claude/plugins/. Ask `claude plugin list` for the truth.
+  const r = spawnSync('claude', ['plugin', 'list'], { encoding: 'utf-8', timeout: 5000 });
+  if (r.status !== 0) {
+    record({ name: 'plugin registration', status: 'WARN', detail: `'claude plugin list' returned exit ${r.status}; can't verify`,
+             remedy: 'ensure `claude` is on PATH; or run `claude plugin install captain-memo@captain-memo` manually' });
     return;
   }
-  if (stat.isSymbolicLink()) {
-    const target = readlinkSync(link);
-    if (existsSync(target)) {
-      record({ name: 'plugin registration', status: 'PASS', detail: `~/.claude/plugins/captain-memo -> ${target}` });
-    } else {
-      record({ name: 'plugin registration', status: 'FAIL', detail: `symlink target missing: ${target}`,
-               remedy: 'captain-memo uninstall && captain-memo install' });
-    }
-  } else if (stat.isDirectory()) {
-    record({ name: 'plugin registration', status: 'PASS', detail: `~/.claude/plugins/captain-memo (real directory)` });
+  // Look for our plugin slug + the enabled status. Exact format from claude CLI:
+  //   ❯ captain-memo@captain-memo
+  //     Status: ✔ enabled
+  const out = (r.stdout ?? '');
+  const ourLine = out.split('\n').find(l => l.includes('captain-memo@captain-memo'));
+  if (!ourLine) {
+    record({ name: 'plugin registration', status: 'FAIL', detail: 'captain-memo@captain-memo not in `claude plugin list`',
+             remedy: 'captain-memo install   (re-runs the marketplace registration)' });
+    return;
+  }
+  // Status icon may be on the same line OR below it; check both
+  const enabled = /enabled/i.test(out.slice(out.indexOf(ourLine), out.indexOf(ourLine) + 200));
+  if (enabled) {
+    record({ name: 'plugin registration', status: 'PASS', detail: 'captain-memo@captain-memo · enabled' });
   } else {
-    record({ name: 'plugin registration', status: 'WARN', detail: `unexpected file type at ${link}` });
+    record({ name: 'plugin registration', status: 'WARN', detail: 'captain-memo@captain-memo registered but not enabled',
+             remedy: 'claude plugin enable captain-memo@captain-memo' });
   }
 }
 
 function checkPluginManifest(): void {
-  const link = join(homedir(), '.claude', 'plugins', 'captain-memo');
-  const manifest = join(link, '.claude-plugin', 'plugin.json');
-  const hooks = join(link, 'hooks', 'hooks.json');
+  // Manifest lives in the repo's plugin/ subdir (not in ~/.claude/plugins/...).
+  // Check that the source files Claude Code reads via marketplace are present
+  // and parseable.
+  const repoRoot = join(import.meta.dir, '../../..');
+  const manifest = join(repoRoot, 'plugin', '.claude-plugin', 'plugin.json');
+  const hooks = join(repoRoot, 'plugin', 'hooks', 'hooks.json');
   if (!existsSync(manifest)) {
     record({ name: 'plugin manifest', status: 'FAIL', detail: `${manifest} missing` });
     return;
   }
   if (!existsSync(hooks)) {
     record({ name: 'plugin hooks', status: 'WARN', detail: `${hooks} missing — sessions won't fire hooks`,
-             remedy: 'captain-memo install (re-syncs the plugin source)' });
+             remedy: 'reinstall the captain-memo repo (the file is checked in)' });
     return;
   }
-  record({ name: 'plugin manifest', status: 'PASS', detail: 'plugin.json + hooks.json present' });
+  record({ name: 'plugin manifest', status: 'PASS', detail: 'plugin.json + hooks.json present in repo' });
 }
 
 function statusIcon(s: Status): string {
