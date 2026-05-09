@@ -39,6 +39,7 @@ import {
   DEFAULT_OBSERVATION_TICK_MS,
 } from '../shared/paths.ts';
 import { Summarizer } from './summarizer.ts';
+import pkg from '../../package.json' with { type: 'json' };
 
 export interface SummarizerResult {
   type: ObservationType;
@@ -607,6 +608,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           },
           project_id: opts.projectId,
           embedder: { model: opts.embedderModel, endpoint: opts.embedderEndpoint },
+          version: pkg.version,
         });
       }
       if (req.method === 'GET' && url.pathname === '/observations/recent') {

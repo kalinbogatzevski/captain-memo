@@ -20,6 +20,7 @@ interface StatsResponse {
   };
   project_id: string;
   embedder: { model: string; endpoint: string };
+  version?: string;
 }
 
 function fmtNum(n: number): string {
@@ -28,7 +29,8 @@ function fmtNum(n: number): string {
 
 function formatBanner(stats: StatsResponse): string {
   const lines: string[] = [];
-  lines.push(`⚓ Captain Memo · ${stats.project_id} · ${fmtNum(stats.total_chunks)} chunks indexed`);
+  const ver = stats.version ? ` v${stats.version}` : '';
+  lines.push(`⚓ Captain Memo${ver} · ${stats.project_id} · ${fmtNum(stats.total_chunks)} chunks indexed`);
   const byCh = Object.entries(stats.by_channel)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([k, v]) => `${k}=${fmtNum(v)}`)
