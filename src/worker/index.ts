@@ -56,6 +56,7 @@ export interface WorkerOptions {
   embedderEndpoint: string;
   embedderModel: string;
   embedderApiKey?: string;
+  embedderApiFormat?: 'openai' | 'aelita';
   vectorDbPath: string;
   embeddingDimension: number;
   skipEmbed?: boolean;
@@ -146,6 +147,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     endpoint: opts.embedderEndpoint,
     model: opts.embedderModel,
     ...(opts.embedderApiKey !== undefined && { apiKey: opts.embedderApiKey }),
+    ...(opts.embedderApiFormat !== undefined && { apiFormat: opts.embedderApiFormat }),
   });
   const vector = new VectorStore({
     dbPath: opts.vectorDbPath,
@@ -960,6 +962,12 @@ export async function runWorkerCli(): Promise<void> {
   const embedderEndpoint = process.env.CAPTAIN_MEMO_EMBEDDER_ENDPOINT ?? DEFAULT_VOYAGE_ENDPOINT;
   const embedderModel = process.env.CAPTAIN_MEMO_EMBEDDER_MODEL ?? 'voyageai/voyage-4-nano';
   const embedderApiKey = process.env.CAPTAIN_MEMO_EMBEDDER_API_KEY;
+  // 'aelita' speaks the {texts, input_type} + x-aelita-token shape used by
+  // Aelita's internal embedder VM; 'openai' (default) speaks the standard
+  // {input, model, input_type} + Bearer-auth shape used by Voyage hosted,
+  // OpenAI, OpenRouter, Ollama, etc. Anything else falls back to 'openai'.
+  const embedderApiFormatRaw = (process.env.CAPTAIN_MEMO_EMBEDDER_API_FORMAT ?? 'openai').toLowerCase();
+  const embedderApiFormat: 'openai' | 'aelita' = embedderApiFormatRaw === 'aelita' ? 'aelita' : 'openai';
   const embeddingDimension = Number(process.env.CAPTAIN_MEMO_EMBEDDING_DIM ?? 2048);
   // Honor the install wizard's keyword-only mode — without this read, a user
   // who picked "skip embedder" still gets every chunk silently zero-vectored.
@@ -1092,6 +1100,7 @@ export async function runWorkerCli(): Promise<void> {
     embedderEndpoint,
     embedderModel,
     ...(embedderApiKey !== undefined && { embedderApiKey }),
+    embedderApiFormat,
     vectorDbPath,
     embeddingDimension,
     skipEmbed,
