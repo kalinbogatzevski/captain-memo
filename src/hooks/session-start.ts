@@ -20,11 +20,21 @@ interface StatsResponse {
   };
   project_id: string;
   embedder: { model: string; endpoint: string };
+  disk?: { bytes: number; path: string };
   version?: string;
 }
 
 function fmtNum(n: number): string {
   return n.toLocaleString('en-US');
+}
+
+function fmtBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let size = bytes / 1024;
+  let i = 0;
+  while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
+  return `${size.toFixed(size >= 100 ? 0 : 1)} ${units[i]}`;
 }
 
 function formatBanner(stats: StatsResponse): string {
@@ -48,6 +58,9 @@ function formatBanner(stats: StatsResponse): string {
 
   lines.push(`  Project    ${stats.project_id}`);
   lines.push(`  Corpus     ${corpusLine}`);
+  if (stats.disk) {
+    lines.push(`  Disk       ${fmtBytes(stats.disk.bytes)}  (${stats.disk.path})`);
+  }
   lines.push(`  Embedder   ${stats.embedder.model} @ ${host}`);
   lines.push(`  Retrieval  silent envelope on each prompt (top-5)`);
 

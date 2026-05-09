@@ -1,4 +1,5 @@
 import { join } from 'path';
+import { statSync, readdirSync } from 'fs';
 import { z } from 'zod';
 import { MetaStore } from './meta.ts';
 import { Embedder } from './embedder.ts';
@@ -14,6 +15,7 @@ import { newChunkId } from '../shared/id.ts';
 import { sha256Hex } from '../shared/sha.ts';
 import type { RawObservationEvent, ObservationType, Observation } from '../shared/types.ts';
 import {
+  DATA_DIR,
   META_DB_PATH,
   VECTOR_DB_DIR,
   DEFAULT_WORKER_PORT,
@@ -40,6 +42,24 @@ import {
 } from '../shared/paths.ts';
 import { Summarizer } from './summarizer.ts';
 import pkg from '../../package.json' with { type: 'json' };
+
+// Recursive directory size in bytes. Returns 0 for missing dirs (fail-open
+// for /stats — better an under-counted disk number than a 500 response).
+// Symlinks are not followed (would risk loops + unrelated tree size).
+function dirSizeBytes(dir: string): number {
+  let total = 0;
+  try {
+    for (const name of readdirSync(dir)) {
+      try {
+        const path = join(dir, name);
+        const st = statSync(path);
+        if (st.isDirectory()) total += dirSizeBytes(path);
+        else if (st.isFile()) total += st.size;
+      } catch { /* skip files that vanished mid-walk */ }
+    }
+  } catch { /* dir missing or unreadable */ }
+  return total;
+}
 
 export interface SummarizerResult {
   type: ObservationType;
@@ -624,6 +644,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         const obsTotal = obsStore ? obsStore.countAll() : 0;
         const queuePending = obsQueue ? obsQueue.pendingCount() : 0;
         const queueProcessing = obsQueue ? obsQueue.processingCount() : 0;
+        const diskBytes = dirSizeBytes(DATA_DIR);
         return Response.json({
           total_chunks,
           by_channel,
@@ -642,6 +663,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           },
           project_id: opts.projectId,
           embedder: { model: opts.embedderModel, endpoint: opts.embedderEndpoint },
+          disk: { bytes: diskBytes, path: DATA_DIR },
           version: pkg.version,
         });
       }
