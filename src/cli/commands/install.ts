@@ -60,7 +60,7 @@ function resolvePaths(mode: InstallMode): ModePaths {
 }
 
 type SummarizerProvider = 'claude-code' | 'anthropic' | 'openai-compatible' | 'skip';
-type EmbedderProvider = 'local-sidecar' | 'openai-compatible' | 'skip';
+type EmbedderProvider = 'voyage-hosted' | 'local-sidecar' | 'openai-compatible' | 'skip';
 type WatchPaths = 'all-projects' | 'user-global' | 'custom' | 'skip';
 
 interface WizardConfig {
@@ -72,6 +72,7 @@ interface WizardConfig {
   embedder: EmbedderProvider;
   embedderEndpoint: string;
   embedderModel: string;
+  embedderApiKey?: string;
   embeddingDimension: number;
   watchMemory: string;
   hookTimeoutMs: number;
@@ -292,8 +293,9 @@ function gatherConfig(existing?: Partial<WizardConfig>): WizardConfig {
   const summarizer = ask(
     'Which summarizer should I use to compress session events into observations?',
     [
-      { value: 'claude-code', label: 'Claude Code Max/Pro plan (no API key needed)', recommended: true },
-      { value: 'anthropic', label: 'Anthropic API (paid, low latency, needs ANTHROPIC_API_KEY)' },
+      { value: 'claude-oauth', label: 'Claude Max plan via OAuth (~700 ms/call, no API key, requires `claude login`)', recommended: true },
+      { value: 'anthropic', label: 'Anthropic API (paid, sub-second, needs ANTHROPIC_API_KEY)' },
+      { value: 'claude-code', label: 'Claude Code subprocess (`claude -p`) — slower but works without OAuth file' },
       { value: 'openai-compatible', label: 'OpenAI / Ollama / OpenRouter / etc. (any /v1/chat/completions)' },
       { value: 'skip', label: "Skip — events queue but don't summarize" },
     ],
@@ -316,19 +318,36 @@ function gatherConfig(existing?: Partial<WizardConfig>): WizardConfig {
   const embedder = ask(
     'Which embedder should I use for vector search?',
     [
-      { value: 'local-sidecar', label: 'Local voyage-4-nano sidecar (best quality, runs on CPU, ~3GB install)', recommended: true },
-      { value: 'openai-compatible', label: 'External /v1/embeddings (Ollama / OpenAI / Voyage cloud / etc.)' },
+      { value: 'voyage-hosted', label: 'Voyage hosted API (fast on any hardware, ~$0.30/year typical use, needs free API key)', recommended: true },
+      { value: 'local-sidecar', label: 'Local voyage-4-nano sidecar (private, free, but ~6 GB install + needs AVX2 CPU)' },
+      { value: 'openai-compatible', label: 'External /v1/embeddings (Ollama / OpenAI / OpenRouter / your own)' },
       { value: 'skip', label: 'Skip — keyword-only retrieval (works without any embedder)' },
     ],
   ) as EmbedderProvider;
 
   let embedderEndpoint = 'http://127.0.0.1:8124/v1/embeddings';
   let embedderModel = 'voyageai/voyage-4-nano';
+  let embedderApiKey: string | undefined;
   let embeddingDimension = 2048;
-  if (embedder === 'openai-compatible') {
+  if (embedder === 'voyage-hosted') {
+    embedderEndpoint = 'https://api.voyageai.com/v1/embeddings';
+    embedderModel = askText(
+      'Voyage model (voyage-4-lite recommended — fast, cheap, 1024-dim)',
+      existing?.embedderModel?.startsWith('voyage-') ? existing.embedderModel : 'voyage-4-lite',
+    );
+    embeddingDimension = Number(askText('Embedding dimension (voyage-4-lite default 1024)', '1024'));
+    embedderApiKey = askText(
+      'Voyage API key (get one free at https://dash.voyageai.com — paste it here, or leave blank to set via worker.env later)',
+      existing?.embedderApiKey ?? '',
+    );
+    if (!embedderApiKey) {
+      console.log('  (no key entered — worker.env will be written without one; add it manually before starting)');
+    }
+  } else if (embedder === 'openai-compatible') {
     embedderEndpoint = askText('Embedder endpoint URL', existing?.embedderEndpoint ?? 'http://localhost:11434/v1/embeddings');
     embedderModel = askText('Embedder model', existing?.embedderModel ?? 'nomic-embed-text');
     embeddingDimension = Number(askText('Embedding dimension', String(existing?.embeddingDimension ?? 768)));
+    embedderApiKey = askText('API key (leave blank for local servers like Ollama)', existing?.embedderApiKey ?? '');
   } else if (embedder === 'skip') {
     embeddingDimension = 8; // dummy for the vec0 table
   }
@@ -358,6 +377,7 @@ function gatherConfig(existing?: Partial<WizardConfig>): WizardConfig {
     embedder,
     embedderEndpoint,
     embedderModel,
+    ...(embedderApiKey !== undefined && embedderApiKey !== '' && { embedderApiKey }),
     embeddingDimension,
     watchMemory,
     hookTimeoutMs: 2000, // generous default; user can tune later
@@ -402,6 +422,9 @@ function writeWorkerEnv(cfg: WizardConfig, paths: ModePaths): void {
     lines.push(`CAPTAIN_MEMO_EMBEDDER_ENDPOINT=${cfg.embedderEndpoint}`);
     lines.push(`CAPTAIN_MEMO_EMBEDDER_MODEL=${cfg.embedderModel}`);
     lines.push(`CAPTAIN_MEMO_EMBEDDING_DIM=${cfg.embeddingDimension}`);
+    if (cfg.embedderApiKey) {
+      lines.push(`CAPTAIN_MEMO_EMBEDDER_API_KEY=${cfg.embedderApiKey}`);
+    }
   }
   if (cfg.watchMemory) lines.push(`CAPTAIN_MEMO_WATCH_MEMORY=${cfg.watchMemory}`);
 
