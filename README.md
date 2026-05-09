@@ -12,6 +12,8 @@
 
 Captain Memo is a Claude Code plugin (and a self-contained local-memory layer for any AI coding agent that speaks the standard hook + MCP shapes). Every session leaves a wake; Captain Memo keeps the log so the next session sails with what was learned in the last one.
 
+> **v0.1.0 "Europe Day" — Linux only.** The runtime is portable, but the installer assumes systemd. macOS and Windows support are planned for v0.2.0. Mac users wanting to try v0.1.0 today can run the worker manually under launchd / tmux / nohup; see [issue #1](https://github.com/kalinbogatzevski/captain-memo/issues/1).
+
 ---
 
 ## Why I built this
