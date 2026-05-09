@@ -1,0 +1,19 @@
+Captain Memo
+Copyright 2026 Kalin Bogatzevski and Captain Memo contributors
+
+This product is licensed under the Apache License, Version 2.0
+(see LICENSE for the full text).
+
+This product includes software developed by third parties:
+
+- sqlite-vec (https://github.com/asg017/sqlite-vec)
+  Copyright (c) Alex Garcia and contributors. Licensed under Apache-2.0.
+
+- Bun (https://bun.sh)
+  Copyright (c) Oven and contributors. Licensed under MIT.
+
+- Voyage AI embeddings (https://voyageai.com)
+  Used as a network service via the Voyage HTTP API. No code redistributed.
+
+- Anthropic API (https://anthropic.com)
+  Used as a network service. No code redistributed.

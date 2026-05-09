@@ -4,7 +4,7 @@
   "description": "Local memory layer for Claude Code — Voyage-embedded, hybrid search, federated remotes",
   "type": "module",
   "private": true,
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": {
     "name": "Kalin Bogatzevski",
     "url": "https://github.com/kalinbogatzevski"
