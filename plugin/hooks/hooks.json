@@ -16,6 +16,7 @@
         "hooks": [
           {
             "type": "command",
+            "shell": "bash",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/captain-memo-hook SessionStart",
             "timeout": 60
           }
