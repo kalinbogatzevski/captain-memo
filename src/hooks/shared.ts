@@ -58,9 +58,14 @@ export async function readStdinJson<T = unknown>(): Promise<T> {
   }
 }
 
-/** Write a string to stdout, no trailing newline added (caller controls). */
+/** Write a string to stdout, no trailing newline added (caller controls).
+ *  Uses process.stdout.write (Node-compatible, synchronous-ish path) instead
+ *  of Bun.write — the latter returns a Promise we'd have to await everywhere
+ *  to guarantee the buffer flushes before process exit. With pipes (Claude
+ *  Code's hook protocol), unawaited Bun.write can leave bytes in a buffer
+ *  that the parent never reads. */
 export function writeStdout(s: string): void {
-  Bun.write(Bun.stdout, s);
+  process.stdout.write(s);
 }
 
 export interface FetchWithTimeoutOptions {
