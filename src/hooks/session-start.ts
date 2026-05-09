@@ -58,6 +58,18 @@ function formatBanner(stats: StatsResponse): string {
 }
 
 export async function main(): Promise<void> {
+  // Diagnostic: confirm hook fires regardless of downstream success.
+  // Removed once SessionStart firing is verified stable across plugin versions.
+  try {
+    const { appendFileSync, mkdirSync } = await import('fs');
+    const { homedir } = await import('os');
+    const { join } = await import('path');
+    const dir = join(homedir(), '.captain-memo', 'logs');
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(join(dir, 'session-start-fired.log'),
+      `${new Date().toISOString()} pid=${process.pid}\n`);
+  } catch { /* fire-detector failure must not break the hook */ }
+
   try { await readStdinJson<SessionStartPayload>(); } catch { /* ignore */ }
   // SessionStart isn't on a hot path — it fires once per session, not per
   // prompt. Use a much more generous timeout than the hook default so the
