@@ -31,12 +31,17 @@ So I sat down to build that "something different" for myself, and ended up with 
 ## What it is
 
 - **Local-first.** Vector store and metadata live on your machine — `sqlite-vec` + SQLite WAL. No cloud database, no per-call billing for retrieval, no network round-trips on the hot path.
-- **Hybrid search.** Voyage-4-nano embeddings + FTS5 keyword index, fused via Reciprocal Rank Fusion. Multilingual (BG/EN/etc.) — your non-English memory is searchable too.
-- **Three summarizer providers**, picked at install time:
-  - `claude-code` — uses your existing **Claude Code Max/Pro** plan (no API key, no extra billing)
+- **Hybrid search.** Voyage embeddings (default) + SQLite FTS5 keyword index, fused via Reciprocal Rank Fusion with exponential recency decay on observations. Multilingual (BG/EN/etc.) — your non-English memory is searchable too.
+- **Four summarizer providers**, picked at install time:
+  - `claude-oauth` *(default)* — direct Anthropic API using the OAuth token Claude Code already stored. No API key. ~700 ms/call. Just works on a Max plan.
+  - `anthropic` — direct Anthropic SDK with `ANTHROPIC_API_KEY` (paid)
+  - `claude-code` — `claude -p` subprocess (slower; for users without OAuth file access)
   - `openai-compatible` — Ollama / LM Studio / vLLM / OpenAI / OpenRouter / DeepSeek / Groq / Together / Mistral / etc.
-  - `anthropic` — direct Anthropic SDK with `ANTHROPIC_API_KEY`
-- **Local Voyage embedder** included — `voyageai/voyage-4-nano` open weights via a small FastAPI sidecar. No cloud key required for embeddings either.
+- **Four embedder backends**, picked at install time:
+  - `voyage-hosted` *(default)* — Voyage API (`voyage-4-lite`, 1024-dim). Free signup, ~$0.30/year typical use, fast on any hardware.
+  - `local-sidecar` — `voyageai/voyage-4-nano` open weights via a self-contained FastAPI sidecar (offline, private, 2048-dim, needs AVX2)
+  - `openai-compatible` — Any `/v1/embeddings` endpoint (Ollama, OpenAI, OpenRouter, etc.)
+  - `skip` — keyword-only retrieval (FTS5 only, no vectors)
 - **Auto-injected context.** A `<memory-context>` envelope is added to every user prompt by the `UserPromptSubmit` hook. The model sees relevant memory, skills, and prior session observations before it answers.
 - **Session observations.** Every tool use is captured fire-and-forget; on `Stop`, batched events are summarized into structured observations (type / title / facts / concepts) and indexed into the same hybrid search. Future sessions can recall them.
 - **Indefinite retention.** No 30-day cleanups. A project takes years; your memory should too.
@@ -45,56 +50,77 @@ So I sat down to build that "something different" for myself, and ended up with 
 
 ## Requirements
 
-| Component | Minimum | Recommended | Notes |
-|---|---|---|---|
-| OS | Linux (systemd) | Debian 13 / Ubuntu 24.04 | macOS / Windows port not yet implemented |
-| CPU | x86_64, SSE4.2 | x86_64 with **AVX2** | The local embedder is ~10× faster on AVX2 hardware (most CPUs since ~2014). Pre-AVX2 still works via `numpy<2`. |
-| RAM | 2 GB | 4 GB+ | Embedder + worker peak ~3 GB during indexing. |
-| Disk | 5 GB free in `$HOME` | 10 GB | Python venv ~3 GB + voyage-4-nano model ~250 MB + your vector DB. |
-| Python | 3.11+ | 3.11–3.13 | Only required if installing the local embedder. |
-| Bun | ≥ 1.1.14 | latest | https://bun.com |
-| Sudo | **not required** | — | The default install runs entirely as your user. Sudo is only needed if you opt into `--system` (multi-user / always-on server) or want `loginctl enable-linger` to keep services running across logouts. |
-| Network | outbound HTTPS | — | First-time install pulls ~3.3 GB from PyPI + HuggingFace. |
+**Always required:**
 
-The wizard runs **pre-flight checks** before touching anything — it tells you exactly which requirement is unmet and how to fix it. If your hardware can't run the local embedder (e.g. low RAM / no disk), the wizard offers to use a remote `/v1/embeddings` endpoint instead, so Captain Memo still works.
+| Component | Minimum | Notes |
+|---|---|---|
+| OS | Linux (systemd) | macOS / Windows port not yet implemented |
+| Bun | ≥ 1.1.14 | https://bun.com |
+| Disk | ~50 MB | The corpus itself + worker code; grows ~1 MB per few hundred chunks |
+| Sudo | **not required** | The default install runs entirely as your user. Sudo only needed for `--system` (multi-user / always-on server). |
+
+**Plus, depending on the embedder you pick:**
+
+| If you choose | Extra requirement | Approx footprint |
+|---|---|---|
+| **Hosted Voyage API** *(recommended)* | Free API key from [dash.voyageai.com](https://dash.voyageai.com), outbound HTTPS | ~$0.30/year typical use, no install bloat |
+| **Local voyage-4-nano sidecar** | Python 3.11+, **AVX2 CPU**, 8 GB RAM, ~6 GB disk | Self-contained but heavy; bring patience for first-time pip install + model download |
+| **Other OpenAI-compatible endpoint** (Ollama, OpenAI, OpenRouter) | Whatever your endpoint requires | Depends on backend |
+
+**And, depending on the summarizer you pick:**
+
+| If you choose | Extra requirement |
+|---|---|
+| **Claude Max via OAuth** *(recommended)* | A Claude Max subscription + `claude login` already done. No API key. |
+| **Anthropic API** | `ANTHROPIC_API_KEY=sk-ant-…` (paid per token) |
+| **Claude Code subprocess** | `claude` CLI on PATH; uses Max plan but adds 5–15 s per call vs OAuth |
+| **OpenAI / Ollama / OpenRouter** | Endpoint URL + optional API key |
+
+The install wizard runs **pre-flight checks** before touching anything — it tells you exactly which requirement is unmet and how to fix it. If your CPU can't run the local embedder, the wizard recommends a hosted backend instead.
 
 ## Install — pick a path
 
-Three install methods, all leading to the same plugin loaded into Claude Code. Pick the one that matches your situation.
-
-### Method 1 — Recommended (full local stack, no sudo)
-
-For most users. Clone the repo, run the wizard, done. Sets up the local embedder + worker + plugin registration. Everything runs as your user; no sudo needed.
+All paths lead to the same plugin loaded into Claude Code. The wizard asks which embedder + summarizer to use, then sets everything up.
 
 ```bash
-git clone https://github.com/<your-account>/captain-memo
+git clone https://github.com/kalinbogatzevski/captain-memo
 cd captain-memo
 bun install
 ./bin/captain-memo install
 ```
 
-The wizard asks which summarizer + embedder to use, then sets up:
-- **Embedder sidecar** at `~/.captain-memo/embed/` (user-level systemd, voyage-4-nano on port 8124)
+The wizard asks ~5 questions and sets up:
 - **Worker daemon** at `~/.config/systemd/user/captain-memo-worker.service` (port 39888)
-- **Plugin registration** via `claude plugin marketplace add` + `claude plugin install` (the wizard runs both for you — your hooks, MCP server, and slash commands all auto-register)
+- **Plugin registration** via `claude plugin marketplace add` + `claude plugin install` — your hooks, MCP server, and slash commands all auto-register
 - **Config** at `~/.config/captain-memo/worker.env`
+- **Embedder sidecar** at `~/.captain-memo/embed/` *(only if you pick the local backend)*
 
 After the wizard, **fully restart Claude Code** (quit the `claude` process, not just the session) for the plugin to load.
 
-### Method 2 — Plugin only (BYO embedder + summarizer)
+### What the wizard asks you
 
-If you already have an OpenAI-compatible embeddings endpoint (Ollama, Voyage cloud, OpenAI, etc.) AND you don't want to run a local Python sidecar, you can skip the heavy install. The wizard will ask, and you point it at your endpoint:
+**Question 1 — Summarizer** (compresses tool-use events into observation chunks):
 
-```bash
-git clone https://github.com/<your-account>/captain-memo
-cd captain-memo
-bun install
-./bin/captain-memo install   # pick "External /v1/embeddings" when asked
-```
+| Pick | When |
+|---|---|
+| **Claude Max via OAuth** *(recommended)* | You have a Claude Max subscription. Free, fast (~700 ms/call), no API key — Captain Memo reads the OAuth token Claude Code already stored. |
+| Anthropic API | You want explicit per-token billing or don't have Max. |
+| Claude Code subprocess | OAuth not available; falls back to spawning `claude -p` per call (slower). |
+| OpenAI / Ollama / OpenRouter | You're routing to a different model fleet. |
+| Skip | Events queue but don't summarize (rare; you keep raw events for later). |
 
-Same outcome (plugin registered, worker running, hooks firing) — just no Python venv, no voyage-4-nano local, no ~3 GB pip download. Trade-off: every embedding call goes over the network to your chosen provider.
+**Question 2 — Embedder** (turns text into vectors for semantic search):
 
-### Method 3 — System-wide (headless servers, multi-user)
+| Pick | When |
+|---|---|
+| **Hosted Voyage API** *(recommended)* | Best for most users. Fast on any hardware, ~$0.30/year typical use, free signup at [dash.voyageai.com](https://dash.voyageai.com). 1024-dim. |
+| Local voyage-4-nano sidecar | You want offline / fully-private inference. Needs AVX2 CPU + 6 GB Python install. 2048-dim. |
+| External /v1/embeddings | Self-hosted (Ollama, vLLM, llama.cpp), or another hosted provider. |
+| Skip | Keyword-only retrieval (FTS5, no vectors). Search quality drops a lot. |
+
+If you pick Voyage hosted and don't have your API key handy, leave it blank — the wizard writes a placeholder and tells you which line of `worker.env` to edit later.
+
+### System-wide install (headless servers, multi-user)
 
 For headless boxes, multi-user dev servers, or "always-on regardless of who's logged in":
 
@@ -104,24 +130,26 @@ sudo ./bin/captain-memo install --system
 
 Installs to `/opt/captain-memo-embed/` + `/etc/systemd/system/` + `/etc/captain-memo/` instead of `$HOME`. Same wizard, same result, just at system scope. Survives any user logout.
 
-### One-step from a published repo (after we ship)
+### Plugin-only install (advanced, no local worker)
 
-Once Captain Memo is on GitHub, OSS users can register the plugin in two commands without cloning:
+If you already have a Captain Memo worker running on another box and just want THIS Claude Code install to talk to it:
 
 ```bash
-claude plugin marketplace add github.com/<your-account>/captain-memo
+claude plugin marketplace add github.com/kalinbogatzevski/captain-memo
 claude plugin install captain-memo@captain-memo
 ```
 
-That gets you the **plugin pieces** (hooks, MCP server, slash commands) registered with Claude Code. To actually run the search + observations pipeline you still need the worker + embedder — clone the repo and run `./bin/captain-memo install` for that. We'll improve this gap in a future release (probably bundle a smaller npm package).
+You'll need to set `CAPTAIN_MEMO_WORKER_BASE` in your environment to point at the remote worker's `:39888`. This is a power-user setup; most people should run the wizard.
 
----
+### Other lifecycle commands
 
 ```bash
 captain-memo doctor              # health check across all components
 captain-memo uninstall           # clean removal (--purge for data too)
 captain-memo uninstall --system  # for the system-mode install
 ```
+
+---
 
 ## Inside Claude Code
 
@@ -195,13 +223,14 @@ The migration is **idempotent** (re-runs skip already-migrated rows via a progre
 
 | Component | What it does |
 |---|---|
-| **Worker** (`:39888`) | Long-lived HTTP daemon. Owns the SQLite + sqlite-vec stores, file watcher, observation queue, summarizer wiring. |
-| **Embedder sidecar** (`:8124`) | Self-hosted voyage-4-nano via FastAPI + sentence-transformers. Optional — replace with any `/v1/embeddings`-compatible service. |
-| **MCP server** (stdio) | Exposes 8 tools (`search_memory`, `search_skill`, `search_observations`, `search_all`, `get_full`, `reindex`, `stats`, `status`) to Claude Code. |
-| **Four hooks** | `UserPromptSubmit` (inject envelope, ≤250 ms p95), `SessionStart` (warm worker), `PostToolUse` (fire-and-forget enqueue), `Stop` (drain → summarize → index). |
+| **Worker** (`:39888`) | Long-lived HTTP daemon. Owns the SQLite + sqlite-vec stores, file watcher, observation queue, summarizer + embedder wiring. |
+| **Embedder** | Pluggable: hosted Voyage API (default), local voyage-4-nano sidecar (`:8124`), or any OpenAI-compatible `/v1/embeddings` endpoint. |
+| **Summarizer** | Pluggable: Claude Max via OAuth (default, no API key), Anthropic API, `claude -p` subprocess, or any OpenAI-compatible `/v1/chat/completions`. |
+| **MCP server** (stdio) | Exposes 8 tools to Claude Code (`search_all`, `search_memory`, `search_skill`, `search_observations`, `get_full`, `reindex`, `stats`, `status`). |
+| **Four hooks** | `SessionStart` (corpus banner), `UserPromptSubmit` (inject memory envelope, ≤1.5 s budget), `PostToolUse` (queue tool-use events), `Stop` (drain → summarize → index). |
 | **CLI** | The commands above. |
 
-Channels indexed: `memory` (curated user memory files), `skill` (Claude Code skill bodies, section-level), `observation` (summarized session events).
+Channels indexed: `memory` (curated user memory files), `skill` (Claude Code skill bodies, section-level), `observation` (summarized session events). Observations get an exponential recency decay at search time (90-day half-life by default) so newer truth ranks above stale truth without losing history.
 
 Detailed docs: [`docs/USAGE.md`](docs/USAGE.md).
 
@@ -212,11 +241,12 @@ Detailed docs: [`docs/USAGE.md`](docs/USAGE.md).
 | Plan | Scope | State |
 |---|---|---|
 | 1 | Worker, MCP server, CLI, hybrid search, file watcher, ingest pipeline | Shipped |
-| 2 | Hooks + observation pipeline + 3-provider summarizer + local embedder | Shipped |
-| 3 — Layer A | **claude-mem migration** (`inspect-claude-mem`, `migrate-from-claude-mem`) | Shipped |
-| 3 — Layers B-G | MEMORY.md transformation · federation client · optimize/purge/forget · retrieval-quality eval · Voyage installer · doctor enhancements | Drafted in [`docs/plans/`](docs/plans/) |
+| 2 | Hooks + observation pipeline + 4-provider summarizer + 4-provider embedder | Shipped |
+| 3 — Layer A | claude-mem migration (`inspect-claude-mem`, `migrate-from-claude-mem`) | Shipped |
+| 3 — Layer B | OAuth-direct summarizer (no API key needed) · recency decay · install wizard fast-path defaults | Shipped |
+| 3 — Layers C-G | MEMORY.md transformation · federation client · optimize/purge/forget · retrieval-quality eval · doctor enhancements | Drafted in [`docs/plans/`](docs/plans/) |
 
-167 tests pass. Typecheck clean. Bun ≥ 1.1.14, TypeScript strict.
+172 tests pass. Typecheck clean. Bun ≥ 1.1.14, TypeScript strict.
 
 ---
 
