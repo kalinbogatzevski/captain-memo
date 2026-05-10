@@ -101,6 +101,51 @@ test('IngestPipeline — re-indexes when content changes', async () => {
   expect(vecCalls.filter(c => c.kind === 'delete').length).toBeGreaterThan(0);
 });
 
+test('IngestPipeline — without maxInputTokens, oversized memory file ingests as single chunk (legacy behavior)', async () => {
+  const filePath = join(workDir, 'big-memory.md');
+  // ~1000 tokens of repeated content, no headings → memory-file chunker
+  // would normally produce 1 oversized chunk for an embedder with a small window.
+  writeFileSync(filePath, 'word '.repeat(1000));
+  await pipeline.indexFile(filePath, 'memory');
+
+  const doc = store.getDocument(filePath);
+  const chunks = store.getChunksForDocument(doc!.id);
+  expect(chunks.length).toBe(1);
+});
+
+test('IngestPipeline — with maxInputTokens=100, oversized memory file is split into multiple safe chunks', async () => {
+  const limitedPipeline = new IngestPipeline({
+    meta: store,
+    embedder: fakeEmbedder,
+    vector: fakeVectorStore as any,
+    collectionName: 'test_col',
+    projectId: 'erp-platform',
+    maxInputTokens: 100,
+  });
+  const filePath = join(workDir, 'big-memory.md');
+  // Multi-section markdown that the splitter can break on H2 boundaries
+  const content = [
+    '## Section 1',
+    'word '.repeat(120),
+    '',
+    '## Section 2',
+    'word '.repeat(120),
+    '',
+    '## Section 3',
+    'word '.repeat(120),
+  ].join('\n');
+  writeFileSync(filePath, content);
+  await limitedPipeline.indexFile(filePath, 'memory');
+
+  const doc = store.getDocument(filePath);
+  const chunks = store.getChunksForDocument(doc!.id);
+  // Splitter should produce multiple safe chunks instead of one big one
+  expect(chunks.length).toBeGreaterThan(1);
+  // Vector store received the same number of adds as chunks (1:1 mapping preserved)
+  const addsCount = vecCalls.filter(c => c.kind === 'add')[0]!.payload as string[];
+  expect(addsCount.length).toBe(chunks.length);
+});
+
 test('IngestPipeline — deleteFile drops document and chunks + vectors', async () => {
   const filePath = join(workDir, 'feedback_test.md');
   writeFileSync(filePath, 'content');

@@ -4,6 +4,7 @@ import { sha256Hex } from '../shared/sha.ts';
 import { newChunkId } from '../shared/id.ts';
 import { chunkMemoryFile } from './chunkers/memory-file.ts';
 import { chunkSkill } from './chunkers/skill.ts';
+import { splitForEmbed } from './chunkers/safe-split.ts';
 import type { ChannelType, ChunkInput } from '../shared/types.ts';
 import type { MetaStore } from './meta.ts';
 import type { VectorStore } from './vector-store.ts';
@@ -14,6 +15,14 @@ export interface IngestPipelineOptions {
   vector: VectorStore;
   collectionName: string;
   projectId: string;
+  /**
+   * If set, chunks exceeding this token count are pre-split via
+   * splitForEmbed before reaching the embedder. Pass the same value used
+   * for the Embedder's maxInputTokens — single source of truth keeps the
+   * splitter and rejector aligned. When unset, no splitting occurs and
+   * oversized chunks may throw EmbedderInputTooLarge from the embedder.
+   */
+  maxInputTokens?: number;
 }
 
 export class IngestPipeline {
@@ -22,6 +31,7 @@ export class IngestPipeline {
   private vector: VectorStore;
   private collection: string;
   private projectId: string;
+  private maxInputTokens: number | undefined;
 
   constructor(opts: IngestPipelineOptions) {
     this.meta = opts.meta;
@@ -29,6 +39,7 @@ export class IngestPipeline {
     this.vector = opts.vector;
     this.collection = opts.collectionName;
     this.projectId = opts.projectId;
+    this.maxInputTokens = opts.maxInputTokens;
   }
 
   private chunkerFor(channel: ChannelType, content: string, sourcePath: string): ChunkInput[] {
@@ -46,7 +57,14 @@ export class IngestPipeline {
     const existing = this.meta.getDocument(filePath);
     if (existing && existing.sha === sha) return;
 
-    const chunks = this.chunkerFor(channel, content, filePath);
+    const rawChunks = this.chunkerFor(channel, content, filePath);
+    // Pre-split anything that would overflow the embedder's per-input token
+    // limit. Without this, a single oversized chunk would either silently
+    // tail-truncate at the API (legacy bug) or throw EmbedderInputTooLarge
+    // and abort indexing of the entire file.
+    const chunks = this.maxInputTokens
+      ? splitForEmbed(rawChunks, this.maxInputTokens)
+      : rawChunks;
 
     // Drop old vector entries for this document before indexing the new version
     if (existing) {

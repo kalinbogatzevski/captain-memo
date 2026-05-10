@@ -4,6 +4,7 @@ import { spawnSync } from 'child_process';
 import { Database } from 'bun:sqlite';
 import { MetaStore } from '../../worker/meta.ts';
 import { Embedder } from '../../worker/embedder.ts';
+import { embedderMaxTokens } from '../../shared/embedder-limits.ts';
 import { VectorStore } from '../../worker/vector-store.ts';
 import { runMigration } from '../../migration/runner.ts';
 import { CLAUDE_MEM_DEFAULT_PATH } from '../../migration/claude-mem-schema.ts';
@@ -198,11 +199,15 @@ export async function migrateFromClaudeMemCommand(args: string[]): Promise<numbe
   const apiFormat = process.env.CAPTAIN_MEMO_VOYAGE_API_FORMAT === 'aelita'
     ? 'aelita'
     : 'openai';
+  const model = process.env.CAPTAIN_MEMO_VOYAGE_MODEL ?? 'voyage-4-nano';
   const embedderOpts: ConstructorParameters<typeof Embedder>[0] = {
     endpoint: process.env.CAPTAIN_MEMO_VOYAGE_ENDPOINT ?? DEFAULT_VOYAGE_ENDPOINT,
-    model: process.env.CAPTAIN_MEMO_VOYAGE_MODEL ?? 'voyage-4-nano',
+    model,
     timeoutMs,
     apiFormat,
+    maxInputTokens: process.env.CAPTAIN_MEMO_EMBEDDER_MAX_TOKENS
+      ? Number(process.env.CAPTAIN_MEMO_EMBEDDER_MAX_TOKENS)
+      : embedderMaxTokens(model),
   };
   if (process.env.CAPTAIN_MEMO_VOYAGE_API_KEY) {
     embedderOpts.apiKey = process.env.CAPTAIN_MEMO_VOYAGE_API_KEY;

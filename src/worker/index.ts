@@ -3,6 +3,7 @@ import { statSync, readdirSync } from 'fs';
 import { z } from 'zod';
 import { MetaStore } from './meta.ts';
 import { Embedder } from './embedder.ts';
+import { embedderMaxTokens } from '../shared/embedder-limits.ts';
 import { VectorStore } from './vector-store.ts';
 import { HybridSearcher } from './search.ts';
 import { IngestPipeline } from './ingest.ts';
@@ -11,6 +12,8 @@ import { ObservationQueue } from './observation-queue.ts';
 import { ObservationsStore } from './observations-store.ts';
 import { PendingEmbedQueue } from './pending-embed-queue.ts';
 import { chunkObservation } from './chunkers/observation.ts';
+import { splitForEmbed } from './chunkers/safe-split.ts';
+import { EmbedderInputTooLarge } from './embedder.ts';
 import { newChunkId } from '../shared/id.ts';
 import { sha256Hex } from '../shared/sha.ts';
 import type { RawObservationEvent, ObservationType, Observation } from '../shared/types.ts';
@@ -77,6 +80,7 @@ export interface WorkerOptions {
   embedderModel: string;
   embedderApiKey?: string;
   embedderApiFormat?: 'openai' | 'aelita';
+  embedderMaxInputTokens?: number;
   vectorDbPath: string;
   embeddingDimension: number;
   skipEmbed?: boolean;
@@ -168,6 +172,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     model: opts.embedderModel,
     ...(opts.embedderApiKey !== undefined && { apiKey: opts.embedderApiKey }),
     ...(opts.embedderApiFormat !== undefined && { apiFormat: opts.embedderApiFormat }),
+    maxInputTokens: opts.embedderMaxInputTokens ?? embedderMaxTokens(opts.embedderModel),
   });
   const vector = new VectorStore({
     dbPath: opts.vectorDbPath,
@@ -209,8 +214,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     keywordSearch: async (query, topK) => meta.searchKeyword(query, topK),
   });
 
+  const effectiveMaxInputTokens = opts.embedderMaxInputTokens ?? embedderMaxTokens(opts.embedderModel);
   const ingest = new IngestPipeline({
     meta,
+    maxInputTokens: effectiveMaxInputTokens,
     embedder: {
       embed: async (texts) => {
         if (opts.skipEmbed) {
@@ -332,8 +339,13 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   }
 
   async function ingestObservation(obs: Observation): Promise<void> {
-    const chunks = chunkObservation(obs);
-    if (chunks.length === 0) return;
+    const rawChunks = chunkObservation(obs);
+    if (rawChunks.length === 0) return;
+    // Pre-split oversized chunks so a long Haiku-summarized narrative never
+    // silently truncates at Voyage. Same chokepoint as IngestPipeline uses
+    // for memory + skill files; observations have their own embed loop so
+    // we re-apply here.
+    const chunks = splitForEmbed(rawChunks, effectiveMaxInputTokens);
     const synthesizedPath = `observation:${opts.projectId}:${obs.id}`;
     const chunksWithIds = chunks.map(c => ({
       chunk_id: newChunkId('observation', String(obs.id)),
@@ -520,7 +532,27 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       );
       pendingEmbed.markEmbedded(liveRows.map(r => r.id));
       return { retried: due.length, embedded: liveRows.length };
-    } catch {
+    } catch (err) {
+      // EmbedderInputTooLarge is permanent — the stored chunk text won't
+      // change on retry. Pop the offending row from the queue (FTS still
+      // serves it; vector search misses) so it doesn't loop forever.
+      // All other failures are transient → standard retry-with-backoff.
+      if (err instanceof EmbedderInputTooLarge) {
+        const badRow = liveRows[err.inputIndex];
+        if (badRow) {
+          console.error(
+            `[pending-embed] dropping permanently oversized chunk ${badRow.chunk_id}: ` +
+            `${err.tokensEstimated} tok > ${err.tokensLimit} limit. ` +
+            `Vector search will miss this chunk; FTS still works.`,
+          );
+          pendingEmbed.markEmbedded([badRow.id]);
+          const remainingIds = liveRows.filter((_, i) => i !== err.inputIndex).map(r => r.id);
+          if (remainingIds.length > 0) {
+            pendingEmbed.markRetried(remainingIds, PENDING_RETRY_TICK_MS);
+          }
+          return { retried: due.length, embedded: 0 };
+        }
+      }
       pendingEmbed.markRetried(liveRows.map(r => r.id), PENDING_RETRY_TICK_MS);
       return { retried: due.length, embedded: 0 };
     }
@@ -990,6 +1022,13 @@ export async function runWorkerCli(): Promise<void> {
   // OpenAI, OpenRouter, Ollama, etc. Anything else falls back to 'openai'.
   const embedderApiFormatRaw = (process.env.CAPTAIN_MEMO_EMBEDDER_API_FORMAT ?? 'openai').toLowerCase();
   const embedderApiFormat: 'openai' | 'aelita' = embedderApiFormatRaw === 'aelita' ? 'aelita' : 'openai';
+  // Override knob for users running an embedder we don't know about. When
+  // unset, startWorker falls back to embedderMaxTokens(model) — a per-model
+  // table that defaults to a conservative 512 for unknown models.
+  const embedderMaxInputTokensRaw = process.env.CAPTAIN_MEMO_EMBEDDER_MAX_TOKENS;
+  const embedderMaxInputTokens = embedderMaxInputTokensRaw
+    ? Number(embedderMaxInputTokensRaw)
+    : undefined;
   const embeddingDimension = Number(process.env.CAPTAIN_MEMO_EMBEDDING_DIM ?? 2048);
   // Honor the install wizard's keyword-only mode — without this read, a user
   // who picked "skip embedder" still gets every chunk silently zero-vectored.
@@ -1123,6 +1162,7 @@ export async function runWorkerCli(): Promise<void> {
     embedderModel,
     ...(embedderApiKey !== undefined && { embedderApiKey }),
     embedderApiFormat,
+    ...(embedderMaxInputTokens !== undefined && { embedderMaxInputTokens }),
     vectorDbPath,
     embeddingDimension,
     skipEmbed,
