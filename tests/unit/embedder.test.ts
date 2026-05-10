@@ -1,5 +1,5 @@
 import { test, expect, beforeAll, afterAll } from 'bun:test';
-import { Embedder } from '../../src/worker/embedder.ts';
+import { Embedder, EmbedderInputTooLarge } from '../../src/worker/embedder.ts';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let mockServer: ReturnType<typeof Bun.serve>;
@@ -108,6 +108,79 @@ test('Embedder — gives up after maxRetries', async () => {
   });
   await expect(embedder.embed(['x'])).rejects.toThrow(/HTTP 503/);
   brokenServer.stop();
+});
+
+test('Embedder — sends truncation:false in OpenAI-format body', async () => {
+  const embedder = new Embedder({
+    endpoint: `http://localhost:${mockPort}/v1/embeddings`,
+    model: 'voyage-4-nano',
+  });
+  await embedder.embed(['hello']);
+  // Voyage-specific guard: with truncation:false the API returns 422 on
+  // overflow instead of silently embedding the first N tokens.
+  expect(lastRequestBody.truncation).toBe(false);
+});
+
+test('Embedder — throws EmbedderInputTooLarge BEFORE calling API when input exceeds limit', async () => {
+  let calls = 0;
+  const countingServer = Bun.serve({
+    port: 0,
+    async fetch() {
+      calls++;
+      return new Response(JSON.stringify({ data: [{ embedding: [0], index: 0 }], model: 'x' }));
+    },
+  });
+  const embedder = new Embedder({
+    endpoint: `http://localhost:${countingServer.port}/v1/embeddings`,
+    model: 'voyage-4-nano',
+    maxInputTokens: 10, // tiny limit to force the throw on any non-trivial input
+  });
+  // ~50 tokens of repeated text — comfortably over the 10-token limit even
+  // with the 0.85 safety factor (effective limit = 8 tokens).
+  const oversized = 'the quick brown fox jumps over the lazy dog '.repeat(20);
+  await expect(embedder.embed([oversized])).rejects.toBeInstanceOf(EmbedderInputTooLarge);
+  expect(calls).toBe(0); // never hit the API — pre-call guard fired
+  countingServer.stop();
+});
+
+test('Embedder — EmbedderInputTooLarge carries diagnostic fields', async () => {
+  const embedder = new Embedder({
+    endpoint: 'http://localhost:1/unused',
+    model: 'voyage-4-nano',
+    maxInputTokens: 5,
+  });
+  const oversized = 'one two three four five six seven eight nine ten eleven twelve';
+  try {
+    await embedder.embed(['ok', oversized, 'also ok']);
+    throw new Error('expected throw');
+  } catch (e) {
+    expect(e).toBeInstanceOf(EmbedderInputTooLarge);
+    const err = e as EmbedderInputTooLarge;
+    expect(err.tokensLimit).toBe(5);
+    expect(err.tokensEstimated).toBeGreaterThan(5);
+    expect(err.inputIndex).toBe(1); // 0='ok', 1=oversized, 2='also ok'
+  }
+});
+
+test('Embedder — without maxInputTokens, oversized input is sent to API (legacy behavior)', async () => {
+  let captured: string | null = null;
+  const passthroughServer = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const body = await req.json() as { input: string[] };
+      captured = body.input[0]!;
+      return new Response(JSON.stringify({ data: [{ embedding: [0], index: 0 }], model: 'x' }));
+    },
+  });
+  const embedder = new Embedder({
+    endpoint: `http://localhost:${passthroughServer.port}/v1/embeddings`,
+    model: 'voyage-4-nano',
+    // maxInputTokens NOT set
+  });
+  const longText = 'word '.repeat(1000);
+  await embedder.embed([longText]);
+  expect(captured as unknown as string).toBe(longText); // sent through unchecked
+  passthroughServer.stop();
 });
 
 test('Embedder — does NOT retry on 4xx', async () => {

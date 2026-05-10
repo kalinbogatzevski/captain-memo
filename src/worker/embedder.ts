@@ -1,4 +1,39 @@
+import { countTokens } from '../shared/tokens.ts';
+
 export type ApiFormat = 'openai' | 'aelita';
+
+/**
+ * Multiplier applied to the nominal model limit when validating locally.
+ * gpt-tokenizer (cl100k_base) and Voyage's SentencePiece-derived tokenizer
+ * disagree by up to ~15% on code-heavy / multi-byte content. We assume
+ * the worst case (true count = local count × 1.15) and reject earlier
+ * to ensure we never undercount and slip an oversized input past Voyage.
+ */
+const TOKEN_COUNT_SAFETY_FACTOR = 0.85;
+
+/**
+ * Thrown by Embedder.embed() when an input exceeds the configured
+ * maxInputTokens (with safety margin applied). The embedder does not
+ * split inputs — splitting would break the 1:1 chunk→embedding mapping
+ * callers depend on. Upstream (chunkers, ingest) is responsible for
+ * keeping chunks below the limit; this error surfaces violations loudly
+ * instead of letting Voyage silently tail-truncate.
+ */
+export class EmbedderInputTooLarge extends Error {
+  readonly tokensEstimated: number;
+  readonly tokensLimit: number;
+  readonly inputIndex: number;
+  constructor(estimated: number, limit: number, index: number) {
+    super(
+      `Embedder input #${index} too large: ~${estimated} tokens estimated, limit ${limit}. ` +
+      `Split the input upstream — embedder does not split (would break chunk→embedding mapping).`,
+    );
+    this.name = 'EmbedderInputTooLarge';
+    this.tokensEstimated = estimated;
+    this.tokensLimit = limit;
+    this.inputIndex = index;
+  }
+}
 
 export interface EmbedderOptions {
   endpoint: string;
@@ -12,6 +47,14 @@ export interface EmbedderOptions {
   // 'aelita':           POST /embed       — { texts, input_type }           →
   //   { embeddings: [[…], …] };           auth via `x-aelita-token: …`.
   apiFormat?: ApiFormat;
+  /**
+   * Nominal max input tokens for the configured model. When set, embed()
+   * validates each input locally (with safety margin) and throws
+   * EmbedderInputTooLarge for overflows BEFORE making the API call. Use
+   * embedderMaxTokens(model) from shared/embedder-limits to populate.
+   * Leaving this undefined disables local validation (legacy behavior).
+   */
+  maxInputTokens?: number;
 }
 
 /**
@@ -42,6 +85,7 @@ export class Embedder {
   private maxBatchSize: number;
   private maxRetries: number;
   private apiFormat: ApiFormat;
+  private maxInputTokens: number | undefined;
 
   constructor(opts: EmbedderOptions) {
     this.endpoint = opts.endpoint;
@@ -51,10 +95,21 @@ export class Embedder {
     this.maxBatchSize = opts.maxBatchSize ?? 128;
     this.maxRetries = opts.maxRetries ?? 3;
     this.apiFormat = opts.apiFormat ?? 'openai';
+    this.maxInputTokens = opts.maxInputTokens;
   }
 
   async embed(texts: string[], inputType: InputType = 'document'): Promise<number[][]> {
     if (texts.length === 0) return [];
+    if (this.maxInputTokens !== undefined) {
+      const limit = this.maxInputTokens;
+      const effectiveLimit = Math.floor(limit * TOKEN_COUNT_SAFETY_FACTOR);
+      for (let i = 0; i < texts.length; i++) {
+        const estimated = countTokens(texts[i]!);
+        if (estimated > effectiveLimit) {
+          throw new EmbedderInputTooLarge(estimated, limit, i);
+        }
+      }
+    }
     const all: number[][] = [];
     for (let i = 0; i < texts.length; i += this.maxBatchSize) {
       const batch = texts.slice(i, i + this.maxBatchSize);
@@ -97,7 +152,16 @@ export class Embedder {
       if (this.apiKey) headers.authorization = `Bearer ${this.apiKey}`;
       // input_type is a Captain Memo / Voyage extension; OpenAI-compatible
       // endpoints ignore unknown fields, so this is safe across all providers.
-      body = JSON.stringify({ input: texts, model: this.model, input_type: inputType });
+      // truncation:false makes Voyage hosted return HTTP 422 for oversized
+      // inputs instead of silently tail-truncating; OpenAI-compat endpoints
+      // ignore the field. Belt-and-suspenders with the local maxInputTokens
+      // check above — that catches it before we even call out.
+      body = JSON.stringify({
+        input: texts,
+        model: this.model,
+        input_type: inputType,
+        truncation: false,
+      });
     }
 
     const controller = new AbortController();
