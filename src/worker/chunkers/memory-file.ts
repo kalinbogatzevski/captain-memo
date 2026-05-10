@@ -1,5 +1,6 @@
 import { basename } from 'path';
 import type { ChunkInput } from '../../shared/types.ts';
+import { splitByH2Sections } from './markdown-sections.ts';
 
 const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n?/;
 
@@ -30,18 +31,53 @@ export function chunkMemoryFile(content: string, sourcePath: string): ChunkInput
   const { body, fields } = parseFrontmatter(content);
   const filenameId = basename(sourcePath, '.md');
 
-  const metadata: Record<string, unknown> = {
+  const baseMetadata: Record<string, unknown> = {
     doc_type: 'memory_file',
     filename_id: filenameId,
     source_path: sourcePath,
   };
-  if (fields.type) metadata.memory_type = fields.type;
-  if (fields.description) metadata.description = fields.description;
-  if (fields.name) metadata.name = fields.name;
+  if (fields.type) baseMetadata.memory_type = fields.type;
+  if (fields.description) baseMetadata.description = fields.description;
+  if (fields.name) baseMetadata.name = fields.name;
 
-  return [{
-    text: body.trim(),
-    position: 0,
-    metadata,
-  }];
+  const { intro, sections } = splitByH2Sections(body);
+
+  // No H2 headings — single-chunk legacy shape (CLAUDE.md-style flat docs,
+  // small notes). Preserves embedding behavior for files where there's
+  // nothing meaningful to split on.
+  if (sections.length === 0) {
+    return [{
+      text: body.trim(),
+      position: 0,
+      metadata: baseMetadata,
+    }];
+  }
+
+  // Multi-section file: emit one chunk per H2 section so each topic gets
+  // its own embedding. Sharper retrieval precision (queries match the
+  // relevant section, not the whole document) and reduced overflow risk
+  // for large memory files. Intro paragraph (before the first heading)
+  // becomes its own chunk if non-empty.
+  const chunks: ChunkInput[] = [];
+  let position = 0;
+  if (intro) {
+    chunks.push({
+      text: intro,
+      position: position++,
+      metadata: { ...baseMetadata, section_kind: 'intro' },
+    });
+  }
+  for (const section of sections) {
+    chunks.push({
+      text: section.text.trim(),
+      position: position++,
+      metadata: {
+        ...baseMetadata,
+        section_kind: 'h2',
+        section_title: section.title,
+        ...(section.hasCode && { has_code: true }),
+      },
+    });
+  }
+  return chunks;
 }

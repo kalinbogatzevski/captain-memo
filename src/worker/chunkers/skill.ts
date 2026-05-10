@@ -1,8 +1,8 @@
 import { basename } from 'path';
 import type { ChunkInput } from '../../shared/types.ts';
+import { splitByH2Sections } from './markdown-sections.ts';
 
 const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n?/;
-const CODE_FENCE_RE = /^```/;
 
 interface SkillFrontmatter {
   body: string;
@@ -24,50 +24,12 @@ function parseFrontmatter(content: string): SkillFrontmatter {
   return { body: content.slice(match[0].length), fields };
 }
 
-interface Section {
-  title: string;
-  text: string;
-  hasCode: boolean;
-}
-
-function splitSections(body: string): { intro: string; sections: Section[] } {
-  const lines = body.split('\n');
-  let intro = '';
-  const sections: Section[] = [];
-  let current: Section | null = null;
-  let inFence = false;
-
-  for (const line of lines) {
-    if (CODE_FENCE_RE.test(line)) inFence = !inFence;
-
-    // Only split on ## when NOT inside a code fence
-    if (!inFence && line.startsWith('## ') && !line.startsWith('### ')) {
-      if (current) sections.push(current);
-      current = {
-        title: line.slice(3).trim(),
-        text: line + '\n',
-        hasCode: false,
-      };
-      continue;
-    }
-
-    if (current) {
-      current.text += line + '\n';
-      if (CODE_FENCE_RE.test(line)) current.hasCode = true;
-    } else {
-      intro += line + '\n';
-    }
-  }
-  if (current) sections.push(current);
-  return { intro: intro.trim(), sections };
-}
-
 export function chunkSkill(content: string, sourcePath: string): ChunkInput[] {
   const { body, fields } = parseFrontmatter(content);
   const skillId = basename(sourcePath, '.md');
   const description = fields.description ?? '';
 
-  const { intro, sections } = splitSections(body);
+  const { intro, sections } = splitByH2Sections(body);
 
   const chunks: ChunkInput[] = [];
   let position = 0;
