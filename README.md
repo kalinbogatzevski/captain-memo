@@ -204,6 +204,10 @@ captain-memo migrate-from-claude-mem   # one-time migration (--dry-run for previ
 
 - **[Statusline integration](docs/statusline-integration.md)** — surface worker health, observation count, disk usage, and indexing progress in your Claude Code status bar. Cached for sub-millisecond reads; uses the `--json` output from `stats` / `status`.
 
+### Recall audit log
+
+Disabled by default. Enable with `CAPTAIN_MEMO_RECALL_AUDIT=1` in your `worker.env` to start recording retrieved hits and boost provenance to `${CAPTAIN_MEMO_DATA_DIR:-~/.captain-memo}/recall-audit.jsonl` (one JSON line per search). Each line records the timestamp, session and project IDs, the query, and for every returned hit: the chunk ID, channel, score, a 200-character snippet, and which of the identifier-match or same-branch boosts fired and with what multiplier. Useful for tuning the search boosts against real prompts. The file is append-only; rotate manually if needed.
+
 ## Migrating from claude-mem
 
 If you've been using [`claude-mem`](https://github.com/thedotmack/claude-mem) and want to bring your existing observations and session summaries into Captain Memo, the migration is one command. Your claude-mem install stays intact — Captain Memo only **reads** from `~/.claude-mem/claude-mem.db`, never modifies it.

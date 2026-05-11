@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { extractIdentifierTokens, applyBoosts } from '../../src/worker/rerank.ts';
-import type { FusedItem } from '../../src/worker/search.ts';
+import type { FusedItem, BoostedItem } from '../../src/worker/search.ts';
 
 describe('extractIdentifierTokens', () => {
   test('catches snake_case + dotted tokens', () => {
@@ -107,5 +107,90 @@ describe('applyBoosts — identifier match', () => {
       branchBoost: true,
     });
     expect(reranked[0]!.score).toBeCloseTo(0.5, 2);
+  });
+});
+
+describe('applyBoosts — boost provenance metadata', () => {
+  const fakeChunks: Record<string, { content: string; branch: string | null }> = {
+    'a': { content: 'mentions contract_bills.fee directly', branch: 'feat/billing' },
+    'b': { content: 'generic billing text', branch: 'main' },
+    'c': { content: 'unrelated coffee', branch: null },
+  };
+  const getChunk = async (id: string) => fakeChunks[id]
+    ? { id, content: fakeChunks[id].content, branch: fakeChunks[id].branch }
+    : null;
+
+  test('identifier-matched chunk carries boosts.identifier with the applied multiplier', async () => {
+    const fused: FusedItem[] = [{ id: 'a', score: 0.5 }, { id: 'b', score: 0.4 }];
+    const reranked: BoostedItem[] = await applyBoosts(fused, {
+      query: 'contract_bills.fee usage',
+      currentBranch: null,
+      getChunk,
+      identifierBoost: true,
+      branchBoost: false,
+    });
+    const a = reranked.find(r => r.id === 'a')!;
+    expect(a.boosts?.identifier).toBeCloseTo(1.3, 5);
+    expect(a.boosts?.branch).toBeUndefined();
+
+    const b = reranked.find(r => r.id === 'b')!;
+    expect(b.boosts).toBeUndefined();
+  });
+
+  test('branch-matched chunk carries boosts.branch with the applied multiplier', async () => {
+    const fused: FusedItem[] = [{ id: 'a', score: 0.5 }, { id: 'b', score: 0.4 }];
+    const reranked: BoostedItem[] = await applyBoosts(fused, {
+      query: 'billing',
+      currentBranch: 'feat/billing',
+      getChunk,
+      identifierBoost: false,
+      branchBoost: true,
+    });
+    const a = reranked.find(r => r.id === 'a')!;
+    expect(a.boosts?.branch).toBeCloseTo(1.1, 5);
+    expect(a.boosts?.identifier).toBeUndefined();
+
+    const b = reranked.find(r => r.id === 'b')!;
+    expect(b.boosts).toBeUndefined(); // b is on 'main', not 'feat/billing'
+  });
+
+  test('chunk with both boosts carries both provenance keys', async () => {
+    const fused: FusedItem[] = [{ id: 'a', score: 0.5 }];
+    const reranked: BoostedItem[] = await applyBoosts(fused, {
+      query: 'contract_bills.fee',
+      currentBranch: 'feat/billing',
+      getChunk,
+      identifierBoost: true,
+      branchBoost: true,
+    });
+    const a = reranked[0]!;
+    expect(a.boosts?.identifier).toBeCloseTo(1.3, 5);
+    expect(a.boosts?.branch).toBeCloseTo(1.1, 5);
+  });
+
+  test('no boosts fired → boosts property is absent (not present with empty object)', async () => {
+    const fused: FusedItem[] = [{ id: 'c', score: 0.5 }];
+    const reranked: BoostedItem[] = await applyBoosts(fused, {
+      query: 'contract_bills.fee',
+      currentBranch: 'feat/billing',
+      getChunk,
+      identifierBoost: true,
+      branchBoost: true,
+    });
+    // 'c' has no identifier match and branch is null
+    const c = reranked[0]!;
+    expect(c.boosts).toBeUndefined();
+  });
+
+  test('early-exit (no tokens, no branch) returns plain FusedItem array with no boosts', async () => {
+    const fused: FusedItem[] = [{ id: 'a', score: 0.5 }];
+    const reranked: BoostedItem[] = await applyBoosts(fused, {
+      query: 'billing',           // plain word — no identifier tokens
+      currentBranch: null,        // no branch boost
+      getChunk,
+      identifierBoost: true,
+      branchBoost: true,
+    });
+    expect(reranked[0]!.boosts).toBeUndefined();
   });
 });

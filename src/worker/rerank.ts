@@ -30,6 +30,17 @@ export interface RerankContext {
   branchBoost: boolean;
 }
 
+/** Boost provenance for one hit — only the boosts that actually fired. */
+export interface BoostProvenance {
+  identifier?: number; // multiplier applied (omitted if boost didn't fire)
+  branch?: number;     // multiplier applied (omitted if boost didn't fire)
+}
+
+/** A FusedItem extended with optional boost-provenance metadata. */
+export interface BoostedItem extends FusedItem {
+  boosts?: BoostProvenance;
+}
+
 const IDENTIFIER_BOOST_PER_MATCH = 0.3;
 const IDENTIFIER_BOOST_CAP = 2.0;
 const BRANCH_BOOST_MULTIPLIER = 1.1;
@@ -37,7 +48,7 @@ const BRANCH_BOOST_MULTIPLIER = 1.1;
 export async function applyBoosts(
   fused: FusedItem[],
   ctx: RerankContext,
-): Promise<FusedItem[]> {
+): Promise<BoostedItem[]> {
   const idTokens = ctx.identifierBoost ? extractIdentifierTokens(ctx.query) : [];
   if (idTokens.length === 0 && !(ctx.branchBoost && ctx.currentBranch)) {
     return fused;
@@ -45,9 +56,10 @@ export async function applyBoosts(
   const enriched = await Promise.all(
     fused.map(async item => ({ item, chunk: await ctx.getChunk(item.id) })),
   );
-  const reranked = enriched.map(({ item, chunk }) => {
+  const reranked: BoostedItem[] = enriched.map(({ item, chunk }) => {
     if (!chunk) return item;
     let score = item.score;
+    const boosts: BoostProvenance = {};
     if (idTokens.length > 0) {
       const matches = idTokens.filter(t => chunk.content.includes(t)).length;
       if (matches > 0) {
@@ -56,12 +68,16 @@ export async function applyBoosts(
           IDENTIFIER_BOOST_CAP,
         );
         score *= multiplier;
+        boosts.identifier = multiplier;
       }
     }
     if (ctx.branchBoost && ctx.currentBranch && chunk.branch === ctx.currentBranch) {
       score *= BRANCH_BOOST_MULTIPLIER;
+      boosts.branch = BRANCH_BOOST_MULTIPLIER;
     }
-    return { id: item.id, score };
+    const result: BoostedItem = { id: item.id, score };
+    if (Object.keys(boosts).length > 0) result.boosts = boosts;
+    return result;
   });
   reranked.sort((a, b) => b.score - a.score);
   return reranked;

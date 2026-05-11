@@ -1,4 +1,4 @@
-import { readStdinJson, writeStdout, workerFetch, logHookError } from './shared.ts';
+import { readStdinJson, writeStdout, workerFetch, logHookError, resolveProjectId } from './shared.ts';
 import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS } from '../shared/paths.ts';
 import type { EnvelopePayload } from '../shared/types.ts';
 
@@ -21,7 +21,12 @@ export async function main(): Promise<void> {
 
   const result = await workerFetch<EnvelopePayload>('/inject/context', {
     method: 'POST',
-    body: { prompt, top_k: 5 },
+    body: {
+      prompt,
+      top_k: 5,
+      session_id: payload.session_id,
+      project_id: resolveProjectId(payload.cwd),
+    },
     timeoutMs,
   });
 

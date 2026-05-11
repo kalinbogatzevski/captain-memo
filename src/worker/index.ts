@@ -44,6 +44,7 @@ import {
   DEFAULT_OBSERVATION_BATCH_SIZE,
   DEFAULT_OBSERVATION_TICK_MS,
 } from '../shared/paths.ts';
+import { writeRecallAuditLine } from './recall-audit.ts';
 import { Summarizer } from './summarizer.ts';
 import pkg from '../../package.json' with { type: 'json' };
 
@@ -163,6 +164,8 @@ const InjectContextSchema = z.object({
   top_k: z.number().int().positive().max(50).default(5),
   channels: z.array(z.enum(['memory', 'skill', 'observation'])).optional(),
   budget_tokens: z.number().int().positive().max(20_000).optional(),
+  session_id: z.string().optional(),
+  project_id: z.string().optional(),
 });
 
 const SHORT_PROMPT_THRESHOLD = 10;
@@ -917,6 +920,34 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             metadata: m,
           });
           if (hits.length >= parsed.data.top_k) break;
+        }
+
+        // Fire-and-forget recall audit (default-off; enable via CAPTAIN_MEMO_RECALL_AUDIT=1).
+        // fused already carries .boosts from applyBoosts (BoostedItem); build a
+        // lookup so we can attach provenance to each hit without a second scan.
+        {
+          type BoostedProvenance = { identifier?: number; branch?: number } | undefined;
+          const fusedBoostMap = new Map<string, BoostedProvenance>(
+            fused.map(f => [f.id, (f as { id: string; boosts?: BoostedProvenance }).boosts]),
+          );
+          const rawPrompt = parsed.data.prompt;
+          void writeRecallAuditLine({
+            ts: Date.now(),
+            session_id: parsed.data.session_id ?? 'unknown',
+            project_id: parsed.data.project_id ?? opts.projectId,
+            query: trimmed,
+            ...(rawPrompt !== trimmed && { prompt: rawPrompt }),
+            hits: hits.map(h => {
+              const boosts = fusedBoostMap.get(h.doc_id);
+              return {
+                doc_id: h.doc_id,
+                channel: h.channel,
+                score: h.score,
+                snippet: h.snippet.slice(0, 200),
+                ...(boosts && Object.keys(boosts).length > 0 && { boosts }),
+              };
+            }),
+          });
         }
 
         const result = formatEnvelope({

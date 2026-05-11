@@ -1,10 +1,12 @@
-import type { RerankChunk } from './rerank.ts';
+import type { RerankChunk, BoostedItem } from './rerank.ts';
 import { applyBoosts } from './rerank.ts';
 
 export interface FusedItem {
   id: string;
   score: number;          // Normalized 0-1
 }
+
+export type { BoostedItem };
 
 /**
  * Reciprocal Rank Fusion.
@@ -72,7 +74,7 @@ export class HybridSearcher {
 
   async search(embedding: number[], query: string, topK: number, opts?: {
     currentBranch?: string | null;
-  }): Promise<FusedItem[]> {
+  }): Promise<BoostedItem[]> {
     // Each half logs its own error so silent degradation is debuggable —
     // before, both halves could fail and the user got an empty result with
     // no signal. Now journalctl shows which half (vector / keyword) broke.
