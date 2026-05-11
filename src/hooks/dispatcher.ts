@@ -9,6 +9,7 @@ const EVENTS: Record<string, string> = {
   SessionStart:     '../hooks/session-start.ts',
   PostToolUse:      '../hooks/post-tool-use.ts',
   Stop:             '../hooks/stop.ts',
+  PreCompact:       '../hooks/pre-compact.ts',
 };
 
 export async function main(): Promise<void> {

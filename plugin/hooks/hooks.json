@@ -42,6 +42,17 @@
           }
         ]
       }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/captain-memo-hook PreCompact",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }

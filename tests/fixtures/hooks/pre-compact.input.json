@@ -1,0 +1,7 @@
+{
+  "session_id": "ses_2026-05-11T09-00-00_precompact1",
+  "transcript_path": "/tmp/claude-transcripts/precompact1.jsonl",
+  "cwd": "/home/kalin/projects/captain-memo",
+  "hook_event_name": "PreCompact",
+  "trigger": "manual"
+}

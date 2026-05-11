@@ -125,11 +125,16 @@ export function resolveProjectId(cwd: string | undefined): string {
   return parts[parts.length - 1] ?? 'default';
 }
 
-/** Truncate any string to ≤ N chars, preserving a trailing marker. */
+/** Truncate any string to ≤ N codepoints, preserving a trailing marker. */
 export function clamp(s: string, max: number): string {
   if (typeof s !== 'string') return '';
-  if (s.length <= max) return s;
-  return s.slice(0, max - 1) + '…';
+  // Spread iterates Unicode codepoints, not UTF-16 code units — so a multi-byte
+  // emoji or surrogate pair is treated as ONE element, not two. Without this,
+  // slice() could cut between the high/low surrogates and produce an ill-formed
+  // string that breaks JSON.stringify.
+  const points = [...s];
+  if (points.length <= max) return s;
+  return points.slice(0, max - 1).join('') + '…';
 }
 
 /** Compact-stringify any object/value for tool_input/tool_response summaries. */
