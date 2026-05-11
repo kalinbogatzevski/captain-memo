@@ -67,6 +67,9 @@ export function transformObservation(
     // accounting). Used downstream to compute "savings" stats — work cost vs
     // recall cost. Defaulting to 0 if absent (older claude-mem rows).
     discovery_tokens: row.discovery_tokens ?? 0,
+    // work_tokens mirrors captain-memo's native field for the savings badge.
+    // Migrated rows inherit claude-mem's discovery_tokens as their work cost.
+    work_tokens: row.discovery_tokens ? Number(row.discovery_tokens) : null,
     migrated_from: 'claude-mem',
   };
 

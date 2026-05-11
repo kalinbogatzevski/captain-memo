@@ -72,6 +72,8 @@ export interface SummarizerResult {
   narrative: string;
   facts: string[];
   concepts: string[];
+  /** Token usage from the summarizer call — available when the transport exposes it. */
+  usage?: { input_tokens: number; output_tokens: number };
 }
 
 export interface WorkerOptions {
@@ -449,6 +451,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       try {
         const summary = await summarize(events);
         const head = events[0]!;
+        const workTokens = summary.usage
+          ? summary.usage.input_tokens + summary.usage.output_tokens
+          : null;
         const id = obsStore.insert({
           session_id: head.session_id,
           project_id: head.project_id,
@@ -462,6 +467,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           files_modified: dedupeFlat(events.map(e => e.files_modified)),
           created_at_epoch: head.ts_epoch,
           branch: head.branch ?? null,
+          work_tokens: workTokens,
         });
         const inserted = obsStore.findById(id);
         if (inserted) await ingestObservation(inserted);

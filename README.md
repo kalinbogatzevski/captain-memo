@@ -204,6 +204,19 @@ captain-memo migrate-from-claude-mem   # one-time migration (--dry-run for previ
 
 - **[Statusline integration](docs/statusline-integration.md)** — surface worker health, observation count, disk usage, and indexing progress in your Claude Code status bar. Cached for sub-millisecond reads; uses the `--json` output from `stats` / `status`.
 
+### Token-savings badges
+
+Each captured observation records how many tokens the summarizer spent producing it (`work_tokens = input + output`). When the `<memory-context>` envelope is built, a per-hit savings badge shows how much was compressed compared to injecting the raw session events. By default only the percentage is shown; the absolute amounts are opt-in so the envelope stays concise.
+
+| Env var | Default | Shows |
+|---|---|---|
+| `CAPTAIN_MEMO_SHOW_SAVINGS_PERCENT` | `1` (on) | `saved X%` |
+| `CAPTAIN_MEMO_SHOW_SAVINGS_AMOUNT` | `0` (off) | `N tokens saved` |
+| `CAPTAIN_MEMO_SHOW_WORK_TOKENS` | `0` (off) | `work N` |
+| `CAPTAIN_MEMO_SHOW_READ_TOKENS` | `0` (off) | `recall N` |
+
+Set any flag to `0` to hide it, or `1` to show it. When all four are `0` no badge line is emitted. Observations captured before v0.1.6, and those migrated from claude-mem without a `discovery_tokens` record, silently skip the badge (`work_tokens = NULL`). Migrated observations that _do_ have a `discovery_tokens` value inherit it as `work_tokens` so the badge renders for historical data too.
+
 ### Recall audit log
 
 Disabled by default. Enable with `CAPTAIN_MEMO_RECALL_AUDIT=1` in your `worker.env` to start recording retrieved hits and boost provenance to `${CAPTAIN_MEMO_DATA_DIR:-~/.captain-memo}/recall-audit.jsonl` (one JSON line per search). Each line records the timestamp, session and project IDs, the query, and for every returned hit: the chunk ID, channel, score, a 200-character snippet, and which of the identifier-match or same-branch boosts fired and with what multiplier. Useful for tuning the search boosts against real prompts. The file is append-only; rotate manually if needed.

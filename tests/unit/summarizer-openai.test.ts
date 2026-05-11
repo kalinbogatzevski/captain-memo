@@ -118,3 +118,29 @@ test('openai transport — extra fields are merged into request body', async () 
 test('openai transport — endpoint required at construction', () => {
   expect(() => createOpenAITransport({ endpoint: '' })).toThrow(/endpoint required/);
 });
+
+test('openai transport — usage field is extracted and mapped to input/output shape', async () => {
+  const f = fakeFetch([{
+    body: {
+      choices: [{ message: { role: 'assistant', content: 'hello' } }],
+      model: 'gpt-4o-mini',
+      usage: { prompt_tokens: 120, completion_tokens: 80, total_tokens: 200 },
+    },
+  }]);
+  const t = createOpenAITransport({ endpoint: 'http://x/v1/chat/completions', fetchFn: f.fn });
+  const out = await t({ model: 'gpt-4o-mini', system: 'sys', user: 'usr', max_tokens: 200 });
+  expect(out.usage).toEqual({ input_tokens: 120, output_tokens: 80 });
+});
+
+test('openai transport — missing usage field leaves usage undefined', async () => {
+  const f = fakeFetch([{
+    body: {
+      choices: [{ message: { role: 'assistant', content: 'hello' } }],
+      model: 'gpt-4o-mini',
+      // no usage field
+    },
+  }]);
+  const t = createOpenAITransport({ endpoint: 'http://x/v1/chat/completions', fetchFn: f.fn });
+  const out = await t({ model: 'gpt-4o-mini', system: 'sys', user: 'usr', max_tokens: 200 });
+  expect(out.usage).toBeUndefined();
+});

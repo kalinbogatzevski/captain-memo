@@ -1,19 +1,4 @@
-import type { ChunkInput, ObservationType } from '../../shared/types.ts';
-
-export interface Observation {
-  id: number;
-  session_id: string;
-  project_id: string;
-  type: ObservationType;
-  title: string;
-  narrative: string;
-  facts: string[];
-  concepts: string[];
-  files_read: string[];
-  files_modified: string[];
-  created_at_epoch: number;
-  prompt_number: number;
-}
+import type { ChunkInput, Observation } from '../../shared/types.ts';
 
 export interface SessionSummary {
   id: number;
@@ -42,6 +27,7 @@ export function chunkObservation(obs: Observation): ChunkInput[] {
     files_modified: obs.files_modified,
     created_at_epoch: obs.created_at_epoch,
     prompt_number: obs.prompt_number,
+    work_tokens: obs.work_tokens ?? null,
   };
 
   const chunks: ChunkInput[] = [];

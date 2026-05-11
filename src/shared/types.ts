@@ -101,6 +101,9 @@ export interface Observation {
   created_at_epoch: number;
   /** Git branch active when the observation was captured, or null. */
   branch: string | null;
+  /** Total tokens the summarizer spent producing this observation (input + output).
+   *  Null for pre-v0.1.6 captures and migrated observations without a token record. */
+  work_tokens: number | null;
 }
 
 /** Status enum for the observation_queue rows. */

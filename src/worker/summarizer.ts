@@ -23,6 +23,7 @@ export interface SummarizerTransportArgs {
 export interface SummarizerTransportResult {
   content: Array<{ type: 'text'; text: string }>;
   model: string;
+  usage?: { input_tokens: number; output_tokens: number };
 }
 
 export type SummarizerTransport = (args: SummarizerTransportArgs) => Promise<SummarizerTransportResult>;
@@ -118,7 +119,11 @@ export class Summarizer {
         content.push({ type: 'text', text: (c as { text: string }).text });
       }
     }
-    return { content, model: res.model };
+    const sdkUsage = (res as { usage?: { input_tokens?: number; output_tokens?: number } }).usage;
+    const usage = (sdkUsage?.input_tokens !== undefined && sdkUsage?.output_tokens !== undefined)
+      ? { input_tokens: sdkUsage.input_tokens, output_tokens: sdkUsage.output_tokens }
+      : undefined;
+    return { content, model: res.model, ...(usage && { usage }) };
   }
 
   async summarize(events: RawObservationEvent[]): Promise<SummarizerResult> {
@@ -182,7 +187,10 @@ export class Summarizer {
     if (!parsed.success) {
       throw new Error(`Summarizer: response failed schema validation: ${parsed.error.message}`);
     }
-    return parsed.data;
+    return {
+      ...parsed.data,
+      ...(response.usage && { usage: response.usage }),
+    };
   }
 
   /** Exposed for tests + diagnostics. */

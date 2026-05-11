@@ -70,6 +70,7 @@ export function readClaudeOauthToken(): CachedToken | null {
 interface AnthropicMessageResponse {
   content?: Array<{ type: string; text?: string }>;
   model?: string;
+  usage?: { input_tokens?: number; output_tokens?: number };
 }
 
 export interface ClaudeOauthTransportOptions {
@@ -145,9 +146,13 @@ export function createClaudeOauthTransport(opts: ClaudeOauthTransportOptions = {
       const content = (json.content ?? [])
         .filter((c): c is { type: 'text'; text: string } => c.type === 'text' && typeof c.text === 'string')
         .map(c => ({ type: 'text' as const, text: c.text }));
+      const usage = (json.usage?.input_tokens !== undefined && json.usage?.output_tokens !== undefined)
+        ? { input_tokens: json.usage.input_tokens, output_tokens: json.usage.output_tokens }
+        : undefined;
       return {
         content,
         model: json.model ?? args.model,
+        ...(usage && { usage }),
       };
     } finally {
       clearTimeout(timer);

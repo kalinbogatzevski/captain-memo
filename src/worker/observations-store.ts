@@ -21,6 +21,8 @@ CREATE INDEX IF NOT EXISTS idx_obs_project ON observations(project_id, created_a
 `;
 // Schema-evolution: add branch column if upgrading from v0 schema.
 const ALTER_BRANCH = `ALTER TABLE observations ADD COLUMN branch TEXT`;
+// Schema-evolution: add work_tokens column (v0.1.6+).
+const ALTER_WORK_TOKENS = `ALTER TABLE observations ADD COLUMN work_tokens INTEGER`;
 
 export type NewObservation = Omit<Observation, 'id'>;
 
@@ -43,6 +45,14 @@ export class ObservationsStore {
         console.warn('[observations-store] ALTER TABLE failed unexpectedly:', message);
       }
     }
+    try {
+      this.db.exec(ALTER_WORK_TOKENS);
+    } catch (err) {
+      const message = (err as Error).message ?? '';
+      if (!/duplicate column/i.test(message)) {
+        console.warn('[observations-store] ALTER TABLE failed unexpectedly:', message);
+      }
+    }
   }
 
   insert(obs: NewObservation): number {
@@ -50,8 +60,8 @@ export class ObservationsStore {
       .query(
         `INSERT INTO observations
           (session_id, project_id, prompt_number, type, title, narrative,
-           facts, concepts, files_read, files_modified, created_at_epoch, branch)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           facts, concepts, files_read, files_modified, created_at_epoch, branch, work_tokens)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         obs.session_id, obs.project_id, obs.prompt_number, obs.type, obs.title,
@@ -62,6 +72,7 @@ export class ObservationsStore {
         JSON.stringify(obs.files_modified),
         obs.created_at_epoch,
         obs.branch ?? null,
+        obs.work_tokens ?? null,
       );
     return Number(result.lastInsertRowid);
   }
@@ -81,6 +92,7 @@ export class ObservationsStore {
       files_modified: JSON.parse(String(row.files_modified)),
       created_at_epoch: Number(row.created_at_epoch),
       branch: typeof row.branch === 'string' ? row.branch : null,
+      work_tokens: typeof row.work_tokens === 'number' ? row.work_tokens : null,
     };
   }
 

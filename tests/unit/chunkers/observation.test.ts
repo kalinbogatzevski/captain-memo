@@ -17,6 +17,8 @@ const observation = {
   files_modified: ['core/modules/admin/forms/render.php'],
   created_at_epoch: 1714838400,
   prompt_number: 12,
+  branch: null,
+  work_tokens: null,
 };
 
 test('chunkObservation — produces 1 narrative chunk + 1 chunk per fact', () => {

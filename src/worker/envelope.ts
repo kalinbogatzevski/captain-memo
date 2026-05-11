@@ -72,16 +72,60 @@ function renderSkillGroup(hits: EnvelopeHit[]): string {
   return lines.join('\n');
 }
 
+function renderSavingsBadge(
+  workTokens: number,
+  readTokens: number,
+  opts: { percent: boolean; amount: boolean; work: boolean; read: boolean },
+): string | null {
+  if (workTokens <= 0) return null;
+  const saved = Math.max(0, workTokens - readTokens);
+  const pct = Math.max(0, Math.min(100, Math.round((saved / workTokens) * 100)));
+  const parts: string[] = [];
+  if (opts.percent) parts.push(`saved ${pct}%`);
+  if (opts.amount) parts.push(`${saved.toLocaleString()} tokens saved`);
+  if (opts.work) parts.push(`work ${workTokens.toLocaleString()}`);
+  if (opts.read) parts.push(`recall ${readTokens.toLocaleString()}`);
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
 function renderObservationGroup(hits: EnvelopeHit[]): string {
   if (hits.length === 0) return '';
+
+  const showPercent = process.env.CAPTAIN_MEMO_SHOW_SAVINGS_PERCENT !== '0';
+  const showAmount = process.env.CAPTAIN_MEMO_SHOW_SAVINGS_AMOUNT === '1';
+  const showWork = process.env.CAPTAIN_MEMO_SHOW_WORK_TOKENS === '1';
+  const showRead = process.env.CAPTAIN_MEMO_SHOW_READ_TOKENS === '1';
+  const anyBadge = showPercent || showAmount || showWork || showRead;
+
   const lines: string[] = [`## Session memory (${hits.length} results)`, ''];
   for (const h of hits) {
     const obsType = String(h.metadata.type ?? h.metadata.field_type ?? 'observation');
     const created = Number(h.metadata.created_at_epoch ?? 0);
     const date = formatObservationDate(created);
-    lines.push(`### ${obsType} · ${date} · "${h.title}"`);
-    lines.push(h.snippet.trim());
-    lines.push(`[full: get_full("${h.doc_id}")]`);
+
+    // Build the rendered hit block first so we can count its true token cost
+    // (header + snippet + trailer), not just the snippet alone.
+    const renderedLines = [
+      `### ${obsType} · ${date} · "${h.title}"`,
+      h.snippet.trim(),
+      `[full: get_full("${h.doc_id}")]`,
+    ];
+    const readTokens = anyBadge ? countTokens(renderedLines.join('\n')) : 0;
+
+    lines.push(...renderedLines);
+
+    if (anyBadge) {
+      const workTokens = typeof h.metadata.work_tokens === 'number' ? h.metadata.work_tokens : null;
+      if (workTokens !== null && workTokens > 0) {
+        const badge = renderSavingsBadge(workTokens, readTokens, {
+          percent: showPercent,
+          amount: showAmount,
+          work: showWork,
+          read: showRead,
+        });
+        if (badge) lines.push(badge);
+      }
+    }
     lines.push('');
   }
   return lines.join('\n');

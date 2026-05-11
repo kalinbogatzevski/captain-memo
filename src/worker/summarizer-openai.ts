@@ -37,6 +37,7 @@ interface OpenAIChatChoice {
 interface OpenAIChatResponse {
   choices?: OpenAIChatChoice[];
   model?: string;
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
   error?: { message?: string; code?: string; type?: string };
 }
 
@@ -92,9 +93,14 @@ export function createOpenAITransport(opts: OpenAITransportOptions): SummarizerT
     if (typeof text !== 'string') {
       throw new Error(`openai transport: missing choices[0].message.content in response`);
     }
+    // Map OpenAI's prompt_tokens/completion_tokens to the shared input/output shape.
+    const usage = (json.usage?.prompt_tokens !== undefined && json.usage?.completion_tokens !== undefined)
+      ? { input_tokens: json.usage.prompt_tokens, output_tokens: json.usage.completion_tokens }
+      : undefined;
     return {
       content: [{ type: 'text', text }],
       model: json.model ?? args.model,
+      ...(usage && { usage }),
     };
   };
 }
