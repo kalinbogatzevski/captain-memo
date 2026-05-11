@@ -1,6 +1,6 @@
 import { join } from 'path';
 import { statSync, readdirSync } from 'fs';
-import { detectBranchSync } from './branch.ts';
+import { detectBranchSyncCached } from './branch.ts';
 import { z } from 'zod';
 import { MetaStore } from './meta.ts';
 import { Embedder } from './embedder.ts';
@@ -616,7 +616,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     return decayed;
   };
   const searchWithRecency = async (embedding: number[], query: string, k: number) => {
-    const currentBranch = detectBranchSync(process.cwd());
+    const branchBoostEnabled = process.env.CAPTAIN_MEMO_BRANCH_BOOST !== '0';
+    const currentBranch = branchBoostEnabled ? detectBranchSyncCached(process.cwd()) : null;
     const raw = await searcher.search(embedding, query, k, { currentBranch });
     return applyRecencyDecay(raw);
   };

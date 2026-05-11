@@ -28,3 +28,38 @@ export function detectBranchSync(cwd: string): string | null {
     return null;
   }
 }
+
+// ─── TTL cache for detectBranchSync ──────────────────────────────────────────
+// Repeated calls within BRANCH_CACHE_TTL_MS skip the git spawn entirely.
+// Cache key is the cwd string; value holds the resolved branch and an expiry.
+// The uncached detectBranchSync is kept for callers that need a fresh read
+// every time (e.g. hook capture in post-tool-use.ts).
+
+export const BRANCH_CACHE_TTL_MS = 60_000;
+
+interface BranchCacheEntry {
+  branch: string | null;
+  expires_at_ms: number;
+}
+
+// Exported so tests can flush it between cases via _resetBranchCache().
+export const branchCache = new Map<string, BranchCacheEntry>();
+
+/** Test-only helper — clears the in-memory TTL cache. */
+export function _resetBranchCache(): void {
+  branchCache.clear();
+}
+
+/**
+ * Like detectBranchSync, but memoises the result per cwd for BRANCH_CACHE_TTL_MS.
+ * Use this on hot search paths to avoid a git spawn per request.
+ * Hook-capture paths should keep using the uncached detectBranchSync.
+ */
+export function detectBranchSyncCached(cwd: string): string | null {
+  const now = Date.now();
+  const cached = branchCache.get(cwd);
+  if (cached && cached.expires_at_ms > now) return cached.branch;
+  const branch = detectBranchSync(cwd);
+  branchCache.set(cwd, { branch, expires_at_ms: now + BRANCH_CACHE_TTL_MS });
+  return branch;
+}
