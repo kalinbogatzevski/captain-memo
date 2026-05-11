@@ -1,5 +1,6 @@
 import { join } from 'path';
 import { statSync, readdirSync } from 'fs';
+import { detectBranchSync } from './branch.ts';
 import { z } from 'zod';
 import { MetaStore } from './meta.ts';
 import { Embedder } from './embedder.ts';
@@ -144,6 +145,8 @@ const ObservationEnqueueSchema = z.object({
   files_read: z.array(z.string()).default([]),
   files_modified: z.array(z.string()).default([]),
   ts_epoch: z.number().int(),
+  branch: z.string().nullable().optional(),
+  source: z.string().optional(),
 });
 
 const ObservationFlushSchema = z.object({
@@ -405,6 +408,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         type: obs.type,
         title: obs.title,
         created_at_epoch: obs.created_at_epoch,
+        branch: obs.branch ?? null,
       },
     });
     meta.replaceChunksForDocument(documentId, chunksWithIds);
@@ -454,6 +458,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           files_read: dedupeFlat(events.map(e => e.files_read)),
           files_modified: dedupeFlat(events.map(e => e.files_modified)),
           created_at_epoch: head.ts_epoch,
+          branch: head.branch ?? null,
         });
         const inserted = obsStore.findById(id);
         if (inserted) await ingestObservation(inserted);
@@ -611,7 +616,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     return decayed;
   };
   const searchWithRecency = async (embedding: number[], query: string, k: number) => {
-    const raw = await searcher.search(embedding, query, k);
+    const currentBranch = detectBranchSync(process.cwd());
+    const raw = await searcher.search(embedding, query, k, { currentBranch });
     return applyRecencyDecay(raw);
   };
 
@@ -936,7 +942,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         if (!parsed.success) {
           return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
         }
-        const id = obsQueue.enqueue(parsed.data);
+        const { branch, source, ...rest } = parsed.data;
+        const id = obsQueue.enqueue({
+          ...rest,
+          branch: branch ?? null,
+          ...(source !== undefined && { source }),
+        });
         return Response.json({ id, queued: true });
       }
 

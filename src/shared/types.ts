@@ -75,6 +75,10 @@ export interface RawObservationEvent {
   files_read: string[];
   files_modified: string[];
   ts_epoch: number;            // hook capture time, seconds
+  /** Git branch at capture cwd, or null when not in a git repo. */
+  branch?: string | null;
+  /** Origin of the observation: "post-tool-use" (default), "pre-compact", etc. */
+  source?: string;
 }
 
 /**
@@ -95,6 +99,8 @@ export interface Observation {
   files_read: string[];
   files_modified: string[];
   created_at_epoch: number;
+  /** Git branch active when the observation was captured, or null. */
+  branch: string | null;
 }
 
 /** Status enum for the observation_queue rows. */

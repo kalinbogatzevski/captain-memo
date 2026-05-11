@@ -30,6 +30,7 @@ test('ObservationsStore — insert returns row id and find roundtrips', () => {
     files_read: ['a.ts'],
     files_modified: ['a.ts'],
     created_at_epoch: 1_700_000_000,
+    branch: null,
   });
   expect(id).toBeGreaterThan(0);
   const got = store.findById(id);
@@ -43,12 +44,12 @@ test('ObservationsStore — listForSession returns chronological order', () => {
   store.insert({
     session_id: 's1', project_id: 'p1', prompt_number: 2,
     type: 'feature', title: 'b', narrative: '', facts: [], concepts: [],
-    files_read: [], files_modified: [], created_at_epoch: 200,
+    files_read: [], files_modified: [], created_at_epoch: 200, branch: null,
   });
   store.insert({
     session_id: 's1', project_id: 'p1', prompt_number: 1,
     type: 'feature', title: 'a', narrative: '', facts: [], concepts: [],
-    files_read: [], files_modified: [], created_at_epoch: 100,
+    files_read: [], files_modified: [], created_at_epoch: 100, branch: null,
   });
   const list = store.listForSession('s1');
   expect(list.map(o => o.title)).toEqual(['a', 'b']);
@@ -59,7 +60,7 @@ test('ObservationsStore — listRecent respects limit', () => {
     store.insert({
       session_id: 's', project_id: 'p', prompt_number: i,
       type: 'change', title: `t${i}`, narrative: '', facts: [], concepts: [],
-      files_read: [], files_modified: [], created_at_epoch: 100 + i,
+      files_read: [], files_modified: [], created_at_epoch: 100 + i, branch: null,
     });
   }
   expect(store.listRecent(3)).toHaveLength(3);

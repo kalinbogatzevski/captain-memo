@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS observations (
 CREATE INDEX IF NOT EXISTS idx_obs_session ON observations(session_id, created_at_epoch);
 CREATE INDEX IF NOT EXISTS idx_obs_project ON observations(project_id, created_at_epoch DESC);
 `;
+// Schema-evolution: add branch column if upgrading from v0 schema.
+const ALTER_BRANCH = `ALTER TABLE observations ADD COLUMN branch TEXT`;
 
 export type NewObservation = Omit<Observation, 'id'>;
 
@@ -29,6 +31,18 @@ export class ObservationsStore {
     this.db = new Database(path);
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec(SCHEMA);
+    try {
+      this.db.exec(ALTER_BRANCH);
+    } catch (err) {
+      const message = (err as Error).message ?? '';
+      // SQLite emits "duplicate column name: branch" on re-run; that's the
+      // expected idempotent case. Any other failure (disk full, locked DB,
+      // WAL corruption) deserves a warning so it doesn't masquerade as
+      // benign "already migrated".
+      if (!/duplicate column/i.test(message)) {
+        console.warn('[observations-store] ALTER TABLE failed unexpectedly:', message);
+      }
+    }
   }
 
   insert(obs: NewObservation): number {
@@ -36,8 +50,8 @@ export class ObservationsStore {
       .query(
         `INSERT INTO observations
           (session_id, project_id, prompt_number, type, title, narrative,
-           facts, concepts, files_read, files_modified, created_at_epoch)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           facts, concepts, files_read, files_modified, created_at_epoch, branch)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         obs.session_id, obs.project_id, obs.prompt_number, obs.type, obs.title,
@@ -47,6 +61,7 @@ export class ObservationsStore {
         JSON.stringify(obs.files_read),
         JSON.stringify(obs.files_modified),
         obs.created_at_epoch,
+        obs.branch ?? null,
       );
     return Number(result.lastInsertRowid);
   }
@@ -65,6 +80,7 @@ export class ObservationsStore {
       files_read: JSON.parse(String(row.files_read)),
       files_modified: JSON.parse(String(row.files_modified)),
       created_at_epoch: Number(row.created_at_epoch),
+      branch: typeof row.branch === 'string' ? row.branch : null,
     };
   }
 
