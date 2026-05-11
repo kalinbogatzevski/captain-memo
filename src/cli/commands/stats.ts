@@ -17,6 +17,7 @@ interface StatsResponse {
     percent: number;
   };
   project_id: string;
+  version?: string;
   embedder: { model: string; endpoint: string };
 }
 
@@ -44,6 +45,7 @@ export async function statsCommand(args: string[] = []): Promise<number> {
   console.log('\x1b[1;36mCaptain Memo — corpus statistics\x1b[0m');
   console.log('───────────────────────────────────');
   console.log(`Project:        ${stats.project_id}`);
+  console.log(`Version:        ${stats.version ?? 'unknown'}`);
   console.log(`Indexing:       ${indexingLine(stats.indexing)}`);
   console.log(`Total chunks:   ${stats.total_chunks}`);
   console.log('By channel:');
