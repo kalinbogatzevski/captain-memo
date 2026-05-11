@@ -1,3 +1,6 @@
+import type { RerankChunk } from './rerank.ts';
+import { applyBoosts } from './rerank.ts';
+
 export interface FusedItem {
   id: string;
   score: number;          // Normalized 0-1
@@ -49,6 +52,7 @@ export interface HybridSearcherOptions {
   keywordSearch: (query: string, topK: number) => Promise<KeywordHit[]>;
   rrfK?: number;
   perStrategyTopK?: number;
+  getChunk?: (id: string) => Promise<RerankChunk | null>;
 }
 
 export class HybridSearcher {
@@ -56,15 +60,19 @@ export class HybridSearcher {
   private keywordSearch: HybridSearcherOptions['keywordSearch'];
   private rrfK: number;
   private perStrategyTopK: number;
+  private getChunk: HybridSearcherOptions['getChunk'];
 
   constructor(opts: HybridSearcherOptions) {
     this.vectorSearch = opts.vectorSearch;
     this.keywordSearch = opts.keywordSearch;
     this.rrfK = opts.rrfK ?? 60;
     this.perStrategyTopK = opts.perStrategyTopK ?? 25;
+    this.getChunk = opts.getChunk;
   }
 
-  async search(embedding: number[], query: string, topK: number): Promise<FusedItem[]> {
+  async search(embedding: number[], query: string, topK: number, opts?: {
+    currentBranch?: string | null;
+  }): Promise<FusedItem[]> {
     // Each half logs its own error so silent degradation is debuggable —
     // before, both halves could fail and the user got an empty result with
     // no signal. Now journalctl shows which half (vector / keyword) broke.
@@ -83,6 +91,21 @@ export class HybridSearcher {
     const keywordIds = keywordResults.map(r => r.chunk_id);
 
     const fused = reciprocalRankFusion([vectorIds, keywordIds], this.rrfK);
+
+    if (this.getChunk) {
+      const identifierBoost = process.env.CAPTAIN_MEMO_IDENTIFIER_BOOST !== '0';
+      const branchBoost = process.env.CAPTAIN_MEMO_BRANCH_BOOST !== '0';
+      if (identifierBoost || branchBoost) {
+        const reranked = await applyBoosts(fused, {
+          query,
+          currentBranch: opts?.currentBranch ?? null,
+          getChunk: this.getChunk,
+          identifierBoost,
+          branchBoost,
+        });
+        return reranked.slice(0, topK);
+      }
+    }
     return fused.slice(0, topK);
   }
 }

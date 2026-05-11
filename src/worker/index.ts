@@ -205,6 +205,16 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     }
   }
 
+  const getChunk = async (id: string) => {
+    const found = meta.getChunkById(id);
+    if (!found) return null;
+    return {
+      id,
+      content: found.chunk.text,
+      branch: (found.document.metadata as { branch?: string | null }).branch ?? null,
+    };
+  };
+
   const searcher = new HybridSearcher({
     vectorSearch: async (embedding, topK) => {
       if (opts.skipEmbed || embedding.length === 0) return [];
@@ -212,6 +222,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       return results.map(r => ({ id: r.id, distance: r.distance }));
     },
     keywordSearch: async (query, topK) => meta.searchKeyword(query, topK),
+    getChunk,
   });
 
   const effectiveMaxInputTokens = opts.embedderMaxInputTokens ?? embedderMaxTokens(opts.embedderModel);
