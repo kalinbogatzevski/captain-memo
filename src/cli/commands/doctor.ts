@@ -7,6 +7,10 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { spawnSync } from 'child_process';
+import { Database } from 'bun:sqlite';
+import { getAppliedVersions } from '../../worker/migrations.ts';
+import { OBSERVATIONS_STORE_MIGRATIONS } from '../../worker/observations-store.ts';
+import { OBSERVATION_QUEUE_MIGRATIONS } from '../../worker/observation-queue.ts';
 
 // Lookup a single key from worker.env (user-mode first, then system-mode).
 function readWorkerEnvVar(key: string): string | null {
@@ -207,6 +211,66 @@ function statusIcon(s: Status): string {
   return s === 'PASS' ? '\x1b[32m✓\x1b[0m' : s === 'WARN' ? '\x1b[33m!\x1b[0m' : '\x1b[31m✗\x1b[0m';
 }
 
+interface MigrationDbReport {
+  label: string;
+  dbPath: string;
+  totalNeeded: number;
+  applied: Array<{ version: number; name: string; applied_at_epoch: number }>;
+}
+
+function renderMigrationReport(reports: MigrationDbReport[]): void {
+  console.log('\n  \x1b[1mSchema migrations:\x1b[0m');
+  for (const r of reports) {
+    const n = r.applied.length;
+    const total = r.totalNeeded;
+    const allDone = n === total;
+    const icon = allDone ? '\x1b[32m✓\x1b[0m' : '\x1b[33m!\x1b[0m';
+    if (!existsSync(r.dbPath)) {
+      console.log(`    ${'\x1b[2m'}${r.label}:\x1b[0m  not yet created (no worker run)`);
+      continue;
+    }
+    console.log(`    ${icon} ${r.label}: ${n}/${total} applied`);
+    for (const row of r.applied) {
+      const ts = new Date(row.applied_at_epoch * 1000).toISOString();
+      console.log(`        [${row.version}] ${row.name.padEnd(20)} (${ts})`);
+    }
+    if (!allDone) {
+      console.log(`        \x1b[2m→ ${total - n} pending — start the worker to apply\x1b[0m`);
+    }
+  }
+}
+
+function checkMigrations(dataDir: string): void {
+  const OBSERVATIONS_DB = join(dataDir, 'observations.db');
+  const QUEUE_DB = join(dataDir, 'queue.db');
+
+  const reports: MigrationDbReport[] = [];
+
+  for (const { label, dbPath, migrations } of [
+    { label: 'observations.db',       dbPath: OBSERVATIONS_DB, migrations: OBSERVATIONS_STORE_MIGRATIONS },
+    { label: 'queue.db',               dbPath: QUEUE_DB,        migrations: OBSERVATION_QUEUE_MIGRATIONS },
+  ]) {
+    if (!existsSync(dbPath)) {
+      reports.push({ label, dbPath, totalNeeded: migrations.length, applied: [] });
+      continue;
+    }
+    let db: Database | null = null;
+    try {
+      db = new Database(dbPath, { readonly: true });
+      const applied = getAppliedVersions(db);
+      reports.push({ label, dbPath, totalNeeded: migrations.length, applied });
+    } catch (err) {
+      const msg = (err instanceof Error ? err.message : String(err));
+      reports.push({ label, dbPath, totalNeeded: migrations.length, applied: [] });
+      console.warn(`    [migrations] could not read ${label}: ${msg}`);
+    } finally {
+      db?.close();
+    }
+  }
+
+  renderMigrationReport(reports);
+}
+
 export async function doctorCommand(_args: string[]): Promise<number> {
   console.log('\n\x1b[1;36mCaptain Memo doctor\x1b[0m\n───────────────────');
 
@@ -215,6 +279,9 @@ export async function doctorCommand(_args: string[]): Promise<number> {
   checkConfig();
   checkPluginRegistration();
   checkPluginManifest();
+
+  const dataDir = process.env.CAPTAIN_MEMO_DATA_DIR ?? join(homedir(), '.captain-memo');
+  checkMigrations(dataDir);
 
   for (const c of checks) {
     console.log(`  ${statusIcon(c.status)} ${c.name.padEnd(22)} ${c.detail}`);

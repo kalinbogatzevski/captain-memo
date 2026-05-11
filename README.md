@@ -244,6 +244,25 @@ The migration is **idempotent** (re-runs skip already-migrated rows via a progre
 
 ---
 
+## Schema upgrades
+
+Each SQLite database owned by the worker (`observations.db`, `queue.db`, etc.) maintains its own `schema_versions` table. Stores declare their changes as an ordered migration list; on every worker startup the runner applies any that are not yet recorded.
+
+You never need to run manual `ALTER TABLE` commands. For installs that already have columns from an earlier release (before v0.1.7), the runner recognises the "duplicate column" error as idempotent recovery and marks the migration applied without re-running.
+
+Run `captain-memo doctor` to see which migrations have been applied per database:
+
+```
+Schema migrations:
+  observations.db:      2/2 applied
+    [1] add_branch      (2026-05-11T...)
+    [2] add_work_tokens (2026-05-11T...)
+  observation_queue.db: 1/1 applied
+    [1] add_last_error  (2026-05-11T...)
+```
+
+---
+
 ## What's inside
 
 | Component | What it does |

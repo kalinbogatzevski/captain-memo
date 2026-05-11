@@ -1,5 +1,7 @@
 import { Database } from 'bun:sqlite';
 import type { RawObservationEvent, ObservationQueueStatus } from '../shared/types.ts';
+import { applyMigrations } from './migrations.ts';
+import type { Migration } from './migrations.ts';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS observation_queue (
@@ -9,16 +11,20 @@ CREATE TABLE IF NOT EXISTS observation_queue (
   payload TEXT NOT NULL,
   status TEXT NOT NULL,
   retries INTEGER NOT NULL DEFAULT 0,
-  last_error TEXT,
   created_at_epoch INTEGER NOT NULL,
   processed_at_epoch INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_obsq_status ON observation_queue(status, created_at_epoch);
 CREATE INDEX IF NOT EXISTS idx_obsq_session ON observation_queue(session_id, status);
 `;
-// Schema-evolution: add last_error column if upgrading from v0 schema. SQLite
-// doesn't have IF NOT EXISTS for columns; we accept the error if it's already there.
-const ALTER = `ALTER TABLE observation_queue ADD COLUMN last_error TEXT`;
+
+export const OBSERVATION_QUEUE_MIGRATIONS: Migration[] = [
+  {
+    version: 1,
+    name: 'add_last_error',
+    up: (db) => db.exec('ALTER TABLE observation_queue ADD COLUMN last_error TEXT'),
+  },
+];
 
 export interface ObservationQueueRow {
   id: number;
@@ -37,7 +43,7 @@ export class ObservationQueue {
     this.db = new Database(path);
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec(SCHEMA);
-    try { this.db.exec(ALTER); } catch { /* column already exists */ }
+    applyMigrations(this.db, OBSERVATION_QUEUE_MIGRATIONS);
     // Startup recovery: rows stuck in 'processing' from a worker crash should
     // be retried, not abandoned. Without this, the queue.processing counter
     // grows monotonically across restarts.

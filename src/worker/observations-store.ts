@@ -1,5 +1,7 @@
 import { Database } from 'bun:sqlite';
 import type { Observation, ObservationType } from '../shared/types.ts';
+import { applyMigrations } from './migrations.ts';
+import type { Migration } from './migrations.ts';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS observations (
@@ -19,10 +21,19 @@ CREATE TABLE IF NOT EXISTS observations (
 CREATE INDEX IF NOT EXISTS idx_obs_session ON observations(session_id, created_at_epoch);
 CREATE INDEX IF NOT EXISTS idx_obs_project ON observations(project_id, created_at_epoch DESC);
 `;
-// Schema-evolution: add branch column if upgrading from v0 schema.
-const ALTER_BRANCH = `ALTER TABLE observations ADD COLUMN branch TEXT`;
-// Schema-evolution: add work_tokens column (v0.1.6+).
-const ALTER_WORK_TOKENS = `ALTER TABLE observations ADD COLUMN work_tokens INTEGER`;
+
+export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
+  {
+    version: 1,
+    name: 'add_branch',
+    up: (db) => db.exec('ALTER TABLE observations ADD COLUMN branch TEXT'),
+  },
+  {
+    version: 2,
+    name: 'add_work_tokens',
+    up: (db) => db.exec('ALTER TABLE observations ADD COLUMN work_tokens INTEGER'),
+  },
+];
 
 export type NewObservation = Omit<Observation, 'id'>;
 
@@ -33,26 +44,7 @@ export class ObservationsStore {
     this.db = new Database(path);
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec(SCHEMA);
-    try {
-      this.db.exec(ALTER_BRANCH);
-    } catch (err) {
-      const message = (err as Error).message ?? '';
-      // SQLite emits "duplicate column name: branch" on re-run; that's the
-      // expected idempotent case. Any other failure (disk full, locked DB,
-      // WAL corruption) deserves a warning so it doesn't masquerade as
-      // benign "already migrated".
-      if (!/duplicate column/i.test(message)) {
-        console.warn('[observations-store] ALTER TABLE failed unexpectedly:', message);
-      }
-    }
-    try {
-      this.db.exec(ALTER_WORK_TOKENS);
-    } catch (err) {
-      const message = (err as Error).message ?? '';
-      if (!/duplicate column/i.test(message)) {
-        console.warn('[observations-store] ALTER TABLE failed unexpectedly:', message);
-      }
-    }
+    applyMigrations(this.db, OBSERVATIONS_STORE_MIGRATIONS);
   }
 
   insert(obs: NewObservation): number {

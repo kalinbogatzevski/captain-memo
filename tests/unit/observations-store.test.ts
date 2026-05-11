@@ -2,7 +2,9 @@ import { test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { Database } from 'bun:sqlite';
 import { ObservationsStore } from '../../src/worker/observations-store.ts';
+import { getAppliedVersions } from '../../src/worker/migrations.ts';
 
 let workDir: string;
 let store: ObservationsStore;
@@ -85,4 +87,17 @@ test('ObservationsStore — listRecent respects limit', () => {
     });
   }
   expect(store.listRecent(3)).toHaveLength(3);
+});
+
+test('ObservationsStore — schema_versions records migrations 1 and 2 after construction', () => {
+  store.close();
+  // Re-open the DB directly to inspect schema_versions.
+  const db = new Database(join(workDir, 'observations.db'), { readonly: true });
+  const rows = getAppliedVersions(db);
+  db.close();
+  expect(rows).toHaveLength(2);
+  expect(rows.map(r => r.version)).toEqual([1, 2]);
+  expect(rows.map(r => r.name)).toEqual(['add_branch', 'add_work_tokens']);
+  // Need a fresh store for afterEach to call store.close() without error.
+  store = new ObservationsStore(join(workDir, 'observations.db'));
 });
