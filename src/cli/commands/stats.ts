@@ -35,8 +35,12 @@ function indexingLine(idx: StatsResponse['indexing']): string {
   return `\x1b[31merror\x1b[0m  ${idx.last_error ?? 'unknown'}`;
 }
 
-export async function statsCommand(): Promise<number> {
+export async function statsCommand(args: string[] = []): Promise<number> {
   const stats = await workerGet('/stats') as StatsResponse;
+  if (args.includes('--json')) {
+    console.log(JSON.stringify(stats));
+    return 0;
+  }
   console.log('\x1b[1;36mCaptain Memo — corpus statistics\x1b[0m');
   console.log('───────────────────────────────────');
   console.log(`Project:        ${stats.project_id}`);

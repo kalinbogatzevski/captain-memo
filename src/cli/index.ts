@@ -18,8 +18,8 @@ Usage:
   captain-memo <command> [args]
 
 Commands:
-  status       Check whether the worker is running and reachable
-  stats        Print corpus statistics (chunk counts by channel)
+  status       Check whether the worker is running and reachable (--json)
+  stats        Print corpus statistics (chunk counts by channel) (--json)
   reindex      Re-embed corpus content (optionally scoped to a channel)
   observation  list|flush — manage observation queue (--limit N, --session ID)
   config       show — print effective config (env + defaults, secrets masked)
@@ -46,10 +46,10 @@ export async function main(args: string[]): Promise<void> {
   let exit = 0;
   switch (cmd) {
     case 'status':
-      exit = await statusCommand();
+      exit = await statusCommand(args.slice(1));
       break;
     case 'stats':
-      exit = await statsCommand();
+      exit = await statsCommand(args.slice(1));
       break;
     case 'reindex':
       exit = await reindexCommand(args.slice(1));
