@@ -198,6 +198,12 @@ captain-memo inspect-claude-mem        # read-only row counts of ~/.claude-mem/
 captain-memo migrate-from-claude-mem   # one-time migration (--dry-run for preview)
 ```
 
+`status` and `stats` accept `--json` for machine-readable output — handy for statuslines, dashboards, monitoring probes.
+
+## Recipes
+
+- **[Statusline integration](docs/statusline-integration.md)** — surface worker health, observation count, disk usage, and indexing progress in your Claude Code status bar. Cached for sub-millisecond reads; uses the `--json` output from `stats` / `status`.
+
 ## Migrating from claude-mem
 
 If you've been using [`claude-mem`](https://github.com/thedotmack/claude-mem) and want to bring your existing observations and session summaries into Captain Memo, the migration is one command. Your claude-mem install stays intact — Captain Memo only **reads** from `~/.claude-mem/claude-mem.db`, never modifies it.
