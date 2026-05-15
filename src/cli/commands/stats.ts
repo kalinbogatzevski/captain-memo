@@ -1,5 +1,5 @@
 import { workerGet } from '../client.ts';
-import { fmtElapsed } from '../../shared/format.ts';
+import { fmtBytes, fmtElapsed } from '../../shared/format.ts';
 
 interface StatsResponse {
   total_chunks: number;
@@ -19,6 +19,7 @@ interface StatsResponse {
   project_id: string;
   version?: string;
   embedder: { model: string; endpoint: string };
+  disk?: { bytes: number; path: string };
 }
 
 function indexingLine(idx: StatsResponse['indexing']): string {
@@ -56,5 +57,8 @@ export async function statsCommand(args: string[] = []): Promise<number> {
     console.log(`Observations:   ${stats.observations.total} total · ${stats.observations.queue_pending} pending · ${stats.observations.queue_processing} processing`);
   }
   console.log(`Embedder:       ${stats.embedder.model} @ ${stats.embedder.endpoint}`);
+  if (stats.disk) {
+    console.log(`Disk used:      ${fmtBytes(stats.disk.bytes)}  (${stats.disk.path})`);
+  }
   return 0;
 }
