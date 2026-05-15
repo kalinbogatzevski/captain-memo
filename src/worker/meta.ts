@@ -230,6 +230,21 @@ export class MetaStore {
     return { total_chunks: total.n, by_channel };
   }
 
+  /**
+   * Count chunks still using the pre-v0.1.8 observation chunk shape — one
+   * vector per fact or per narrative. Used by the upgrade command + worker
+   * startup banner to decide whether the corpus needs rechunking.
+   */
+  countLegacyObservationChunks(): number {
+    const row = this.db
+      .query(
+        `SELECT COUNT(*) AS n FROM chunks
+         WHERE json_extract(metadata, '$.field_type') IN ('fact', 'narrative')`
+      )
+      .get() as { n: number } | undefined;
+    return row?.n ?? 0;
+  }
+
   isMigrationDone(kind: 'observation' | 'summary', sourceId: number): boolean {
     const row = this.db
       .query('SELECT 1 AS ok FROM migration_progress WHERE source_kind = ? AND source_id = ?')

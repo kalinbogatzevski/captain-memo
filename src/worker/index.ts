@@ -175,6 +175,19 @@ const NO_OP_TOKENS = new Set(['ok', 'continue', 'yes', 'go', 'next', 'sure']);
 
 export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   const meta = new MetaStore(opts.metaDbPath);
+
+  // Boot-time hint when the corpus still carries pre-v0.1.8 observation
+  // chunks. The worker keeps serving search just fine — the old per-fact
+  // shape is still queryable — but disk + recall improve materially after
+  // an upgrade, so surface the one command that fixes it.
+  const legacyChunks = meta.countLegacyObservationChunks();
+  if (legacyChunks > 0) {
+    console.error(
+      `[worker] notice: ${legacyChunks.toLocaleString('en-US')} observation chunks ` +
+      `are on the pre-v0.1.8 per-fact shape. Run \`captain-memo upgrade\` to ` +
+      `re-chunk (1 chunk per obs, structural [type] prefix) and reclaim disk.`,
+    );
+  }
   const embedder = new Embedder({
     endpoint: opts.embedderEndpoint,
     model: opts.embedderModel,
@@ -858,6 +871,131 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
               }
             }
           }
+        }
+
+        // Observation reindex — file-based reindex above doesn't cover the
+        // observation channel because observations live in obsStore, not on
+        // disk. Batched embeds (32 obs per Voyage call) — per-obs serial
+        // embedding is API-latency bound at ~1.7 obs/sec, batched lifts it
+        // to ~50 obs/sec. With --force, we drop the old document (cascades
+        // meta chunks + FTS), evict orphaned vectors, then re-build chunks.
+        // Without --force, observations that already carry the current chunk
+        // shape (single chunk with field_type='observation') are skipped so
+        // the reindex is resumable after a crash or interrupt.
+        if (obsStore && (parsed.data.channel === 'observation' || parsed.data.channel === 'all')) {
+          const OBS_REINDEX_BATCH = 32;
+          let buffer: Observation[] = [];
+
+          const flushBatch = async (): Promise<void> => {
+            if (buffer.length === 0) return;
+            const batch = buffer;
+            buffer = [];
+
+            // Build chunks for every obs in the batch up front; track which
+            // index of the flat texts array maps to which observation.
+            interface Prepared {
+              obs: Observation;
+              sourcePath: string;
+              chunksWithIds: Array<{ chunk_id: string; text: string; sha: string; position: number; metadata: Record<string, unknown> }>;
+            }
+            const prepared: Prepared[] = [];
+            for (const obs of batch) {
+              const sourcePath = `observation:${opts.projectId}:${obs.id}`;
+              if (parsed.data.force) {
+                const existing = meta.getDocument(sourcePath);
+                if (existing) {
+                  const oldChunks = meta.getChunksForDocument(existing.id);
+                  if (oldChunks.length > 0) {
+                    await vector.delete(collectionName, oldChunks.map(c => c.chunk_id));
+                  }
+                  meta.deleteDocument(sourcePath);
+                }
+              }
+              const rawChunks = chunkObservation(obs);
+              if (rawChunks.length === 0) {
+                skipped++;
+                continue;
+              }
+              const chunks = splitForEmbed(rawChunks, effectiveMaxInputTokens);
+              const chunksWithIds = chunks.map(c => ({
+                chunk_id: newChunkId('observation', String(obs.id)),
+                text: c.text,
+                sha: sha256Hex(c.text),
+                position: c.position,
+                metadata: c.metadata,
+              }));
+              prepared.push({ obs, sourcePath, chunksWithIds });
+            }
+            if (prepared.length === 0) return;
+
+            // Single embed call for all chunks across the batch.
+            const flatTexts = prepared.flatMap(p => p.chunksWithIds.map(c => c.text));
+            let flatEmbeddings: number[][] | null = null;
+            if (opts.skipEmbed) {
+              flatEmbeddings = flatTexts.map(() => new Array(opts.embeddingDimension).fill(0));
+            } else {
+              try {
+                flatEmbeddings = await embedder.embed(flatTexts);
+              } catch (err) {
+                console.error(`[reindex-obs] batch embed failed (${prepared.length} obs):`, (err as Error).message);
+                errors += prepared.length;
+                return;
+              }
+            }
+
+            // Distribute embeddings back to each observation's chunks and
+            // commit meta + vector writes.
+            let cursor = 0;
+            for (const p of prepared) {
+              const n = p.chunksWithIds.length;
+              const obsEmbeddings = flatEmbeddings!.slice(cursor, cursor + n);
+              cursor += n;
+              try {
+                const documentId = meta.upsertDocument({
+                  source_path: p.sourcePath,
+                  channel: 'observation',
+                  project_id: opts.projectId,
+                  sha: sha256Hex(JSON.stringify(p.obs)),
+                  mtime_epoch: p.obs.created_at_epoch,
+                  metadata: {
+                    observation_id: p.obs.id,
+                    session_id: p.obs.session_id,
+                    type: p.obs.type,
+                    title: p.obs.title,
+                    created_at_epoch: p.obs.created_at_epoch,
+                    branch: p.obs.branch ?? null,
+                  },
+                });
+                meta.replaceChunksForDocument(documentId, p.chunksWithIds);
+                await vector.add(
+                  collectionName,
+                  p.chunksWithIds.map((c, i) => ({ id: c.chunk_id, embedding: obsEmbeddings[i]! })),
+                );
+                indexed++;
+              } catch (err) {
+                console.error(`[reindex-obs] obs#${p.obs.id} write failed:`, (err as Error).message);
+                errors++;
+              }
+            }
+          };
+
+          for (const obs of obsStore.iterateAll()) {
+            // Resumability: without --force, skip observations already on the
+            // current chunk shape so re-running picks up where it left off.
+            if (!parsed.data.force) {
+              const existing = meta.getDocument(`observation:${opts.projectId}:${obs.id}`);
+              if (existing) {
+                const chunks = meta.getChunksForDocument(existing.id);
+                if (chunks.length === 1 && (chunks[0]!.metadata as Record<string, unknown>).field_type === 'observation') {
+                  skipped++;
+                  continue;
+                }
+              }
+            }
+            buffer.push(obs);
+            if (buffer.length >= OBS_REINDEX_BATCH) await flushBatch();
+          }
+          await flushBatch();
         }
 
         return Response.json({ indexed, skipped, errors });

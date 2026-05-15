@@ -108,6 +108,13 @@ export class ObservationsStore {
     return rows.map(r => this.hydrate(r));
   }
 
+  *iterateAll(): Generator<Observation> {
+    const rows = this.db
+      .query('SELECT * FROM observations ORDER BY id ASC')
+      .iterate() as IterableIterator<Record<string, unknown>>;
+    for (const row of rows) yield this.hydrate(row);
+  }
+
   countAll(): number {
     return (this.db.query('SELECT COUNT(*) AS n FROM observations').get() as { n: number }).n;
   }
