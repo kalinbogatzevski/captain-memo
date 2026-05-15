@@ -250,6 +250,38 @@ Each SQLite database owned by the worker (`observations.db`, `queue.db`, etc.) m
 
 You never need to run manual `ALTER TABLE` commands. For installs that already have columns from an earlier release (before v0.1.7), the runner recognises the "duplicate column" error as idempotent recovery and marks the migration applied without re-running.
 
+### Upgrading to v0.1.8 (chunking strategy change)
+
+v0.1.8 changes the observation chunker from "1 narrative chunk + N per-fact chunks" to **1 bundled chunk per observation** (title + narrative + facts together, with a `[type]` structural prefix). This cuts vector-db size by ~80% for the observation channel without losing keyword recall (FTS5 still indexes every fact word), and lifts top-K diversity because one observation now occupies one slot instead of 3–6.
+
+The change is opt-in: existing observations keep their old chunk shape and remain searchable until you reindex. The worker prints a one-line notice at startup whenever pre-v0.1.8 chunks are detected, and the fastest way to migrate is one command:
+
+```bash
+captain-memo upgrade
+```
+
+That handles the entire chain: starts the worker if needed, runs the batched reindex (resumable across crashes), stops the worker for VACUUM, reclaims freed pages from `meta.sqlite3` + `vector-db/embeddings.db`, and restarts the worker. Pass `--dry-run` first if you want to see what it would do without touching anything. The whole upgrade is idempotent — safe to re-run.
+
+If you'd rather drive the steps individually:
+
+```bash
+captain-memo reindex --channel observation --force # re-chunk every observation under the
+                                                   # new strategy; worker stays up.
+                                                   # Batched 32/Voyage-call; resumable —
+                                                   # re-run without --force to continue
+                                                   # from where it left off.
+
+systemctl --user stop captain-memo-worker          # vacuum needs an exclusive lock
+captain-memo vacuum                                # reclaim freed pages from meta + vec-db
+systemctl --user start captain-memo-worker
+```
+
+Optional — re-import claude-mem under the new chunker for an even bigger reduction (the migration also delegates to the same chunker now, so imports land at the smaller, structured shape):
+
+```bash
+captain-memo migrate-from-claude-mem               # idempotent; safe to re-run
+```
+
 Run `captain-memo doctor` to see which migrations have been applied per database:
 
 ```
