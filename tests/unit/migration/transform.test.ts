@@ -11,7 +11,7 @@ test('millisecondsToSeconds — divides and floors', () => {
   expect(millisecondsToSeconds(0)).toBe(0);
 });
 
-test('transformObservation — emits 1 narrative chunk + N fact chunks', () => {
+test('transformObservation — emits 1 bundled chunk per observation (v0.1.8)', () => {
   const doc: MigrationDocument = transformObservation({
     id: 42,
     memory_session_id: 'sess-abc',
@@ -37,20 +37,26 @@ test('transformObservation — emits 1 narrative chunk + N fact chunks', () => {
   expect(doc.metadata.source_id).toBe(42);
   expect(doc.mtime_epoch).toBe(1770566467); // ms → s
 
-  // 1 narrative + 2 non-empty facts (empty fact dropped)
-  expect(doc.chunks).toHaveLength(3);
-  expect(doc.chunks[0]!.metadata.field_type).toBe('narrative');
-  expect(doc.chunks[1]!.metadata.field_type).toBe('fact');
-  expect(doc.chunks[1]!.metadata.fact_index).toBe(0);
-  expect(doc.chunks[2]!.metadata.fact_index).toBe(1);
+  expect(doc.chunks).toHaveLength(1);
+  expect(doc.chunks[0]!.metadata.field_type).toBe('observation');
 
-  // base metadata propagated to chunks
+  // Bundled text contains type prefix, title, narrative, and all non-empty facts
+  const text = doc.chunks[0]!.text;
+  expect(text).toContain('[discovery] Found a bug in cashbox');
+  expect(text).toContain('A short narrative.');
+  expect(text).toContain('• Fact one.');
+  expect(text).toContain('• Fact two.');
+  // The empty fact is dropped — fact_count reflects 2, not 3
+  expect(doc.chunks[0]!.metadata.fact_count).toBe(2);
+
+  // base metadata propagated (migration-specific fields land here too)
   expect(doc.chunks[0]!.metadata.observation_id).toBe(42);
   expect(doc.chunks[0]!.metadata.session_id).toBe('sess-abc');
   expect(doc.chunks[0]!.metadata.type).toBe('discovery');
+  expect(doc.chunks[0]!.metadata.migrated_from).toBe('claude-mem');
 });
 
-test('transformObservation — empty narrative skipped', () => {
+test('transformObservation — observation with only facts (no narrative) still produces 1 chunk', () => {
   const doc = transformObservation({
     id: 1, memory_session_id: 's', project: 'p', text: null, type: 'bugfix',
     title: 't', subtitle: null, facts: JSON.stringify(['only-fact']),
@@ -58,7 +64,8 @@ test('transformObservation — empty narrative skipped', () => {
     prompt_number: 0, discovery_tokens: 0, created_at: '', created_at_epoch: 1000,
   }, 'erp-platform');
   expect(doc.chunks).toHaveLength(1);
-  expect(doc.chunks[0]!.metadata.field_type).toBe('fact');
+  expect(doc.chunks[0]!.text).toContain('[bugfix] t');
+  expect(doc.chunks[0]!.text).toContain('• only-fact');
 });
 
 test('transformObservation — invalid JSON in facts handled gracefully', () => {
@@ -68,10 +75,12 @@ test('transformObservation — invalid JSON in facts handled gracefully', () => 
     narrative: 'hello', concepts: null, files_read: null, files_modified: null,
     prompt_number: 0, discovery_tokens: 0, created_at: '', created_at_epoch: 1000,
   }, 'erp-platform');
-  expect(doc.chunks).toHaveLength(1); // narrative only — no facts
+  expect(doc.chunks).toHaveLength(1);
+  expect(doc.chunks[0]!.text).toContain('hello');
+  expect(doc.chunks[0]!.metadata.fact_count).toBe(0);
 });
 
-test('transformSessionSummary — emits one chunk per non-empty field', () => {
+test('transformSessionSummary — bundles all non-empty fields into a single chunk', () => {
   const doc = transformSessionSummary({
     id: 100, memory_session_id: 'sess-xyz', project: '123net_erp',
     request: 'Find the bug.',
@@ -87,9 +96,18 @@ test('transformSessionSummary — emits one chunk per non-empty field', () => {
 
   expect(doc.channel).toBe('observation');
   expect(doc.source_path).toBe('claude-mem://summary/100');
-  expect(doc.chunks).toHaveLength(4); // request, investigated, completed, next_steps
-  const fieldTypes = doc.chunks.map(c => c.metadata.field_type);
-  expect(fieldTypes).toEqual(['request', 'investigated', 'completed', 'next_steps']);
+  expect(doc.chunks).toHaveLength(1);
+  expect(doc.chunks[0]!.metadata.field_type).toBe('session_summary');
+
+  const text = doc.chunks[0]!.text;
+  expect(text).toContain('[session_summary]');
+  expect(text).toContain('Request:\nFind the bug.');
+  expect(text).toContain('Investigated:\nRead X.');
+  expect(text).toContain('Completed:\nFixed Y.');
+  expect(text).toContain('Next steps:\nDeploy.');
+  // Empty fields are dropped, not emitted as empty headers
+  expect(text).not.toContain('Learned:');
+  expect(text).not.toContain('Notes:');
 });
 
 test('transformSessionSummary — all-empty produces zero chunks (skip case)', () => {

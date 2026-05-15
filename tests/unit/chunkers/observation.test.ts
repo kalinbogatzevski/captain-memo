@@ -21,38 +21,54 @@ const observation = {
   work_tokens: null,
 };
 
-test('chunkObservation — produces 1 narrative chunk + 1 chunk per fact', () => {
+test('chunkObservation — produces a single bundled chunk per observation (v0.1.8)', () => {
   const chunks = chunkObservation(observation);
-  expect(chunks).toHaveLength(3); // 1 narrative + 2 facts
+  expect(chunks).toHaveLength(1);
+  expect(chunks[0]!.metadata.field_type).toBe('observation');
 });
 
-test('chunkObservation — narrative chunk has narrative text + correct field_type', () => {
-  const chunks = chunkObservation(observation);
-  const narrative = chunks.find(c => c.metadata.field_type === 'narrative');
-  expect(narrative).toBeDefined();
-  expect(narrative!.text).toBe(observation.narrative);
-});
-
-test('chunkObservation — fact chunks each have one fact + index', () => {
-  const chunks = chunkObservation(observation);
-  const facts = chunks.filter(c => c.metadata.field_type === 'fact');
-  expect(facts).toHaveLength(2);
-  expect(facts[0]!.text).toBe(observation.facts[0]!);
-  expect(facts[0]!.metadata.fact_index).toBe(0);
-  expect(facts[1]!.metadata.fact_index).toBe(1);
-});
-
-test('chunkObservation — metadata propagates type, files, project', () => {
-  const chunks = chunkObservation(observation);
-  for (const chunk of chunks) {
-    expect(chunk.metadata.observation_id).toBe(1234);
-    expect(chunk.metadata.session_id).toBe('sess-abc');
-    expect(chunk.metadata.type).toBe('bugfix');
-    expect(chunk.metadata.files_modified).toEqual(['core/modules/admin/forms/render.php']);
+test('chunkObservation — bundled chunk contains type prefix, title, narrative, and all facts', () => {
+  const [chunk] = chunkObservation(observation);
+  const text = chunk!.text;
+  expect(text).toContain('[bugfix] Fixed locked form-field display bug');
+  expect(text).toContain(observation.narrative);
+  for (const fact of observation.facts) {
+    expect(text).toContain(fact);
   }
 });
 
-test('chunkSummary — 1 chunk per non-empty field', () => {
+test('chunkObservation — facts are bulleted in the bundled text', () => {
+  const [chunk] = chunkObservation(observation);
+  expect(chunk!.text).toMatch(/• Root cause was hardcoded/);
+  expect(chunk!.text).toMatch(/• Smart default approach/);
+});
+
+test('chunkObservation — fact_count metadata reflects the number of facts merged', () => {
+  const [chunk] = chunkObservation(observation);
+  expect(chunk!.metadata.fact_count).toBe(2);
+});
+
+test('chunkObservation — metadata propagates type, files, project, observation_id', () => {
+  const [chunk] = chunkObservation(observation);
+  expect(chunk!.metadata.observation_id).toBe(1234);
+  expect(chunk!.metadata.session_id).toBe('sess-abc');
+  expect(chunk!.metadata.type).toBe('bugfix');
+  expect(chunk!.metadata.files_modified).toEqual(['core/modules/admin/forms/render.php']);
+});
+
+test('chunkObservation — observation with only a narrative still produces one chunk', () => {
+  const narrativeOnly = { ...observation, facts: [], title: '' };
+  const chunks = chunkObservation(narrativeOnly);
+  expect(chunks).toHaveLength(1);
+  expect(chunks[0]!.text).toBe(observation.narrative);
+});
+
+test('chunkObservation — empty observation produces zero chunks', () => {
+  const empty = { ...observation, title: '', narrative: '', facts: [] };
+  expect(chunkObservation(empty)).toHaveLength(0);
+});
+
+test('chunkSummary — 1 chunk per non-empty field (legacy summary chunker)', () => {
   const summary = {
     id: 99,
     session_id: 'sess-abc',
@@ -67,7 +83,7 @@ test('chunkSummary — 1 chunk per non-empty field', () => {
     prompt_number: 12,
   };
   const chunks = chunkSummary(summary);
-  expect(chunks).toHaveLength(4); // 4 non-empty fields
+  expect(chunks).toHaveLength(4);
   const fieldTypes = chunks.map(c => c.metadata.field_type as string);
   expect(fieldTypes).toEqual(['request', 'investigated', 'learned', 'completed']);
 });

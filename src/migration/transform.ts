@@ -1,5 +1,6 @@
 import { sha256Hex } from '../shared/sha.ts';
-import type { ChannelType } from '../shared/types.ts';
+import { chunkObservation } from '../worker/chunkers/observation.ts';
+import type { ChannelType, Observation, ObservationType } from '../shared/types.ts';
 import type {
   ClaudeMemObservationRow,
   ClaudeMemSessionSummaryRow,
@@ -73,27 +74,32 @@ export function transformObservation(
     migrated_from: 'claude-mem',
   };
 
-  const chunks: MigrationChunk[] = [];
-  let position = 0;
-
-  const narrative = (row.narrative ?? '').trim();
-  if (narrative) {
-    chunks.push({
-      text: narrative,
-      position: position++,
-      metadata: { ...baseMetadata, field_type: 'narrative' },
-    });
-  }
-
-  for (let i = 0; i < facts.length; i++) {
-    const fact = facts[i]!.trim();
-    if (!fact) continue;
-    chunks.push({
-      text: fact,
-      position: position++,
-      metadata: { ...baseMetadata, field_type: 'fact', fact_index: i },
-    });
-  }
+  // Delegate to the native chunker so migrated observations land in the
+  // exact same chunk shape as captain-memo's own observations — single
+  // source of truth in chunkers/observation.ts.
+  const obsLike: Observation = {
+    id: row.id,
+    session_id: row.memory_session_id,
+    project_id: projectId,
+    prompt_number: row.prompt_number ?? 0,
+    type: (row.type as ObservationType) ?? 'discovery',
+    title: row.title ?? '',
+    narrative: row.narrative ?? '',
+    facts,
+    concepts,
+    files_read: filesRead,
+    files_modified: filesModified,
+    created_at_epoch: mtime,
+    branch: null,
+    work_tokens: row.discovery_tokens ? Number(row.discovery_tokens) : null,
+  };
+  const chunks: MigrationChunk[] = chunkObservation(obsLike).map(c => ({
+    text: c.text,
+    position: c.position,
+    // Preserve the migration metadata (source_project, discovery_tokens,
+    // migrated_from) on top of whatever the native chunker emits.
+    metadata: { ...baseMetadata, ...c.metadata },
+  }));
 
   return {
     source_path: `claude-mem://observation/${row.id}`,
@@ -128,17 +134,32 @@ export function transformSessionSummary(
     migrated_from: 'claude-mem',
   };
 
-  const chunks: MigrationChunk[] = [];
-  let position = 0;
+  // Bundle all 6 session-summary fields into a single chunk with structural
+  // headers. Pre-0.1.8 the migration emitted one chunk per field — 6 vectors
+  // for what is semantically a single session. Bundling preserves the
+  // structure (FTS5 still finds 'learned: X') while collapsing 6 vectors
+  // into 1, and gives the embedder a richer dense context per session.
+  const headers: Record<string, string> = {
+    request: 'Request',
+    investigated: 'Investigated',
+    learned: 'Learned',
+    completed: 'Completed',
+    next_steps: 'Next steps',
+    notes: 'Notes',
+  };
+  const fieldParts: string[] = [];
   for (const field of SUMMARY_FIELDS) {
     const text = (row[field] ?? '').trim();
     if (!text) continue;
-    chunks.push({
-      text,
-      position: position++,
-      metadata: { ...baseMetadata, field_type: field },
-    });
+    fieldParts.push(`${headers[field]}:\n${text}`);
   }
+  const chunks: MigrationChunk[] = fieldParts.length === 0
+    ? []
+    : [{
+        text: ['[session_summary]', ...fieldParts].join('\n\n'),
+        position: 0,
+        metadata: { ...baseMetadata, field_type: 'session_summary' },
+      }];
 
   return {
     source_path: `claude-mem://summary/${row.id}`,
