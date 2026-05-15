@@ -1,6 +1,8 @@
 import { statusCommand } from './commands/status.ts';
 import { statsCommand } from './commands/stats.ts';
 import { reindexCommand } from './commands/reindex.ts';
+import { vacuumCommand } from './commands/vacuum.ts';
+import { upgradeCommand } from './commands/upgrade.ts';
 import { observationCommand } from './commands/observation.ts';
 import { configCommand } from './commands/config.ts';
 import { installHooksCommand } from './commands/install-hooks.ts';
@@ -21,6 +23,8 @@ Commands:
   status       Check whether the worker is running and reachable (--json)
   stats        Print corpus statistics (chunk counts by channel) (--json)
   reindex      Re-embed corpus content (optionally scoped to a channel)
+  vacuum       Reclaim disk after deletions/reindex (SQLite VACUUM; worker must be stopped)
+  upgrade      Bring the corpus up to the current chunker shape (reindex + vacuum, end-to-end)
   observation  list|flush — manage observation queue (--limit N, --session ID)
   config       show — print effective config (env + defaults, secrets masked)
   install      Interactive wizard — installs everything (embedder, worker, plugin)
@@ -53,6 +57,12 @@ export async function main(args: string[]): Promise<void> {
       break;
     case 'reindex':
       exit = await reindexCommand(args.slice(1));
+      break;
+    case 'vacuum':
+      exit = await vacuumCommand(args.slice(1));
+      break;
+    case 'upgrade':
+      exit = await upgradeCommand(args.slice(1));
       break;
     case 'observation':
       exit = await observationCommand(args.slice(1));

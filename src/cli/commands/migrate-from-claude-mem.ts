@@ -195,13 +195,28 @@ export async function migrateFromClaudeMemCommand(args: string[]): Promise<numbe
   // client's retry budget (3 × 60 s would otherwise stack to run-killing).
   // Override with CAPTAIN_MEMO_VOYAGE_TIMEOUT_MS for hosted-API usage where
   // a much shorter ceiling is fine.
-  const timeoutMs = Number(process.env.CAPTAIN_MEMO_VOYAGE_TIMEOUT_MS ?? 300_000);
-  const apiFormat = process.env.CAPTAIN_MEMO_VOYAGE_API_FORMAT === 'aelita'
-    ? 'aelita'
-    : 'openai';
-  const model = process.env.CAPTAIN_MEMO_VOYAGE_MODEL ?? 'voyage-4-nano';
+  const timeoutMs = Number(
+    process.env.CAPTAIN_MEMO_EMBEDDER_TIMEOUT_MS ??
+    process.env.CAPTAIN_MEMO_VOYAGE_TIMEOUT_MS ??
+    300_000,
+  );
+  // Honor the worker's CAPTAIN_MEMO_EMBEDDER_* env naming first (single
+  // source of truth for installs that already have worker.env wired up),
+  // and fall back to the legacy CAPTAIN_MEMO_VOYAGE_* names for older
+  // installs.
+  const apiFormat =
+    (process.env.CAPTAIN_MEMO_EMBEDDER_API_FORMAT ?? process.env.CAPTAIN_MEMO_VOYAGE_API_FORMAT) === 'aelita'
+      ? 'aelita'
+      : 'openai';
+  const model =
+    process.env.CAPTAIN_MEMO_EMBEDDER_MODEL ??
+    process.env.CAPTAIN_MEMO_VOYAGE_MODEL ??
+    'voyage-4-nano';
   const embedderOpts: ConstructorParameters<typeof Embedder>[0] = {
-    endpoint: process.env.CAPTAIN_MEMO_VOYAGE_ENDPOINT ?? DEFAULT_VOYAGE_ENDPOINT,
+    endpoint:
+      process.env.CAPTAIN_MEMO_EMBEDDER_ENDPOINT ??
+      process.env.CAPTAIN_MEMO_VOYAGE_ENDPOINT ??
+      DEFAULT_VOYAGE_ENDPOINT,
     model,
     timeoutMs,
     apiFormat,
@@ -209,9 +224,9 @@ export async function migrateFromClaudeMemCommand(args: string[]): Promise<numbe
       ? Number(process.env.CAPTAIN_MEMO_EMBEDDER_MAX_TOKENS)
       : embedderMaxTokens(model),
   };
-  if (process.env.CAPTAIN_MEMO_VOYAGE_API_KEY) {
-    embedderOpts.apiKey = process.env.CAPTAIN_MEMO_VOYAGE_API_KEY;
-  }
+  const apiKey =
+    process.env.CAPTAIN_MEMO_EMBEDDER_API_KEY ?? process.env.CAPTAIN_MEMO_VOYAGE_API_KEY;
+  if (apiKey) embedderOpts.apiKey = apiKey;
   const embedder = new Embedder(embedderOpts);
   const dim = await discoverEmbeddingDim(embedderOpts.endpoint, embedder);
   console.log(`Embedding dim: ${dim}`);
