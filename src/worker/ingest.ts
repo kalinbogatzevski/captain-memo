@@ -23,6 +23,13 @@ export interface IngestPipelineOptions {
    * oversized chunks may throw EmbedderInputTooLarge from the embedder.
    */
   maxInputTokens?: number;
+  /**
+   * Fired once per indexFile() call: 'indexed' when the file was (re)chunked
+   * and embedded, 'skipped' when its content sha was unchanged. Lets the
+   * worker track dedup hit-rate without IngestPipeline knowing about
+   * WorkerMetrics.
+   */
+  onIndexResult?: (result: 'indexed' | 'skipped') => void;
 }
 
 export class IngestPipeline {
@@ -32,6 +39,7 @@ export class IngestPipeline {
   private collection: string;
   private projectId: string;
   private maxInputTokens: number | undefined;
+  private onIndexResult: ((result: 'indexed' | 'skipped') => void) | undefined;
 
   constructor(opts: IngestPipelineOptions) {
     this.meta = opts.meta;
@@ -40,6 +48,7 @@ export class IngestPipeline {
     this.collection = opts.collectionName;
     this.projectId = opts.projectId;
     this.maxInputTokens = opts.maxInputTokens;
+    this.onIndexResult = opts.onIndexResult;
   }
 
   private chunkerFor(channel: ChannelType, content: string, sourcePath: string): ChunkInput[] {
@@ -55,7 +64,10 @@ export class IngestPipeline {
     const mtime_epoch = Math.floor(stat.mtimeMs / 1000);
 
     const existing = this.meta.getDocument(filePath);
-    if (existing && existing.sha === sha) return;
+    if (existing && existing.sha === sha) {
+      this.onIndexResult?.('skipped');
+      return;
+    }
 
     const rawChunks = this.chunkerFor(channel, content, filePath);
     // Pre-split anything that would overflow the embedder's per-input token
@@ -77,6 +89,7 @@ export class IngestPipeline {
     if (chunks.length === 0) {
       // Empty file or all-whitespace — drop the document if it existed
       if (existing) this.meta.deleteDocument(filePath);
+      this.onIndexResult?.('indexed');
       return;
     }
 
@@ -106,6 +119,7 @@ export class IngestPipeline {
       this.collection,
       chunksWithIds.map((c, i) => ({ id: c.chunk_id, embedding: embeddings[i]! })),
     );
+    this.onIndexResult?.('indexed');
   }
 
   async deleteFile(filePath: string): Promise<void> {
