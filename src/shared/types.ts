@@ -104,6 +104,10 @@ export interface Observation {
   /** Total tokens the summarizer spent producing this observation (input + output).
    *  Null for pre-v0.1.6 captures and migrated observations without a token record. */
   work_tokens: number | null;
+  /** Token count of the observation's rendered chunk text — the cost paid in
+   *  the corpus to store it. Populated at index time; null until then and for
+   *  observations indexed before v0.1.9. */
+  stored_tokens: number | null;
 }
 
 /** Status enum for the observation_queue rows. */

@@ -89,15 +89,48 @@ test('ObservationsStore — listRecent respects limit', () => {
   expect(store.listRecent(3)).toHaveLength(3);
 });
 
-test('ObservationsStore — schema_versions records migrations 1 and 2 after construction', () => {
+test('ObservationsStore — schema_versions records migrations 1, 2 and 3 after construction', () => {
   store.close();
-  // Re-open the DB directly to inspect schema_versions.
   const db = new Database(join(workDir, 'observations.db'), { readonly: true });
   const rows = getAppliedVersions(db);
   db.close();
-  expect(rows).toHaveLength(2);
-  expect(rows.map(r => r.version)).toEqual([1, 2]);
-  expect(rows.map(r => r.name)).toEqual(['add_branch', 'add_work_tokens']);
-  // Need a fresh store for afterEach to call store.close() without error.
+  expect(rows).toHaveLength(3);
+  expect(rows.map(r => r.version)).toEqual([1, 2, 3]);
+  expect(rows.map(r => r.name)).toEqual(['add_branch', 'add_work_tokens', 'add_stored_tokens']);
   store = new ObservationsStore(join(workDir, 'observations.db'));
+});
+
+test('ObservationsStore — stored_tokens defaults to null on insert', () => {
+  const id = store.insert({
+    session_id: 's1', project_id: 'p1', prompt_number: 1,
+    type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
+    files_read: [], files_modified: [], created_at_epoch: 100,
+    branch: null, work_tokens: null,
+  });
+  expect(store.findById(id)!.stored_tokens).toBeNull();
+});
+
+test('ObservationsStore — setStoredTokens roundtrips', () => {
+  const id = store.insert({
+    session_id: 's1', project_id: 'p1', prompt_number: 1,
+    type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
+    files_read: [], files_modified: [], created_at_epoch: 100,
+    branch: null, work_tokens: null,
+  });
+  store.setStoredTokens(id, 137);
+  expect(store.findById(id)!.stored_tokens).toBe(137);
+});
+
+test('ObservationsStore — sumWorkTokens / sumStoredTokens ignore NULL rows', () => {
+  const mk = (work: number | null) => store.insert({
+    session_id: 's1', project_id: 'p1', prompt_number: 1,
+    type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
+    files_read: [], files_modified: [], created_at_epoch: 100,
+    branch: null, work_tokens: work,
+  });
+  const a = mk(100); mk(200); mk(null);   // 3 rows, 2 with work_tokens
+  store.setStoredTokens(a, 25);            // 1 row with stored_tokens
+
+  expect(store.sumWorkTokens()).toEqual({ sum: 300, count: 2 });
+  expect(store.sumStoredTokens()).toEqual({ sum: 25, count: 1 });
 });

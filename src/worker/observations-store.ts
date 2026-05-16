@@ -33,9 +33,14 @@ export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
     name: 'add_work_tokens',
     up: (db) => db.exec('ALTER TABLE observations ADD COLUMN work_tokens INTEGER'),
   },
+  {
+    version: 3,
+    name: 'add_stored_tokens',
+    up: (db) => db.exec('ALTER TABLE observations ADD COLUMN stored_tokens INTEGER'),
+  },
 ];
 
-export type NewObservation = Omit<Observation, 'id'>;
+export type NewObservation = Omit<Observation, 'id' | 'stored_tokens'>;
 
 export class ObservationsStore {
   private db: Database;
@@ -85,6 +90,7 @@ export class ObservationsStore {
       created_at_epoch: Number(row.created_at_epoch),
       branch: typeof row.branch === 'string' ? row.branch : null,
       work_tokens: typeof row.work_tokens === 'number' ? row.work_tokens : null,
+      stored_tokens: typeof row.stored_tokens === 'number' ? row.stored_tokens : null,
     };
   }
 
@@ -117,6 +123,26 @@ export class ObservationsStore {
 
   countAll(): number {
     return (this.db.query('SELECT COUNT(*) AS n FROM observations').get() as { n: number }).n;
+  }
+
+  setStoredTokens(id: number, tokens: number): void {
+    this.db
+      .query('UPDATE observations SET stored_tokens = ? WHERE id = ?')
+      .run(tokens, id);
+  }
+
+  sumWorkTokens(): { sum: number; count: number } {
+    const r = this.db
+      .query('SELECT COALESCE(SUM(work_tokens), 0) AS s, COUNT(work_tokens) AS c FROM observations')
+      .get() as { s: number; c: number };
+    return { sum: r.s, count: r.c };
+  }
+
+  sumStoredTokens(): { sum: number; count: number } {
+    const r = this.db
+      .query('SELECT COALESCE(SUM(stored_tokens), 0) AS s, COUNT(stored_tokens) AS c FROM observations')
+      .get() as { s: number; c: number };
+    return { sum: r.s, count: r.c };
   }
 
   close(): void {

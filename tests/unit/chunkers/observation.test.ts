@@ -19,6 +19,7 @@ const observation = {
   prompt_number: 12,
   branch: null,
   work_tokens: null,
+  stored_tokens: null,
 };
 
 test('chunkObservation — produces a single bundled chunk per observation (v0.1.8)', () => {
