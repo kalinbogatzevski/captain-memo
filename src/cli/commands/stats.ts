@@ -1,5 +1,6 @@
 import { workerGet } from '../client.ts';
 import { fmtBytes, fmtElapsed } from '../../shared/format.ts';
+import type { EfficiencyReport } from '../../worker/efficiency.ts';
 
 interface StatsResponse {
   total_chunks: number;
@@ -20,6 +21,7 @@ interface StatsResponse {
   version?: string;
   embedder: { model: string; endpoint: string };
   disk?: { bytes: number; path: string };
+  efficiency?: EfficiencyReport;
 }
 
 function indexingLine(idx: StatsResponse['indexing']): string {
@@ -35,6 +37,42 @@ function indexingLine(idx: StatsResponse['indexing']): string {
     return `\x1b[32mready\x1b[0m  indexed ${idx.done}/${idx.total} in ${fmtElapsed(idx.elapsed_s)}${idx.errors > 0 ? `  \x1b[31m${idx.errors} errors\x1b[0m` : ''}`;
   }
   return `\x1b[31merror\x1b[0m  ${idx.last_error ?? 'unknown'}`;
+}
+
+/**
+ * Render the "Efficiency" block for `captain-memo stats`. Returned as an array
+ * of lines (already coloured) so it is unit-testable without capturing stdout.
+ */
+export function formatEfficiencyLines(eff: EfficiencyReport): string[] {
+  const lines: string[] = ['Efficiency', '──────────'];
+
+  const c = eff.corpus;
+  if (c.ratio === null || c.saved_pct === null) {
+    lines.push(`  Compression:    \x1b[33m— (run 'captain-memo reindex' to populate)\x1b[0m`);
+  } else {
+    lines.push(
+      `  Compression:    ${c.ratio}× — distilled ${c.work_tokens.toLocaleString()} tokens ` +
+      `of work into ${c.stored_tokens.toLocaleString()} stored`,
+    );
+    lines.push(
+      `                  (${c.saved_pct}% saved · based on ` +
+      `${c.coverage.with_data}/${c.coverage.total} observations)`,
+    );
+  }
+
+  const e = eff.embedder;
+  lines.push(e.calls > 0
+    ? `  Embedder:       ${e.calls} calls · ~${e.avg_latency_ms} ms avg · ` +
+      `${e.tokens_per_s.toLocaleString()} tok/s   (since worker start)`
+    : `  Embedder:       — (no embeds since worker start)`);
+
+  const d = eff.dedup;
+  lines.push(d.docs_seen > 0
+    ? `  Dedup:          ${d.skip_pct}% of docs skipped re-embed ` +
+      `(${d.skipped_unchanged}/${d.docs_seen} unchanged)`
+    : `  Dedup:          — (no documents indexed since worker start)`);
+
+  return lines;
 }
 
 export async function statsCommand(args: string[] = []): Promise<number> {
@@ -59,6 +97,10 @@ export async function statsCommand(args: string[] = []): Promise<number> {
   console.log(`Embedder:       ${stats.embedder.model} @ ${stats.embedder.endpoint}`);
   if (stats.disk) {
     console.log(`Disk used:      ${fmtBytes(stats.disk.bytes)}  (${stats.disk.path})`);
+  }
+  if (stats.efficiency) {
+    console.log('');
+    for (const line of formatEfficiencyLines(stats.efficiency)) console.log(line);
   }
   return 0;
 }
