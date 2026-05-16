@@ -1,10 +1,9 @@
 import type { WorkerMetrics } from './metrics.ts';
 
 export interface EfficiencyInput {
-  workSum: number;          // SUM(work_tokens) over observations
-  workCount: number;        // COUNT(work_tokens) — non-null rows
-  storedSum: number;        // SUM(stored_tokens)
-  storedCount: number;      // COUNT(stored_tokens) — non-null rows
+  workSum: number;          // SUM(work_tokens)   over paired observations
+  storedSum: number;        // SUM(stored_tokens) over the SAME observations
+  pairedCount: number;      // observations carrying BOTH values
   totalObservations: number;
   metrics: WorkerMetrics;
 }
@@ -24,12 +23,11 @@ export interface EfficiencyReport {
 const round1 = (n: number): number => Math.round(n * 10) / 10;
 
 export function computeEfficiency(input: EfficiencyInput): EfficiencyReport {
-  const { workSum, workCount, storedSum, storedCount, totalObservations, metrics } = input;
+  const { workSum, storedSum, pairedCount, totalObservations, metrics } = input;
 
-  // Compression is only meaningful when both halves have data. If no
-  // observation carries work_tokens, or nothing has been stored yet, report
-  // null so the CLI shows a "run reindex" hint instead of a bogus ratio.
-  const hasCorpus = workCount > 0 && workSum > 0 && storedCount > 0 && storedSum > 0;
+  // Compression is only meaningful when work and stored are summed over the
+  // same observations. pairedCount is the count of rows with BOTH values.
+  const hasCorpus = pairedCount > 0 && workSum > 0 && storedSum > 0;
   const ratio = hasCorpus ? round1(workSum / storedSum) : null;
   const saved_pct = hasCorpus
     ? Math.max(0, Math.min(100, Math.round(((workSum - storedSum) / workSum) * 100)))
@@ -51,7 +49,7 @@ export function computeEfficiency(input: EfficiencyInput): EfficiencyReport {
       stored_tokens: storedSum,
       ratio,
       saved_pct,
-      coverage: { with_data: workCount, total: totalObservations },
+      coverage: { with_data: pairedCount, total: totalObservations },
     },
     embedder: { calls: metrics.embedCalls, avg_latency_ms, tokens_per_s },
     dedup: {

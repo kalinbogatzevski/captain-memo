@@ -382,6 +382,42 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     ? new PendingEmbedQueue(opts.pendingEmbedDbPath)
     : null;
 
+  // One-time stored_tokens backfill. The column is captured at index time, so
+  // observations indexed before v0.1.9 have it NULL. Pure CPU — chunk + count
+  // tokens, NO embedder calls. Backgrounded so the HTTP server is up
+  // immediately; resumable + idempotent (a later boot with nothing missing is
+  // a no-op). Batched so a setStoredTokens write never races a live cursor.
+  if (obsStore) {
+    const missingStored = obsStore.countMissingStoredTokens();
+    if (missingStored > 0) {
+      const store = obsStore;
+      void (async () => {
+        console.error(`[worker] stored_tokens backfill: ${missingStored} observations`);
+        const BACKFILL_BATCH = 200;
+        let done = 0;
+        for (;;) {
+          const batch = store.listMissingStoredTokens(BACKFILL_BATCH);
+          if (batch.length === 0) break;
+          for (const obs of batch) {
+            try {
+              const rawChunks = chunkObservation(obs);
+              const chunks = rawChunks.length > 0
+                ? splitForEmbed(rawChunks, effectiveMaxInputTokens)
+                : [];
+              const tokens = chunks.reduce((n, c) => n + countTokens(c.text), 0);
+              store.setStoredTokens(obs.id, tokens);
+              done++;
+            } catch (err) {
+              console.error(`[worker] stored_tokens backfill failed for obs ${obs.id}:`, (err as Error).message);
+              store.setStoredTokens(obs.id, 0);  // mark processed so the loop still terminates
+            }
+          }
+        }
+        console.error(`[worker] stored_tokens backfill complete: ${done} observations`);
+      })();
+    }
+  }
+
   const summarize = opts.summarize ?? null;
   const tickMs = opts.observationTickMs ?? 5000;
   const batchSize = opts.observationBatchSize ?? 20;
@@ -740,11 +776,11 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         const queuePending = obsQueue ? obsQueue.pendingCount() : 0;
         const queueProcessing = obsQueue ? obsQueue.processingCount() : 0;
         const diskBytes = dirSizeBytes(DATA_DIR);
-        const workTok = obsStore ? obsStore.sumWorkTokens() : { sum: 0, count: 0 };
-        const storedTok = obsStore ? obsStore.sumStoredTokens() : { sum: 0, count: 0 };
+        const paired = obsStore
+          ? obsStore.sumPairedTokens()
+          : { work: 0, stored: 0, paired: 0 };
         const efficiency = computeEfficiency({
-          workSum: workTok.sum, workCount: workTok.count,
-          storedSum: storedTok.sum, storedCount: storedTok.count,
+          workSum: paired.work, storedSum: paired.stored, pairedCount: paired.paired,
           totalObservations: obsTotal,
           metrics,
         });

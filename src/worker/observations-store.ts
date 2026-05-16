@@ -131,18 +131,36 @@ export class ObservationsStore {
       .run(tokens, id);
   }
 
-  sumWorkTokens(): { sum: number; count: number } {
-    const r = this.db
-      .query('SELECT COALESCE(SUM(work_tokens), 0) AS s, COUNT(work_tokens) AS c FROM observations')
-      .get() as { s: number; c: number };
-    return { sum: r.s, count: r.c };
+  /** Count observations whose stored_tokens has not been captured yet. */
+  countMissingStoredTokens(): number {
+    return (this.db
+      .query('SELECT COUNT(*) AS n FROM observations WHERE stored_tokens IS NULL')
+      .get() as { n: number }).n;
   }
 
-  sumStoredTokens(): { sum: number; count: number } {
-    const r = this.db
-      .query('SELECT COALESCE(SUM(stored_tokens), 0) AS s, COUNT(stored_tokens) AS c FROM observations')
-      .get() as { s: number; c: number };
-    return { sum: r.s, count: r.c };
+  /** Oldest-first batch of observations still missing stored_tokens. */
+  listMissingStoredTokens(limit: number): Observation[] {
+    const rows = this.db
+      .query('SELECT * FROM observations WHERE stored_tokens IS NULL ORDER BY id ASC LIMIT ?')
+      .all(limit) as Array<Record<string, unknown>>;
+    return rows.map(r => this.hydrate(r));
+  }
+
+  /**
+   * Sum work_tokens and stored_tokens over the SAME observations — only rows
+   * carrying BOTH values. Summing them independently would divide totals
+   * describing different populations and yield a meaningless ratio.
+   */
+  sumPairedTokens(): { work: number; stored: number; paired: number } {
+    return this.db
+      .query(
+        `SELECT COALESCE(SUM(work_tokens), 0)   AS work,
+                COALESCE(SUM(stored_tokens), 0) AS stored,
+                COUNT(*)                        AS paired
+         FROM observations
+         WHERE work_tokens IS NOT NULL AND stored_tokens IS NOT NULL`,
+      )
+      .get() as { work: number; stored: number; paired: number };
   }
 
   close(): void {
