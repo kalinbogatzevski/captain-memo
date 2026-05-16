@@ -945,7 +945,7 @@ Expected: PASS — all unit, integration and hook tests green. If anything fails
 
 - [ ] **Step 2: Type-check**
 
-Run: `bunx tsc --noEmit` (or the repo's configured type-check script if one exists in `package.json`)
+Run: `bun run typecheck`
 Expected: no type errors.
 
 - [ ] **Step 3: Bump the version**
