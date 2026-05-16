@@ -390,22 +390,27 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   if (obsStore) {
     const missingStored = obsStore.countMissingStoredTokens();
     if (missingStored > 0) {
-      console.error(`[worker] stored_tokens backfill: ${missingStored} observations`);
       const store = obsStore;
       void (async () => {
+        console.error(`[worker] stored_tokens backfill: ${missingStored} observations`);
         const BACKFILL_BATCH = 200;
         let done = 0;
         for (;;) {
           const batch = store.listMissingStoredTokens(BACKFILL_BATCH);
           if (batch.length === 0) break;
           for (const obs of batch) {
-            const rawChunks = chunkObservation(obs);
-            const chunks = rawChunks.length > 0
-              ? splitForEmbed(rawChunks, effectiveMaxInputTokens)
-              : [];
-            const tokens = chunks.reduce((n, c) => n + countTokens(c.text), 0);
-            store.setStoredTokens(obs.id, tokens);
-            done++;
+            try {
+              const rawChunks = chunkObservation(obs);
+              const chunks = rawChunks.length > 0
+                ? splitForEmbed(rawChunks, effectiveMaxInputTokens)
+                : [];
+              const tokens = chunks.reduce((n, c) => n + countTokens(c.text), 0);
+              store.setStoredTokens(obs.id, tokens);
+              done++;
+            } catch (err) {
+              console.error(`[worker] stored_tokens backfill failed for obs ${obs.id}:`, (err as Error).message);
+              store.setStoredTokens(obs.id, 0);  // mark processed so the loop still terminates
+            }
           }
         }
         console.error(`[worker] stored_tokens backfill complete: ${done} observations`);
