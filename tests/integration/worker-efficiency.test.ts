@@ -61,6 +61,60 @@ test('GET /stats — efficiency object has the expected shape', async () => {
   });
 });
 
+test('worker startup backfills stored_tokens for pre-existing observations', async () => {
+  // Pre-seed an observations DB with rows that have work_tokens but NO
+  // stored_tokens — the pre-v0.1.9 state.
+  const seedDir = mkdtempSync(join(tmpdir(), 'captain-memo-eff-seed-'));
+  const seedDbPath = join(seedDir, 'obs.db');
+  const seed = new ObservationsStore(seedDbPath);
+  for (let i = 0; i < 3; i++) {
+    seed.insert({
+      session_id: 's-seed', project_id: 'eff-test', prompt_number: i,
+      type: 'feature', title: `seeded observation ${i}`,
+      narrative: 'a narrative long enough to chunk into real tokens',
+      facts: ['fact one', 'fact two'], concepts: ['c'],
+      files_read: [], files_modified: [], created_at_epoch: 1_700_000_000 + i,
+      branch: null, work_tokens: 5000,
+    });
+  }
+  seed.close();
+
+  const seedWorker = await startWorker({
+    port: 39913,
+    projectId: 'eff-test',
+    metaDbPath: ':memory:',
+    embedderEndpoint: 'http://localhost:0/unused',
+    embedderModel: 'voyage-4-nano',
+    vectorDbPath: join(seedDir, 'vec.db'),
+    embeddingDimension: 8,
+    skipEmbed: true,
+    observationQueueDbPath: join(seedDir, 'queue.db'),
+    observationsDbPath: seedDbPath,
+    pendingEmbedDbPath: join(seedDir, 'pending.db'),
+    summarize: async () => ({ type: 'change', title: 't', narrative: '', facts: [], concepts: [] }),
+    observationTickMs: 0,
+  });
+
+  // Poll /stats until the background backfill has populated all 3 rows.
+  let corpus: any = null;
+  for (let i = 0; i < 50; i++) {
+    const s = await (await fetch('http://localhost:39913/stats')).json() as any;
+    corpus = s.efficiency.corpus;
+    if (corpus.coverage.with_data === 3) break;
+    await new Promise(r => setTimeout(r, 100));
+  }
+  await seedWorker.stop();
+
+  const reader = new ObservationsStore(seedDbPath);
+  const all = reader.listRecent(10);
+  reader.close();
+  rmSync(seedDir, { recursive: true, force: true });
+
+  expect(all.every(o => typeof o.stored_tokens === 'number' && o.stored_tokens! > 0)).toBe(true);
+  expect(corpus.coverage.with_data).toBe(3);
+  expect(corpus.ratio).toBeGreaterThan(0);
+});
+
 test('ingesting an observation populates stored_tokens', async () => {
   await fetch(`http://localhost:${PORT}/observation/enqueue`, {
     method: 'POST',

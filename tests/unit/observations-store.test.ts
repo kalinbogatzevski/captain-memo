@@ -142,3 +142,21 @@ test('ObservationsStore — sumPairedTokens sums only rows with BOTH tokens', ()
 test('ObservationsStore — sumPairedTokens is zeroed on an empty corpus', () => {
   expect(store.sumPairedTokens()).toEqual({ work: 0, stored: 0, paired: 0 });
 });
+
+test('ObservationsStore — countMissingStoredTokens / listMissingStoredTokens', () => {
+  const mk = () => store.insert({
+    session_id: 's1', project_id: 'p1', prompt_number: 1,
+    type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
+    files_read: [], files_modified: [], created_at_epoch: 100,
+    branch: null, work_tokens: null,
+  });
+  const a = mk(); const b = mk(); mk();   // 3 rows, all stored_tokens NULL
+  store.setStoredTokens(a, 5);            // a no longer missing
+
+  expect(store.countMissingStoredTokens()).toBe(2);
+
+  const missing = store.listMissingStoredTokens(10);
+  expect(missing.map(o => o.id)).toEqual([b, b + 1]);
+
+  expect(store.listMissingStoredTokens(1)).toHaveLength(1);   // respects limit
+});

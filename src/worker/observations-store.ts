@@ -131,6 +131,21 @@ export class ObservationsStore {
       .run(tokens, id);
   }
 
+  /** Count observations whose stored_tokens has not been captured yet. */
+  countMissingStoredTokens(): number {
+    return (this.db
+      .query('SELECT COUNT(*) AS n FROM observations WHERE stored_tokens IS NULL')
+      .get() as { n: number }).n;
+  }
+
+  /** Oldest-first batch of observations still missing stored_tokens. */
+  listMissingStoredTokens(limit: number): Observation[] {
+    const rows = this.db
+      .query('SELECT * FROM observations WHERE stored_tokens IS NULL ORDER BY id ASC LIMIT ?')
+      .all(limit) as Array<Record<string, unknown>>;
+    return rows.map(r => this.hydrate(r));
+  }
+
   /**
    * Sum work_tokens and stored_tokens over the SAME observations — only rows
    * carrying BOTH values. Summing them independently would divide totals
