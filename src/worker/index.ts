@@ -46,6 +46,9 @@ import {
 } from '../shared/paths.ts';
 import { writeRecallAuditLine } from './recall-audit.ts';
 import { Summarizer } from './summarizer.ts';
+import { createWorkerMetrics, recordEmbed, recordIndexResult } from './metrics.ts';
+import { computeEfficiency } from './efficiency.ts';
+import { countTokens } from '../shared/tokens.ts';
 import pkg from '../../package.json' with { type: 'json' };
 
 // Recursive directory size in bytes. Returns 0 for missing dirs (fail-open
@@ -247,16 +250,33 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   });
 
   const effectiveMaxInputTokens = opts.embedderMaxInputTokens ?? embedderMaxTokens(opts.embedderModel);
+  const metrics = createWorkerMetrics();
+
+  // Single timed wrapper around embedder.embed() for the indexing paths.
+  // Token counting here is cheap relative to the embed call it wraps and
+  // runs off the /stats hot path.
+  async function timedEmbed(texts: string[]): Promise<number[][]> {
+    const t0 = performance.now();
+    try {
+      return await embedder.embed(texts);
+    } finally {
+      const ms = performance.now() - t0;
+      const tokens = texts.reduce((n, t) => n + countTokens(t), 0);
+      recordEmbed(metrics, tokens, ms);
+    }
+  }
+
   const ingest = new IngestPipeline({
     meta,
     maxInputTokens: effectiveMaxInputTokens,
+    onIndexResult: (result) => recordIndexResult(metrics, result),
     embedder: {
       embed: async (texts) => {
         if (opts.skipEmbed) {
           return texts.map(() => new Array(opts.embeddingDimension).fill(0));
         }
         try {
-          return await embedder.embed(texts);
+          return await timedEmbed(texts);
         } catch {
           // Embed failure → return zero-vectors so chunks still land in the vector table
           // (keyword search still works; vector half degrades gracefully).
@@ -387,6 +407,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       metadata: c.metadata,
     }));
 
+    const storedTokens = chunksWithIds.reduce((n, c) => n + countTokens(c.text), 0);
+    obsStore?.setStoredTokens(obs.id, storedTokens);
+
     // Embed → write meta + vectors. If embed fails, write meta (so keyword
     // search still works on this doc) but DO NOT write zero-vectors to the
     // vector store. Zero-vectors poison vector retrieval for the lifetime
@@ -399,7 +422,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       embeddings = chunksWithIds.map(() => new Array(opts.embeddingDimension).fill(0));
     } else {
       try {
-        embeddings = await embedder.embed(chunksWithIds.map(c => c.text));
+        embeddings = await timedEmbed(chunksWithIds.map(c => c.text));
       } catch (err) {
         console.error('[ingest-obs] embed failed; queueing for retry:', (err as Error).message);
         if (pendingEmbed) {
@@ -717,6 +740,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         const queuePending = obsQueue ? obsQueue.pendingCount() : 0;
         const queueProcessing = obsQueue ? obsQueue.processingCount() : 0;
         const diskBytes = dirSizeBytes(DATA_DIR);
+        const workTok = obsStore ? obsStore.sumWorkTokens() : { sum: 0, count: 0 };
+        const storedTok = obsStore ? obsStore.sumStoredTokens() : { sum: 0, count: 0 };
+        const efficiency = computeEfficiency({
+          workSum: workTok.sum, workCount: workTok.count,
+          storedSum: storedTok.sum, storedCount: storedTok.count,
+          totalObservations: obsTotal,
+          metrics,
+        });
         return Response.json({
           total_chunks,
           by_channel,
@@ -736,6 +767,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           project_id: opts.projectId,
           embedder: { model: opts.embedderModel, endpoint: opts.embedderEndpoint },
           disk: { bytes: diskBytes, path: DATA_DIR },
+          efficiency,
           version: pkg.version,
         });
       }
@@ -935,7 +967,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
               flatEmbeddings = flatTexts.map(() => new Array(opts.embeddingDimension).fill(0));
             } else {
               try {
-                flatEmbeddings = await embedder.embed(flatTexts);
+                flatEmbeddings = await timedEmbed(flatTexts);
               } catch (err) {
                 console.error(`[reindex-obs] batch embed failed (${prepared.length} obs):`, (err as Error).message);
                 errors += prepared.length;
@@ -950,6 +982,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
               const n = p.chunksWithIds.length;
               const obsEmbeddings = flatEmbeddings!.slice(cursor, cursor + n);
               cursor += n;
+              const pStoredTokens = p.chunksWithIds.reduce((n, c) => n + countTokens(c.text), 0);
+              obsStore?.setStoredTokens(p.obs.id, pStoredTokens);
               try {
                 const documentId = meta.upsertDocument({
                   source_path: p.sourcePath,
