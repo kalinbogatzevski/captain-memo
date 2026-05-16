@@ -1,0 +1,63 @@
+import type { WorkerMetrics } from './metrics.ts';
+
+export interface EfficiencyInput {
+  workSum: number;          // SUM(work_tokens) over observations
+  workCount: number;        // COUNT(work_tokens) — non-null rows
+  storedSum: number;        // SUM(stored_tokens)
+  storedCount: number;      // COUNT(stored_tokens) — non-null rows
+  totalObservations: number;
+  metrics: WorkerMetrics;
+}
+
+export interface EfficiencyReport {
+  corpus: {
+    work_tokens: number;
+    stored_tokens: number;
+    ratio: number | null;        // work / stored, 1 decimal; null when undefined
+    saved_pct: number | null;    // 100*(work-stored)/work, clamped [0,100]; null when undefined
+    coverage: { with_data: number; total: number };
+  };
+  embedder: { calls: number; avg_latency_ms: number; tokens_per_s: number };
+  dedup: { docs_seen: number; skipped_unchanged: number; skip_pct: number };
+}
+
+const round1 = (n: number): number => Math.round(n * 10) / 10;
+
+export function computeEfficiency(input: EfficiencyInput): EfficiencyReport {
+  const { workSum, workCount, storedSum, storedCount, totalObservations, metrics } = input;
+
+  // Compression is only meaningful when both halves have data. If no
+  // observation carries work_tokens, or nothing has been stored yet, report
+  // null so the CLI shows a "run reindex" hint instead of a bogus ratio.
+  const hasCorpus = workCount > 0 && workSum > 0 && storedCount > 0 && storedSum > 0;
+  const ratio = hasCorpus ? round1(workSum / storedSum) : null;
+  const saved_pct = hasCorpus
+    ? Math.max(0, Math.min(100, Math.round(((workSum - storedSum) / workSum) * 100)))
+    : null;
+
+  const avg_latency_ms = metrics.embedCalls > 0
+    ? Math.round(metrics.embedMs / metrics.embedCalls)
+    : 0;
+  const tokens_per_s = metrics.embedMs > 0
+    ? Math.round(metrics.embedTokens / (metrics.embedMs / 1000))
+    : 0;
+  const skip_pct = metrics.docsSeen > 0
+    ? Math.round((metrics.docsSkippedUnchanged / metrics.docsSeen) * 100)
+    : 0;
+
+  return {
+    corpus: {
+      work_tokens: workSum,
+      stored_tokens: storedSum,
+      ratio,
+      saved_pct,
+      coverage: { with_data: workCount, total: totalObservations },
+    },
+    embedder: { calls: metrics.embedCalls, avg_latency_ms, tokens_per_s },
+    dedup: {
+      docs_seen: metrics.docsSeen,
+      skipped_unchanged: metrics.docsSkippedUnchanged,
+      skip_pct,
+    },
+  };
+}

@@ -146,6 +146,25 @@ test('IngestPipeline — with maxInputTokens=100, oversized memory file is split
   expect(addsCount.length).toBe(chunks.length);
 });
 
+test('IngestPipeline — onIndexResult reports indexed then skipped on unchanged sha', async () => {
+  const results: Array<'indexed' | 'skipped'> = [];
+  const pipe = new IngestPipeline({
+    meta: store,
+    embedder: fakeEmbedder,
+    vector: fakeVectorStore as any,
+    collectionName: 'test_col',
+    projectId: 'erp-platform',
+    onIndexResult: (r) => results.push(r),
+  });
+  const filePath = join(workDir, 'feedback_dedup.md');
+  writeFileSync(filePath, '---\ntype: feedback\ndescription: d\n---\nBody text here.');
+
+  await pipe.indexFile(filePath, 'memory');   // first pass — content is new
+  await pipe.indexFile(filePath, 'memory');   // second pass — sha unchanged
+
+  expect(results).toEqual(['indexed', 'skipped']);
+});
+
 test('IngestPipeline — deleteFile drops document and chunks + vectors', async () => {
   const filePath = join(workDir, 'feedback_test.md');
   writeFileSync(filePath, 'content');

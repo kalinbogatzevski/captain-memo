@@ -92,6 +92,7 @@ export function transformObservation(
     created_at_epoch: mtime,
     branch: null,
     work_tokens: row.discovery_tokens ? Number(row.discovery_tokens) : null,
+    stored_tokens: null,
   };
   const chunks: MigrationChunk[] = chunkObservation(obsLike).map(c => ({
     text: c.text,
