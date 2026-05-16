@@ -46,6 +46,10 @@ test('renderStats — renders the framed panel with all sections', () => {
   const top = lines.find(l => l.startsWith('╭'))!;
   const bot = lines.find(l => l.startsWith('╰'))!;
   expect(top.length).toBe(bot.length);
+  // header content line's visible width matches the border (⚓ is 1 string
+  // char but 2 display columns, so the stripped mid-line is 1 char shorter).
+  const mid = lines.find(l => l.startsWith('│'))!;
+  expect(mid.length).toBe(top.length - 1);
 });
 
 test('renderStats — null ratio shows the populating hint, no bar', () => {

@@ -24,7 +24,7 @@ export interface StatsResponse {
   efficiency?: EfficiencyReport | undefined;
 }
 
-const PANEL_WIDTH = 57;
+const PANEL_WIDTH = 60;
 const BAR_WIDTH = 20;
 
 /** A proportional bar: ▕████░░▏. `fraction` is clamped to [0,1]. */
@@ -69,14 +69,14 @@ function indexingText(idx: StatsResponse['indexing']): string {
 function headerPanel(version: string): string[] {
   const inner = PANEL_WIDTH - 2;
   const border = '─'.repeat(inner);
-  // ⚓ renders 2 columns but is 1 string char — count one extra display column.
-  const plain = `  ⚓  CAPTAIN MEMO        corpus statistics   ·   v${version}`;
-  const displayWidth = plain.length + 1;
-  const pad = ' '.repeat(Math.max(1, inner - displayWidth));
-  const content =
-    '  ' + goldBold('⚓  CAPTAIN MEMO')
-    + dim('        corpus statistics   ·   ')
-    + bold(`v${version}`) + pad;
+  // ⚓ is one string char but renders 2 terminal columns — count one extra.
+  const wordmark = '⚓  CAPTAIN MEMO';        // 15 chars, 16 columns
+  const subtitle = '        corpus statistics   ·   ';
+  const ver = `v${version}`;
+  const usedCols = 2 /* indent */ + wordmark.length + 1 /* ⚓ extra */
+    + subtitle.length + ver.length;
+  const pad = ' '.repeat(Math.max(1, inner - usedCols));
+  const content = '  ' + goldBold(wordmark) + dim(subtitle) + bold(ver) + pad;
   return [
     cyanBold('╭' + border + '╮'),
     cyanBold('│') + content + cyanBold('│'),
@@ -117,7 +117,7 @@ export function renderStats(stats: StatsResponse): string[] {
       out.push(`   ${'Compression'.padEnd(14)}${dim('— populating… (restart worker)')}`);
     } else {
       const b = green(bar(corpus.saved_pct / 100, BAR_WIDTH));
-      out.push(`   ${'Compression'.padEnd(14)}${goldBold(`${corpus.ratio}×`).padEnd(8)}  ${b}  ${corpus.saved_pct}%`);
+      out.push(`   ${'Compression'.padEnd(14)}${goldBold(`${corpus.ratio}×`.padEnd(7))}  ${b}  ${corpus.saved_pct}%`);
       out.push(`   ${' '.repeat(14)}${dim(`distilled ${fmtCount(corpus.work_tokens)} → ${fmtCount(corpus.stored_tokens)} tokens`
         + ` · ${corpus.coverage.with_data}/${corpus.coverage.total} obs`)}`);
     }
