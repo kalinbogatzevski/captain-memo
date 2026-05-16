@@ -172,7 +172,8 @@ export function renderStats(stats: StatsResponse): string[];
 - Colour comes exclusively from `src/shared/ansi.ts` helpers — no raw `\x1b` escapes — so
   output is automatically TTY-aware and `NO_COLOR`-aware.
 
-**Layout** (fixed inner width `PANEL_WIDTH = 57`):
+**Layout** (fixed panel width `PANEL_WIDTH = 60` — wide enough that the
+anchor-glyph header and a `vX.Y.ZZ` version fit inside the border):
 
 ```
 ╭─────────────────────────────────────────────────────────╮
