@@ -121,16 +121,24 @@ test('ObservationsStore — setStoredTokens roundtrips', () => {
   expect(store.findById(id)!.stored_tokens).toBe(137);
 });
 
-test('ObservationsStore — sumWorkTokens / sumStoredTokens ignore NULL rows', () => {
+test('ObservationsStore — sumPairedTokens sums only rows with BOTH tokens', () => {
   const mk = (work: number | null) => store.insert({
     session_id: 's1', project_id: 'p1', prompt_number: 1,
     type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
     files_read: [], files_modified: [], created_at_epoch: 100,
     branch: null, work_tokens: work,
   });
-  const a = mk(100); mk(200); mk(null);   // 3 rows, 2 with work_tokens
-  store.setStoredTokens(a, 25);            // 1 row with stored_tokens
+  const a = mk(100);   // will get stored_tokens → paired
+  const b = mk(200);   // will get stored_tokens → paired
+  mk(300);             // work only, no stored → NOT paired
+  const d = mk(null);  // stored only, no work → NOT paired
+  store.setStoredTokens(a, 10);
+  store.setStoredTokens(b, 20);
+  store.setStoredTokens(d, 999);
 
-  expect(store.sumWorkTokens()).toEqual({ sum: 300, count: 2 });
-  expect(store.sumStoredTokens()).toEqual({ sum: 25, count: 1 });
+  expect(store.sumPairedTokens()).toEqual({ work: 300, stored: 30, paired: 2 });
+});
+
+test('ObservationsStore — sumPairedTokens is zeroed on an empty corpus', () => {
+  expect(store.sumPairedTokens()).toEqual({ work: 0, stored: 0, paired: 0 });
 });

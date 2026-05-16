@@ -740,11 +740,11 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         const queuePending = obsQueue ? obsQueue.pendingCount() : 0;
         const queueProcessing = obsQueue ? obsQueue.processingCount() : 0;
         const diskBytes = dirSizeBytes(DATA_DIR);
-        const workTok = obsStore ? obsStore.sumWorkTokens() : { sum: 0, count: 0 };
-        const storedTok = obsStore ? obsStore.sumStoredTokens() : { sum: 0, count: 0 };
+        const paired = obsStore
+          ? obsStore.sumPairedTokens()
+          : { work: 0, stored: 0, paired: 0 };
         const efficiency = computeEfficiency({
-          workSum: workTok.sum, workCount: workTok.count,
-          storedSum: storedTok.sum, storedCount: storedTok.count,
+          workSum: paired.work, storedSum: paired.stored, pairedCount: paired.paired,
           totalObservations: obsTotal,
           metrics,
         });
