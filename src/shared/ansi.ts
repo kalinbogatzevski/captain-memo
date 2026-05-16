@@ -1,9 +1,11 @@
 // TTY-aware ANSI helpers. When stdout is a pipe/file, codes drop out so log
-// captures stay readable.
+// captures stay readable. The standard NO_COLOR env var (no-color.org) also
+// force-disables colour — presence of the var is the signal, any value.
 
 const RESET = '\x1b[0m';
 
-export const isTTY = (): boolean => process.stdout.isTTY === true;
+export const isTTY = (): boolean =>
+  process.stdout.isTTY === true && process.env.NO_COLOR === undefined;
 
 export function wrap(code: string, s: string): string {
   return isTTY() && code ? `\x1b[${code}m${s}${RESET}` : s;
