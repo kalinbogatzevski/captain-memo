@@ -72,3 +72,65 @@ test('renderStats — tolerates a worker with no efficiency field', () => {
   expect(text).toContain('CORPUS');
   expect(text).not.toContain('EFFICIENCY');
 });
+
+test('renderStats — RECALL section shows empty-state hint when no retrievals yet', () => {
+  const empty: StatsResponse = {
+    ...SAMPLE,
+    recall: { ever_retrieved: 0, top: [] },
+  };
+  const text = renderStats(empty).map(stripAnsi).join('\n');
+  expect(text).toContain('RECALL');
+  expect(text).toContain('Ever recalled');
+  expect(text).toContain('no retrievals yet');
+});
+
+test('renderStats — RECALL section lists top retrieved with count and type', () => {
+  const populated: StatsResponse = {
+    ...SAMPLE,
+    recall: {
+      ever_retrieved: 42,
+      top: [
+        { id: 16776, type: 'discovery', title: 'Team filter implementation in calendar UI',
+          retrieval_count: 8, last_retrieved_at: 1779877819 },
+        { id: 16786, type: 'bugfix', title: 'parseModelName preserves haiku-4-5 version',
+          retrieval_count: 5, last_retrieved_at: 1779877800 },
+      ],
+    },
+  };
+  const text = renderStats(populated).map(stripAnsi).join('\n');
+  expect(text).toContain('RECALL');
+  expect(text).toContain('42');
+  expect(text).toContain('Top retrieved');
+  expect(text).toContain('8×');
+  expect(text).toContain('[discovery]');
+  expect(text).toContain('Team filter implementation');
+  expect(text).toContain('5×');
+  expect(text).toContain('[bugfix]');
+  expect(text).not.toContain('no retrievals yet');
+});
+
+test('renderStats — RECALL section is omitted entirely when recall field absent', () => {
+  // Spread-omit rather than `recall: undefined` to satisfy
+  // exactOptionalPropertyTypes — optional ≠ explicit undefined.
+  const { recall: _unused, ...noRecall } = SAMPLE as StatsResponse & {
+    recall?: StatsResponse['recall'];
+  };
+  void _unused;
+  const text = renderStats(noRecall as StatsResponse).map(stripAnsi).join('\n');
+  expect(text).not.toContain('RECALL');
+});
+
+test('renderStats — RECALL title trim guards against 200-char observation titles', () => {
+  const long = 'X'.repeat(120);
+  const populated: StatsResponse = {
+    ...SAMPLE,
+    recall: {
+      ever_retrieved: 1,
+      top: [{ id: 1, type: 'feature', title: long, retrieval_count: 1, last_retrieved_at: 1 }],
+    },
+  };
+  const text = renderStats(populated).map(stripAnsi).join('\n');
+  // Trimmed to <= 48 chars (47 + '…'); no raw 100-char run survives.
+  expect(text).not.toContain('X'.repeat(50));
+  expect(text).toContain('…');
+});

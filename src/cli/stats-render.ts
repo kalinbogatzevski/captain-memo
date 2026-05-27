@@ -22,6 +22,16 @@ export interface StatsResponse {
   embedder: { model: string; endpoint: string };
   disk?: { bytes: number; path: string };
   efficiency?: EfficiencyReport | undefined;
+  recall?: {
+    ever_retrieved: number;
+    top: Array<{
+      id: number;
+      type: string;
+      title: string;
+      retrieval_count: number;
+      last_retrieved_at: number;
+    }>;
+  };
 }
 
 const PANEL_WIDTH = 60;
@@ -127,6 +137,32 @@ export function renderStats(stats: StatsResponse): string[] {
     out.push(`   ${'Dedup'.padEnd(14)}` + (dedup.docs_seen > 0
       ? `${dedup.skip_pct}%   ${dim(`${fmtCount(dedup.skipped_unchanged)} / ${fmtCount(dedup.docs_seen)} unchanged`)}`
       : dim('— no documents indexed since worker start')));
+    out.push('');
+  }
+
+  // RECALL — which observations the user actually keeps coming back to.
+  // Empty corpus (never_retrieved) is shown as a one-line hint, not hidden,
+  // so a fresh install still surfaces the feature's existence.
+  if (stats.recall) {
+    out.push(sectionRule('RECALL'));
+    const ever = stats.recall.ever_retrieved;
+    const total = stats.observations.total;
+    if (ever === 0) {
+      out.push(`   ${'Ever recalled'.padEnd(14)}${dim('0')} / ${fmtCount(total)}`
+        + `   ${dim('— no retrievals yet; data accumulates with use')}`);
+    } else {
+      const pct = total > 0 ? ((ever / total) * 100).toFixed(1) : '0.0';
+      out.push(`   ${'Ever recalled'.padEnd(14)}${goldBold(fmtCount(ever))} / ${fmtCount(total)}`
+        + `   ${dim(`(${pct}% of corpus)`)}`);
+      if (stats.recall.top.length > 0) {
+        out.push(`   ${'Top retrieved'.padEnd(14)}`);
+        for (const r of stats.recall.top) {
+          const titleTrim = r.title.length > 48 ? r.title.slice(0, 47) + '…' : r.title;
+          const count = `${r.retrieval_count}×`.padStart(4);
+          out.push(`     ${gold(count)}  ${dim(`[${r.type}]`)} ${titleTrim}`);
+        }
+      }
+    }
     out.push('');
   }
 

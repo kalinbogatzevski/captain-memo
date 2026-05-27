@@ -814,6 +814,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           totalObservations: obsTotal,
           metrics,
         });
+        const recall = obsStore ? obsStore.getRecallStats(5) : undefined;
         return Response.json({
           total_chunks,
           by_channel,
@@ -834,6 +835,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           embedder: { model: opts.embedderModel, endpoint: opts.embedderEndpoint },
           disk: { bytes: diskBytes, path: DATA_DIR },
           efficiency,
+          recall,
           version: pkg.version,
         });
       }

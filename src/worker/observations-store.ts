@@ -150,6 +150,53 @@ export class ObservationsStore {
    * prepared statement because retrieval batches vary in size (1 for /get_full,
    * top_k for /search/*) and re-preparing per call is cheap.
    */
+  /**
+   * Aggregate retrieval stats for the stats CLI's RECALL section.
+   * Returns the count of observations that have been retrieved at least once
+   * AND the top-N most-retrieved observations (ties broken by recency).
+   *
+   * Cheap — two indexed queries, no joins. Safe to call on every /stats hit.
+   */
+  getRecallStats(topN: number): {
+    ever_retrieved: number;
+    top: Array<{
+      id: number;
+      type: ObservationType;
+      title: string;
+      retrieval_count: number;
+      last_retrieved_at: number;
+    }>;
+  } {
+    const ever_retrieved = (this.db
+      .query('SELECT COUNT(*) AS n FROM observations WHERE retrieval_count > 0')
+      .get() as { n: number }).n;
+    const topRows = this.db
+      .query(
+        `SELECT id, type, title, retrieval_count, last_retrieved_at
+           FROM observations
+          WHERE retrieval_count > 0
+          ORDER BY retrieval_count DESC, last_retrieved_at DESC
+          LIMIT ?`,
+      )
+      .all(topN) as Array<{
+        id: number;
+        type: string;
+        title: string;
+        retrieval_count: number;
+        last_retrieved_at: number;
+      }>;
+    return {
+      ever_retrieved,
+      top: topRows.map(r => ({
+        id: r.id,
+        type: r.type as ObservationType,
+        title: r.title,
+        retrieval_count: r.retrieval_count,
+        last_retrieved_at: r.last_retrieved_at,
+      })),
+    };
+  }
+
   bumpRetrieval(ids: number[]): void {
     if (ids.length === 0) return;
     const now = Math.floor(Date.now() / 1000);

@@ -215,6 +215,47 @@ test('ObservationsStore — bumpRetrieval([]) is a no-op', () => {
   expect(got!.last_retrieved_at).toBeNull();
 });
 
+test('ObservationsStore — getRecallStats returns counts and top-N most-retrieved', () => {
+  const mk = (title: string) => store.insert({
+    session_id: 's1', project_id: 'p1', prompt_number: 1,
+    type: 'discovery', title, narrative: '', facts: [], concepts: [],
+    files_read: [], files_modified: [], created_at_epoch: 100,
+    branch: null, work_tokens: null,
+  });
+  const a = mk('apple');
+  const b = mk('banana');
+  const c = mk('cherry');
+  mk('never-touched');
+
+  // Each bumpRetrieval call increments each unique id by 1; duplicates within
+  // a single call dedupe via SQL IN-set semantics (matches production: search
+  // results never carry the same observation twice).
+  store.bumpRetrieval([a]);
+  store.bumpRetrieval([b]); store.bumpRetrieval([b]);
+  store.bumpRetrieval([c]); store.bumpRetrieval([c]); store.bumpRetrieval([c]);
+  // Final counts: c=3, b=2, a=1, never-touched=0
+
+  const stats = store.getRecallStats(2);
+  expect(stats.ever_retrieved).toBe(3);
+  expect(stats.top).toHaveLength(2);
+  expect(stats.top[0]!.title).toBe('cherry');
+  expect(stats.top[0]!.retrieval_count).toBe(3);
+  expect(stats.top[1]!.title).toBe('banana');
+  expect(stats.top[1]!.retrieval_count).toBe(2);
+});
+
+test('ObservationsStore — getRecallStats handles empty / never-retrieved corpus', () => {
+  store.insert({
+    session_id: 's1', project_id: 'p1', prompt_number: 1,
+    type: 'discovery', title: 't', narrative: '', facts: [], concepts: [],
+    files_read: [], files_modified: [], created_at_epoch: 100,
+    branch: null, work_tokens: null,
+  });
+  const stats = store.getRecallStats(5);
+  expect(stats.ever_retrieved).toBe(0);
+  expect(stats.top).toEqual([]);
+});
+
 test('ObservationsStore — countMissingStoredTokens / listMissingStoredTokens', () => {
   const mk = () => store.insert({
     session_id: 's1', project_id: 'p1', prompt_number: 1,
