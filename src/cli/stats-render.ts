@@ -145,6 +145,7 @@ export function renderStats(stats: StatsResponse): string[] {
   // so a fresh install still surfaces the feature's existence.
   if (stats.recall) {
     out.push(sectionRule('RECALL'));
+    out.push(`   ${dim('tracks which observations you keep coming back to')}`);
     const ever = stats.recall.ever_retrieved;
     const total = stats.observations.total;
     if (ever === 0) {

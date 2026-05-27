@@ -84,6 +84,27 @@ test('renderStats — RECALL section shows empty-state hint when no retrievals y
   expect(text).toContain('no retrievals yet');
 });
 
+test('renderStats — RECALL section carries a one-line "what this is" subheader', () => {
+  // Same explainer in both populated and empty states — anyone glancing at
+  // the section can map "RECALL" to the concept without leaving the panel.
+  const populated: StatsResponse = {
+    ...SAMPLE,
+    recall: {
+      ever_retrieved: 5,
+      top: [{ id: 1, type: 'feature', title: 't', retrieval_count: 3, last_retrieved_at: 1 }],
+    },
+  };
+  const populatedText = renderStats(populated).map(stripAnsi).join('\n');
+  expect(populatedText).toContain('tracks which observations you keep coming back to');
+
+  const empty: StatsResponse = {
+    ...SAMPLE,
+    recall: { ever_retrieved: 0, top: [] },
+  };
+  const emptyText = renderStats(empty).map(stripAnsi).join('\n');
+  expect(emptyText).toContain('tracks which observations you keep coming back to');
+});
+
 test('renderStats — RECALL section lists top retrieved with count and type', () => {
   const populated: StatsResponse = {
     ...SAMPLE,
