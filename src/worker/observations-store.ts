@@ -38,9 +38,17 @@ export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
     name: 'add_stored_tokens',
     up: (db) => db.exec('ALTER TABLE observations ADD COLUMN stored_tokens INTEGER'),
   },
+  {
+    version: 4,
+    name: 'add_retrieval_tracking',
+    up: (db) => {
+      db.exec('ALTER TABLE observations ADD COLUMN retrieval_count INTEGER NOT NULL DEFAULT 0');
+      db.exec('ALTER TABLE observations ADD COLUMN last_retrieved_at INTEGER');
+    },
+  },
 ];
 
-export type NewObservation = Omit<Observation, 'id' | 'stored_tokens'>;
+export type NewObservation = Omit<Observation, 'id' | 'stored_tokens' | 'retrieval_count' | 'last_retrieved_at'>;
 
 export class ObservationsStore {
   private db: Database;
@@ -91,6 +99,8 @@ export class ObservationsStore {
       branch: typeof row.branch === 'string' ? row.branch : null,
       work_tokens: typeof row.work_tokens === 'number' ? row.work_tokens : null,
       stored_tokens: typeof row.stored_tokens === 'number' ? row.stored_tokens : null,
+      retrieval_count: typeof row.retrieval_count === 'number' ? row.retrieval_count : 0,
+      last_retrieved_at: typeof row.last_retrieved_at === 'number' ? row.last_retrieved_at : null,
     };
   }
 
@@ -129,6 +139,29 @@ export class ObservationsStore {
     this.db
       .query('UPDATE observations SET stored_tokens = ? WHERE id = ?')
       .run(tokens, id);
+  }
+
+  /**
+   * Bump retrieval_count and stamp last_retrieved_at on every supplied id.
+   * Empty array is a no-op. Callers should wrap in try/catch — a failure
+   * here MUST never fail the originating search request.
+   *
+   * The IN-clause is built from the ids inline rather than via a fixed-arity
+   * prepared statement because retrieval batches vary in size (1 for /get_full,
+   * top_k for /search/*) and re-preparing per call is cheap.
+   */
+  bumpRetrieval(ids: number[]): void {
+    if (ids.length === 0) return;
+    const now = Math.floor(Date.now() / 1000);
+    const placeholders = ids.map(() => '?').join(',');
+    this.db
+      .query(
+        `UPDATE observations
+            SET retrieval_count = retrieval_count + 1,
+                last_retrieved_at = ?
+          WHERE id IN (${placeholders})`,
+      )
+      .run(now, ...ids);
   }
 
   /** Count observations whose stored_tokens has not been captured yet. */

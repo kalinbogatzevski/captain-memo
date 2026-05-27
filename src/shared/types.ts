@@ -108,6 +108,13 @@ export interface Observation {
    *  the corpus to store it. Populated at index time; null until then and for
    *  observations indexed before v0.1.9. */
   stored_tokens: number | null;
+  /** How many times this observation has been returned by a /search/* or
+   *  /get_full call. Defaults to 0; bumped fire-and-forget on every retrieval.
+   *  The signal feeds future importance/decay scoring and Dreaming clustering. */
+  retrieval_count: number;
+  /** Epoch seconds of the most recent retrieval, or null if never recalled.
+   *  Set on every bump. */
+  last_retrieved_at: number | null;
 }
 
 /** Status enum for the observation_queue rows. */

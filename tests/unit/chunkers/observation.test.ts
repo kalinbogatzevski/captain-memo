@@ -20,6 +20,8 @@ const observation = {
   branch: null,
   work_tokens: null,
   stored_tokens: null,
+  retrieval_count: 0,
+  last_retrieved_at: null,
 };
 
 test('chunkObservation — produces a single bundled chunk per observation (v0.1.8)', () => {

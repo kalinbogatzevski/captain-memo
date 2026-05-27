@@ -764,6 +764,36 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     return results;
   };
 
+  /**
+   * Bump retrieval_count / last_retrieved_at on any observation rows surfaced
+   * by a search response. Empty-safe and exception-safe — a write failure here
+   * must never bubble up and fail the originating search request, since the
+   * tracking signal is auxiliary, not load-bearing.
+   *
+   * The helper accepts the result shape produced by /search/* endpoints (each
+   * item carries `metadata` from the chunker; for observation chunks that
+   * metadata includes `observation_id`). Non-observation results contribute
+   * no ids and are naturally filtered out.
+   */
+  const bumpRetrievalFromResults = (
+    items: Array<{ metadata: Record<string, unknown> }>,
+  ): void => {
+    if (!obsStore || items.length === 0) return;
+    const ids: number[] = [];
+    for (const item of items) {
+      const oid = item.metadata?.observation_id;
+      if (typeof oid === 'number' && Number.isInteger(oid) && oid > 0) {
+        ids.push(oid);
+      }
+    }
+    if (ids.length === 0) return;
+    try {
+      obsStore.bumpRetrieval(ids);
+    } catch (err) {
+      console.error('[retrieval-tracking] bump failed:', (err as Error).message);
+    }
+  };
+
   const handler = async (req: Request): Promise<Response> => {
     try {
       const url = new URL(req.url);
@@ -853,6 +883,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 
         const by_channel: Record<string, number> = {};
         for (const r of results) by_channel[r.channel] = (by_channel[r.channel] ?? 0) + 1;
+        bumpRetrievalFromResults(results);
         return Response.json({ results, by_channel });
       }
       if (req.method === 'POST' && url.pathname === '/search/memory') {
@@ -886,6 +917,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         if (parsed.data.type !== undefined) filters.obs_type = parsed.data.type;
         if (parsed.data.files !== undefined) filters.files = parsed.data.files;
         const results = await searchByChannel(parsed.data.query, 'observation', parsed.data.top_k, filters);
+        bumpRetrievalFromResults(results);
         return Response.json({ results });
       }
 
@@ -898,6 +930,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         if (!result) {
           return Response.json({ error: 'not_found' }, { status: 404 });
         }
+        // /get_full is the strongest "this observation was useful" signal —
+        // the caller asked for the whole content, not just a snippet.
+        bumpRetrievalFromResults([{ metadata: result.chunk.metadata }]);
         return Response.json({
           content: result.chunk.text,
           metadata: {

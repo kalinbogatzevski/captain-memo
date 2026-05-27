@@ -221,6 +221,24 @@ Set any flag to `0` to hide it, or `1` to show it. When all four are `0` no badg
 
 Disabled by default. Enable with `CAPTAIN_MEMO_RECALL_AUDIT=1` in your `worker.env` to start recording retrieved hits and boost provenance to `${CAPTAIN_MEMO_DATA_DIR:-~/.captain-memo}/recall-audit.jsonl` (one JSON line per search). Each line records the timestamp, session and project IDs, the query, and for every returned hit: the chunk ID, channel, score, a 200-character snippet, and which of the identifier-match or same-branch boosts fired and with what multiplier. Useful for tuning the search boosts against real prompts. The file is append-only; rotate manually if needed.
 
+### Retrieval tracking (v0.1.11+)
+
+Always on, zero config. Every observation chunk surfaced by `/search/all`, `/search/observations`, or `/get_full` gets two columns updated on the `observations` row: `retrieval_count` (incremented) and `last_retrieved_at` (epoch seconds, set to now). The bump is fire-and-forget and exception-safe — a write failure cannot fail the originating search request.
+
+The signal feeds future importance / decay scoring and "Dreaming" clustering (clusters of observations you actually keep recalling together, not just clusters that happen to share vocabulary). After a few weeks of usage you can mine your own corpus:
+
+```bash
+sqlite3 ~/.captain-memo/observations.db \
+  "SELECT id, type, title, retrieval_count,
+          datetime(last_retrieved_at, 'unixepoch') AS last_recalled
+   FROM observations
+   WHERE retrieval_count > 0
+   ORDER BY retrieval_count DESC, last_retrieved_at DESC
+   LIMIT 20;"
+```
+
+…and see which past discoveries / bugfixes / decisions you actually keep coming back to. That's the empirical ground truth for the next memory feature, instead of guessing.
+
 ## Migrating from claude-mem
 
 If you've been using [`claude-mem`](https://github.com/thedotmack/claude-mem) and want to bring your existing observations and session summaries into Captain Memo, the migration is one command. Your claude-mem install stays intact — Captain Memo only **reads** from `~/.claude-mem/claude-mem.db`, never modifies it.

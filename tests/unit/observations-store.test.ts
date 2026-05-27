@@ -89,14 +89,19 @@ test('ObservationsStore — listRecent respects limit', () => {
   expect(store.listRecent(3)).toHaveLength(3);
 });
 
-test('ObservationsStore — schema_versions records migrations 1, 2 and 3 after construction', () => {
+test('ObservationsStore — schema_versions records all migrations after construction', () => {
   store.close();
   const db = new Database(join(workDir, 'observations.db'), { readonly: true });
   const rows = getAppliedVersions(db);
   db.close();
-  expect(rows).toHaveLength(3);
-  expect(rows.map(r => r.version)).toEqual([1, 2, 3]);
-  expect(rows.map(r => r.name)).toEqual(['add_branch', 'add_work_tokens', 'add_stored_tokens']);
+  expect(rows).toHaveLength(4);
+  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4]);
+  expect(rows.map(r => r.name)).toEqual([
+    'add_branch',
+    'add_work_tokens',
+    'add_stored_tokens',
+    'add_retrieval_tracking',
+  ]);
   store = new ObservationsStore(join(workDir, 'observations.db'));
 });
 
@@ -141,6 +146,73 @@ test('ObservationsStore — sumPairedTokens sums only rows with BOTH tokens', ()
 
 test('ObservationsStore — sumPairedTokens is zeroed on an empty corpus', () => {
   expect(store.sumPairedTokens()).toEqual({ work: 0, stored: 0, paired: 0 });
+});
+
+test('ObservationsStore — retrieval_count defaults to 0 and last_retrieved_at to null', () => {
+  const id = store.insert({
+    session_id: 's1', project_id: 'p1', prompt_number: 1,
+    type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
+    files_read: [], files_modified: [], created_at_epoch: 100,
+    branch: null, work_tokens: null,
+  });
+  const got = store.findById(id);
+  expect(got!.retrieval_count).toBe(0);
+  expect(got!.last_retrieved_at).toBeNull();
+});
+
+test('ObservationsStore — bumpRetrieval increments count and sets last_retrieved_at', () => {
+  const id = store.insert({
+    session_id: 's1', project_id: 'p1', prompt_number: 1,
+    type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
+    files_read: [], files_modified: [], created_at_epoch: 100,
+    branch: null, work_tokens: null,
+  });
+  const before = Math.floor(Date.now() / 1000);
+  store.bumpRetrieval([id]);
+  const got = store.findById(id);
+  expect(got!.retrieval_count).toBe(1);
+  expect(got!.last_retrieved_at).not.toBeNull();
+  expect(got!.last_retrieved_at!).toBeGreaterThanOrEqual(before);
+});
+
+test('ObservationsStore — bumpRetrieval is idempotent across calls (count accumulates)', () => {
+  const id = store.insert({
+    session_id: 's1', project_id: 'p1', prompt_number: 1,
+    type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
+    files_read: [], files_modified: [], created_at_epoch: 100,
+    branch: null, work_tokens: null,
+  });
+  store.bumpRetrieval([id]);
+  store.bumpRetrieval([id]);
+  store.bumpRetrieval([id]);
+  expect(store.findById(id)!.retrieval_count).toBe(3);
+});
+
+test('ObservationsStore — bumpRetrieval handles multiple ids in one call', () => {
+  const mk = () => store.insert({
+    session_id: 's1', project_id: 'p1', prompt_number: 1,
+    type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
+    files_read: [], files_modified: [], created_at_epoch: 100,
+    branch: null, work_tokens: null,
+  });
+  const a = mk(); const b = mk(); const c = mk();
+  store.bumpRetrieval([a, c]);
+  expect(store.findById(a)!.retrieval_count).toBe(1);
+  expect(store.findById(b)!.retrieval_count).toBe(0);   // not bumped
+  expect(store.findById(c)!.retrieval_count).toBe(1);
+});
+
+test('ObservationsStore — bumpRetrieval([]) is a no-op', () => {
+  const id = store.insert({
+    session_id: 's1', project_id: 'p1', prompt_number: 1,
+    type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
+    files_read: [], files_modified: [], created_at_epoch: 100,
+    branch: null, work_tokens: null,
+  });
+  store.bumpRetrieval([]);
+  const got = store.findById(id);
+  expect(got!.retrieval_count).toBe(0);
+  expect(got!.last_retrieved_at).toBeNull();
 });
 
 test('ObservationsStore — countMissingStoredTokens / listMissingStoredTokens', () => {
