@@ -22,3 +22,20 @@ export const boldRed  = (s: string): string => wrap('31;1', s);
 export const cyanBold = (s: string): string => wrap('36;1', s);
 export const cyanDim  = (s: string): string => wrap('36;2', s);
 export const goldBold = (s: string): string => wrap('33;1', s);
+
+const ANSI_SGR_RE = /\x1b\[[0-9;]*m/g;
+
+/** Length of a string as the terminal would print it — strips SGR escape
+ *  codes before counting. Required for aligning columns of color-wrapped
+ *  text where .length would over-count by 8–12 chars per escape sequence. */
+export function visibleWidth(s: string): number {
+  return s.replace(ANSI_SGR_RE, '').length;
+}
+
+/** Pad a possibly-colored string with spaces on the RIGHT until its visible
+ *  width equals `width`. Truncation is the caller's job — this helper only
+ *  extends, never shortens. */
+export function padVisibleEnd(s: string, width: number): string {
+  const need = width - visibleWidth(s);
+  return need > 0 ? s + ' '.repeat(need) : s;
+}

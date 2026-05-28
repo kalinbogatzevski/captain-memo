@@ -197,6 +197,44 @@ test('renderStats — DREAM section shows OFF state when audit log absent', () =
   expect(text).toContain('CAPTAIN_MEMO_RECALL_AUDIT=1');
 });
 
+test('renderStats — wide mode places CORPUS and EFFICIENCY side by side', () => {
+  // At panelWidth 130 the two sections should appear on the same line.
+  // Find the CORPUS rule line: it should ALSO contain "EFFICIENCY".
+  const lines = renderStats(SAMPLE, { panelWidth: 130 }).map(stripAnsi);
+  const ruleLine = lines.find(l => l.includes('CORPUS'));
+  expect(ruleLine).toBeDefined();
+  expect(ruleLine!).toContain('EFFICIENCY');
+});
+
+test('renderStats — narrow mode keeps CORPUS and EFFICIENCY on their own lines', () => {
+  // Default narrow width: sections must stack vertically.
+  const lines = renderStats(SAMPLE, { panelWidth: 60 }).map(stripAnsi);
+  const corpusLine = lines.find(l => l.includes('CORPUS'));
+  const effLine = lines.find(l => l.includes('EFFICIENCY'));
+  expect(corpusLine).toBeDefined();
+  expect(effLine).toBeDefined();
+  expect(corpusLine).not.toContain('EFFICIENCY');
+  expect(effLine).not.toContain('CORPUS');
+});
+
+test('renderStats — wide mode places Top surfaced and Top recalled side by side', () => {
+  const stats: StatsResponse = {
+    ...SAMPLE,
+    recall: {
+      surfaced_count: 5, recalled_count: 2,
+      totals: { auto: 10, search: 3, drill: 2 },
+      top_surfaced: [{ id: 1, type: 'feature', title: 'A',
+        from_auto: 5, from_search: 0, from_drill: 0, last_surfaced_at: 1 }],
+      top_recalled: [{ id: 2, type: 'bugfix', title: 'B',
+        from_auto: 0, from_search: 1, from_drill: 2, last_surfaced_at: 1 }],
+    },
+  };
+  const lines = renderStats(stats, { panelWidth: 130 }).map(stripAnsi);
+  const headerLine = lines.find(l => l.includes('Top surfaced'));
+  expect(headerLine).toBeDefined();
+  expect(headerLine!).toContain('Top recalled');
+});
+
 test('renderStats — DREAM section is omitted when dream field absent', () => {
   const { dream: _u, ...noDream } = SAMPLE as StatsResponse & { dream?: StatsResponse['dream'] };
   void _u;

@@ -1,4 +1,7 @@
-import { bold, cyanBold, dim, gold, goldBold, green, red, yellow } from '../shared/ansi.ts';
+import {
+  bold, cyan, cyanBold, dim, gold, goldBold, green, red, yellow,
+  padVisibleEnd,
+} from '../shared/ansi.ts';
 import { fmtBytes, fmtElapsed } from '../shared/format.ts';
 import type { EfficiencyReport } from '../worker/efficiency.ts';
 
@@ -60,8 +63,49 @@ export interface DreamStatsBlock {
   };
 }
 
-const PANEL_WIDTH = 60;
+const DEFAULT_PANEL_WIDTH = 60;
+const MIN_WIDE_PANEL = 100;     // below this we stick to single-column
+const MAX_PANEL_WIDTH = 132;    // beyond this becomes hard to scan
 const BAR_WIDTH = 20;
+
+/** Resolve the panel width in order of precedence:
+ *   1. Explicit `--width` override (passed via opts.panelWidth)
+ *   2. $COLUMNS environment variable (honored even when stdout is piped — lets
+ *      users export COLUMNS=140 to force wide rendering in tmux / SSH chains
+ *      where TTY detection lies)
+ *   3. process.stdout.columns when stdout is a real TTY
+ *   4. DEFAULT_PANEL_WIDTH (60) when stdout is piped — keeps log captures
+ *      compact and grep-friendly. */
+function resolvePanelWidth(override?: number): number {
+  if (typeof override === 'number') return clamp(override, 40, MAX_PANEL_WIDTH);
+  const envCols = parseInt(process.env.COLUMNS ?? '', 10);
+  if (Number.isFinite(envCols) && envCols > 0) return clamp(envCols, 40, MAX_PANEL_WIDTH);
+  const cols = process.stdout.columns;
+  if (!process.stdout.isTTY || !cols) return DEFAULT_PANEL_WIDTH;
+  return clamp(cols, 40, MAX_PANEL_WIDTH);
+}
+
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, n));
+}
+
+/** Render two side-by-side blocks of (possibly ANSI-colored) lines, sized to
+ *  `totalWidth` with `gap` spaces between them. Short blocks are padded out;
+ *  the longer of the two determines vertical span. Visible-width-aware so
+ *  ANSI escapes don't disturb the column boundary. */
+function twoColumn(
+  left: string[], right: string[], totalWidth: number, gap = 3,
+): string[] {
+  const colWidth = Math.floor((totalWidth - gap) / 2);
+  const rows = Math.max(left.length, right.length);
+  const out: string[] = [];
+  for (let i = 0; i < rows; i++) {
+    const L = padVisibleEnd(left[i] ?? '', colWidth);
+    const R = right[i] ?? '';
+    out.push(L + ' '.repeat(gap) + R);
+  }
+  return out;
+}
 
 /** A proportional bar: ▕████░░▏. `fraction` is clamped to [0,1]. */
 export function bar(fraction: number, width: number): string {
@@ -75,10 +119,10 @@ function fmtCount(n: number): string {
   return n.toLocaleString('en-US').replace(/,/g, ' ');
 }
 
-/** "  TITLE ──────…" drawn to PANEL_WIDTH. */
-function sectionRule(title: string): string {
+/** "  TITLE ──────…" drawn to the given width. */
+function sectionRule(title: string, panelWidth: number): string {
   const prefix = `  ${title} `;
-  const dashes = '─'.repeat(Math.max(0, PANEL_WIDTH - prefix.length));
+  const dashes = '─'.repeat(Math.max(0, panelWidth - prefix.length));
   return `  ${cyanBold(title)} ${dim(dashes)}`;
 }
 
@@ -102,8 +146,8 @@ function indexingText(idx: StatsResponse['indexing']): string {
   return `error · ${idx.last_error ?? 'unknown'}`;
 }
 
-function headerPanel(version: string): string[] {
-  const inner = PANEL_WIDTH - 2;
+function headerPanel(version: string, panelWidth: number): string[] {
+  const inner = panelWidth - 2;
   const border = '─'.repeat(inner);
   // ⚓ is one string char but renders 2 terminal columns — count one extra.
   const wordmark = '⚓  CAPTAIN MEMO';        // 15 chars, 16 columns
@@ -120,50 +164,44 @@ function headerPanel(version: string): string[] {
   ];
 }
 
-export function renderStats(stats: StatsResponse): string[] {
+export interface RenderOpts {
+  /** Explicit panel width override — used in tests to lock behavior in a
+   *  width-independent way. In production, leave undefined and the terminal
+   *  width is auto-detected. */
+  panelWidth?: number;
+}
+
+export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string[] {
+  const panelWidth = resolvePanelWidth(opts.panelWidth);
+  const wide = panelWidth >= MIN_WIDE_PANEL;
+
   const out: string[] = [];
-  out.push(...headerPanel(stats.version ?? 'unknown'));
+  out.push(...headerPanel(stats.version ?? 'unknown', panelWidth));
   out.push('');
-  out.push(`  ${dim('Project'.padEnd(10))} ${stats.project_id}`);
+  out.push(`  ${dim('Project'.padEnd(10))} ${cyan(stats.project_id)}`);
   out.push(`  ${dim('Indexing'.padEnd(10))} ${statusDot(stats.indexing.status)} ${indexingText(stats.indexing)}`);
-  out.push(`  ${dim('Embedder'.padEnd(10))} ${stats.embedder.model} ${dim('·')} ${stats.embedder.endpoint}`);
+  out.push(`  ${dim('Embedder'.padEnd(10))} ${cyan(stats.embedder.model)} ${dim('·')} ${dim(stats.embedder.endpoint)}`);
   if (stats.disk) {
-    out.push(`  ${dim('Disk'.padEnd(10))} ${fmtBytes(stats.disk.bytes)}`);
+    out.push(`  ${dim('Disk'.padEnd(10))} ${gold(fmtBytes(stats.disk.bytes))}`);
   }
   out.push('');
 
-  // CORPUS
-  out.push(sectionRule('CORPUS'));
-  const channels = Object.entries(stats.by_channel);
-  const maxCount = Math.max(1, ...channels.map(([, c]) => c));
-  for (const [channel, count] of channels) {
-    const b = gold(bar(count / maxCount, BAR_WIDTH));
-    out.push(`   ${channel.padEnd(14)}${fmtCount(count).padStart(9)}   ${b}`);
-  }
-  out.push(`   ${dim('─'.repeat(23))}`);
-  out.push(`   ${'Total'.padEnd(14)}${fmtCount(stats.total_chunks).padStart(9)}`
-    + `     ${dim(`${fmtCount(stats.observations.total)} observations`)}`);
-  out.push('');
+  // CORPUS + EFFICIENCY: side by side in wide mode, stacked when narrow.
+  const corpusBlock = renderCorpusBlock(stats, panelWidth, wide);
+  const efficiencyBlock = stats.efficiency
+    ? renderEfficiencyBlock(stats.efficiency, panelWidth, wide)
+    : [];
 
-  // EFFICIENCY
-  if (stats.efficiency) {
-    const { corpus, embedder, dedup } = stats.efficiency;
-    out.push(sectionRule('EFFICIENCY'));
-    if (corpus.ratio === null || corpus.saved_pct === null) {
-      out.push(`   ${'Compression'.padEnd(14)}${dim('— populating… (restart worker)')}`);
-    } else {
-      const b = green(bar(corpus.saved_pct / 100, BAR_WIDTH));
-      out.push(`   ${'Compression'.padEnd(14)}${goldBold(`${corpus.ratio}×`.padEnd(7))}  ${b}  ${corpus.saved_pct}%`);
-      out.push(`   ${' '.repeat(14)}${dim(`distilled ${fmtCount(corpus.work_tokens)} → ${fmtCount(corpus.stored_tokens)} tokens`
-        + ` · ${corpus.coverage.with_data}/${corpus.coverage.total} obs`)}`);
-    }
-    out.push(`   ${'Embedder'.padEnd(14)}` + (embedder.calls > 0
-      ? `${embedder.calls} calls ${dim('·')} ~${embedder.avg_latency_ms} ms ${dim('·')} ${fmtCount(embedder.tokens_per_s)} tok/s`
-      : dim('— no embeds since worker start')));
-    out.push(`   ${'Dedup'.padEnd(14)}` + (dedup.docs_seen > 0
-      ? `${dedup.skip_pct}%   ${dim(`${fmtCount(dedup.skipped_unchanged)} / ${fmtCount(dedup.docs_seen)} unchanged`)}`
-      : dim('— no documents indexed since worker start')));
+  if (wide && efficiencyBlock.length > 0) {
+    out.push(...twoColumn(corpusBlock, efficiencyBlock, panelWidth));
     out.push('');
+  } else {
+    out.push(...corpusBlock);
+    out.push('');
+    if (efficiencyBlock.length > 0) {
+      out.push(...efficiencyBlock);
+      out.push('');
+    }
   }
 
   // RECALL — how memory actually gets used. Three lenses:
@@ -180,7 +218,7 @@ export function renderStats(stats: StatsResponse): string[] {
   // the legacy counter, with /search/* being the dominant path.
   if (stats.recall) {
     const recall = normalizeRecall(stats.recall);
-    out.push(sectionRule('RECALL'));
+    out.push(sectionRule('RECALL', panelWidth));
     out.push(`   ${dim('tracks how memory actually gets used')}`);
     const total = stats.observations.total;
     const { surfaced_count, recalled_count } = recall;
@@ -193,25 +231,43 @@ export function renderStats(stats: StatsResponse): string[] {
       const drillRate = surfaced_count > 0
         ? ((recalled_count / surfaced_count) * 100).toFixed(2)
         : '0.00';
-      out.push(`   ${'Surfaced'.padEnd(14)}${goldBold(fmtCount(surfaced_count))} / ${fmtCount(total)}`
-        + `   ${dim(`(${sPct}% of corpus)`)}`);
-      out.push(`   ${'Recalled'.padEnd(14)}${goldBold(fmtCount(recalled_count))} / ${fmtCount(total)}`
-        + `   ${dim(`(${rPct}% of corpus)`)}`);
-      out.push(`   ${'Drill-in rate'.padEnd(14)}${goldBold(`${drillRate}%`)}`
+      out.push(`   ${'Surfaced'.padEnd(14)}${goldBold(fmtCount(surfaced_count))}`
+        + ` ${dim('/')} ${fmtCount(total)}   ${dim(`(${sPct}% of corpus)`)}`);
+      out.push(`   ${'Recalled'.padEnd(14)}${green(fmtCount(recalled_count))}`
+        + ` ${dim('/')} ${fmtCount(total)}   ${dim(`(${rPct}% of corpus)`)}`);
+      out.push(`   ${'Drill-in rate'.padEnd(14)}${cyanBold(`${drillRate}%`)}`
         + `   ${dim(`(${recalled_count}/${surfaced_count} recalled out of surfaced)`)}`);
 
-      if (recall.top_surfaced.length > 0) {
+      const colWidth = wide ? Math.floor((panelWidth - 3) / 2) : panelWidth;
+      const hasSurfaced = recall.top_surfaced.length > 0;
+      const hasRecalled = recall.top_recalled.length > 0;
+
+      if (wide && hasSurfaced && hasRecalled) {
+        // Both lists populated → side by side.
+        const left = renderTopList('Top surfaced', recall.top_surfaced, colWidth);
+        const right = renderTopList('Top recalled', recall.top_recalled, colWidth);
         out.push('');
-        out.push(`   ${'Top surfaced'.padEnd(14)}`);
-        for (const r of recall.top_surfaced) {
-          out.push(...renderRecallEntry(r));
+        out.push(...twoColumn(left, right, panelWidth));
+      } else if (wide && (hasSurfaced || hasRecalled)) {
+        // Only one list populated → split its entries across two columns so
+        // we still consume the available horizontal space. Halves vertical
+        // height for the common early-data case where drill is empty.
+        const heading = hasSurfaced ? 'Top surfaced' : 'Top recalled';
+        const entries = hasSurfaced ? recall.top_surfaced : recall.top_recalled;
+        const mid = Math.ceil(entries.length / 2);
+        const left = renderTopList(heading, entries.slice(0, mid), colWidth);
+        const right = renderTopList(' ', entries.slice(mid), colWidth);  // blank heading
+        out.push('');
+        out.push(...twoColumn(left, right, panelWidth));
+      } else {
+        // Narrow mode (or both empty) → original stacked layout.
+        if (hasSurfaced) {
+          out.push('');
+          out.push(...renderTopList('Top surfaced', recall.top_surfaced, panelWidth));
         }
-      }
-      if (recall.top_recalled.length > 0) {
-        out.push('');
-        out.push(`   ${'Top recalled'.padEnd(14)}`);
-        for (const r of recall.top_recalled) {
-          out.push(...renderRecallEntry(r));
+        if (hasRecalled) {
+          out.push('');
+          out.push(...renderTopList('Top recalled', recall.top_recalled, panelWidth));
         }
       }
     }
@@ -223,20 +279,20 @@ export function renderStats(stats: StatsResponse): string[] {
   // retrieval pair density) WITHOUT running clustering. The actual cluster
   // preview lives in `captain-memo dream --dry-run`.
   if (stats.dream) {
-    out.push(sectionRule('DREAM'));
+    out.push(sectionRule('DREAM', panelWidth));
     out.push(`   ${dim('tracks the data feeding the Dreams pipeline')}`);
     const d = stats.dream;
     const corpusTotal = stats.observations.total;
 
     if (d.audit_log.bytes === 0 && d.audit_log.entries === 0) {
-      out.push(`   ${'Audit log'.padEnd(14)}${dim('— off')}`
+      out.push(`   ${'Audit log'.padEnd(14)}${red('— off')}`
         + `   ${dim('(set CAPTAIN_MEMO_RECALL_AUDIT=1 in worker.env)')}`);
     } else {
       const ageStr = d.audit_log.last_entry_epoch_ms !== null
         ? fmtAgo(Math.floor((Date.now() - d.audit_log.last_entry_epoch_ms) / 1000))
         : '—';
       out.push(`   ${'Audit log'.padEnd(14)}`
-        + `${fmtBytes(d.audit_log.bytes)} ${dim('·')} ${fmtCount(d.audit_log.entries)} entries`
+        + `${gold(fmtBytes(d.audit_log.bytes))} ${dim('·')} ${cyan(fmtCount(d.audit_log.entries))} entries`
         + ` ${dim('·')} ${dim(`last ${ageStr} ago`)}`);
     }
 
@@ -249,10 +305,10 @@ export function renderStats(stats: StatsResponse): string[] {
         : '0.0';
       out.push(`   ${'Co-retrieval'.padEnd(14)}`
         + `${goldBold(fmtCount(d.co_retrieval.pairs))} pairs`
-        + ` ${dim('·')} ${fmtCount(d.co_retrieval.docs_covered)} observations covered`
+        + ` ${dim('·')} ${green(fmtCount(d.co_retrieval.docs_covered))} observations covered`
         + ` ${dim(`(${pct}% of corpus)`)}`);
     }
-    out.push(`   ${'Preview'.padEnd(14)}${dim('captain-memo dream --dry-run')}`);
+    out.push(`   ${'Preview'.padEnd(14)}${cyanBold('captain-memo dream --dry-run')}`);
     out.push('');
   }
 
@@ -312,16 +368,78 @@ function normalizeRecall(
   };
 }
 
+/** CORPUS sub-block: channel bars + total. Returned as a block of lines so
+ *  the caller can place it inline or alongside another block. */
+function renderCorpusBlock(
+  stats: StatsResponse, panelWidth: number, wide: boolean,
+): string[] {
+  const out: string[] = [];
+  out.push(sectionRule('CORPUS', wide ? Math.floor((panelWidth - 3) / 2) : panelWidth));
+  const channels = Object.entries(stats.by_channel);
+  const maxCount = Math.max(1, ...channels.map(([, c]) => c));
+  const barWidth = wide ? 16 : BAR_WIDTH;   // slightly tighter in wide cols
+  for (const [channel, count] of channels) {
+    const b = gold(bar(count / maxCount, barWidth));
+    out.push(`   ${channel.padEnd(14)}${fmtCount(count).padStart(9)}   ${b}`);
+  }
+  out.push(`   ${dim('─'.repeat(23))}`);
+  out.push(`   ${'Total'.padEnd(14)}${goldBold(fmtCount(stats.total_chunks).padStart(9))}`
+    + `     ${dim(`${fmtCount(stats.observations.total)} observations`)}`);
+  return out;
+}
+
+/** EFFICIENCY sub-block: compression bar + embedder + dedup. */
+function renderEfficiencyBlock(
+  efficiency: EfficiencyReport, panelWidth: number, wide: boolean,
+): string[] {
+  const { corpus, embedder, dedup } = efficiency;
+  const out: string[] = [];
+  out.push(sectionRule('EFFICIENCY', wide ? Math.floor((panelWidth - 3) / 2) : panelWidth));
+  const barWidth = wide ? 16 : BAR_WIDTH;
+  if (corpus.ratio === null || corpus.saved_pct === null) {
+    out.push(`   ${'Compression'.padEnd(14)}${dim('— populating… (restart worker)')}`);
+  } else {
+    const b = green(bar(corpus.saved_pct / 100, barWidth));
+    out.push(`   ${'Compression'.padEnd(14)}${goldBold(`${corpus.ratio}×`.padEnd(7))}  ${b}  ${green(`${corpus.saved_pct}%`)}`);
+    out.push(`   ${' '.repeat(14)}${dim(`distilled ${fmtCount(corpus.work_tokens)} → ${fmtCount(corpus.stored_tokens)} tokens`
+      + ` · ${corpus.coverage.with_data}/${corpus.coverage.total} obs`)}`);
+  }
+  out.push(`   ${'Embedder'.padEnd(14)}` + (embedder.calls > 0
+    ? `${cyan(String(embedder.calls))} calls ${dim('·')} ~${embedder.avg_latency_ms} ms ${dim('·')} ${fmtCount(embedder.tokens_per_s)} tok/s`
+    : dim('— no embeds since worker start')));
+  out.push(`   ${'Dedup'.padEnd(14)}` + (dedup.docs_seen > 0
+    ? `${cyanBold(`${dedup.skip_pct}%`)}   ${dim(`${fmtCount(dedup.skipped_unchanged)} / ${fmtCount(dedup.docs_seen)} unchanged`)}`
+    : dim('— no documents indexed since worker start')));
+  return out;
+}
+
+/** One Top-N list as a sub-block. Title trim adapts to the column width so
+ *  side-by-side mode (narrower) doesn't bleed into the right column. */
+function renderTopList(
+  heading: string, entries: RecallTopEntry[], colWidth: number,
+): string[] {
+  const out: string[] = [];
+  out.push(`   ${bold(heading.padEnd(14))}`);
+  // Reserve room for "     N×  [type] " prefix (~13 chars) + title; trim to fit.
+  const titleMax = Math.max(20, colWidth - 16);
+  for (const r of entries) {
+    out.push(...renderRecallEntry(r, titleMax));
+  }
+  return out;
+}
+
 /** Render one top-list entry: count line + provenance breakdown line. */
-function renderRecallEntry(r: RecallTopEntry): string[] {
-  const titleTrim = r.title.length > 48 ? r.title.slice(0, 47) + '…' : r.title;
+function renderRecallEntry(r: RecallTopEntry, titleMax = 48): string[] {
+  const titleTrim = r.title.length > titleMax
+    ? r.title.slice(0, titleMax - 1) + '…' : r.title;
   const total = r.from_auto + r.from_search + r.from_drill;
   const count = `${total}×`.padStart(4);
-  const breakdown = dim(
-    `auto: ${r.from_auto}   search: ${r.from_search}   drill: ${r.from_drill}`,
-  );
+  const breakdown =
+    `${dim('auto:')} ${gold(String(r.from_auto))}   `
+    + `${dim('search:')} ${cyan(String(r.from_search))}   `
+    + `${dim('drill:')} ${green(String(r.from_drill))}`;
   return [
-    `     ${gold(count)}  ${dim(`[${r.type}]`)} ${titleTrim}`,
+    `     ${goldBold(count)}  ${dim(`[${r.type}]`)} ${titleTrim}`,
     `           ${breakdown}`,
   ];
 }

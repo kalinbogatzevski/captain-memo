@@ -7,6 +7,16 @@ export async function statsCommand(args: string[] = []): Promise<number> {
     console.log(JSON.stringify(stats));
     return 0;
   }
-  for (const line of renderStats(stats)) console.log(line);
+  // --width N overrides terminal-width auto-detection. Useful when stdout is
+  // piped (process.stdout.columns reads as 0) but you still want the wide
+  // two-column layout — e.g. `captain-memo stats --width 140 | less -R`.
+  let panelWidth: number | undefined;
+  const widthIdx = args.indexOf('--width');
+  if (widthIdx >= 0 && widthIdx + 1 < args.length) {
+    const w = parseInt(args[widthIdx + 1]!, 10);
+    if (Number.isFinite(w) && w >= 40) panelWidth = w;
+  }
+  const opts = panelWidth !== undefined ? { panelWidth } : {};
+  for (const line of renderStats(stats, opts)) console.log(line);
   return 0;
 }
