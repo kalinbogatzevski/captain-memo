@@ -1,6 +1,6 @@
 import {
   bold, cyan, cyanBold, dim, gold, goldBold, green, red, yellow,
-  padVisibleEnd,
+  padVisibleEnd, visibleWidth,
 } from '../shared/ansi.ts';
 import { fmtBytes, fmtElapsed } from '../shared/format.ts';
 import type { EfficiencyReport } from '../worker/efficiency.ts';
@@ -444,24 +444,48 @@ function renderTopList(
 ): string[] {
   const out: string[] = [];
   out.push(`   ${bold(heading.padEnd(14))}`);
-  // Reserve room for "     N×  [type] " prefix (~13 chars) + title; trim to fit.
-  const titleMax = Math.max(20, colWidth - 16);
   for (const r of entries) {
-    out.push(...renderRecallEntry(r, titleMax));
+    out.push(...renderRecallEntry(r, colWidth));
   }
   return out;
 }
 
-/** Render one top-list entry: count line + provenance breakdown line. */
-function renderRecallEntry(r: RecallTopEntry, titleMax = 48): string[] {
-  const titleTrim = r.title.length > titleMax
-    ? r.title.slice(0, titleMax - 1) + '…' : r.title;
+/** Render one top-list entry: count line + provenance breakdown line.
+ *  Title trim adapts per-entry based on the actual prefix length so a
+ *  short type like [theme] gets MORE title room than [discovery] does.
+ *  The prefix breakdown:
+ *     "     "  5 spaces
+ *     "Nx"     padStart(4) → 4 chars
+ *     "  "     2 spaces
+ *     "[X]"    type tag, variable (7–11 chars)
+ *     " "      1 space
+ *  → 12 + type.length chars, then title fills the remainder.
+ */
+function renderRecallEntry(r: RecallTopEntry, colWidth = 64): string[] {
   const total = r.from_auto + r.from_search + r.from_drill;
   const count = `${total}×`.padStart(4);
-  const breakdown =
+  const prefixLen = 12 + r.type.length + 2;   // 2-char trailing safety margin
+  const titleMax = Math.max(8, colWidth - prefixLen);
+  const titleTrim = r.title.length > titleMax
+    ? r.title.slice(0, titleMax - 1) + '…' : r.title;
+
+  // Breakdown line — also gated against colWidth so 4-digit counts don't
+  // overflow into the right column under narrow side-by-side mode.
+  const longForm =
     `${dim('auto:')} ${gold(String(r.from_auto))}   `
     + `${dim('search:')} ${cyan(String(r.from_search))}   `
     + `${dim('drill:')} ${green(String(r.from_drill))}`;
+  const shortForm =
+    `${dim('a:')}${gold(String(r.from_auto))} `
+    + `${dim('s:')}${cyan(String(r.from_search))} `
+    + `${dim('d:')}${green(String(r.from_drill))}`;
+  // visibleWidth of longForm with 11-space indent: ~11 + 30 chars for
+  // single-digit counts, more for larger counts. Use compact form below ~52.
+  const indent = 11;
+  const breakdown = (indent + visibleWidth(longForm)) > colWidth
+    ? shortForm
+    : longForm;
+
   return [
     `     ${goldBold(count)}  ${dim(`[${r.type}]`)} ${titleTrim}`,
     `           ${breakdown}`,
