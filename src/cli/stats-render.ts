@@ -89,6 +89,16 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
 }
 
+/** Compute the (left, right) column widths that exactly add up to
+ *  `totalWidth - gap`. When the budget is odd, the EXTRA char goes to the
+ *  RIGHT column — that keeps both columns visually identical when paired
+ *  with the panel's header border, which always renders to totalWidth. */
+function splitColumnWidths(totalWidth: number, gap: number): { left: number; right: number } {
+  const budget = totalWidth - gap;
+  const left = Math.floor(budget / 2);
+  return { left, right: budget - left };
+}
+
 /** Render two side-by-side blocks of (possibly ANSI-colored) lines, sized to
  *  `totalWidth` with `gap` spaces between them. Short blocks are padded out;
  *  the longer of the two determines vertical span. Visible-width-aware so
@@ -96,11 +106,11 @@ function clamp(n: number, lo: number, hi: number): number {
 function twoColumn(
   left: string[], right: string[], totalWidth: number, gap = 3,
 ): string[] {
-  const colWidth = Math.floor((totalWidth - gap) / 2);
+  const { left: lw } = splitColumnWidths(totalWidth, gap);
   const rows = Math.max(left.length, right.length);
   const out: string[] = [];
   for (let i = 0; i < rows; i++) {
-    const L = padVisibleEnd(left[i] ?? '', colWidth);
+    const L = padVisibleEnd(left[i] ?? '', lw);
     const R = right[i] ?? '';
     out.push(L + ' '.repeat(gap) + R);
   }
@@ -187,9 +197,10 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
   out.push('');
 
   // CORPUS + EFFICIENCY: side by side in wide mode, stacked when narrow.
-  const corpusBlock = renderCorpusBlock(stats, panelWidth, wide);
+  const cols = splitColumnWidths(panelWidth, 3);
+  const corpusBlock = renderCorpusBlock(stats, wide ? cols.left : panelWidth, wide);
   const efficiencyBlock = stats.efficiency
-    ? renderEfficiencyBlock(stats.efficiency, panelWidth, wide)
+    ? renderEfficiencyBlock(stats.efficiency, wide ? cols.right : panelWidth, wide)
     : [];
 
   if (wide && efficiencyBlock.length > 0) {
@@ -238,14 +249,14 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
       out.push(`   ${'Drill-in rate'.padEnd(14)}${cyanBold(`${drillRate}%`)}`
         + `   ${dim(`(${recalled_count}/${surfaced_count} recalled out of surfaced)`)}`);
 
-      const colWidth = wide ? Math.floor((panelWidth - 3) / 2) : panelWidth;
+      const split = splitColumnWidths(panelWidth, 3);
       const hasSurfaced = recall.top_surfaced.length > 0;
       const hasRecalled = recall.top_recalled.length > 0;
 
       if (wide && hasSurfaced && hasRecalled) {
         // Both lists populated → side by side.
-        const left = renderTopList('Top surfaced', recall.top_surfaced, colWidth);
-        const right = renderTopList('Top recalled', recall.top_recalled, colWidth);
+        const left = renderTopList('Top surfaced', recall.top_surfaced, split.left);
+        const right = renderTopList('Top recalled', recall.top_recalled, split.right);
         out.push('');
         out.push(...twoColumn(left, right, panelWidth));
       } else if (wide && (hasSurfaced || hasRecalled)) {
@@ -255,8 +266,8 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
         const heading = hasSurfaced ? 'Top surfaced' : 'Top recalled';
         const entries = hasSurfaced ? recall.top_surfaced : recall.top_recalled;
         const mid = Math.ceil(entries.length / 2);
-        const left = renderTopList(heading, entries.slice(0, mid), colWidth);
-        const right = renderTopList(' ', entries.slice(mid), colWidth);  // blank heading
+        const left = renderTopList(heading, entries.slice(0, mid), split.left);
+        const right = renderTopList(' ', entries.slice(mid), split.right);
         out.push('');
         out.push(...twoColumn(left, right, panelWidth));
       } else {
@@ -368,13 +379,13 @@ function normalizeRecall(
   };
 }
 
-/** CORPUS sub-block: channel bars + total. Returned as a block of lines so
- *  the caller can place it inline or alongside another block. */
+/** CORPUS sub-block: channel bars + total. Block is sized to `blockWidth`
+ *  visible columns — the caller decides whether that's full panel or a half. */
 function renderCorpusBlock(
-  stats: StatsResponse, panelWidth: number, wide: boolean,
+  stats: StatsResponse, blockWidth: number, wide: boolean,
 ): string[] {
   const out: string[] = [];
-  out.push(sectionRule('CORPUS', wide ? Math.floor((panelWidth - 3) / 2) : panelWidth));
+  out.push(sectionRule('CORPUS', blockWidth));
   const channels = Object.entries(stats.by_channel);
   const maxCount = Math.max(1, ...channels.map(([, c]) => c));
   const barWidth = wide ? 16 : BAR_WIDTH;   // slightly tighter in wide cols
@@ -388,21 +399,28 @@ function renderCorpusBlock(
   return out;
 }
 
-/** EFFICIENCY sub-block: compression bar + embedder + dedup. */
+/** EFFICIENCY sub-block: compression bar + embedder + dedup. In wide mode
+ *  the detail line under Compression is omitted because the half-width
+ *  column can't render the full token counts without overflowing into the
+ *  CORPUS column. The secondary numbers stay accessible via --json. */
 function renderEfficiencyBlock(
-  efficiency: EfficiencyReport, panelWidth: number, wide: boolean,
+  efficiency: EfficiencyReport, blockWidth: number, wide: boolean,
 ): string[] {
   const { corpus, embedder, dedup } = efficiency;
   const out: string[] = [];
-  out.push(sectionRule('EFFICIENCY', wide ? Math.floor((panelWidth - 3) / 2) : panelWidth));
+  out.push(sectionRule('EFFICIENCY', blockWidth));
   const barWidth = wide ? 16 : BAR_WIDTH;
   if (corpus.ratio === null || corpus.saved_pct === null) {
     out.push(`   ${'Compression'.padEnd(14)}${dim('— populating… (restart worker)')}`);
   } else {
     const b = green(bar(corpus.saved_pct / 100, barWidth));
     out.push(`   ${'Compression'.padEnd(14)}${goldBold(`${corpus.ratio}×`.padEnd(7))}  ${b}  ${green(`${corpus.saved_pct}%`)}`);
-    out.push(`   ${' '.repeat(14)}${dim(`distilled ${fmtCount(corpus.work_tokens)} → ${fmtCount(corpus.stored_tokens)} tokens`
-      + ` · ${corpus.coverage.with_data}/${corpus.coverage.total} obs`)}`);
+    if (!wide) {
+      // Detail line: full token counts in dim. Verbose — drop it in wide
+      // mode where the half-width column can't hold it without overflow.
+      out.push(`   ${' '.repeat(14)}${dim(`distilled ${fmtCount(corpus.work_tokens)} → ${fmtCount(corpus.stored_tokens)} tokens`
+        + ` · ${corpus.coverage.with_data}/${corpus.coverage.total} obs`)}`);
+    }
   }
   out.push(`   ${'Embedder'.padEnd(14)}` + (embedder.calls > 0
     ? `${cyan(String(embedder.calls))} calls ${dim('·')} ~${embedder.avg_latency_ms} ms ${dim('·')} ${fmtCount(embedder.tokens_per_s)} tok/s`

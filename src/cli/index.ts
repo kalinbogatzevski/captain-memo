@@ -12,6 +12,7 @@ import { doctorCommand } from './commands/doctor.ts';
 import { inspectClaudeMemCommand } from './commands/inspect-claude-mem.ts';
 import { migrateFromClaudeMemCommand } from './commands/migrate-from-claude-mem.ts';
 import { dreamCommand } from './commands/dream.ts';
+import { watchCommand } from './commands/watch.ts';
 import { printBanner } from './banner.ts';
 import pkg from '../../package.json' with { type: 'json' };
 
@@ -35,6 +36,7 @@ Commands:
   inspect-claude-mem  Print row counts of ~/.claude-mem/claude-mem.db (read-only).
   migrate-from-claude-mem  One-time migration of ~/.claude-mem/claude-mem.db (read-only)
   dream        Preview Local Dreaming clusters (read-only; --dry-run only in v1)
+  watch        Live-refresh stats with colors + wide layout (every N seconds)
   help         Show this message
 
 Examples:
@@ -92,6 +94,9 @@ export async function main(args: string[]): Promise<void> {
       break;
     case 'dream':
       exit = await dreamCommand(args.slice(1));
+      break;
+    case 'watch':
+      exit = await watchCommand(args.slice(1));
       break;
     case 'help':
     case '--help':
