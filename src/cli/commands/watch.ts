@@ -28,8 +28,8 @@ Notes:
   - Requires the \`watch\` binary (procps-ng); pre-installed on most Linux
     distros and available via Homebrew on macOS.
   - Press Ctrl+C to exit.
-  - The terminal width at launch time is captured and pinned for the
-    session; if you resize the terminal afterwards, exit and relaunch.
+  - The layout self-scales to the terminal width on every refresh — resize
+    the terminal anytime and the next tick adapts automatically.
 `;
 
 export async function watchCommand(args: string[]): Promise<number> {
@@ -45,17 +45,19 @@ export async function watchCommand(args: string[]): Promise<number> {
     return 2;
   }
 
-  // process.stdout.columns is reliable here because we're invoked from a
-  // user's interactive shell. Fallback 120 covers the headless edge case.
-  const cols = process.stdout.columns && process.stdout.columns >= 40
-    ? process.stdout.columns
-    : 120;
-
   // We re-invoke captain-memo via the SAME script path that's running now —
   // avoids depending on $PATH having the binary visible (the user may run
   // from the project dir without having installed it globally).
   const self = process.argv.slice(0, 2).map(shellQuote).join(' ');
-  const inner = `FORCE_COLOR=1 ${self} stats --width ${cols}`;
+
+  // IMPORTANT: do NOT pin --width here. `watch` exports COLUMNS=<cols> to its
+  // child on every refresh based on its current terminal size (verified via
+  // `strings /usr/bin/watch` → `COLUMNS=%ld` format string). The renderer's
+  // resolvePanelWidth() picks up that env var, so the layout self-scales
+  // when the user resizes the terminal mid-session. Pinning --width here
+  // would freeze the width at launch time and break that responsiveness —
+  // the exact bug the user reported in v0.1.14.
+  const inner = `FORCE_COLOR=1 ${self} stats`;
 
   // Run watch with -c (interpret ANSI), -n <seconds>, and the inner command.
   // stdio: inherit so watch fully takes over the terminal until Ctrl+C.

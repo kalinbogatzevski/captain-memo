@@ -65,7 +65,13 @@ export interface DreamStatsBlock {
 
 const DEFAULT_PANEL_WIDTH = 60;
 const MIN_WIDE_PANEL = 100;     // below this we stick to single-column
-const MAX_PANEL_WIDTH = 132;    // beyond this becomes hard to scan
+// MAX_PANEL_WIDTH used to be 132 (legacy "wide screen" limit). Users with
+// modern ultra-wide monitors complained the panel left a dead zone on the
+// right edge instead of expanding to fill their terminal — exactly the
+// behavior `captain-memo watch` was supposed to deliver. Lifted to 240
+// which covers any realistic terminal; sanity cap remains to defend
+// against the runaway-COLUMNS env-var failure mode.
+const MAX_PANEL_WIDTH = 240;
 const BAR_WIDTH = 20;
 
 /** Resolve the panel width in order of precedence:
