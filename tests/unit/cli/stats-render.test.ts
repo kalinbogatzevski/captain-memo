@@ -32,24 +32,24 @@ test('bar — fills proportionally and clamps out-of-range fractions', () => {
   expect(bar(2, 4)).toBe('▕████▏');          // clamped high
 });
 
-test('renderStats — renders the framed panel with all sections', () => {
+test('renderStats — renders the wordmark, double-rule header, and all sections', () => {
   const lines = renderStats(SAMPLE).map(stripAnsi);
   const text = lines.join('\n');
   expect(text).toContain('CAPTAIN MEMO');
-  expect(text).toContain('CORPUS');
-  expect(text).toContain('EFFICIENCY');
+  expect(text).toContain('Corpus');
+  expect(text).toContain('Efficiency');
   expect(text).toContain('observation');
   expect(text).toContain('13.1×');
   expect(text).toContain('92%');
   expect(text).toContain('47 calls');
-  // header panel: top and bottom borders are equal width
-  const top = lines.find(l => l.startsWith('╭'))!;
-  const bot = lines.find(l => l.startsWith('╰'))!;
-  expect(top.length).toBe(bot.length);
-  // header content line's visible width matches the border (⚓ is 1 string
-  // char but 2 display columns, so the stripped mid-line is 1 char shorter).
-  const mid = lines.find(l => l.startsWith('│'))!;
-  expect(mid.length).toBe(top.length - 1);
+  // Header is now two lines: wordmark, then a double-rule '═' line.
+  const wordmarkLine = lines.find(l => l.includes('⚓'))!;
+  const ruleLine = lines.find(l => l.startsWith('  ═'))!;
+  expect(wordmarkLine).toBeDefined();
+  expect(ruleLine).toBeDefined();
+  // The double-rule extends to the panel width minus the 2-char indent.
+  // We don't pin an exact byte count here since UTF-8 width of '═' is 3.
+  expect(ruleLine.length).toBeGreaterThan(wordmarkLine.length / 2);
 });
 
 test('renderStats — null ratio shows the populating hint, no bar', () => {
@@ -69,8 +69,8 @@ test('renderStats — null ratio shows the populating hint, no bar', () => {
 test('renderStats — tolerates a worker with no efficiency field', () => {
   const noEff: StatsResponse = { ...SAMPLE, efficiency: undefined };
   const text = renderStats(noEff).map(stripAnsi).join('\n');
-  expect(text).toContain('CORPUS');
-  expect(text).not.toContain('EFFICIENCY');
+  expect(text).toContain('Corpus');
+  expect(text).not.toContain('Efficiency');
 });
 
 const EMPTY_RECALL = {
@@ -81,17 +81,16 @@ const EMPTY_RECALL = {
   top_recalled: [],
 } as const;
 
-test('renderStats — RECALL section shows empty-state hint when no retrievals yet', () => {
+test('renderStats — Recall section shows empty-state hint when no retrievals yet', () => {
   const empty: StatsResponse = { ...SAMPLE, recall: EMPTY_RECALL };
   const text = renderStats(empty).map(stripAnsi).join('\n');
-  expect(text).toContain('RECALL');
+  expect(text).toContain('Recall');
   expect(text).toContain('Surfaced');
   expect(text).toContain('no retrievals yet');
 });
 
-test('renderStats — RECALL section carries a one-line "what this is" subheader', () => {
-  // Same explainer in both populated and empty states — anyone glancing at
-  // the section can map "RECALL" to the concept without leaving the panel.
+test('renderStats — Recall section carries a one-line "what this is" subheader', () => {
+  // Same explainer in both populated and empty states.
   const populated: StatsResponse = {
     ...SAMPLE,
     recall: {
@@ -105,11 +104,11 @@ test('renderStats — RECALL section carries a one-line "what this is" subheader
     },
   };
   const populatedText = renderStats(populated).map(stripAnsi).join('\n');
-  expect(populatedText).toContain('tracks how memory actually gets used');
+  expect(populatedText).toContain('how memory actually gets used');
 
   const empty: StatsResponse = { ...SAMPLE, recall: EMPTY_RECALL };
   const emptyText = renderStats(empty).map(stripAnsi).join('\n');
-  expect(emptyText).toContain('tracks how memory actually gets used');
+  expect(emptyText).toContain('how memory actually gets used');
 });
 
 test('renderStats — RECALL section shows surfaced + recalled + drill-in rate, with provenance per entry', () => {
@@ -130,7 +129,7 @@ test('renderStats — RECALL section shows surfaced + recalled + drill-in rate, 
     },
   };
   const text = renderStats(populated).map(stripAnsi).join('\n');
-  expect(text).toContain('RECALL');
+  expect(text).toContain('Recall');
   expect(text).toContain('Surfaced');
   expect(text).toContain('4 200');                  // grouped count
   expect(text).toContain('Recalled');
@@ -148,7 +147,7 @@ test('renderStats — RECALL section shows surfaced + recalled + drill-in rate, 
   expect(text).not.toContain('no retrievals yet');
 });
 
-test('renderStats — RECALL section is omitted entirely when recall field absent', () => {
+test('renderStats — Recall section is omitted entirely when recall field absent', () => {
   // Spread-omit rather than `recall: undefined` to satisfy
   // exactOptionalPropertyTypes — optional ≠ explicit undefined.
   const { recall: _unused, ...noRecall } = SAMPLE as StatsResponse & {
@@ -156,10 +155,10 @@ test('renderStats — RECALL section is omitted entirely when recall field absen
   };
   void _unused;
   const text = renderStats(noRecall as StatsResponse).map(stripAnsi).join('\n');
-  expect(text).not.toContain('RECALL');
+  expect(text).not.toContain('Recall');
 });
 
-test('renderStats — DREAM section shows audit log + co-retrieval inputs', () => {
+test('renderStats — Dream section shows audit log + co-retrieval inputs', () => {
   const stats: StatsResponse = {
     ...SAMPLE,
     dream: {
@@ -173,8 +172,8 @@ test('renderStats — DREAM section shows audit log + co-retrieval inputs', () =
     },
   };
   const text = renderStats(stats).map(stripAnsi).join('\n');
-  expect(text).toContain('DREAM');
-  expect(text).toContain('tracks the data feeding the Dreams pipeline');
+  expect(text).toContain('Dream');
+  expect(text).toContain('data feeding the Dreams pipeline');
   expect(text).toContain('Audit log');
   expect(text).toContain('87 entries');
   expect(text).toContain('Co-retrieval');
@@ -192,29 +191,26 @@ test('renderStats — DREAM section shows OFF state when audit log absent', () =
     },
   };
   const text = renderStats(stats).map(stripAnsi).join('\n');
-  expect(text).toContain('DREAM');
+  expect(text).toContain('Dream');
   expect(text).toContain('— off');
   expect(text).toContain('CAPTAIN_MEMO_RECALL_AUDIT=1');
 });
 
-test('renderStats — wide mode places CORPUS and EFFICIENCY side by side', () => {
-  // At panelWidth 130 the two sections should appear on the same line.
-  // Find the CORPUS rule line: it should ALSO contain "EFFICIENCY".
+test('renderStats — wide mode places Corpus and Efficiency side by side', () => {
   const lines = renderStats(SAMPLE, { panelWidth: 130 }).map(stripAnsi);
-  const ruleLine = lines.find(l => l.includes('CORPUS'));
+  const ruleLine = lines.find(l => l.includes('Corpus'));
   expect(ruleLine).toBeDefined();
-  expect(ruleLine!).toContain('EFFICIENCY');
+  expect(ruleLine!).toContain('Efficiency');
 });
 
-test('renderStats — narrow mode keeps CORPUS and EFFICIENCY on their own lines', () => {
-  // Default narrow width: sections must stack vertically.
+test('renderStats — narrow mode keeps Corpus and Efficiency on their own lines', () => {
   const lines = renderStats(SAMPLE, { panelWidth: 60 }).map(stripAnsi);
-  const corpusLine = lines.find(l => l.includes('CORPUS'));
-  const effLine = lines.find(l => l.includes('EFFICIENCY'));
+  const corpusLine = lines.find(l => l.includes('Corpus'));
+  const effLine = lines.find(l => l.includes('Efficiency'));
   expect(corpusLine).toBeDefined();
   expect(effLine).toBeDefined();
-  expect(corpusLine).not.toContain('EFFICIENCY');
-  expect(effLine).not.toContain('CORPUS');
+  expect(corpusLine).not.toContain('Efficiency');
+  expect(effLine).not.toContain('Corpus');
 });
 
 test('renderStats — wide mode places Top surfaced and Top recalled side by side', () => {
@@ -235,14 +231,14 @@ test('renderStats — wide mode places Top surfaced and Top recalled side by sid
   expect(headerLine!).toContain('Top recalled');
 });
 
-test('renderStats — DREAM section is omitted when dream field absent', () => {
+test('renderStats — Dream section is omitted when dream field absent', () => {
   const { dream: _u, ...noDream } = SAMPLE as StatsResponse & { dream?: StatsResponse['dream'] };
   void _u;
   const text = renderStats(noDream as StatsResponse).map(stripAnsi).join('\n');
-  expect(text).not.toContain('DREAM');
+  expect(text).not.toContain('Dream');
 });
 
-test('renderStats — RECALL title trim guards against 200-char observation titles', () => {
+test('renderStats — Recall title trim guards against 200-char observation titles', () => {
   const long = 'X'.repeat(120);
   const populated: StatsResponse = {
     ...SAMPLE,

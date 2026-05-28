@@ -26,15 +26,10 @@ export interface StatsResponse {
   disk?: { bytes: number; path: string };
   efficiency?: EfficiencyReport | undefined;
   recall?: {
-    /** Distinct observations bumped by ANY source (auto/search/drill). */
     surfaced_count: number;
-    /** Distinct observations bumped by /get_full (drill). */
     recalled_count: number;
-    /** Grand totals per source, useful for sanity-checking the breakdown. */
     totals: { auto: number; search: number; drill: number };
-    /** Top observations by total bumps across all sources. */
     top_surfaced: RecallTopEntry[];
-    /** Top observations by drill-in count — the strongest "actually used" signal. */
     top_recalled: RecallTopEntry[];
   };
   dream?: DreamStatsBlock;
@@ -65,23 +60,28 @@ export interface DreamStatsBlock {
 
 const DEFAULT_PANEL_WIDTH = 60;
 const MIN_WIDE_PANEL = 100;     // below this we stick to single-column
-// MAX_PANEL_WIDTH used to be 132 (legacy "wide screen" limit). Users with
-// modern ultra-wide monitors complained the panel left a dead zone on the
-// right edge instead of expanding to fill their terminal — exactly the
-// behavior `captain-memo watch` was supposed to deliver. Lifted to 240
-// which covers any realistic terminal; sanity cap remains to defend
-// against the runaway-COLUMNS env-var failure mode.
 const MAX_PANEL_WIDTH = 240;
 const BAR_WIDTH = 20;
 
-/** Resolve the panel width in order of precedence:
- *   1. Explicit `--width` override (passed via opts.panelWidth)
- *   2. $COLUMNS environment variable (honored even when stdout is piped — lets
- *      users export COLUMNS=140 to force wide rendering in tmux / SSH chains
- *      where TTY detection lies)
- *   3. process.stdout.columns when stdout is a real TTY
- *   4. DEFAULT_PANEL_WIDTH (60) when stdout is piped — keeps log captures
- *      compact and grep-friendly. */
+// COLOR DISCIPLINE (locked roles — change carefully):
+//
+//   goldBold   — wordmark identity only (line 1 of the panel).
+//   cyanBold   — live values that change between refreshes: counts,
+//                percentages, sizes, ages, ratios. The "look here" cue.
+//   cyan       — section headings (no bold). Quieter than the values.
+//   gold/cyan/green — RESERVED for the auto/search/drill provenance triplet
+//                in Top-N entries. These three colors carry semantic
+//                meaning; they must not appear elsewhere or the meaning
+//                degrades into decoration.
+//   green/yellow/red — status semantics only (ready/indexing/error/off).
+//                Never as accent decoration.
+//   dim        — labels, separators, secondary metadata, formatting
+//                punctuation. The structural layer.
+//   default    — body text, titles, model names, things you read once.
+//
+// Net effect: structure (dim) → values (cyan-bright) → status (semantic)
+// → provenance (mapped triad). Four roles, no overlap.
+
 function resolvePanelWidth(override?: number): number {
   if (typeof override === 'number') return clamp(override, 40, MAX_PANEL_WIDTH);
   const envCols = parseInt(process.env.COLUMNS ?? '', 10);
@@ -95,20 +95,12 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
 }
 
-/** Compute the (left, right) column widths that exactly add up to
- *  `totalWidth - gap`. When the budget is odd, the EXTRA char goes to the
- *  RIGHT column — that keeps both columns visually identical when paired
- *  with the panel's header border, which always renders to totalWidth. */
 function splitColumnWidths(totalWidth: number, gap: number): { left: number; right: number } {
   const budget = totalWidth - gap;
   const left = Math.floor(budget / 2);
   return { left, right: budget - left };
 }
 
-/** Render two side-by-side blocks of (possibly ANSI-colored) lines, sized to
- *  `totalWidth` with `gap` spaces between them. Short blocks are padded out;
- *  the longer of the two determines vertical span. Visible-width-aware so
- *  ANSI escapes don't disturb the column boundary. */
 function twoColumn(
   left: string[], right: string[], totalWidth: number, gap = 3,
 ): string[] {
@@ -123,7 +115,8 @@ function twoColumn(
   return out;
 }
 
-/** A proportional bar: ▕████░░▏. `fraction` is clamped to [0,1]. */
+/** A proportional bar: ▕████░░▏. Cyan so it lines up with the panel's
+ *  "live data" accent without competing with the gold wordmark. */
 export function bar(fraction: number, width: number): string {
   const f = Math.max(0, Math.min(1, fraction));
   const filled = Math.round(f * width);
@@ -135,14 +128,25 @@ function fmtCount(n: number): string {
   return n.toLocaleString('en-US').replace(/,/g, ' ');
 }
 
-/** "  TITLE ──────…" drawn to the given width. */
+/** Compact engineering notation: 19057556 → "19.0 M", 15605 → "15.6 k".
+ *  One space before the unit because monospaced engineering tables read
+ *  more cleanly with the unit visually detached from the magnitude. */
+function fmtCompact(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)} k`;
+  if (n < 1_000_000_000) return `${(n / 1_000_000).toFixed(1)} M`;
+  return `${(n / 1_000_000_000).toFixed(1)} B`;
+}
+
+/** "  Title ──────…" drawn to the given width. Section heads use plain
+ *  cyan (no bold) so live values are visually heavier — see color
+ *  discipline note at the top of the file. */
 function sectionRule(title: string, panelWidth: number): string {
   const prefix = `  ${title} `;
   const dashes = '─'.repeat(Math.max(0, panelWidth - prefix.length));
-  return `  ${cyanBold(title)} ${dim(dashes)}`;
+  return `  ${cyan(title)} ${dim(dashes)}`;
 }
 
-/** The status dot, coloured by indexing state. */
 function statusDot(status: StatsResponse['indexing']['status']): string {
   if (status === 'ready') return green('●');
   if (status === 'indexing') return yellow('●');
@@ -162,28 +166,22 @@ function indexingText(idx: StatsResponse['indexing']): string {
   return `error · ${idx.last_error ?? 'unknown'}`;
 }
 
+/** Two-line title: wordmark on line 1, double-rule on line 2. Replaces
+ *  the previous boxed header — the frame fought the content for attention
+ *  and added a "decorated dashboard" feel. The double `═` differentiates
+ *  the title rule from the single `─` section rules below. */
 function headerPanel(version: string, panelWidth: number): string[] {
-  const inner = panelWidth - 2;
-  const border = '─'.repeat(inner);
-  // ⚓ is one string char but renders 2 terminal columns — count one extra.
-  const wordmark = '⚓  CAPTAIN MEMO';        // 15 chars, 16 columns
-  const subtitle = '        corpus statistics   ·   ';
+  const wordmark = '⚓  CAPTAIN MEMO';
+  const subtitle = 'corpus statistics';
   const ver = `v${version}`;
-  const usedCols = 2 /* indent */ + wordmark.length + 1 /* ⚓ extra */
-    + subtitle.length + ver.length;
-  const pad = ' '.repeat(Math.max(1, inner - usedCols));
-  const content = '  ' + goldBold(wordmark) + dim(subtitle) + bold(ver) + pad;
-  return [
-    cyanBold('╭' + border + '╮'),
-    cyanBold('│') + content + cyanBold('│'),
-    cyanBold('╰' + border + '╯'),
-  ];
+  const titleLine = `  ${goldBold(wordmark)}   ${dim(subtitle)} ${dim('·')} ${bold(ver)}`;
+  // ═ matches the section-rule indent so the eye sees a continuous left
+  // rail down the left edge of the panel.
+  const rule = '  ' + dim('═'.repeat(Math.max(0, panelWidth - 2)));
+  return [titleLine, rule];
 }
 
 export interface RenderOpts {
-  /** Explicit panel width override — used in tests to lock behavior in a
-   *  width-independent way. In production, leave undefined and the terminal
-   *  width is auto-detected. */
   panelWidth?: number;
 }
 
@@ -194,11 +192,17 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
   const out: string[] = [];
   out.push(...headerPanel(stats.version ?? 'unknown', panelWidth));
   out.push('');
-  out.push(`  ${dim('Project'.padEnd(10))} ${cyan(stats.project_id)}`);
-  out.push(`  ${dim('Indexing'.padEnd(10))} ${statusDot(stats.indexing.status)} ${indexingText(stats.indexing)}`);
-  out.push(`  ${dim('Embedder'.padEnd(10))} ${cyan(stats.embedder.model)} ${dim('·')} ${dim(stats.embedder.endpoint)}`);
-  if (stats.disk) {
-    out.push(`  ${dim('Disk'.padEnd(10))} ${gold(fmtBytes(stats.disk.bytes))}`);
+
+  // Status block. At narrow widths, four labeled rows. At wide widths,
+  // pair (Project, Indexing) | (Embedder, Disk) so the labels stay visible
+  // but the block is half as tall.
+  const statusLines = renderStatusBlock(stats);
+  if (wide && statusLines.length === 4) {
+    const left = statusLines.slice(0, 2);
+    const right = statusLines.slice(2, 4);
+    out.push(...twoColumn(left, right, panelWidth));
+  } else {
+    out.push(...statusLines);
   }
   out.push('');
 
@@ -221,26 +225,14 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
     }
   }
 
-  // RECALL — how memory actually gets used. Three lenses:
-  //   Surfaced    = observation appeared in ANY retrieval response
-  //   Recalled    = observation was fetched in full via /get_full
-  //   Drill-in %  = recalled / surfaced — how often surfacing converts to use
-  // Each top entry also shows its provenance breakdown (auto/search/drill)
-  // so a popular row is distinguishable from a passively-matched one.
-  //
-  // Cross-version compatibility: if the worker is still on the pre-v5 shape
-  // (ever_retrieved + top[]), map it forward into the new shape so the CLI
-  // never crashes during a half-deployed upgrade window. Old data is treated
-  // as from_search bumps since pre-v5 only /search/* and /get_full bumped
-  // the legacy counter, with /search/* being the dominant path.
   if (stats.recall) {
     const recall = normalizeRecall(stats.recall);
-    out.push(sectionRule('RECALL', panelWidth));
-    out.push(`   ${dim('tracks how memory actually gets used')}`);
+    out.push(sectionRule('Recall', panelWidth));
+    out.push(`   ${dim('how memory actually gets used')}`);
     const total = stats.observations.total;
     const { surfaced_count, recalled_count } = recall;
     if (surfaced_count === 0 && recalled_count === 0) {
-      out.push(`   ${'Surfaced'.padEnd(14)}${dim('0')} / ${fmtCount(total)}`
+      out.push(`   ${dim('Surfaced'.padEnd(14))}${dim('0')} / ${fmtCount(total)}`
         + `   ${dim('— no retrievals yet; data accumulates with use')}`);
     } else {
       const sPct = total > 0 ? ((surfaced_count / total) * 100).toFixed(1) : '0.0';
@@ -248,11 +240,11 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
       const drillRate = surfaced_count > 0
         ? ((recalled_count / surfaced_count) * 100).toFixed(2)
         : '0.00';
-      out.push(`   ${'Surfaced'.padEnd(14)}${goldBold(fmtCount(surfaced_count))}`
+      out.push(`   ${dim('Surfaced'.padEnd(14))}${cyanBold(fmtCount(surfaced_count))}`
         + ` ${dim('/')} ${fmtCount(total)}   ${dim(`(${sPct}% of corpus)`)}`);
-      out.push(`   ${'Recalled'.padEnd(14)}${green(fmtCount(recalled_count))}`
+      out.push(`   ${dim('Recalled'.padEnd(14))}${cyanBold(fmtCount(recalled_count))}`
         + ` ${dim('/')} ${fmtCount(total)}   ${dim(`(${rPct}% of corpus)`)}`);
-      out.push(`   ${'Drill-in rate'.padEnd(14)}${cyanBold(`${drillRate}%`)}`
+      out.push(`   ${dim('Drill-in rate'.padEnd(14))}${cyanBold(`${drillRate}%`)}`
         + `   ${dim(`(${recalled_count}/${surfaced_count} recalled out of surfaced)`)}`);
 
       const split = splitColumnWidths(panelWidth, 3);
@@ -260,15 +252,11 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
       const hasRecalled = recall.top_recalled.length > 0;
 
       if (wide && hasSurfaced && hasRecalled) {
-        // Both lists populated → side by side.
         const left = renderTopList('Top surfaced', recall.top_surfaced, split.left);
         const right = renderTopList('Top recalled', recall.top_recalled, split.right);
         out.push('');
         out.push(...twoColumn(left, right, panelWidth));
       } else if (wide && (hasSurfaced || hasRecalled)) {
-        // Only one list populated → split its entries across two columns so
-        // we still consume the available horizontal space. Halves vertical
-        // height for the common early-data case where drill is empty.
         const heading = hasSurfaced ? 'Top surfaced' : 'Top recalled';
         const entries = hasSurfaced ? recall.top_surfaced : recall.top_recalled;
         const mid = Math.ceil(entries.length / 2);
@@ -277,7 +265,6 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
         out.push('');
         out.push(...twoColumn(left, right, panelWidth));
       } else {
-        // Narrow mode (or both empty) → original stacked layout.
         if (hasSurfaced) {
           out.push('');
           out.push(...renderTopList('Top surfaced', recall.top_surfaced, panelWidth));
@@ -291,49 +278,58 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
     out.push('');
   }
 
-  // DREAM — cheap precursor diagnostics for the Local Dreaming pipeline.
-  // Surfaces the inputs the dry-run depends on (audit log liveness, co-
-  // retrieval pair density) WITHOUT running clustering. The actual cluster
-  // preview lives in `captain-memo dream --dry-run`.
   if (stats.dream) {
-    out.push(sectionRule('DREAM', panelWidth));
-    out.push(`   ${dim('tracks the data feeding the Dreams pipeline')}`);
+    out.push(sectionRule('Dream', panelWidth));
+    out.push(`   ${dim('data feeding the Dreams pipeline')}`);
     const d = stats.dream;
     const corpusTotal = stats.observations.total;
 
     if (d.audit_log.bytes === 0 && d.audit_log.entries === 0) {
-      out.push(`   ${'Audit log'.padEnd(14)}${red('— off')}`
+      out.push(`   ${dim('Audit log'.padEnd(14))}${red('— off')}`
         + `   ${dim('(set CAPTAIN_MEMO_RECALL_AUDIT=1 in worker.env)')}`);
     } else {
       const ageStr = d.audit_log.last_entry_epoch_ms !== null
         ? fmtAgo(Math.floor((Date.now() - d.audit_log.last_entry_epoch_ms) / 1000))
         : '—';
-      out.push(`   ${'Audit log'.padEnd(14)}`
-        + `${gold(fmtBytes(d.audit_log.bytes))} ${dim('·')} ${cyan(fmtCount(d.audit_log.entries))} entries`
+      out.push(`   ${dim('Audit log'.padEnd(14))}`
+        + `${cyanBold(fmtBytes(d.audit_log.bytes))} ${dim('·')} ${cyanBold(fmtCount(d.audit_log.entries))} entries`
         + ` ${dim('·')} ${dim(`last ${ageStr} ago`)}`);
     }
 
     if (d.co_retrieval.pairs === 0) {
-      out.push(`   ${'Co-retrieval'.padEnd(14)}${dim('0 pairs')}`
+      out.push(`   ${dim('Co-retrieval'.padEnd(14))}${dim('0 pairs')}`
         + `   ${dim('— no co-occurring observations yet')}`);
     } else {
       const pct = corpusTotal > 0
         ? ((d.co_retrieval.docs_covered / corpusTotal) * 100).toFixed(1)
         : '0.0';
-      out.push(`   ${'Co-retrieval'.padEnd(14)}`
-        + `${goldBold(fmtCount(d.co_retrieval.pairs))} pairs`
-        + ` ${dim('·')} ${green(fmtCount(d.co_retrieval.docs_covered))} observations covered`
+      out.push(`   ${dim('Co-retrieval'.padEnd(14))}`
+        + `${cyanBold(fmtCount(d.co_retrieval.pairs))} pairs`
+        + ` ${dim('·')} ${cyanBold(fmtCount(d.co_retrieval.docs_covered))} observations covered`
         + ` ${dim(`(${pct}% of corpus)`)}`);
     }
-    out.push(`   ${'Preview'.padEnd(14)}${cyanBold('captain-memo dream --dry-run')}`);
+    // Inline command, no "Preview" label — the dim arrow is the affordance.
+    out.push(`   ${dim('→')} ${cyan('captain-memo dream --dry-run')}`);
     out.push('');
   }
 
   return out;
 }
 
-/** Human-readable "N units ago" for an age in seconds. Coarse and tiny —
- *  matches the size profile of fmtElapsed in shared/format.ts. */
+/** The four-row metadata block at the top of the panel. Caller decides
+ *  whether to pair them side-by-side via twoColumn. */
+function renderStatusBlock(stats: StatsResponse): string[] {
+  const lines = [
+    `  ${dim('Project'.padEnd(10))} ${stats.project_id}`,
+    `  ${dim('Indexing'.padEnd(10))} ${statusDot(stats.indexing.status)} ${indexingText(stats.indexing)}`,
+    `  ${dim('Embedder'.padEnd(10))} ${stats.embedder.model} ${dim('·')} ${dim(stats.embedder.endpoint)}`,
+  ];
+  if (stats.disk) {
+    lines.push(`  ${dim('Disk'.padEnd(10))} ${cyanBold(fmtBytes(stats.disk.bytes))}`);
+  }
+  return lines;
+}
+
 function fmtAgo(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)} min`;
@@ -341,8 +337,6 @@ function fmtAgo(seconds: number): string {
   return `${Math.floor(seconds / 86400)} d`;
 }
 
-/** Legacy pre-v5 recall shape. Kept here for the back-compat shim only —
- *  new code should never construct one of these. */
 interface LegacyRecallShape {
   ever_retrieved: number;
   top: Array<{
@@ -359,10 +353,6 @@ interface ModernRecallShape {
   top_recalled: RecallTopEntry[];
 }
 
-/** Map either the pre-v5 (ever_retrieved/top) shape or the current
- *  (surfaced/recalled/provenance) shape into the current shape. Lets the
- *  CLI render correctly during an upgrade window where the worker is one
- *  version behind. Detection key: presence of `surfaced_count`. */
 function normalizeRecall(
   recall: ModernRecallShape | LegacyRecallShape,
 ): ModernRecallShape {
@@ -385,65 +375,64 @@ function normalizeRecall(
   };
 }
 
-/** CORPUS sub-block: channel bars + total. Block is sized to `blockWidth`
- *  visible columns — the caller decides whether that's full panel or a half. */
+/** Corpus sub-block: channel bars + total. The intermediate divider line
+ *  is intentionally absent — the Total row's typography (cyanBold count,
+ *  dim "observations" subtitle) provides enough separation without the
+ *  decorative dash row that used to live above it. */
 function renderCorpusBlock(
   stats: StatsResponse, blockWidth: number, wide: boolean,
 ): string[] {
   const out: string[] = [];
-  out.push(sectionRule('CORPUS', blockWidth));
+  out.push(sectionRule('Corpus', blockWidth));
   const channels = Object.entries(stats.by_channel);
   const maxCount = Math.max(1, ...channels.map(([, c]) => c));
-  const barWidth = wide ? 16 : BAR_WIDTH;   // slightly tighter in wide cols
+  const barWidth = wide ? 16 : BAR_WIDTH;
   for (const [channel, count] of channels) {
-    const b = gold(bar(count / maxCount, barWidth));
-    out.push(`   ${channel.padEnd(14)}${fmtCount(count).padStart(9)}   ${b}`);
+    const b = cyan(bar(count / maxCount, barWidth));
+    out.push(`   ${dim(channel.padEnd(14))}${fmtCount(count).padStart(9)}   ${b}`);
   }
-  out.push(`   ${dim('─'.repeat(23))}`);
-  out.push(`   ${'Total'.padEnd(14)}${goldBold(fmtCount(stats.total_chunks).padStart(9))}`
+  out.push(`   ${dim('Total'.padEnd(14))}${cyanBold(fmtCount(stats.total_chunks).padStart(9))}`
     + `     ${dim(`${fmtCount(stats.observations.total)} observations`)}`);
   return out;
 }
 
-/** EFFICIENCY sub-block: compression bar + embedder + dedup. In wide mode
- *  the detail line under Compression is omitted because the half-width
- *  column can't render the full token counts without overflowing into the
- *  CORPUS column. The secondary numbers stay accessible via --json. */
+/** Efficiency sub-block: compression bar + embedder + dedup. The compact
+ *  `distilled` detail line now appears in BOTH modes because fmtCompact
+ *  shrinks "19 057 556 tokens" to "19.0 M tok" which fits any column. */
 function renderEfficiencyBlock(
   efficiency: EfficiencyReport, blockWidth: number, wide: boolean,
 ): string[] {
   const { corpus, embedder, dedup } = efficiency;
   const out: string[] = [];
-  out.push(sectionRule('EFFICIENCY', blockWidth));
+  out.push(sectionRule('Efficiency', blockWidth));
   const barWidth = wide ? 16 : BAR_WIDTH;
   if (corpus.ratio === null || corpus.saved_pct === null) {
-    out.push(`   ${'Compression'.padEnd(14)}${dim('— populating… (restart worker)')}`);
+    out.push(`   ${dim('Compression'.padEnd(14))}${dim('— populating… (restart worker)')}`);
   } else {
     const b = green(bar(corpus.saved_pct / 100, barWidth));
-    out.push(`   ${'Compression'.padEnd(14)}${goldBold(`${corpus.ratio}×`.padEnd(7))}  ${b}  ${green(`${corpus.saved_pct}%`)}`);
-    if (!wide) {
-      // Detail line: full token counts in dim. Verbose — drop it in wide
-      // mode where the half-width column can't hold it without overflow.
-      out.push(`   ${' '.repeat(14)}${dim(`distilled ${fmtCount(corpus.work_tokens)} → ${fmtCount(corpus.stored_tokens)} tokens`
-        + ` · ${corpus.coverage.with_data}/${corpus.coverage.total} obs`)}`);
-    }
+    out.push(`   ${dim('Compression'.padEnd(14))}${cyanBold(`${corpus.ratio}×`.padEnd(7))}  ${b}  ${green(`${corpus.saved_pct}%`)}`);
+    // Compact detail: fmtCompact keeps this under ~38 chars even at the
+    // largest realistic corpus sizes, so it fits in a half-width column
+    // without overflowing into the neighbor.
+    out.push(`   ${' '.repeat(14)}${dim(`distilled ${fmtCompact(corpus.work_tokens)} → ${fmtCompact(corpus.stored_tokens)} tok`
+      + ` · ${fmtCompact(corpus.coverage.with_data)}/${fmtCompact(corpus.coverage.total)} obs`)}`);
   }
-  out.push(`   ${'Embedder'.padEnd(14)}` + (embedder.calls > 0
-    ? `${cyan(String(embedder.calls))} calls ${dim('·')} ~${embedder.avg_latency_ms} ms ${dim('·')} ${fmtCount(embedder.tokens_per_s)} tok/s`
+  out.push(`   ${dim('Embedder'.padEnd(14))}` + (embedder.calls > 0
+    ? `${cyanBold(String(embedder.calls))} calls ${dim('·')} ~${embedder.avg_latency_ms} ms ${dim('·')} ${fmtCount(embedder.tokens_per_s)} tok/s`
     : dim('— no embeds since worker start')));
-  out.push(`   ${'Dedup'.padEnd(14)}` + (dedup.docs_seen > 0
+  out.push(`   ${dim('Dedup'.padEnd(14))}` + (dedup.docs_seen > 0
     ? `${cyanBold(`${dedup.skip_pct}%`)}   ${dim(`${fmtCount(dedup.skipped_unchanged)} / ${fmtCount(dedup.docs_seen)} unchanged`)}`
     : dim('— no documents indexed since worker start')));
   return out;
 }
 
-/** One Top-N list as a sub-block. Title trim adapts to the column width so
- *  side-by-side mode (narrower) doesn't bleed into the right column. */
 function renderTopList(
   heading: string, entries: RecallTopEntry[], colWidth: number,
 ): string[] {
   const out: string[] = [];
-  out.push(`   ${bold(heading.padEnd(14))}`);
+  // Heading in cyan (matches section heads), not bold — keeps the live
+  // values in the entries below visually heavier.
+  out.push(`   ${cyan(heading.padEnd(14))}`);
   for (const r of entries) {
     out.push(...renderRecallEntry(r, colWidth));
   }
@@ -451,26 +440,18 @@ function renderTopList(
 }
 
 /** Render one top-list entry: count line + provenance breakdown line.
- *  Title trim adapts per-entry based on the actual prefix length so a
- *  short type like [theme] gets MORE title room than [discovery] does.
- *  The prefix breakdown:
- *     "     "  5 spaces
- *     "Nx"     padStart(4) → 4 chars
- *     "  "     2 spaces
- *     "[X]"    type tag, variable (7–11 chars)
- *     " "      1 space
- *  → 12 + type.length chars, then title fills the remainder.
+ *  Prefix structure (visible chars): 5 + 4 + 2 + type.length + 1 = 12 + type.
  */
 function renderRecallEntry(r: RecallTopEntry, colWidth = 64): string[] {
   const total = r.from_auto + r.from_search + r.from_drill;
   const count = `${total}×`.padStart(4);
-  const prefixLen = 12 + r.type.length + 2;   // 2-char trailing safety margin
+  const prefixLen = 12 + r.type.length + 2;
   const titleMax = Math.max(8, colWidth - prefixLen);
   const titleTrim = r.title.length > titleMax
     ? r.title.slice(0, titleMax - 1) + '…' : r.title;
 
-  // Breakdown line — also gated against colWidth so 4-digit counts don't
-  // overflow into the right column under narrow side-by-side mode.
+  // Provenance triplet — gold/cyan/green are RESERVED for this triad. Do
+  // not borrow them for decoration anywhere else in the panel.
   const longForm =
     `${dim('auto:')} ${gold(String(r.from_auto))}   `
     + `${dim('search:')} ${cyan(String(r.from_search))}   `
@@ -479,15 +460,14 @@ function renderRecallEntry(r: RecallTopEntry, colWidth = 64): string[] {
     `${dim('a:')}${gold(String(r.from_auto))} `
     + `${dim('s:')}${cyan(String(r.from_search))} `
     + `${dim('d:')}${green(String(r.from_drill))}`;
-  // visibleWidth of longForm with 11-space indent: ~11 + 30 chars for
-  // single-digit counts, more for larger counts. Use compact form below ~52.
   const indent = 11;
   const breakdown = (indent + visibleWidth(longForm)) > colWidth
     ? shortForm
     : longForm;
 
+  // Count uses cyanBold (live value); type stays dim; title is default.
   return [
-    `     ${goldBold(count)}  ${dim(`[${r.type}]`)} ${titleTrim}`,
+    `     ${cyanBold(count)}  ${dim(`[${r.type}]`)} ${titleTrim}`,
     `           ${breakdown}`,
   ];
 }
