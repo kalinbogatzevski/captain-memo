@@ -45,6 +45,7 @@ import {
   DEFAULT_OBSERVATION_TICK_MS,
 } from '../shared/paths.ts';
 import { writeRecallAuditLine } from './recall-audit.ts';
+import { getDreamStats } from './dream-stats.ts';
 import { Summarizer } from './summarizer.ts';
 import { createWorkerMetrics, recordEmbed, recordIndexResult } from './metrics.ts';
 import { computeEfficiency } from './efficiency.ts';
@@ -816,6 +817,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           metrics,
         });
         const recall = obsStore ? obsStore.getRecallStats(5) : undefined;
+        // Dream-stats path: cheap precursor diagnostics from the audit log.
+        // Audit-log path mirrors the writer in recall-audit.ts (same env-var
+        // override semantics) so a custom CAPTAIN_MEMO_DATA_DIR is honored.
+        const auditLogPath = (() => {
+          const dir = process.env.CAPTAIN_MEMO_DATA_DIR ?? DATA_DIR;
+          return `${dir}/recall-audit.jsonl`;
+        })();
+        const dream = await getDreamStats(auditLogPath).catch(() => undefined);
         return Response.json({
           total_chunks,
           by_channel,
@@ -837,6 +846,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           disk: { bytes: diskBytes, path: DATA_DIR },
           efficiency,
           recall,
+          dream,
           version: pkg.version,
         });
       }

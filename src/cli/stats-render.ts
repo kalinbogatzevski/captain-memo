@@ -34,6 +34,7 @@ export interface StatsResponse {
     /** Top observations by drill-in count — the strongest "actually used" signal. */
     top_recalled: RecallTopEntry[];
   };
+  dream?: DreamStatsBlock;
 }
 
 interface RecallTopEntry {
@@ -44,6 +45,19 @@ interface RecallTopEntry {
   from_search: number;
   from_drill: number;
   last_surfaced_at: number | null;
+}
+
+export interface DreamStatsBlock {
+  audit_log: {
+    path: string;
+    bytes: number;
+    entries: number;
+    last_entry_epoch_ms: number | null;
+  };
+  co_retrieval: {
+    pairs: number;
+    docs_covered: number;
+  };
 }
 
 const PANEL_WIDTH = 60;
@@ -204,7 +218,54 @@ export function renderStats(stats: StatsResponse): string[] {
     out.push('');
   }
 
+  // DREAM — cheap precursor diagnostics for the Local Dreaming pipeline.
+  // Surfaces the inputs the dry-run depends on (audit log liveness, co-
+  // retrieval pair density) WITHOUT running clustering. The actual cluster
+  // preview lives in `captain-memo dream --dry-run`.
+  if (stats.dream) {
+    out.push(sectionRule('DREAM'));
+    out.push(`   ${dim('tracks the data feeding the Dreams pipeline')}`);
+    const d = stats.dream;
+    const corpusTotal = stats.observations.total;
+
+    if (d.audit_log.bytes === 0 && d.audit_log.entries === 0) {
+      out.push(`   ${'Audit log'.padEnd(14)}${dim('— off')}`
+        + `   ${dim('(set CAPTAIN_MEMO_RECALL_AUDIT=1 in worker.env)')}`);
+    } else {
+      const ageStr = d.audit_log.last_entry_epoch_ms !== null
+        ? fmtAgo(Math.floor((Date.now() - d.audit_log.last_entry_epoch_ms) / 1000))
+        : '—';
+      out.push(`   ${'Audit log'.padEnd(14)}`
+        + `${fmtBytes(d.audit_log.bytes)} ${dim('·')} ${fmtCount(d.audit_log.entries)} entries`
+        + ` ${dim('·')} ${dim(`last ${ageStr} ago`)}`);
+    }
+
+    if (d.co_retrieval.pairs === 0) {
+      out.push(`   ${'Co-retrieval'.padEnd(14)}${dim('0 pairs')}`
+        + `   ${dim('— no co-occurring observations yet')}`);
+    } else {
+      const pct = corpusTotal > 0
+        ? ((d.co_retrieval.docs_covered / corpusTotal) * 100).toFixed(1)
+        : '0.0';
+      out.push(`   ${'Co-retrieval'.padEnd(14)}`
+        + `${goldBold(fmtCount(d.co_retrieval.pairs))} pairs`
+        + ` ${dim('·')} ${fmtCount(d.co_retrieval.docs_covered)} observations covered`
+        + ` ${dim(`(${pct}% of corpus)`)}`);
+    }
+    out.push(`   ${'Preview'.padEnd(14)}${dim('captain-memo dream --dry-run')}`);
+    out.push('');
+  }
+
   return out;
+}
+
+/** Human-readable "N units ago" for an age in seconds. Coarse and tiny —
+ *  matches the size profile of fmtElapsed in shared/format.ts. */
+function fmtAgo(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} min`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} h`;
+  return `${Math.floor(seconds / 86400)} d`;
 }
 
 /** Legacy pre-v5 recall shape. Kept here for the back-compat shim only —

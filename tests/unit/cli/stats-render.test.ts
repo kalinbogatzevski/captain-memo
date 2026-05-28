@@ -159,6 +159,51 @@ test('renderStats — RECALL section is omitted entirely when recall field absen
   expect(text).not.toContain('RECALL');
 });
 
+test('renderStats — DREAM section shows audit log + co-retrieval inputs', () => {
+  const stats: StatsResponse = {
+    ...SAMPLE,
+    dream: {
+      audit_log: {
+        path: '/tmp/recall-audit.jsonl',
+        bytes: 155_000,
+        entries: 87,
+        last_entry_epoch_ms: Date.now() - 90_000,   // 1.5 minutes ago
+      },
+      co_retrieval: { pairs: 142, docs_covered: 222 },
+    },
+  };
+  const text = renderStats(stats).map(stripAnsi).join('\n');
+  expect(text).toContain('DREAM');
+  expect(text).toContain('tracks the data feeding the Dreams pipeline');
+  expect(text).toContain('Audit log');
+  expect(text).toContain('87 entries');
+  expect(text).toContain('Co-retrieval');
+  expect(text).toContain('142');
+  expect(text).toContain('222 observations covered');
+  expect(text).toContain('captain-memo dream --dry-run');
+});
+
+test('renderStats — DREAM section shows OFF state when audit log absent', () => {
+  const stats: StatsResponse = {
+    ...SAMPLE,
+    dream: {
+      audit_log: { path: '/tmp/recall-audit.jsonl', bytes: 0, entries: 0, last_entry_epoch_ms: null },
+      co_retrieval: { pairs: 0, docs_covered: 0 },
+    },
+  };
+  const text = renderStats(stats).map(stripAnsi).join('\n');
+  expect(text).toContain('DREAM');
+  expect(text).toContain('— off');
+  expect(text).toContain('CAPTAIN_MEMO_RECALL_AUDIT=1');
+});
+
+test('renderStats — DREAM section is omitted when dream field absent', () => {
+  const { dream: _u, ...noDream } = SAMPLE as StatsResponse & { dream?: StatsResponse['dream'] };
+  void _u;
+  const text = renderStats(noDream as StatsResponse).map(stripAnsi).join('\n');
+  expect(text).not.toContain('DREAM');
+});
+
 test('renderStats — RECALL title trim guards against 200-char observation titles', () => {
   const long = 'X'.repeat(120);
   const populated: StatsResponse = {
