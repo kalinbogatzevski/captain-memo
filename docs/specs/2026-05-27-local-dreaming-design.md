@@ -1,9 +1,33 @@
 # Captain Memo — Local Dreaming Design Sketch
 
-**Status:** Draft (pre-data — refine after ≥2 weeks of retrieval-tracking signal)
-**Date:** 2026-05-27
+**Status:** Draft (pre-data; v0.1.12 widened the upstream signal — see "Update 2026-05-28")
+**Date:** 2026-05-27, revised 2026-05-28
 **Author:** Kalin Bogatzevski (drafted with Claude during brainstorming session)
 **Project home:** `~/projects/captain-memo/`
+
+---
+
+## Update 2026-05-28 — what v0.1.12 changed
+
+v0.1.12 shipped retrieval tracking with provenance: the single `retrieval_count`
+became three per-source counters (`from_auto`, `from_search`, `from_drill`) plus
+`last_surfaced_at`, and — critically — `/inject/context` now bumps the auto
+column on every prompt. This was the wiring gap behind yesterday's "0.0% of
+corpus ever recalled" stats. Two things in this spec need to move:
+
+1. **Migration number collision.** This spec proposed a v5 migration. v5 was
+   used by the provenance work. The schema additions below (archived,
+   archived_into_theme_id, theme_member_ids) shift to **migration v6**.
+
+2. **Co-retrieval signal density.** The original spec assumed co-retrieval data
+   would accrue slowly because pre-v0.1.12 only explicit `/search/*` and
+   `/get_full` bumped. With `from_auto` now firing on every prompt, co-retrieval
+   evidence accrues at roughly the prompt rate — orders of magnitude faster than
+   anticipated. The "wait ≥2 weeks" guidance was calibrated against the old
+   rate; useful clustering density should land much sooner.
+
+   The clustering signal hierarchy below is unchanged; only the wait-time and
+   the expected sparseness of co-retrieval are revised.
 
 ---
 
@@ -57,8 +81,8 @@ Local Dreaming should mirror both: dual signal + reviewable.
 
 ### Inputs
 
-- **Observations table** at v4+ schema (every row has `retrieval_count`, `last_retrieved_at`, `archived` boolean from v5 of this spec).
-- **Optional**: `recall-audit.jsonl` if `CAPTAIN_MEMO_RECALL_AUDIT=1` was on during the period — gives query text alongside hits, useful for naming clusters.
+- **Observations table** at v6+ schema (every row has `from_auto`, `from_search`, `from_drill`, `last_surfaced_at` from migration v5; plus `archived`, `archived_into_theme_id`, `theme_member_ids` from migration v6).
+- **Required for co-retrieval signal**: `recall-audit.jsonl` (enabled with `CAPTAIN_MEMO_RECALL_AUDIT=1`). Every `/inject/context` hit now logs a line containing all surfaced doc_ids — that's the raw data the co-retrieval matrix is built from. Per-row `from_auto` counts the *per-row* surface frequency; the audit log is what records *which rows were surfaced together*.
 
 ### Clustering signal — three layers
 
@@ -93,7 +117,7 @@ For each cluster of N observations:
 - **`?include_archived=1`**: archived rows are searchable for historical questions.
 - The theme observation's chunk carries the same `observation_id` field but also `theme_member_ids` in metadata, so retrieval-tracking bumps on a theme also bump retrievals on its members (transitive recall signal).
 
-### Schema additions (proposed v5 migration)
+### Schema additions (migration v6 — v5 was taken by provenance counters)
 
 ```sql
 ALTER TABLE observations ADD COLUMN archived BOOLEAN NOT NULL DEFAULT FALSE;
@@ -114,7 +138,7 @@ Plus extend the `type` enum from `bugfix | feature | refactor | discovery | deci
 
 ## Open questions (must be answered post-data)
 
-1. **How sparse is the co-retrieval signal in practice?** If users typically don't recall multiple observations per prompt, the co-retrieval signal is weak and we fall back to semantic+temporal. **Validate after 2 weeks of audit-log data.**
+1. **How sparse is the co-retrieval signal in practice?** Pre-v0.1.12 this was the highest-risk open question — only explicit search bumped, so co-retrieval evidence was rare. **v0.1.12 partly resolves it**: `from_auto` now fires on every `/inject/context` (per prompt, with `top_k=5` hits typically), so pairs that co-occur in the auto-injection envelope leave a trail in the audit log within hours of use rather than weeks. Remaining open question: do auto-injection co-occurrences actually predict "the user treats these as the same topic," or are they noisy? The latter would push the weight back toward semantic+temporal. **Validate after 3–5 days of v0.1.12 data** (revised from "2 weeks").
 
 2. **Theme labeling.** Haiku can write a title, but should the user be able to rename / merge / split themes via CLI? Likely v2.
 
@@ -187,8 +211,9 @@ Result: 9 observations collapse to 1 theme + 9 archived originals. The theme is 
 
 ## Next session
 
-- **Wait for ≥2 weeks of retrieval-tracking data** (started 2026-05-27 with v0.1.11 + `CAPTAIN_MEMO_RECALL_AUDIT=1`).
-- **Then**: build `captain-memo dream --dry-run` against real data, validate clusters, tune weights.
-- **Then**: real Dreams pass with Haiku, schema v5 migration, systemd timer.
+- **Data-independent ship-now items (done as of 2026-05-28):** migration v6 schema scaffold; `captain-memo dream --dry-run` clustering pipeline (no writes, no Haiku); spec patch (this doc).
+- **Wait for 3–5 days of v0.1.12 data** before running dry-run against real data. The `from_auto` path is now the primary co-retrieval source; the previous 2-week wait was calibrated against the older, much slower bump rate.
+- **Then**: validate dry-run cluster output, tune weights, decide whether to build the Haiku summarization step.
+- **Then**: real Dreams pass with Haiku writes, systemd timer.
 
 This doc gets updated when the data arrives. Sections marked "tunable post-data" are the ones expected to change.

@@ -4,7 +4,8 @@ export type MemoryType = 'user' | 'feedback' | 'project' | 'reference';
 
 export type ObservationType =
   | 'bugfix' | 'feature' | 'refactor'
-  | 'discovery' | 'decision' | 'change';
+  | 'discovery' | 'decision' | 'change'
+  | 'theme';   // produced by Local Dreaming — see docs/specs/2026-05-27-local-dreaming-design.md
 
 export type DocType =
   | 'memory_file' | 'skill_section' | 'skill_summary'
@@ -124,6 +125,15 @@ export interface Observation {
   from_drill: number;
   /** Epoch seconds of the most recent bump from any source, or null. */
   last_surfaced_at: number | null;
+  /** v6 Dreaming scaffold — TRUE when this observation has been folded into
+   *  a theme and should be skipped by the default search path. Reversible
+   *  via UPDATE archived = 0. */
+  archived: boolean;
+  /** id of the theme observation this row was archived into, or null. */
+  archived_into_theme_id: number | null;
+  /** JSON-encoded array of member observation ids — populated only when
+   *  type='theme'. NULL on every non-theme row. */
+  theme_member_ids: number[] | null;
 }
 
 /** Provenance tag for a retrieval bump.

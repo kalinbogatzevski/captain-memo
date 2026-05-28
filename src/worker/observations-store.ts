@@ -69,6 +69,26 @@ export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // v6 — Local Dreaming scaffold: archived flag + theme back-references.
+    // No semantic change for live behavior; columns are inert until the
+    // `captain-memo dream` command writes them. `archived` is a soft-delete:
+    // archived rows stay in place (queryable with ?include_archived=1) so the
+    // operation is reversible by a single UPDATE.
+    //
+    // Partial index keeps the default search path (archived = FALSE) cheap
+    // by indexing only the small archived subset.
+    //
+    // Spec: docs/specs/2026-05-27-local-dreaming-design.md (revised 2026-05-28).
+    version: 6,
+    name: 'add_dreaming_scaffold',
+    up: (db) => {
+      db.exec('ALTER TABLE observations ADD COLUMN archived INTEGER NOT NULL DEFAULT 0');
+      db.exec('ALTER TABLE observations ADD COLUMN archived_into_theme_id INTEGER');
+      db.exec('ALTER TABLE observations ADD COLUMN theme_member_ids TEXT');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_obs_archived ON observations(archived) WHERE archived = 1');
+    },
+  },
 ];
 
 export type NewObservation = Omit<
@@ -76,6 +96,7 @@ export type NewObservation = Omit<
   'id' | 'stored_tokens'
   | 'retrieval_count' | 'last_retrieved_at'
   | 'from_auto' | 'from_search' | 'from_drill' | 'last_surfaced_at'
+  | 'archived' | 'archived_into_theme_id' | 'theme_member_ids'
 >;
 
 /** Per-source breakdown for one observation in the top lists. */
@@ -158,6 +179,12 @@ export class ObservationsStore {
       from_search: typeof row.from_search === 'number' ? row.from_search : 0,
       from_drill: typeof row.from_drill === 'number' ? row.from_drill : 0,
       last_surfaced_at: typeof row.last_surfaced_at === 'number' ? row.last_surfaced_at : null,
+      archived: row.archived === 1 || row.archived === true,
+      archived_into_theme_id:
+        typeof row.archived_into_theme_id === 'number' ? row.archived_into_theme_id : null,
+      theme_member_ids: typeof row.theme_member_ids === 'string'
+        ? (JSON.parse(row.theme_member_ids) as number[])
+        : null,
     };
   }
 

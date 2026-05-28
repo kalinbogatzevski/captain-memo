@@ -94,16 +94,30 @@ test('ObservationsStore — schema_versions records all migrations after constru
   const db = new Database(join(workDir, 'observations.db'), { readonly: true });
   const rows = getAppliedVersions(db);
   db.close();
-  expect(rows).toHaveLength(5);
-  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5]);
+  expect(rows).toHaveLength(6);
+  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6]);
   expect(rows.map(r => r.name)).toEqual([
     'add_branch',
     'add_work_tokens',
     'add_stored_tokens',
     'add_retrieval_tracking',
     'add_retrieval_provenance',
+    'add_dreaming_scaffold',
   ]);
   store = new ObservationsStore(join(workDir, 'observations.db'));
+});
+
+test('ObservationsStore — v6 Dreaming columns default sensibly on fresh inserts', () => {
+  const id = store.insert({
+    session_id: 's1', project_id: 'p1', prompt_number: 1,
+    type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
+    files_read: [], files_modified: [], created_at_epoch: 100,
+    branch: null, work_tokens: null,
+  });
+  const got = store.findById(id);
+  expect(got!.archived).toBe(false);
+  expect(got!.archived_into_theme_id).toBeNull();
+  expect(got!.theme_member_ids).toBeNull();
 });
 
 test('ObservationsStore — stored_tokens defaults to null on insert', () => {
