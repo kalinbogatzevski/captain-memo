@@ -73,14 +73,19 @@ test('renderStats — tolerates a worker with no efficiency field', () => {
   expect(text).not.toContain('EFFICIENCY');
 });
 
+const EMPTY_RECALL = {
+  surfaced_count: 0,
+  recalled_count: 0,
+  totals: { auto: 0, search: 0, drill: 0 },
+  top_surfaced: [],
+  top_recalled: [],
+} as const;
+
 test('renderStats — RECALL section shows empty-state hint when no retrievals yet', () => {
-  const empty: StatsResponse = {
-    ...SAMPLE,
-    recall: { ever_retrieved: 0, top: [] },
-  };
+  const empty: StatsResponse = { ...SAMPLE, recall: EMPTY_RECALL };
   const text = renderStats(empty).map(stripAnsi).join('\n');
   expect(text).toContain('RECALL');
-  expect(text).toContain('Ever recalled');
+  expect(text).toContain('Surfaced');
   expect(text).toContain('no retrievals yet');
 });
 
@@ -90,42 +95,55 @@ test('renderStats — RECALL section carries a one-line "what this is" subheader
   const populated: StatsResponse = {
     ...SAMPLE,
     recall: {
-      ever_retrieved: 5,
-      top: [{ id: 1, type: 'feature', title: 't', retrieval_count: 3, last_retrieved_at: 1 }],
+      surfaced_count: 5,
+      recalled_count: 2,
+      totals: { auto: 10, search: 3, drill: 2 },
+      top_surfaced: [{ id: 1, type: 'feature', title: 't',
+        from_auto: 9, from_search: 0, from_drill: 0, last_surfaced_at: 1 }],
+      top_recalled: [{ id: 1, type: 'feature', title: 't',
+        from_auto: 9, from_search: 0, from_drill: 2, last_surfaced_at: 1 }],
     },
   };
   const populatedText = renderStats(populated).map(stripAnsi).join('\n');
-  expect(populatedText).toContain('tracks which observations you keep coming back to');
+  expect(populatedText).toContain('tracks how memory actually gets used');
 
-  const empty: StatsResponse = {
-    ...SAMPLE,
-    recall: { ever_retrieved: 0, top: [] },
-  };
+  const empty: StatsResponse = { ...SAMPLE, recall: EMPTY_RECALL };
   const emptyText = renderStats(empty).map(stripAnsi).join('\n');
-  expect(emptyText).toContain('tracks which observations you keep coming back to');
+  expect(emptyText).toContain('tracks how memory actually gets used');
 });
 
-test('renderStats — RECALL section lists top retrieved with count and type', () => {
+test('renderStats — RECALL section shows surfaced + recalled + drill-in rate, with provenance per entry', () => {
   const populated: StatsResponse = {
     ...SAMPLE,
     recall: {
-      ever_retrieved: 42,
-      top: [
+      surfaced_count: 4200,
+      recalled_count: 42,
+      totals: { auto: 9876, search: 314, drill: 42 },
+      top_surfaced: [
         { id: 16776, type: 'discovery', title: 'Team filter implementation in calendar UI',
-          retrieval_count: 8, last_retrieved_at: 1779877819 },
+          from_auto: 138, from_search: 3, from_drill: 1, last_surfaced_at: 1779877819 },
+      ],
+      top_recalled: [
         { id: 16786, type: 'bugfix', title: 'parseModelName preserves haiku-4-5 version',
-          retrieval_count: 5, last_retrieved_at: 1779877800 },
+          from_auto: 0, from_search: 1, from_drill: 5, last_surfaced_at: 1779877800 },
       ],
     },
   };
   const text = renderStats(populated).map(stripAnsi).join('\n');
   expect(text).toContain('RECALL');
-  expect(text).toContain('42');
-  expect(text).toContain('Top retrieved');
-  expect(text).toContain('8×');
+  expect(text).toContain('Surfaced');
+  expect(text).toContain('4 200');                  // grouped count
+  expect(text).toContain('Recalled');
+  expect(text).toContain('Drill-in rate');
+  expect(text).toContain('Top surfaced');
+  expect(text).toContain('Top recalled');
+  expect(text).toContain('142×');                   // 138 + 3 + 1
   expect(text).toContain('[discovery]');
   expect(text).toContain('Team filter implementation');
-  expect(text).toContain('5×');
+  expect(text).toContain('auto: 138');
+  expect(text).toContain('search: 3');
+  expect(text).toContain('drill: 1');
+  expect(text).toContain('6×');                     // 0 + 1 + 5
   expect(text).toContain('[bugfix]');
   expect(text).not.toContain('no retrievals yet');
 });
@@ -146,8 +164,12 @@ test('renderStats — RECALL title trim guards against 200-char observation titl
   const populated: StatsResponse = {
     ...SAMPLE,
     recall: {
-      ever_retrieved: 1,
-      top: [{ id: 1, type: 'feature', title: long, retrieval_count: 1, last_retrieved_at: 1 }],
+      surfaced_count: 1,
+      recalled_count: 0,
+      totals: { auto: 1, search: 0, drill: 0 },
+      top_surfaced: [{ id: 1, type: 'feature', title: long,
+        from_auto: 1, from_search: 0, from_drill: 0, last_surfaced_at: 1 }],
+      top_recalled: [],
     },
   };
   const text = renderStats(populated).map(stripAnsi).join('\n');

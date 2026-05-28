@@ -765,18 +765,19 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   };
 
   /**
-   * Bump retrieval_count / last_retrieved_at on any observation rows surfaced
-   * by a search response. Empty-safe and exception-safe — a write failure here
-   * must never bubble up and fail the originating search request, since the
+   * Bump the per-source retrieval counter on any observation rows surfaced by
+   * a search/inject response. Empty-safe and exception-safe — a write failure
+   * here must never bubble up and fail the originating request, since the
    * tracking signal is auxiliary, not load-bearing.
    *
-   * The helper accepts the result shape produced by /search/* endpoints (each
-   * item carries `metadata` from the chunker; for observation chunks that
-   * metadata includes `observation_id`). Non-observation results contribute
-   * no ids and are naturally filtered out.
+   * `source` tags the call site so /stats can break out auto-injection vs
+   * explicit search vs full-content drill. Non-observation results contribute
+   * no ids and are naturally filtered out (only items with a numeric
+   * metadata.observation_id are counted).
    */
   const bumpRetrievalFromResults = (
     items: Array<{ metadata: Record<string, unknown> }>,
+    source: import('../shared/types.ts').RetrievalSource,
   ): void => {
     if (!obsStore || items.length === 0) return;
     const ids: number[] = [];
@@ -788,7 +789,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     }
     if (ids.length === 0) return;
     try {
-      obsStore.bumpRetrieval(ids);
+      obsStore.bumpRetrieval(ids, source);
     } catch (err) {
       console.error('[retrieval-tracking] bump failed:', (err as Error).message);
     }
@@ -885,7 +886,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 
         const by_channel: Record<string, number> = {};
         for (const r of results) by_channel[r.channel] = (by_channel[r.channel] ?? 0) + 1;
-        bumpRetrievalFromResults(results);
+        bumpRetrievalFromResults(results, 'search');
         return Response.json({ results, by_channel });
       }
       if (req.method === 'POST' && url.pathname === '/search/memory') {
@@ -896,6 +897,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         const filters: ChannelFilters = {};
         if (parsed.data.type !== undefined) filters.memory_type = parsed.data.type;
         const results = await searchByChannel(parsed.data.query, 'memory', parsed.data.top_k, filters);
+        // Memory hits are not observations and carry no observation_id, so
+        // this is a defensive no-op for shape consistency — keeps every
+        // /search/* endpoint following the same "always bump" contract.
+        bumpRetrievalFromResults(results, 'search');
         return Response.json({ results });
       }
 
@@ -907,6 +912,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         const filters: ChannelFilters = {};
         if (parsed.data.skill_id !== undefined) filters.skill_id = parsed.data.skill_id;
         const results = await searchByChannel(parsed.data.query, 'skill', parsed.data.top_k, filters);
+        bumpRetrievalFromResults(results, 'search');
         return Response.json({ results });
       }
 
@@ -919,7 +925,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         if (parsed.data.type !== undefined) filters.obs_type = parsed.data.type;
         if (parsed.data.files !== undefined) filters.files = parsed.data.files;
         const results = await searchByChannel(parsed.data.query, 'observation', parsed.data.top_k, filters);
-        bumpRetrievalFromResults(results);
+        bumpRetrievalFromResults(results, 'search');
         return Response.json({ results });
       }
 
@@ -934,7 +940,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         }
         // /get_full is the strongest "this observation was useful" signal —
         // the caller asked for the whole content, not just a snippet.
-        bumpRetrievalFromResults([{ metadata: result.chunk.metadata }]);
+        bumpRetrievalFromResults([{ metadata: result.chunk.metadata }], 'drill');
         return Response.json({
           content: result.chunk.text,
           metadata: {
@@ -1200,6 +1206,13 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             }),
           });
         }
+
+        // Bump from_auto on every observation surfaced through the auto-
+        // injection path. This is the dominant retrieval path in production
+        // (fires on every UserPromptSubmit), so without it the recall stats
+        // are starved — pre-v5 this gap is exactly why the corpus showed
+        // ~0% recalled despite continuous use.
+        bumpRetrievalFromResults(hits, 'auto');
 
         const result = formatEnvelope({
           project_id: opts.projectId,

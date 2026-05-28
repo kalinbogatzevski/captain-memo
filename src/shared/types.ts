@@ -108,14 +108,30 @@ export interface Observation {
    *  the corpus to store it. Populated at index time; null until then and for
    *  observations indexed before v0.1.9. */
   stored_tokens: number | null;
-  /** How many times this observation has been returned by a /search/* or
-   *  /get_full call. Defaults to 0; bumped fire-and-forget on every retrieval.
-   *  The signal feeds future importance/decay scoring and Dreaming clustering. */
+  /** DEPRECATED (pre-v5). Total retrievals before the provenance split. Kept
+   *  in the type so consumers compiled against older schemas don't break, but
+   *  the worker no longer increments it. New code should consult from_auto +
+   *  from_search + from_drill instead. */
   retrieval_count: number;
-  /** Epoch seconds of the most recent retrieval, or null if never recalled.
-   *  Set on every bump. */
+  /** DEPRECATED (pre-v5). Mirror of last_surfaced_at preserved for compat. */
   last_retrieved_at: number | null;
+  /** Times surfaced by the UserPromptSubmit hook (auto-injection into context). */
+  from_auto: number;
+  /** Times surfaced by an explicit /search/* call (slash skill, MCP tool). */
+  from_search: number;
+  /** Times the full content was fetched via /get_full — strongest "actually
+   *  used" signal: the caller asked for the body, not just the snippet. */
+  from_drill: number;
+  /** Epoch seconds of the most recent bump from any source, or null. */
+  last_surfaced_at: number | null;
 }
+
+/** Provenance tag for a retrieval bump.
+ *  - 'auto'   → bumped by /inject/context (UserPromptSubmit hook)
+ *  - 'search' → bumped by /search/all|memory|skill|observations
+ *  - 'drill'  → bumped by /get_full
+ */
+export type RetrievalSource = 'auto' | 'search' | 'drill';
 
 /** Status enum for the observation_queue rows. */
 export type ObservationQueueStatus = 'pending' | 'processing' | 'done' | 'failed';

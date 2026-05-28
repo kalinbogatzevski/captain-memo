@@ -221,23 +221,61 @@ Set any flag to `0` to hide it, or `1` to show it. When all four are `0` no badg
 
 Disabled by default. Enable with `CAPTAIN_MEMO_RECALL_AUDIT=1` in your `worker.env` to start recording retrieved hits and boost provenance to `${CAPTAIN_MEMO_DATA_DIR:-~/.captain-memo}/recall-audit.jsonl` (one JSON line per search). Each line records the timestamp, session and project IDs, the query, and for every returned hit: the chunk ID, channel, score, a 200-character snippet, and which of the identifier-match or same-branch boosts fired and with what multiplier. Useful for tuning the search boosts against real prompts. The file is append-only; rotate manually if needed.
 
-### Retrieval tracking (v0.1.11+)
+### Retrieval tracking with provenance (v0.1.12+)
 
-Always on, zero config. Every observation chunk surfaced by `/search/all`, `/search/observations`, or `/get_full` gets two columns updated on the `observations` row: `retrieval_count` (incremented) and `last_retrieved_at` (epoch seconds, set to now). The bump is fire-and-forget and exception-safe — a write failure cannot fail the originating search request.
+Always on, zero config. Every observation chunk surfaced by the worker is counted, broken down by which path surfaced it. Three counters on each `observations` row track the breakdown, plus a single `last_surfaced_at` timestamp:
 
-The signal feeds future importance / decay scoring and "Dreaming" clustering (clusters of observations you actually keep recalling together, not just clusters that happen to share vocabulary). After a few weeks of usage you can mine your own corpus:
+| Column | Bumped by | Semantic meaning |
+|---|---|---|
+| `from_auto`   | `/inject/context` (the `UserPromptSubmit` hook) | Memory thematically matched what you were typing — *passive surfacing* |
+| `from_search` | `/search/all` · `/search/memory` · `/search/skill` · `/search/observations` | You or Claude explicitly searched — *active surfacing* |
+| `from_drill`  | `/get_full` | The full content was actually fetched — *drilled in* (strongest signal of usefulness) |
+
+The bump is fire-and-forget and exception-safe — a write failure cannot fail the originating search/inject request.
+
+Pre-v5 schemas used a single `retrieval_count` column that only covered `/search/*` and `/get_full`. The migration to v5 backfills historical bumps into `from_search` (the dominant pre-v5 path) so no signal is lost; the legacy columns remain on the row but are no longer written.
+
+#### Why provenance matters
+
+Without a per-path breakdown, "this observation was retrieved 142 times" is ambiguous. Two failure modes hide in that single number:
+
+1. **Popular by accident.** A row keeps tripping over auto-injection because its embedding lexically resembles many prompts. High `from_auto`, low `from_search`, zero `from_drill` = candidate for downranking or Dreaming compaction.
+2. **Popular by intent.** You actively search for and drill into the row. Low `from_auto`, high `from_search`, non-zero `from_drill` = exactly what memory exists for.
+
+`captain-memo stats` surfaces this directly:
+
+```
+RECALL ───────────────────────────────────────────────────
+tracks how memory actually gets used
+Surfaced      9 876 / 18 470   (53.5% of corpus)
+Recalled         42 / 18 470   (0.23% of corpus)
+Drill-in rate  0.43%   (42/9876 recalled out of surfaced)
+
+Top surfaced
+  142×  [feature] Add retrieval tracking fields…
+        auto: 138   search: 3   drill: 1
+   98×  [discovery] InjectContextSchema validation…
+        auto: 85    search: 12  drill: 1
+
+Top recalled
+    3×  [discovery] Claude Dreams API enables memory…
+        auto: 0     search: 1   drill: 2
+```
+
+You can also query directly:
 
 ```bash
 sqlite3 ~/.captain-memo/observations.db \
-  "SELECT id, type, title, retrieval_count,
-          datetime(last_retrieved_at, 'unixepoch') AS last_recalled
+  "SELECT id, type, title,
+          from_auto, from_search, from_drill,
+          datetime(last_surfaced_at, 'unixepoch') AS last_surfaced
    FROM observations
-   WHERE retrieval_count > 0
-   ORDER BY retrieval_count DESC, last_retrieved_at DESC
+   WHERE (from_auto + from_search + from_drill) > 0
+   ORDER BY from_drill DESC, (from_auto + from_search) DESC
    LIMIT 20;"
 ```
 
-…and see which past discoveries / bugfixes / decisions you actually keep coming back to. That's the empirical ground truth for the next memory feature, instead of guessing.
+The signal feeds future importance / decay scoring and "Dreaming" clustering — clusters of observations you actually keep drilling into, not just clusters that happen to share vocabulary.
 
 ## Migrating from claude-mem
 

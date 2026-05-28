@@ -94,13 +94,14 @@ test('ObservationsStore — schema_versions records all migrations after constru
   const db = new Database(join(workDir, 'observations.db'), { readonly: true });
   const rows = getAppliedVersions(db);
   db.close();
-  expect(rows).toHaveLength(4);
-  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4]);
+  expect(rows).toHaveLength(5);
+  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5]);
   expect(rows.map(r => r.name)).toEqual([
     'add_branch',
     'add_work_tokens',
     'add_stored_tokens',
     'add_retrieval_tracking',
+    'add_retrieval_provenance',
   ]);
   store = new ObservationsStore(join(workDir, 'observations.db'));
 });
@@ -148,7 +149,7 @@ test('ObservationsStore — sumPairedTokens is zeroed on an empty corpus', () =>
   expect(store.sumPairedTokens()).toEqual({ work: 0, stored: 0, paired: 0 });
 });
 
-test('ObservationsStore — retrieval_count defaults to 0 and last_retrieved_at to null', () => {
+test('ObservationsStore — provenance counters default to 0 and last_surfaced_at to null', () => {
   const id = store.insert({
     session_id: 's1', project_id: 'p1', prompt_number: 1,
     type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
@@ -156,11 +157,13 @@ test('ObservationsStore — retrieval_count defaults to 0 and last_retrieved_at 
     branch: null, work_tokens: null,
   });
   const got = store.findById(id);
-  expect(got!.retrieval_count).toBe(0);
-  expect(got!.last_retrieved_at).toBeNull();
+  expect(got!.from_auto).toBe(0);
+  expect(got!.from_search).toBe(0);
+  expect(got!.from_drill).toBe(0);
+  expect(got!.last_surfaced_at).toBeNull();
 });
 
-test('ObservationsStore — bumpRetrieval increments count and sets last_retrieved_at', () => {
+test('ObservationsStore — bumpRetrieval routes each source to its own column', () => {
   const id = store.insert({
     session_id: 's1', project_id: 'p1', prompt_number: 1,
     type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
@@ -168,24 +171,15 @@ test('ObservationsStore — bumpRetrieval increments count and sets last_retriev
     branch: null, work_tokens: null,
   });
   const before = Math.floor(Date.now() / 1000);
-  store.bumpRetrieval([id]);
+  store.bumpRetrieval([id], 'auto');
+  store.bumpRetrieval([id], 'auto');
+  store.bumpRetrieval([id], 'search');
+  store.bumpRetrieval([id], 'drill');
   const got = store.findById(id);
-  expect(got!.retrieval_count).toBe(1);
-  expect(got!.last_retrieved_at).not.toBeNull();
-  expect(got!.last_retrieved_at!).toBeGreaterThanOrEqual(before);
-});
-
-test('ObservationsStore — bumpRetrieval is idempotent across calls (count accumulates)', () => {
-  const id = store.insert({
-    session_id: 's1', project_id: 'p1', prompt_number: 1,
-    type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
-    files_read: [], files_modified: [], created_at_epoch: 100,
-    branch: null, work_tokens: null,
-  });
-  store.bumpRetrieval([id]);
-  store.bumpRetrieval([id]);
-  store.bumpRetrieval([id]);
-  expect(store.findById(id)!.retrieval_count).toBe(3);
+  expect(got!.from_auto).toBe(2);
+  expect(got!.from_search).toBe(1);
+  expect(got!.from_drill).toBe(1);
+  expect(got!.last_surfaced_at!).toBeGreaterThanOrEqual(before);
 });
 
 test('ObservationsStore — bumpRetrieval handles multiple ids in one call', () => {
@@ -196,52 +190,59 @@ test('ObservationsStore — bumpRetrieval handles multiple ids in one call', () 
     branch: null, work_tokens: null,
   });
   const a = mk(); const b = mk(); const c = mk();
-  store.bumpRetrieval([a, c]);
-  expect(store.findById(a)!.retrieval_count).toBe(1);
-  expect(store.findById(b)!.retrieval_count).toBe(0);   // not bumped
-  expect(store.findById(c)!.retrieval_count).toBe(1);
+  store.bumpRetrieval([a, c], 'search');
+  expect(store.findById(a)!.from_search).toBe(1);
+  expect(store.findById(b)!.from_search).toBe(0);
+  expect(store.findById(c)!.from_search).toBe(1);
 });
 
-test('ObservationsStore — bumpRetrieval([]) is a no-op', () => {
+test('ObservationsStore — bumpRetrieval([], source) is a no-op', () => {
   const id = store.insert({
     session_id: 's1', project_id: 'p1', prompt_number: 1,
     type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
     files_read: [], files_modified: [], created_at_epoch: 100,
     branch: null, work_tokens: null,
   });
-  store.bumpRetrieval([]);
+  store.bumpRetrieval([], 'auto');
   const got = store.findById(id);
-  expect(got!.retrieval_count).toBe(0);
-  expect(got!.last_retrieved_at).toBeNull();
+  expect(got!.from_auto).toBe(0);
+  expect(got!.last_surfaced_at).toBeNull();
 });
 
-test('ObservationsStore — getRecallStats returns counts and top-N most-retrieved', () => {
+test('ObservationsStore — getRecallStats: top_surfaced ranks by total bumps, top_recalled by drill', () => {
   const mk = (title: string) => store.insert({
     session_id: 's1', project_id: 'p1', prompt_number: 1,
     type: 'discovery', title, narrative: '', facts: [], concepts: [],
     files_read: [], files_modified: [], created_at_epoch: 100,
     branch: null, work_tokens: null,
   });
-  const a = mk('apple');
-  const b = mk('banana');
-  const c = mk('cherry');
+  const a = mk('auto-heavy');     // lots of auto, no drill
+  const b = mk('drill-heavy');    // few auto, many drill
+  const c = mk('mixed');          // some of each
   mk('never-touched');
 
-  // Each bumpRetrieval call increments each unique id by 1; duplicates within
-  // a single call dedupe via SQL IN-set semantics (matches production: search
-  // results never carry the same observation twice).
-  store.bumpRetrieval([a]);
-  store.bumpRetrieval([b]); store.bumpRetrieval([b]);
-  store.bumpRetrieval([c]); store.bumpRetrieval([c]); store.bumpRetrieval([c]);
-  // Final counts: c=3, b=2, a=1, never-touched=0
+  for (let i = 0; i < 10; i++) store.bumpRetrieval([a], 'auto');
+  store.bumpRetrieval([b], 'auto');
+  for (let i = 0; i < 5; i++)  store.bumpRetrieval([b], 'drill');
+  store.bumpRetrieval([c], 'auto');
+  store.bumpRetrieval([c], 'search');
+  store.bumpRetrieval([c], 'drill');
 
-  const stats = store.getRecallStats(2);
-  expect(stats.ever_retrieved).toBe(3);
-  expect(stats.top).toHaveLength(2);
-  expect(stats.top[0]!.title).toBe('cherry');
-  expect(stats.top[0]!.retrieval_count).toBe(3);
-  expect(stats.top[1]!.title).toBe('banana');
-  expect(stats.top[1]!.retrieval_count).toBe(2);
+  const stats = store.getRecallStats(3);
+
+  // 3 distinct observations got surfaced; 2 of them got drilled.
+  expect(stats.surfaced_count).toBe(3);
+  expect(stats.recalled_count).toBe(2);
+  expect(stats.totals).toEqual({ auto: 12, search: 1, drill: 6 });
+
+  // top_surfaced ranks by (auto+search+drill): a=10, b=6, c=3.
+  expect(stats.top_surfaced.map(r => r.title)).toEqual(['auto-heavy', 'drill-heavy', 'mixed']);
+  expect(stats.top_surfaced[0]!.from_auto).toBe(10);
+  expect(stats.top_surfaced[0]!.from_drill).toBe(0);
+
+  // top_recalled ranks by from_drill: b=5, c=1, a not present (drill=0).
+  expect(stats.top_recalled.map(r => r.title)).toEqual(['drill-heavy', 'mixed']);
+  expect(stats.top_recalled[0]!.from_drill).toBe(5);
 });
 
 test('ObservationsStore — getRecallStats handles empty / never-retrieved corpus', () => {
@@ -252,8 +253,11 @@ test('ObservationsStore — getRecallStats handles empty / never-retrieved corpu
     branch: null, work_tokens: null,
   });
   const stats = store.getRecallStats(5);
-  expect(stats.ever_retrieved).toBe(0);
-  expect(stats.top).toEqual([]);
+  expect(stats.surfaced_count).toBe(0);
+  expect(stats.recalled_count).toBe(0);
+  expect(stats.totals).toEqual({ auto: 0, search: 0, drill: 0 });
+  expect(stats.top_surfaced).toEqual([]);
+  expect(stats.top_recalled).toEqual([]);
 });
 
 test('ObservationsStore — countMissingStoredTokens / listMissingStoredTokens', () => {

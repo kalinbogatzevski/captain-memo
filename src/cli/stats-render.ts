@@ -23,15 +23,27 @@ export interface StatsResponse {
   disk?: { bytes: number; path: string };
   efficiency?: EfficiencyReport | undefined;
   recall?: {
-    ever_retrieved: number;
-    top: Array<{
-      id: number;
-      type: string;
-      title: string;
-      retrieval_count: number;
-      last_retrieved_at: number;
-    }>;
+    /** Distinct observations bumped by ANY source (auto/search/drill). */
+    surfaced_count: number;
+    /** Distinct observations bumped by /get_full (drill). */
+    recalled_count: number;
+    /** Grand totals per source, useful for sanity-checking the breakdown. */
+    totals: { auto: number; search: number; drill: number };
+    /** Top observations by total bumps across all sources. */
+    top_surfaced: RecallTopEntry[];
+    /** Top observations by drill-in count — the strongest "actually used" signal. */
+    top_recalled: RecallTopEntry[];
   };
+}
+
+interface RecallTopEntry {
+  id: number;
+  type: string;
+  title: string;
+  from_auto: number;
+  from_search: number;
+  from_drill: number;
+  last_surfaced_at: number | null;
 }
 
 const PANEL_WIDTH = 60;
@@ -140,27 +152,52 @@ export function renderStats(stats: StatsResponse): string[] {
     out.push('');
   }
 
-  // RECALL — which observations the user actually keeps coming back to.
-  // Empty corpus (never_retrieved) is shown as a one-line hint, not hidden,
-  // so a fresh install still surfaces the feature's existence.
+  // RECALL — how memory actually gets used. Three lenses:
+  //   Surfaced    = observation appeared in ANY retrieval response
+  //   Recalled    = observation was fetched in full via /get_full
+  //   Drill-in %  = recalled / surfaced — how often surfacing converts to use
+  // Each top entry also shows its provenance breakdown (auto/search/drill)
+  // so a popular row is distinguishable from a passively-matched one.
+  //
+  // Cross-version compatibility: if the worker is still on the pre-v5 shape
+  // (ever_retrieved + top[]), map it forward into the new shape so the CLI
+  // never crashes during a half-deployed upgrade window. Old data is treated
+  // as from_search bumps since pre-v5 only /search/* and /get_full bumped
+  // the legacy counter, with /search/* being the dominant path.
   if (stats.recall) {
+    const recall = normalizeRecall(stats.recall);
     out.push(sectionRule('RECALL'));
-    out.push(`   ${dim('tracks which observations you keep coming back to')}`);
-    const ever = stats.recall.ever_retrieved;
+    out.push(`   ${dim('tracks how memory actually gets used')}`);
     const total = stats.observations.total;
-    if (ever === 0) {
-      out.push(`   ${'Ever recalled'.padEnd(14)}${dim('0')} / ${fmtCount(total)}`
+    const { surfaced_count, recalled_count } = recall;
+    if (surfaced_count === 0 && recalled_count === 0) {
+      out.push(`   ${'Surfaced'.padEnd(14)}${dim('0')} / ${fmtCount(total)}`
         + `   ${dim('— no retrievals yet; data accumulates with use')}`);
     } else {
-      const pct = total > 0 ? ((ever / total) * 100).toFixed(1) : '0.0';
-      out.push(`   ${'Ever recalled'.padEnd(14)}${goldBold(fmtCount(ever))} / ${fmtCount(total)}`
-        + `   ${dim(`(${pct}% of corpus)`)}`);
-      if (stats.recall.top.length > 0) {
-        out.push(`   ${'Top retrieved'.padEnd(14)}`);
-        for (const r of stats.recall.top) {
-          const titleTrim = r.title.length > 48 ? r.title.slice(0, 47) + '…' : r.title;
-          const count = `${r.retrieval_count}×`.padStart(4);
-          out.push(`     ${gold(count)}  ${dim(`[${r.type}]`)} ${titleTrim}`);
+      const sPct = total > 0 ? ((surfaced_count / total) * 100).toFixed(1) : '0.0';
+      const rPct = total > 0 ? ((recalled_count / total) * 100).toFixed(2) : '0.00';
+      const drillRate = surfaced_count > 0
+        ? ((recalled_count / surfaced_count) * 100).toFixed(2)
+        : '0.00';
+      out.push(`   ${'Surfaced'.padEnd(14)}${goldBold(fmtCount(surfaced_count))} / ${fmtCount(total)}`
+        + `   ${dim(`(${sPct}% of corpus)`)}`);
+      out.push(`   ${'Recalled'.padEnd(14)}${goldBold(fmtCount(recalled_count))} / ${fmtCount(total)}`
+        + `   ${dim(`(${rPct}% of corpus)`)}`);
+      out.push(`   ${'Drill-in rate'.padEnd(14)}${goldBold(`${drillRate}%`)}`
+        + `   ${dim(`(${recalled_count}/${surfaced_count} recalled out of surfaced)`)}`);
+
+      if (recall.top_surfaced.length > 0) {
+        out.push('');
+        out.push(`   ${'Top surfaced'.padEnd(14)}`);
+        for (const r of recall.top_surfaced) {
+          out.push(...renderRecallEntry(r));
+        }
+      }
+      if (recall.top_recalled.length > 0) {
+        out.push('');
+        out.push(`   ${'Top recalled'.padEnd(14)}`);
+        for (const r of recall.top_recalled) {
+          out.push(...renderRecallEntry(r));
         }
       }
     }
@@ -168,4 +205,62 @@ export function renderStats(stats: StatsResponse): string[] {
   }
 
   return out;
+}
+
+/** Legacy pre-v5 recall shape. Kept here for the back-compat shim only —
+ *  new code should never construct one of these. */
+interface LegacyRecallShape {
+  ever_retrieved: number;
+  top: Array<{
+    id: number; type: string; title: string;
+    retrieval_count: number; last_retrieved_at: number;
+  }>;
+}
+
+interface ModernRecallShape {
+  surfaced_count: number;
+  recalled_count: number;
+  totals: { auto: number; search: number; drill: number };
+  top_surfaced: RecallTopEntry[];
+  top_recalled: RecallTopEntry[];
+}
+
+/** Map either the pre-v5 (ever_retrieved/top) shape or the current
+ *  (surfaced/recalled/provenance) shape into the current shape. Lets the
+ *  CLI render correctly during an upgrade window where the worker is one
+ *  version behind. Detection key: presence of `surfaced_count`. */
+function normalizeRecall(
+  recall: ModernRecallShape | LegacyRecallShape,
+): ModernRecallShape {
+  if ('surfaced_count' in recall) return recall;
+  const legacy = recall as LegacyRecallShape;
+  const mapped: RecallTopEntry[] = legacy.top.map(t => ({
+    id: t.id, type: t.type, title: t.title,
+    from_auto: 0,
+    from_search: t.retrieval_count,
+    from_drill: 0,
+    last_surfaced_at: t.last_retrieved_at,
+  }));
+  const totalSearch = mapped.reduce((acc, t) => acc + t.from_search, 0);
+  return {
+    surfaced_count: legacy.ever_retrieved,
+    recalled_count: 0,
+    totals: { auto: 0, search: totalSearch, drill: 0 },
+    top_surfaced: mapped,
+    top_recalled: [],
+  };
+}
+
+/** Render one top-list entry: count line + provenance breakdown line. */
+function renderRecallEntry(r: RecallTopEntry): string[] {
+  const titleTrim = r.title.length > 48 ? r.title.slice(0, 47) + '…' : r.title;
+  const total = r.from_auto + r.from_search + r.from_drill;
+  const count = `${total}×`.padStart(4);
+  const breakdown = dim(
+    `auto: ${r.from_auto}   search: ${r.from_search}   drill: ${r.from_drill}`,
+  );
+  return [
+    `     ${gold(count)}  ${dim(`[${r.type}]`)} ${titleTrim}`,
+    `           ${breakdown}`,
+  ];
 }

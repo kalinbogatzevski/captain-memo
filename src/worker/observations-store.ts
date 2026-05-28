@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite';
-import type { Observation, ObservationType } from '../shared/types.ts';
+import type { Observation, ObservationType, RetrievalSource } from '../shared/types.ts';
 import { applyMigrations } from './migrations.ts';
 import type { Migration } from './migrations.ts';
 
@@ -46,9 +46,62 @@ export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
       db.exec('ALTER TABLE observations ADD COLUMN last_retrieved_at INTEGER');
     },
   },
+  {
+    // v5 — retrieval provenance: split the single retrieval_count into three
+    // per-source counters (auto = /inject/context; search = /search/*; drill =
+    // /get_full) plus a last_surfaced_at stamp. Pre-v5 bumps came exclusively
+    // from /search/* and /get_full, so we backfill them into from_search (the
+    // dominant pre-v5 path) to preserve the historical signal without losing
+    // it. Going forward, retrieval_count and last_retrieved_at are vestigial
+    // — readers consult the new columns; the worker no longer writes them.
+    version: 5,
+    name: 'add_retrieval_provenance',
+    up: (db) => {
+      db.exec('ALTER TABLE observations ADD COLUMN from_auto INTEGER NOT NULL DEFAULT 0');
+      db.exec('ALTER TABLE observations ADD COLUMN from_search INTEGER NOT NULL DEFAULT 0');
+      db.exec('ALTER TABLE observations ADD COLUMN from_drill INTEGER NOT NULL DEFAULT 0');
+      db.exec('ALTER TABLE observations ADD COLUMN last_surfaced_at INTEGER');
+      db.exec(`
+        UPDATE observations
+           SET from_search = retrieval_count,
+               last_surfaced_at = last_retrieved_at
+         WHERE retrieval_count > 0
+      `);
+    },
+  },
 ];
 
-export type NewObservation = Omit<Observation, 'id' | 'stored_tokens' | 'retrieval_count' | 'last_retrieved_at'>;
+export type NewObservation = Omit<
+  Observation,
+  'id' | 'stored_tokens'
+  | 'retrieval_count' | 'last_retrieved_at'
+  | 'from_auto' | 'from_search' | 'from_drill' | 'last_surfaced_at'
+>;
+
+/** Per-source breakdown for one observation in the top lists. */
+export interface RecallTopEntry {
+  id: number;
+  type: ObservationType;
+  title: string;
+  from_auto: number;
+  from_search: number;
+  from_drill: number;
+  last_surfaced_at: number | null;
+}
+
+/** Shape returned by getRecallStats — drives the RECALL section of /stats. */
+export interface RecallStats {
+  /** Distinct observations with at least one bump from any source. */
+  surfaced_count: number;
+  /** Distinct observations with at least one /get_full bump (drilled-in). */
+  recalled_count: number;
+  /** Grand totals across the corpus, per source — useful for sanity checks. */
+  totals: { auto: number; search: number; drill: number };
+  /** Top by (from_auto + from_search + from_drill), ties broken by last_surfaced_at. */
+  top_surfaced: RecallTopEntry[];
+  /** Top by from_drill, ties broken by last_surfaced_at — the strongest signal. */
+  top_recalled: RecallTopEntry[];
+}
 
 export class ObservationsStore {
   private db: Database;
@@ -101,6 +154,10 @@ export class ObservationsStore {
       stored_tokens: typeof row.stored_tokens === 'number' ? row.stored_tokens : null,
       retrieval_count: typeof row.retrieval_count === 'number' ? row.retrieval_count : 0,
       last_retrieved_at: typeof row.last_retrieved_at === 'number' ? row.last_retrieved_at : null,
+      from_auto: typeof row.from_auto === 'number' ? row.from_auto : 0,
+      from_search: typeof row.from_search === 'number' ? row.from_search : 0,
+      from_drill: typeof row.from_drill === 'number' ? row.from_drill : 0,
+      last_surfaced_at: typeof row.last_surfaced_at === 'number' ? row.last_surfaced_at : null,
     };
   }
 
@@ -142,70 +199,112 @@ export class ObservationsStore {
   }
 
   /**
-   * Bump retrieval_count and stamp last_retrieved_at on every supplied id.
-   * Empty array is a no-op. Callers should wrap in try/catch — a failure
-   * here MUST never fail the originating search request.
-   *
-   * The IN-clause is built from the ids inline rather than via a fixed-arity
-   * prepared statement because retrieval batches vary in size (1 for /get_full,
-   * top_k for /search/*) and re-preparing per call is cheap.
-   */
-  /**
    * Aggregate retrieval stats for the stats CLI's RECALL section.
-   * Returns the count of observations that have been retrieved at least once
-   * AND the top-N most-retrieved observations (ties broken by recency).
    *
-   * Cheap — two indexed queries, no joins. Safe to call on every /stats hit.
+   * Returns:
+   *  - surfaced_count: distinct observations bumped by ANY source
+   *  - recalled_count: distinct observations bumped by /get_full
+   *  - totals: grand totals per source (auto/search/drill)
+   *  - top_surfaced: top-N by total bumps across all sources
+   *  - top_recalled: top-N by drill bumps (strongest "actually used" signal)
+   *
+   * Three indexed queries, no joins. Safe to call on every /stats hit.
    */
-  getRecallStats(topN: number): {
-    ever_retrieved: number;
-    top: Array<{
-      id: number;
-      type: ObservationType;
-      title: string;
-      retrieval_count: number;
-      last_retrieved_at: number;
-    }>;
-  } {
-    const ever_retrieved = (this.db
-      .query('SELECT COUNT(*) AS n FROM observations WHERE retrieval_count > 0')
-      .get() as { n: number }).n;
-    const topRows = this.db
+  getRecallStats(topN: number): RecallStats {
+    const counts = this.db
       .query(
-        `SELECT id, type, title, retrieval_count, last_retrieved_at
+        `SELECT
+           SUM(CASE WHEN (from_auto + from_search + from_drill) > 0 THEN 1 ELSE 0 END) AS surfaced,
+           SUM(CASE WHEN from_drill > 0 THEN 1 ELSE 0 END)                              AS recalled,
+           COALESCE(SUM(from_auto),   0) AS total_auto,
+           COALESCE(SUM(from_search), 0) AS total_search,
+           COALESCE(SUM(from_drill),  0) AS total_drill
+         FROM observations`,
+      )
+      .get() as {
+        surfaced: number | null;
+        recalled: number | null;
+        total_auto: number;
+        total_search: number;
+        total_drill: number;
+      };
+
+    const mapRow = (r: {
+      id: number; type: string; title: string;
+      from_auto: number; from_search: number; from_drill: number;
+      last_surfaced_at: number | null;
+    }): RecallTopEntry => ({
+      id: r.id,
+      type: r.type as ObservationType,
+      title: r.title,
+      from_auto: r.from_auto,
+      from_search: r.from_search,
+      from_drill: r.from_drill,
+      last_surfaced_at: r.last_surfaced_at,
+    });
+
+    const topSurfaced = this.db
+      .query(
+        `SELECT id, type, title, from_auto, from_search, from_drill, last_surfaced_at
            FROM observations
-          WHERE retrieval_count > 0
-          ORDER BY retrieval_count DESC, last_retrieved_at DESC
+          WHERE (from_auto + from_search + from_drill) > 0
+          ORDER BY (from_auto + from_search + from_drill) DESC,
+                   last_surfaced_at DESC
           LIMIT ?`,
       )
-      .all(topN) as Array<{
-        id: number;
-        type: string;
-        title: string;
-        retrieval_count: number;
-        last_retrieved_at: number;
-      }>;
+      .all(topN) as Array<Parameters<typeof mapRow>[0]>;
+
+    const topRecalled = this.db
+      .query(
+        `SELECT id, type, title, from_auto, from_search, from_drill, last_surfaced_at
+           FROM observations
+          WHERE from_drill > 0
+          ORDER BY from_drill DESC, last_surfaced_at DESC
+          LIMIT ?`,
+      )
+      .all(topN) as Array<Parameters<typeof mapRow>[0]>;
+
     return {
-      ever_retrieved,
-      top: topRows.map(r => ({
-        id: r.id,
-        type: r.type as ObservationType,
-        title: r.title,
-        retrieval_count: r.retrieval_count,
-        last_retrieved_at: r.last_retrieved_at,
-      })),
+      surfaced_count: counts.surfaced ?? 0,
+      recalled_count: counts.recalled ?? 0,
+      totals: {
+        auto:   counts.total_auto,
+        search: counts.total_search,
+        drill:  counts.total_drill,
+      },
+      top_surfaced: topSurfaced.map(mapRow),
+      top_recalled: topRecalled.map(mapRow),
     };
   }
 
-  bumpRetrieval(ids: number[]): void {
+  /**
+   * Bump a per-source counter and stamp last_surfaced_at on every supplied id.
+   * Empty array is a no-op. Callers should wrap in try/catch — a failure here
+   * MUST never fail the originating search request.
+   *
+   * Source maps to a column:
+   *   'auto'   → from_auto    (/inject/context hook)
+   *   'search' → from_search  (/search/all|memory|skill|observations)
+   *   'drill'  → from_drill   (/get_full)
+   *
+   * The column name is selected from a closed set (not from the request),
+   * so concatenation is safe; the ids themselves use bound parameters.
+   */
+  bumpRetrieval(ids: number[], source: RetrievalSource): void {
     if (ids.length === 0) return;
+    const column: Record<RetrievalSource, 'from_auto' | 'from_search' | 'from_drill'> = {
+      auto:   'from_auto',
+      search: 'from_search',
+      drill:  'from_drill',
+    };
+    const col = column[source];
     const now = Math.floor(Date.now() / 1000);
     const placeholders = ids.map(() => '?').join(',');
     this.db
       .query(
         `UPDATE observations
-            SET retrieval_count = retrieval_count + 1,
-                last_retrieved_at = ?
+            SET ${col} = ${col} + 1,
+                last_surfaced_at = ?
           WHERE id IN (${placeholders})`,
       )
       .run(now, ...ids);
