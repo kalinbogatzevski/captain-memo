@@ -73,13 +73,13 @@ test('renderStats — tolerates a worker with no efficiency field', () => {
   expect(text).not.toContain('Efficiency');
 });
 
-const EMPTY_RECALL = {
+const EMPTY_RECALL: NonNullable<StatsResponse['recall']> = {
   surfaced_count: 0,
   recalled_count: 0,
   totals: { auto: 0, search: 0, drill: 0 },
   top_surfaced: [],
   top_recalled: [],
-} as const;
+};
 
 test('renderStats — Recall section shows empty-state hint when no retrievals yet', () => {
   const empty: StatsResponse = { ...SAMPLE, recall: EMPTY_RECALL };
@@ -145,6 +145,83 @@ test('renderStats — RECALL section shows surfaced + recalled + drill-in rate, 
   expect(text).toContain('6×');                     // 0 + 1 + 5
   expect(text).toContain('[bugfix]');
   expect(text).not.toContain('no retrievals yet');
+});
+
+test('renderStats — Recall shows a live "Last surfaced" pulse from recent_surfaced[0]', () => {
+  const nowS = Math.floor(Date.now() / 1000);
+  const stats: StatsResponse = {
+    ...SAMPLE,
+    recall: {
+      surfaced_count: 5, recalled_count: 2,
+      totals: { auto: 10, search: 3, drill: 2 },
+      top_surfaced: [{ id: 1, type: 'feature', title: 'A',
+        from_auto: 5, from_search: 0, from_drill: 0, last_surfaced_at: nowS }],
+      top_recalled: [],
+      recent_surfaced: [
+        { id: 9, type: 'discovery', title: 'team filter in calendar',
+          last_surfaced_at: nowS - 4, source: 'auto' },
+      ],
+    },
+  };
+  const text = renderStats(stats).map(stripAnsi).join('\n');
+  expect(text).toContain('Last surfaced');
+  expect(text).toContain('team filter in calendar');
+  expect(text).toContain('4s');  // age of the most recent surfacing
+});
+
+test('renderStats — Recall shows a "Recently surfaced" list of recent entries', () => {
+  const nowS = Math.floor(Date.now() / 1000);
+  const stats: StatsResponse = {
+    ...SAMPLE,
+    recall: {
+      surfaced_count: 5, recalled_count: 2,
+      totals: { auto: 10, search: 3, drill: 2 },
+      top_surfaced: [{ id: 1, type: 'feature', title: 'A',
+        from_auto: 5, from_search: 0, from_drill: 0, last_surfaced_at: nowS }],
+      top_recalled: [],
+      recent_surfaced: [
+        { id: 9, type: 'discovery', title: 'team filter in calendar', last_surfaced_at: nowS - 4, source: 'auto' },
+        { id: 8, type: 'feature', title: 'split retrieval tracking', last_surfaced_at: nowS - 40, source: 'search' },
+        { id: 7, type: 'bugfix', title: 'parseModelName preserves version', last_surfaced_at: nowS - 130, source: 'drill' },
+      ],
+    },
+  };
+  const text = renderStats(stats).map(stripAnsi).join('\n');
+  expect(text).toContain('Recently surfaced');
+  expect(text).toContain('split retrieval tracking');
+  // Long titles trim to the column width; assert the surviving prefix.
+  expect(text).toContain('parseModelName preserves');
+});
+
+test('renderStats — collapsed top entry shows the "(+N similar)" annotation', () => {
+  const stats: StatsResponse = {
+    ...SAMPLE,
+    recall: {
+      surfaced_count: 5, recalled_count: 0,
+      totals: { auto: 15, search: 0, drill: 0 },
+      top_surfaced: [{ id: 1, type: 'discovery', title: 'update-status skill available',
+        from_auto: 15, from_search: 0, from_drill: 0, last_surfaced_at: 1, variants: 5 }],
+      top_recalled: [],
+    },
+  };
+  const text = renderStats(stats).map(stripAnsi).join('\n');
+  expect(text).toContain('(+4 similar)');   // 5 variants → 4 others
+  expect(text).toContain('15×');            // summed count
+});
+
+test('renderStats — no "(+N similar)" when an entry has variants 1 or undefined', () => {
+  const stats: StatsResponse = {
+    ...SAMPLE,
+    recall: {
+      surfaced_count: 1, recalled_count: 0,
+      totals: { auto: 3, search: 0, drill: 0 },
+      top_surfaced: [{ id: 1, type: 'discovery', title: 'singleton observation',
+        from_auto: 3, from_search: 0, from_drill: 0, last_surfaced_at: 1, variants: 1 }],
+      top_recalled: [],
+    },
+  };
+  const text = renderStats(stats).map(stripAnsi).join('\n');
+  expect(text).not.toContain('similar)');
 });
 
 test('renderStats — Recall section is omitted entirely when recall field absent', () => {

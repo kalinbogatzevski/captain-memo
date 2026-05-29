@@ -11,6 +11,7 @@ import { IngestPipeline } from './ingest.ts';
 import { FileWatcher } from './watcher.ts';
 import { ObservationQueue } from './observation-queue.ts';
 import { ObservationsStore } from './observations-store.ts';
+import type { RecallQuery, RecallView, RecallSort } from './observations-store.ts';
 import { PendingEmbedQueue } from './pending-embed-queue.ts';
 import { chunkObservation } from './chunkers/observation.ts';
 import { splitForEmbed } from './chunkers/safe-split.ts';
@@ -106,6 +107,10 @@ export interface WorkerOptions {
 export interface WorkerHandle {
   port: number;
   stop: () => Promise<void>;
+  /** The live observations store, or undefined when the worker runs without
+   *  observations. Exposed for tests and in-process introspection (e.g. to
+   *  archive a row and assert the search post-filter drops it). */
+  store?: ObservationsStore;
 }
 
 const SearchRequestSchema = z.object({
@@ -776,6 +781,29 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
    * no ids and are naturally filtered out (only items with a numeric
    * metadata.observation_id are counted).
    */
+  /**
+   * Drop hits whose backing observation has been archived (folded into a
+   * survivor by dedup). Applied to every surfacing path — search and the
+   * auto-injection hook — so archived duplicates stop appearing without
+   * deleting their vectors (reversible: un-archive restores instantly).
+   * Non-observation hits (no observation_id) are always kept.
+   */
+  const dropArchived = <T extends { metadata: Record<string, unknown> }>(items: T[]): T[] => {
+    if (!obsStore || items.length === 0) return items;
+    const ids: number[] = [];
+    for (const item of items) {
+      const oid = item.metadata?.observation_id;
+      if (typeof oid === 'number' && Number.isInteger(oid) && oid > 0) ids.push(oid);
+    }
+    if (ids.length === 0) return items;
+    const archived = obsStore.archivedAmong(ids);
+    if (archived.size === 0) return items;
+    return items.filter(item => {
+      const oid = item.metadata?.observation_id;
+      return !(typeof oid === 'number' && archived.has(oid));
+    });
+  };
+
   const bumpRetrievalFromResults = (
     items: Array<{ metadata: Record<string, unknown> }>,
     source: import('../shared/types.ts').RetrievalSource,
@@ -859,6 +887,40 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         }));
         return Response.json({ items });
       }
+
+      // Server-side table for `captain-memo top`: sort/filter/page/collapse.
+      if (req.method === 'GET' && url.pathname === '/recall/list') {
+        if (!obsStore) return Response.json({ rows: [], total: 0 });
+        const sp = url.searchParams;
+        const oneOf = <T extends string>(v: string | null, allowed: readonly T[], def: T): T =>
+          (v !== null && (allowed as readonly string[]).includes(v)) ? v as T : def;
+        const view = oneOf<RecallView>(sp.get('view'), ['surfaced', 'recalled', 'recent'], 'surfaced');
+        const sort = oneOf<RecallSort>(sp.get('sort'), ['total', 'auto', 'search', 'drill', 'recency'], 'total');
+        const limit = Math.max(1, Math.min(500, Number(sp.get('limit') ?? 50) || 50));
+        const offset = Math.max(0, Number(sp.get('offset') ?? 0) || 0);
+        const collapse = sp.get('collapse') === '1' || sp.get('collapse') === 'true';
+        const qy: RecallQuery = { view, sort, limit, offset, collapse };
+        const type = sp.get('type'); if (type) qy.type = type;
+        const q = sp.get('q'); if (q) qy.q = q;
+        return Response.json(obsStore.queryRecall(qy));
+      }
+
+      // Full observation for a `top` drill-in. Counts as a /get_full-style
+      // drill: bumps from_drill so inspecting memory via `top` is self-measuring.
+      if (req.method === 'GET' && url.pathname === '/observation/full') {
+        if (!obsStore) return Response.json({ error: 'not_found' }, { status: 404 });
+        const id = Number(url.searchParams.get('id'));
+        if (!Number.isInteger(id) || id <= 0) {
+          return Response.json({ error: 'invalid_request' }, { status: 400 });
+        }
+        const obs = obsStore.findById(id);
+        if (!obs || obs.archived) {
+          return Response.json({ error: 'not_found' }, { status: 404 });
+        }
+        try { obsStore.bumpRetrieval([id], 'drill'); }
+        catch (err) { console.error('[retrieval-tracking] drill bump failed:', (err as Error).message); }
+        return Response.json({ observation: obs });
+      }
       if (req.method === 'POST' && url.pathname === '/search/all') {
         const parsed = SearchRequestSchema.safeParse(await req.json());
         if (!parsed.success) {
@@ -894,10 +956,11 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           };
         }).filter((r): r is NonNullable<typeof r> => r !== null);
 
+        const visible = dropArchived(results);
         const by_channel: Record<string, number> = {};
-        for (const r of results) by_channel[r.channel] = (by_channel[r.channel] ?? 0) + 1;
-        bumpRetrievalFromResults(results, 'search');
-        return Response.json({ results, by_channel });
+        for (const r of visible) by_channel[r.channel] = (by_channel[r.channel] ?? 0) + 1;
+        bumpRetrievalFromResults(visible, 'search');
+        return Response.json({ results: visible, by_channel });
       }
       if (req.method === 'POST' && url.pathname === '/search/memory') {
         const parsed = MemorySearchSchema.safeParse(await req.json());
@@ -906,7 +969,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         }
         const filters: ChannelFilters = {};
         if (parsed.data.type !== undefined) filters.memory_type = parsed.data.type;
-        const results = await searchByChannel(parsed.data.query, 'memory', parsed.data.top_k, filters);
+        const results = dropArchived(await searchByChannel(parsed.data.query, 'memory', parsed.data.top_k, filters));
         // Memory hits are not observations and carry no observation_id, so
         // this is a defensive no-op for shape consistency — keeps every
         // /search/* endpoint following the same "always bump" contract.
@@ -921,7 +984,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         }
         const filters: ChannelFilters = {};
         if (parsed.data.skill_id !== undefined) filters.skill_id = parsed.data.skill_id;
-        const results = await searchByChannel(parsed.data.query, 'skill', parsed.data.top_k, filters);
+        const results = dropArchived(await searchByChannel(parsed.data.query, 'skill', parsed.data.top_k, filters));
         bumpRetrievalFromResults(results, 'search');
         return Response.json({ results });
       }
@@ -934,7 +997,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         const filters: ChannelFilters = {};
         if (parsed.data.type !== undefined) filters.obs_type = parsed.data.type;
         if (parsed.data.files !== undefined) filters.files = parsed.data.files;
-        const results = await searchByChannel(parsed.data.query, 'observation', parsed.data.top_k, filters);
+        const results = dropArchived(await searchByChannel(parsed.data.query, 'observation', parsed.data.top_k, filters));
         bumpRetrievalFromResults(results, 'search');
         return Response.json({ results });
       }
@@ -1171,13 +1234,13 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         const fused = await searchWithRecency(embedding, trimmed, parsed.data.top_k * 3);
         const channelsRequested: Array<'memory' | 'skill' | 'observation'> =
           parsed.data.channels ?? ['memory', 'skill', 'observation'];
-        const hits: import('../shared/types.ts').EnvelopeHit[] = [];
+        const candidates: import('../shared/types.ts').EnvelopeHit[] = [];
         for (const f of fused) {
           const lookup = meta.getChunkById(f.id);
           if (!lookup) continue;
           if (!channelsRequested.includes(lookup.document.channel as 'memory' | 'skill' | 'observation')) continue;
           const m = lookup.chunk.metadata as Record<string, unknown>;
-          hits.push({
+          candidates.push({
             doc_id: lookup.chunk.chunk_id,
             channel: lookup.document.channel,
             source_path: lookup.document.source_path,
@@ -1186,8 +1249,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             score: f.score,
             metadata: m,
           });
-          if (hits.length >= parsed.data.top_k) break;
         }
+        // Drop archived observations BEFORE taking top_k, so a folded-away dup
+        // can't consume a slot that a live observation should fill.
+        const hits = dropArchived(candidates).slice(0, parsed.data.top_k);
 
         // Fire-and-forget recall audit (default-off; enable via CAPTAIN_MEMO_RECALL_AUDIT=1).
         // fused already carries .boosts from applyBoosts (BoostedItem); build a
@@ -1310,6 +1375,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 
   return {
     port: server.port ?? opts.port,
+    ...(obsStore ? { store: obsStore } : {}),
     stop: async () => {
       if (tickTimer) clearInterval(tickTimer);
       if (pendingTickTimer) clearInterval(pendingTickTimer);

@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite';
 import type { Observation, ObservationType, RetrievalSource } from '../shared/types.ts';
 import { applyMigrations } from './migrations.ts';
 import type { Migration } from './migrations.ts';
+import { groupBySimilarity, DEFAULT_SIMILARITY_THRESHOLD } from '../shared/title-similarity.ts';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS observations (
@@ -89,13 +90,24 @@ export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_obs_archived ON observations(archived) WHERE archived = 1');
     },
   },
+  {
+    // v7 — record WHICH source drove the most recent surfacing, so the live
+    // "last surfaced … via auto/search/drill" pulse can name the path. NULL for
+    // history (pre-v7 last_surfaced_at bumps didn't capture the source).
+    version: 7,
+    name: 'add_last_surfaced_source',
+    up: (db) => {
+      db.exec('ALTER TABLE observations ADD COLUMN last_surfaced_source TEXT');
+    },
+  },
 ];
 
 export type NewObservation = Omit<
   Observation,
   'id' | 'stored_tokens'
   | 'retrieval_count' | 'last_retrieved_at'
-  | 'from_auto' | 'from_search' | 'from_drill' | 'last_surfaced_at'
+  | 'from_auto' | 'from_search' | 'from_drill'
+  | 'last_surfaced_at' | 'last_surfaced_source'
   | 'archived' | 'archived_into_theme_id' | 'theme_member_ids'
 >;
 
@@ -108,6 +120,20 @@ export interface RecallTopEntry {
   from_search: number;
   from_drill: number;
   last_surfaced_at: number | null;
+  /** How many near-duplicate observations were collapsed into this entry.
+   *  1 = no collapse; >1 means the counts above are summed across `variants`
+   *  near-identical rows. Display shows "(+N similar)". */
+  variants: number;
+}
+
+/** One row of the live "recently surfaced" pulse — ordered by recency, not
+ *  count. `source` names the path that drove the most recent surfacing. */
+export interface RecentSurfacedEntry {
+  id: number;
+  type: ObservationType;
+  title: string;
+  last_surfaced_at: number;
+  source: RetrievalSource | null;
 }
 
 /** Shape returned by getRecallStats — drives the RECALL section of /stats. */
@@ -118,10 +144,164 @@ export interface RecallStats {
   recalled_count: number;
   /** Grand totals across the corpus, per source — useful for sanity checks. */
   totals: { auto: number; search: number; drill: number };
-  /** Top by (from_auto + from_search + from_drill), ties broken by last_surfaced_at. */
+  /** Top by (from_auto + from_search + from_drill), ties broken by last_surfaced_at.
+   *  Near-duplicate titles are collapsed (see RecallTopEntry.variants). */
   top_surfaced: RecallTopEntry[];
   /** Top by from_drill, ties broken by last_surfaced_at — the strongest signal. */
   top_recalled: RecallTopEntry[];
+  /** Most-recently-surfaced observations (recency order), for the live pulse. */
+  recent_surfaced: RecentSurfacedEntry[];
+}
+
+/** Which population the `top` table is showing. */
+export type RecallView = 'surfaced' | 'recalled' | 'recent';
+/** Column the `top` table is sorted by. */
+export type RecallSort = 'total' | 'auto' | 'search' | 'drill' | 'recency';
+
+export interface RecallQuery {
+  view: RecallView;
+  sort: RecallSort;
+  type?: string;          // exact observation type filter
+  q?: string;             // case-insensitive title substring
+  limit: number;
+  offset: number;
+  collapse: boolean;      // fold near-duplicate titles (sum counts)
+}
+
+export interface RecallRow {
+  id: number;
+  type: ObservationType;
+  title: string;
+  from_auto: number;
+  from_search: number;
+  from_drill: number;
+  total: number;
+  last_surfaced_at: number | null;
+  last_surfaced_source: RetrievalSource | null;
+  variants: number;       // 1 unless collapsed
+}
+
+export interface RecallPage {
+  rows: RecallRow[];
+  total: number;          // full match count (pre-paging)
+}
+
+/** One entry in a duplicate group (survivor or member). */
+export interface DuplicateEntry {
+  id: number;
+  type: ObservationType;
+  title: string;
+  total: number;
+}
+
+/** A set of near-identical observations the dedup command can fold together.
+ *  `survivor` is the highest-count phrasing; `members` would be archived into it. */
+export interface DuplicateGroup {
+  survivor: DuplicateEntry;
+  members: DuplicateEntry[];
+}
+
+/** Narrow an unknown DB cell to a RetrievalSource. */
+function isRetrievalSource(v: unknown): v is RetrievalSource {
+  return v === 'auto' || v === 'search' || v === 'drill';
+}
+
+/** Upper bound on rows pulled into the in-memory near-dup collapse. */
+const CANDIDATE_CAP = 200;
+
+interface RawTopRow {
+  id: number; type: string; title: string;
+  from_auto: number; from_search: number; from_drill: number;
+  last_surfaced_at: number | null;
+}
+
+const totalMetric = (e: RecallTopEntry): number => e.from_auto + e.from_search + e.from_drill;
+const drillMetric = (e: RecallTopEntry): number => e.from_drill;
+
+interface RawRecallRow extends RawTopRow {
+  last_surfaced_source: unknown;
+}
+
+/** Map a raw DB row to a RecallRow (no collapse → variants 1). */
+function rawToRecallRow(r: RawRecallRow): RecallRow {
+  return {
+    id: r.id,
+    type: r.type as ObservationType,
+    title: r.title,
+    from_auto: r.from_auto,
+    from_search: r.from_search,
+    from_drill: r.from_drill,
+    total: r.from_auto + r.from_search + r.from_drill,
+    last_surfaced_at: r.last_surfaced_at,
+    last_surfaced_source: isRetrievalSource(r.last_surfaced_source) ? r.last_surfaced_source : null,
+    variants: 1,
+  };
+}
+
+/** Fold a similarity group (representative leads) into one RecallRow with
+ *  summed counts. last_surfaced_* come from the most-recently-surfaced member,
+ *  so the row's recency reflects the group's freshest activity. */
+function collapseToRecallRow(group: RawRecallRow[]): RecallRow {
+  const rep = group[0]!;
+  let auto = 0, search = 0, drill = 0;
+  let freshest = rep;
+  for (const r of group) {
+    auto += r.from_auto; search += r.from_search; drill += r.from_drill;
+    // Explicit null handling (matches collapseTop): a null timestamp is never
+    // "fresher" than a real one, and never coerced to a sentinel like 0 or -1.
+    if (r.last_surfaced_at !== null
+      && (freshest.last_surfaced_at === null || r.last_surfaced_at > freshest.last_surfaced_at)) {
+      freshest = r;
+    }
+  }
+  return {
+    id: rep.id,
+    type: rep.type as ObservationType,
+    title: rep.title,
+    from_auto: auto,
+    from_search: search,
+    from_drill: drill,
+    total: auto + search + drill,
+    last_surfaced_at: freshest.last_surfaced_at,
+    last_surfaced_source: isRetrievalSource(freshest.last_surfaced_source) ? freshest.last_surfaced_source : null,
+    variants: group.length,
+  };
+}
+
+/** Collapse near-identical titles among already-metric-sorted candidate rows,
+ *  sum each group's counts into its representative (the highest-count phrasing,
+ *  which leads the group), then re-rank by the metric and take the top N. */
+function collapseTop(
+  rows: RawTopRow[],
+  metric: (e: RecallTopEntry) => number,
+  topN: number,
+): RecallTopEntry[] {
+  const groups = groupBySimilarity(rows, r => r.title, DEFAULT_SIMILARITY_THRESHOLD);
+  const collapsed: RecallTopEntry[] = groups.map(group => {
+    const rep = group[0]!;
+    let auto = 0, search = 0, drill = 0, maxTs: number | null = null;
+    for (const r of group) {
+      auto += r.from_auto; search += r.from_search; drill += r.from_drill;
+      if (r.last_surfaced_at !== null && (maxTs === null || r.last_surfaced_at > maxTs)) {
+        maxTs = r.last_surfaced_at;
+      }
+    }
+    return {
+      id: rep.id,
+      type: rep.type as ObservationType,
+      title: rep.title,
+      from_auto: auto,
+      from_search: search,
+      from_drill: drill,
+      last_surfaced_at: maxTs,
+      variants: group.length,
+    };
+  });
+  collapsed.sort((a, b) =>
+    metric(b) - metric(a)
+    || (b.last_surfaced_at ?? 0) - (a.last_surfaced_at ?? 0)
+    || b.id - a.id);   // id tiebreaker → deterministic order on full ties
+  return collapsed.slice(0, topN);
 }
 
 export class ObservationsStore {
@@ -179,6 +359,8 @@ export class ObservationsStore {
       from_search: typeof row.from_search === 'number' ? row.from_search : 0,
       from_drill: typeof row.from_drill === 'number' ? row.from_drill : 0,
       last_surfaced_at: typeof row.last_surfaced_at === 'number' ? row.last_surfaced_at : null,
+      last_surfaced_source: isRetrievalSource(row.last_surfaced_source)
+        ? row.last_surfaced_source : null,
       archived: row.archived === 1 || row.archived === true,
       archived_into_theme_id:
         typeof row.archived_into_theme_id === 'number' ? row.archived_into_theme_id : null,
@@ -226,16 +408,20 @@ export class ObservationsStore {
   }
 
   /**
-   * Aggregate retrieval stats for the stats CLI's RECALL section.
+   * Aggregate retrieval stats for the stats CLI's RECALL section. Archived
+   * observations (folded into a survivor by dedup) are excluded everywhere.
    *
    * Returns:
-   *  - surfaced_count: distinct observations bumped by ANY source
-   *  - recalled_count: distinct observations bumped by /get_full
+   *  - surfaced_count: distinct (non-archived) observations bumped by ANY source
+   *  - recalled_count: distinct (non-archived) observations bumped by /get_full
    *  - totals: grand totals per source (auto/search/drill)
-   *  - top_surfaced: top-N by total bumps across all sources
-   *  - top_recalled: top-N by drill bumps (strongest "actually used" signal)
+   *  - top_surfaced: top-N by total bumps, with near-duplicate titles COLLAPSED
+   *    (counts summed, RecallTopEntry.variants set)
+   *  - top_recalled: top-N by drill bumps, same collapse
+   *  - recent_surfaced: most-recently-surfaced rows for the live pulse
    *
-   * Three indexed queries, no joins. Safe to call on every /stats hit.
+   * Safe to call on every /stats hit: a few indexed queries plus an in-memory
+   * collapse bounded by CANDIDATE_CAP.
    */
   getRecallStats(topN: number): RecallStats {
     const counts = this.db
@@ -246,7 +432,8 @@ export class ObservationsStore {
            COALESCE(SUM(from_auto),   0) AS total_auto,
            COALESCE(SUM(from_search), 0) AS total_search,
            COALESCE(SUM(from_drill),  0) AS total_drill
-         FROM observations`,
+         FROM observations
+         WHERE archived = 0`,
       )
       .get() as {
         surfaced: number | null;
@@ -256,40 +443,28 @@ export class ObservationsStore {
         total_drill: number;
       };
 
-    const mapRow = (r: {
-      id: number; type: string; title: string;
-      from_auto: number; from_search: number; from_drill: number;
-      last_surfaced_at: number | null;
-    }): RecallTopEntry => ({
-      id: r.id,
-      type: r.type as ObservationType,
-      title: r.title,
-      from_auto: r.from_auto,
-      from_search: r.from_search,
-      from_drill: r.from_drill,
-      last_surfaced_at: r.last_surfaced_at,
-    });
-
-    const topSurfaced = this.db
+    // Over-fetch candidates, then collapse near-identical titles in memory.
+    // The cap bounds the collapse cost; low-count dupes beyond it can't reach
+    // the top list anyway.
+    const surfacedCandidates = this.db
       .query(
         `SELECT id, type, title, from_auto, from_search, from_drill, last_surfaced_at
            FROM observations
-          WHERE (from_auto + from_search + from_drill) > 0
-          ORDER BY (from_auto + from_search + from_drill) DESC,
-                   last_surfaced_at DESC
+          WHERE archived = 0 AND (from_auto + from_search + from_drill) > 0
+          ORDER BY (from_auto + from_search + from_drill) DESC, last_surfaced_at DESC
           LIMIT ?`,
       )
-      .all(topN) as Array<Parameters<typeof mapRow>[0]>;
+      .all(CANDIDATE_CAP) as RawTopRow[];
 
-    const topRecalled = this.db
+    const recalledCandidates = this.db
       .query(
         `SELECT id, type, title, from_auto, from_search, from_drill, last_surfaced_at
            FROM observations
-          WHERE from_drill > 0
+          WHERE archived = 0 AND from_drill > 0
           ORDER BY from_drill DESC, last_surfaced_at DESC
           LIMIT ?`,
       )
-      .all(topN) as Array<Parameters<typeof mapRow>[0]>;
+      .all(CANDIDATE_CAP) as RawTopRow[];
 
     return {
       surfaced_count: counts.surfaced ?? 0,
@@ -299,15 +474,262 @@ export class ObservationsStore {
         search: counts.total_search,
         drill:  counts.total_drill,
       },
-      top_surfaced: topSurfaced.map(mapRow),
-      top_recalled: topRecalled.map(mapRow),
+      top_surfaced: collapseTop(surfacedCandidates, totalMetric, topN),
+      top_recalled: collapseTop(recalledCandidates, drillMetric, topN),
+      recent_surfaced: this.getRecentlySurfaced(topN),
     };
   }
 
   /**
-   * Bump a per-source counter and stamp last_surfaced_at on every supplied id.
-   * Empty array is a no-op. Callers should wrap in try/catch — a failure here
-   * MUST never fail the originating search request.
+   * Most-recently-surfaced observations (recency order, newest first), for the
+   * live pulse. Never-surfaced and archived rows are excluded.
+   */
+  getRecentlySurfaced(limit: number): RecentSurfacedEntry[] {
+    const rows = this.db
+      .query(
+        `SELECT id, type, title, last_surfaced_at, last_surfaced_source
+           FROM observations
+          WHERE last_surfaced_at IS NOT NULL AND archived = 0
+          ORDER BY last_surfaced_at DESC, id DESC
+          LIMIT ?`,
+      )
+      .all(limit) as Array<{
+        id: number; type: string; title: string;
+        last_surfaced_at: number; last_surfaced_source: unknown;
+      }>;
+    return rows.map(r => ({
+      id: r.id,
+      type: r.type as ObservationType,
+      title: r.title,
+      last_surfaced_at: r.last_surfaced_at,
+      source: isRetrievalSource(r.last_surfaced_source) ? r.last_surfaced_source : null,
+    }));
+  }
+
+  /**
+   * Server-side sort / filter / page / collapse for the `top` table. One
+   * population (surfaced | recalled | recent), one sort column, optional type
+   * and title-substring filters, optional near-dup collapse. Archived rows are
+   * always excluded. `total` is the full match count for paging UIs.
+   */
+  queryRecall(qy: RecallQuery): RecallPage {
+    const popPred: Record<RecallView, string> = {
+      surfaced: '(from_auto + from_search + from_drill) > 0',
+      recalled: 'from_drill > 0',
+      recent:   'last_surfaced_at IS NOT NULL',
+    };
+    const orderExpr: Record<RecallSort, string> = {
+      total:   '(from_auto + from_search + from_drill)',
+      auto:    'from_auto',
+      search:  'from_search',
+      drill:   'from_drill',
+      recency: 'COALESCE(last_surfaced_at, 0)',
+    };
+
+    const where: string[] = ['archived = 0', popPred[qy.view]];
+    const params: Array<string | number> = [];
+    if (qy.type) { where.push('type = ?'); params.push(qy.type); }
+    if (qy.q)    { where.push('LOWER(title) LIKE ?'); params.push(`%${qy.q.toLowerCase()}%`); }
+    const whereSql = where.join(' AND ');
+    const orderSql = `${orderExpr[qy.sort]} DESC, COALESCE(last_surfaced_at, 0) DESC, id DESC`;
+    const cols = 'id, type, title, from_auto, from_search, from_drill, last_surfaced_at, last_surfaced_source';
+
+    // True match count (pre-collapse) — the RecallPage `total` contract. Used
+    // by both paths so paging UIs see the real number of matching rows.
+    const total = (this.db
+      .query(`SELECT COUNT(*) AS n FROM observations WHERE ${whereSql}`)
+      .get(...params) as { n: number }).n;
+
+    if (!qy.collapse) {
+      const rows = this.db
+        .query(`SELECT ${cols} FROM observations WHERE ${whereSql} ORDER BY ${orderSql} LIMIT ? OFFSET ?`)
+        .all(...params, qy.limit, qy.offset) as RawRecallRow[];
+      return { rows: rows.map(rawToRecallRow), total };
+    }
+
+    // Collapse path: pull a candidate set large enough to cover the requested
+    // window (never fewer than CANDIDATE_CAP), fold near-dupes, re-rank by the
+    // requested metric with an id tiebreaker, then page in memory. `total`
+    // stays the pre-collapse match count; callers report group count via rows.
+    const fetchLimit = Math.max(CANDIDATE_CAP, qy.offset + qy.limit);
+    const candidates = this.db
+      .query(`SELECT ${cols} FROM observations WHERE ${whereSql} ORDER BY ${orderSql} LIMIT ?`)
+      .all(...params, fetchLimit) as RawRecallRow[];
+    const groups = groupBySimilarity(candidates, r => r.title, DEFAULT_SIMILARITY_THRESHOLD);
+    const collapsed = groups.map(collapseToRecallRow);
+    const metricOf = (r: RecallRow): number =>
+      qy.sort === 'recency' ? (r.last_surfaced_at ?? 0)
+      : qy.sort === 'total' ? r.total
+      : qy.sort === 'auto'  ? r.from_auto
+      : qy.sort === 'search' ? r.from_search
+      : r.from_drill;
+    collapsed.sort((a, b) => metricOf(b) - metricOf(a)
+      || (b.last_surfaced_at ?? 0) - (a.last_surfaced_at ?? 0)
+      || b.id - a.id);
+    return {
+      rows: collapsed.slice(qy.offset, qy.offset + qy.limit),
+      total,
+    };
+  }
+
+  /**
+   * Of the given ids, return the subset that is archived. One indexed query;
+   * used by the worker's search post-filter to drop archived hits in a batch
+   * (avoids a per-hit findById round-trip). Empty input → empty set.
+   */
+  archivedAmong(ids: number[]): Set<number> {
+    if (ids.length === 0) return new Set();
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = this.db
+      .query(`SELECT id FROM observations WHERE archived = 1 AND id IN (${placeholders})`)
+      .all(...ids) as Array<{ id: number }>;
+    return new Set(rows.map(r => r.id));
+  }
+
+  /**
+   * Fold `memberIds` into `survivorId`: add the members' per-source counts onto
+   * the survivor, advance the survivor's last_surfaced_at to the group max,
+   * archive each member (archived=1, archived_into_theme_id=survivorId), and
+   * record the merged ids on the survivor (theme_member_ids) for reversal.
+   *
+   * Reversible via unmergeDuplicateGroup. Reuses the v6 `archived_into_theme_id`
+   * column to mean "folded into observation id" — the survivor need not be a
+   * synthesized theme for a plain title-dedup.
+   *
+   * Runs in a single transaction so a crash mid-merge can't leave counts summed
+   * but members un-archived (or vice-versa).
+   */
+  mergeDuplicateGroup(survivorId: number, memberIds: number[]): void {
+    const ids = memberIds.filter(id => id !== survivorId);
+    if (ids.length === 0) return;
+    const placeholders = ids.map(() => '?').join(',');
+
+    const tx = this.db.transaction(() => {
+      const agg = this.db
+        .query(
+          `SELECT COALESCE(SUM(from_auto), 0)   AS a,
+                  COALESCE(SUM(from_search), 0) AS s,
+                  COALESCE(SUM(from_drill), 0)  AS d,
+                  MAX(last_surfaced_at)         AS maxts
+             FROM observations
+            WHERE id IN (${placeholders})`,
+        )
+        .get(...ids) as { a: number; s: number; d: number; maxts: number | null };
+
+      this.db
+        .query(
+          // last_surfaced_at advances to the group max, but stays NULL when
+          // neither the survivor nor any member was ever surfaced (don't coerce
+          // "never" to epoch 0).
+          `UPDATE observations
+              SET from_auto   = from_auto   + ?,
+                  from_search = from_search + ?,
+                  from_drill  = from_drill  + ?,
+                  last_surfaced_at = CASE
+                    WHEN last_surfaced_at IS NULL THEN ?
+                    WHEN ? IS NULL THEN last_surfaced_at
+                    ELSE MAX(last_surfaced_at, ?)
+                  END,
+                  theme_member_ids = ?
+            WHERE id = ?`,
+        )
+        .run(agg.a, agg.s, agg.d, agg.maxts, agg.maxts, agg.maxts, JSON.stringify(ids), survivorId);
+
+      this.db
+        .query(
+          `UPDATE observations
+              SET archived = 1, archived_into_theme_id = ?
+            WHERE id IN (${placeholders})`,
+        )
+        .run(survivorId, ...ids);
+    });
+    tx();
+  }
+
+  /**
+   * Find groups of near-identical SURFACED observations (total > 0) that the
+   * dedup command could fold together. Survivor = highest-count phrasing.
+   * Only groups with at least one member (size > 1) are returned. Scans the
+   * surfaced subset for speed and because those are the dupes that actually
+   * bloat the stats/search surface.
+   */
+  findDuplicateGroups(threshold: number): DuplicateGroup[] {
+    const rows = this.db
+      .query(
+        `SELECT id, type, title, from_auto, from_search, from_drill
+           FROM observations
+          WHERE archived = 0 AND (from_auto + from_search + from_drill) > 0
+          ORDER BY (from_auto + from_search + from_drill) DESC, id ASC`,
+      )
+      .all() as RawTopRow[];
+    const toEntry = (r: RawTopRow): DuplicateEntry => ({
+      id: r.id, type: r.type as ObservationType, title: r.title,
+      total: r.from_auto + r.from_search + r.from_drill,
+    });
+    return groupBySimilarity(rows, r => r.title, threshold)
+      .filter(g => g.length > 1)
+      .map(g => ({ survivor: toEntry(g[0]!), members: g.slice(1).map(toEntry) }));
+  }
+
+  /** Ids of live rows that have folded-in members (theme_member_ids set) —
+   *  the set `dedup --undo` reverses. */
+  mergedSurvivorIds(): number[] {
+    const rows = this.db
+      .query('SELECT id FROM observations WHERE theme_member_ids IS NOT NULL AND archived = 0 ORDER BY id ASC')
+      .all() as Array<{ id: number }>;
+    return rows.map(r => r.id);
+  }
+
+  /**
+   * Reverse a prior mergeDuplicateGroup for `survivorId`: subtract the members'
+   * counts back off the survivor, un-archive them, and clear the survivor's
+   * theme_member_ids. No-op if the row has no merged members. Single transaction.
+   */
+  unmergeDuplicateGroup(survivorId: number): void {
+    const row = this.db
+      .query('SELECT theme_member_ids FROM observations WHERE id = ?')
+      .get(survivorId) as { theme_member_ids: string | null } | undefined;
+    if (!row || !row.theme_member_ids) return;
+    let memberIds: number[];
+    try {
+      memberIds = JSON.parse(row.theme_member_ids) as number[];
+    } catch {
+      // Corrupted theme_member_ids (e.g. an interrupted prior write). Don't let
+      // one bad row crash `dedup --undo`; clear the pointer and skip.
+      this.db.query('UPDATE observations SET theme_member_ids = NULL WHERE id = ?').run(survivorId);
+      return;
+    }
+    if (!Array.isArray(memberIds) || memberIds.length === 0) return;
+    const placeholders = memberIds.map(() => '?').join(',');
+
+    const tx = this.db.transaction(() => {
+      const agg = this.db
+        .query(
+          `SELECT COALESCE(SUM(from_auto), 0)   AS a,
+                  COALESCE(SUM(from_search), 0) AS s,
+                  COALESCE(SUM(from_drill), 0)  AS d
+             FROM observations WHERE id IN (${placeholders})`,
+        )
+        .get(...memberIds) as { a: number; s: number; d: number };
+      this.db
+        .query(
+          `UPDATE observations
+              SET from_auto = from_auto - ?, from_search = from_search - ?, from_drill = from_drill - ?,
+                  theme_member_ids = NULL
+            WHERE id = ?`,
+        )
+        .run(agg.a, agg.s, agg.d, survivorId);
+      this.db
+        .query(`UPDATE observations SET archived = 0, archived_into_theme_id = NULL WHERE id IN (${placeholders})`)
+        .run(...memberIds);
+    });
+    tx();
+  }
+
+  /**
+   * Bump a per-source counter and stamp last_surfaced_at + last_surfaced_source
+   * on every supplied id. Empty array is a no-op. Callers should wrap in
+   * try/catch — a failure here MUST never fail the originating search request.
    *
    * Source maps to a column:
    *   'auto'   → from_auto    (/inject/context hook)
@@ -316,8 +738,15 @@ export class ObservationsStore {
    *
    * The column name is selected from a closed set (not from the request),
    * so concatenation is safe; the ids themselves use bound parameters.
+   *
+   * `atEpoch` is a testability seam — production callers omit it and get
+   * Date.now(); tests pass explicit timestamps to make recency provable.
    */
-  bumpRetrieval(ids: number[], source: RetrievalSource): void {
+  bumpRetrieval(
+    ids: number[],
+    source: RetrievalSource,
+    atEpoch: number = Math.floor(Date.now() / 1000),
+  ): void {
     if (ids.length === 0) return;
     const column: Record<RetrievalSource, 'from_auto' | 'from_search' | 'from_drill'> = {
       auto:   'from_auto',
@@ -325,16 +754,16 @@ export class ObservationsStore {
       drill:  'from_drill',
     };
     const col = column[source];
-    const now = Math.floor(Date.now() / 1000);
     const placeholders = ids.map(() => '?').join(',');
     this.db
       .query(
         `UPDATE observations
             SET ${col} = ${col} + 1,
-                last_surfaced_at = ?
+                last_surfaced_at = ?,
+                last_surfaced_source = ?
           WHERE id IN (${placeholders})`,
       )
-      .run(now, ...ids);
+      .run(atEpoch, source, ...ids);
   }
 
   /** Count observations whose stored_tokens has not been captured yet. */

@@ -12,7 +12,9 @@ import { doctorCommand } from './commands/doctor.ts';
 import { inspectClaudeMemCommand } from './commands/inspect-claude-mem.ts';
 import { migrateFromClaudeMemCommand } from './commands/migrate-from-claude-mem.ts';
 import { dreamCommand } from './commands/dream.ts';
+import { dedupCommand } from './commands/dedup.ts';
 import { watchCommand } from './commands/watch.ts';
+import { topCommand } from './commands/top.ts';
 import { printBanner } from './banner.ts';
 import pkg from '../../package.json' with { type: 'json' };
 
@@ -36,7 +38,9 @@ Commands:
   inspect-claude-mem  Print row counts of ~/.claude-mem/claude-mem.db (read-only).
   migrate-from-claude-mem  One-time migration of ~/.claude-mem/claude-mem.db (read-only)
   dream        Preview Local Dreaming clusters (read-only; --dry-run only in v1)
-  watch        Live-refresh stats with colors + wide layout (every N seconds)
+  dedup        Fold near-duplicate observations together (dry-run by default; --apply, --undo)
+  top          Interactive live stats (htop-style: sort, filter, drill); press ? in-app
+  watch        Deprecated alias for \`top\`
   help         Show this message
 
 Examples:
@@ -94,6 +98,12 @@ export async function main(args: string[]): Promise<void> {
       break;
     case 'dream':
       exit = await dreamCommand(args.slice(1));
+      break;
+    case 'dedup':
+      exit = await dedupCommand(args.slice(1));
+      break;
+    case 'top':
+      exit = await topCommand(args.slice(1));
       break;
     case 'watch':
       exit = await watchCommand(args.slice(1));

@@ -31,6 +31,9 @@ export interface StatsResponse {
     totals: { auto: number; search: number; drill: number };
     top_surfaced: RecallTopEntry[];
     top_recalled: RecallTopEntry[];
+    /** Most-recently-surfaced rows (recency order) for the live pulse. Optional
+     *  for back-compat with pre-v0.1.16 worker payloads. */
+    recent_surfaced?: RecentSurfacedEntry[];
   };
   dream?: DreamStatsBlock;
 }
@@ -43,6 +46,17 @@ interface RecallTopEntry {
   from_search: number;
   from_drill: number;
   last_surfaced_at: number | null;
+  /** Number of near-duplicate rows collapsed into this entry (>1 ⇒ summed).
+   *  Optional: legacy payloads and the back-compat shim omit it. */
+  variants?: number;
+}
+
+interface RecentSurfacedEntry {
+  id: number;
+  type: string;
+  title: string;
+  last_surfaced_at: number;
+  source: 'auto' | 'search' | 'drill' | null;
 }
 
 export interface DreamStatsBlock {
@@ -170,11 +184,15 @@ function indexingText(idx: StatsResponse['indexing']): string {
  *  the previous boxed header — the frame fought the content for attention
  *  and added a "decorated dashboard" feel. The double `═` differentiates
  *  the title rule from the single `─` section rules below. */
-function headerPanel(version: string, panelWidth: number): string[] {
+function headerPanel(version: string, panelWidth: number, headerRight?: string): string[] {
   const wordmark = '⚓  CAPTAIN MEMO';
   const subtitle = 'corpus statistics';
   const ver = `v${version}`;
-  const titleLine = `  ${goldBold(wordmark)}   ${dim(subtitle)} ${dim('·')} ${bold(ver)}`;
+  const base = `  ${goldBold(wordmark)}   ${dim(subtitle)} ${dim('·')} ${bold(ver)}`;
+  // Optional right-aligned status (e.g. the `top` live clock).
+  const titleLine = headerRight
+    ? base + ' '.repeat(Math.max(1, panelWidth - visibleWidth(base) - visibleWidth(headerRight))) + headerRight
+    : base;
   // ═ matches the section-rule indent so the eye sees a continuous left
   // rail down the left edge of the panel.
   const rule = '  ' + dim('═'.repeat(Math.max(0, panelWidth - 2)));
@@ -183,6 +201,8 @@ function headerPanel(version: string, panelWidth: number): string[] {
 
 export interface RenderOpts {
   panelWidth?: number;
+  /** Optional right-aligned status on the header line (the `top` live clock). */
+  headerRight?: string;
 }
 
 export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string[] {
@@ -190,7 +210,7 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
   const wide = panelWidth >= MIN_WIDE_PANEL;
 
   const out: string[] = [];
-  out.push(...headerPanel(stats.version ?? 'unknown', panelWidth));
+  out.push(...headerPanel(stats.version ?? 'unknown', panelWidth, opts.headerRight));
   out.push('');
 
   // Status block. At narrow widths, four labeled rows. At wide widths,
@@ -229,6 +249,19 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
     const recall = normalizeRecall(stats.recall);
     out.push(sectionRule('Recall', panelWidth));
     out.push(`   ${dim('how memory actually gets used')}`);
+
+    // Live pulse: the single most-recently-surfaced observation. Under `top`
+    // (or watch) this ticks every refresh, so the panel shows what Captain is
+    // doing right now, not just all-time leaders.
+    const recent = recall.recent_surfaced ?? [];
+    if (recent.length > 0) {
+      const top = recent[0]!;
+      const age = fmtAgo(Math.max(0, Math.floor(Date.now() / 1000) - top.last_surfaced_at));
+      const title = trimTitle(top.title, panelWidth - 34 - top.type.length);
+      out.push(`   ${dim('Last surfaced'.padEnd(14))}${cyanBold(`${age} ago`)}`
+        + ` ${dim('·')} ${dim(`[${top.type}]`)} ${title} ${dim('·')} ${sourceColored(top.source)}`);
+    }
+
     const total = stats.observations.total;
     const { surfaced_count, recalled_count } = recall;
     if (surfaced_count === 0 && recalled_count === 0) {
@@ -272,6 +305,21 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
         if (hasRecalled) {
           out.push('');
           out.push(...renderTopList('Top recalled', recall.top_recalled, panelWidth));
+        }
+      }
+
+      // Recently surfaced — recency-ordered, distinct from the count-ranked Top
+      // lists above. Two-up across columns when wide so it stays short.
+      if (recent.length > 0) {
+        out.push('');
+        out.push(`   ${cyan('Recently surfaced'.padEnd(17))}`);
+        if (wide) {
+          const mid = Math.ceil(recent.length / 2);
+          const left = recent.slice(0, mid).flatMap(e => renderRecentRow(e, split.left));
+          const right = recent.slice(mid).flatMap(e => renderRecentRow(e, split.right));
+          out.push(...twoColumn(left, right, panelWidth));
+        } else {
+          for (const e of recent) out.push(...renderRecentRow(e, panelWidth));
         }
       }
     }
@@ -337,6 +385,34 @@ function fmtAgo(seconds: number): string {
   return `${Math.floor(seconds / 86400)} d`;
 }
 
+/** The provenance triad applied to a surfacing source. auto=gold, search=cyan,
+ *  drill=green — same mapping as the Top-N breakdown, so the colors carry the
+ *  same meaning wherever a source appears. */
+function sourceColored(source: 'auto' | 'search' | 'drill' | null): string {
+  if (source === 'auto') return gold('auto');
+  if (source === 'search') return cyan('search');
+  if (source === 'drill') return green('drill');
+  return dim('—');
+}
+
+function trimTitle(title: string, max: number): string {
+  const m = Math.max(4, max);
+  return title.length > m ? title.slice(0, m - 1) + '…' : title;
+}
+
+/** One "recently surfaced" row: age · [type] title · source. Recency order,
+ *  so this is the live "what Captain is doing now" pulse, not a count ranking. */
+function renderRecentRow(e: RecentSurfacedEntry, colWidth: number): string[] {
+  const nowS = Math.floor(Date.now() / 1000);
+  const age = fmtAgo(Math.max(0, nowS - e.last_surfaced_at)).padStart(6);
+  // Visible prefix: 5 indent + 6 age + 3 (" · ") + [type] + 1 + tail " · src".
+  const prefixLen = 5 + 6 + 3 + (e.type.length + 2) + 1 + 9;
+  const title = trimTitle(e.title, colWidth - prefixLen);
+  return [
+    `     ${cyanBold(age)} ${dim('·')} ${dim(`[${e.type}]`)} ${title} ${dim('·')} ${sourceColored(e.source)}`,
+  ];
+}
+
 interface LegacyRecallShape {
   ever_retrieved: number;
   top: Array<{
@@ -351,6 +427,7 @@ interface ModernRecallShape {
   totals: { auto: number; search: number; drill: number };
   top_surfaced: RecallTopEntry[];
   top_recalled: RecallTopEntry[];
+  recent_surfaced?: RecentSurfacedEntry[];
 }
 
 function normalizeRecall(
@@ -445,8 +522,10 @@ function renderTopList(
 function renderRecallEntry(r: RecallTopEntry, colWidth = 64): string[] {
   const total = r.from_auto + r.from_search + r.from_drill;
   const count = `${total}×`.padStart(4);
+  // "(+N similar)" when this entry collapsed several near-duplicate rows.
+  const similar = (r.variants && r.variants > 1) ? ` (+${r.variants - 1} similar)` : '';
   const prefixLen = 12 + r.type.length + 2;
-  const titleMax = Math.max(8, colWidth - prefixLen);
+  const titleMax = Math.max(8, colWidth - prefixLen - similar.length);
   const titleTrim = r.title.length > titleMax
     ? r.title.slice(0, titleMax - 1) + '…' : r.title;
 
@@ -465,9 +544,10 @@ function renderRecallEntry(r: RecallTopEntry, colWidth = 64): string[] {
     ? shortForm
     : longForm;
 
-  // Count uses cyanBold (live value); type stays dim; title is default.
+  // Count uses cyanBold (live value); type stays dim; title is default;
+  // the "(+N similar)" collapse hint is dim so it reads as metadata.
   return [
-    `     ${cyanBold(count)}  ${dim(`[${r.type}]`)} ${titleTrim}`,
+    `     ${cyanBold(count)}  ${dim(`[${r.type}]`)} ${titleTrim}${dim(similar)}`,
     `           ${breakdown}`,
   ];
 }

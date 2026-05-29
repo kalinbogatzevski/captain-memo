@@ -94,8 +94,8 @@ test('ObservationsStore — schema_versions records all migrations after constru
   const db = new Database(join(workDir, 'observations.db'), { readonly: true });
   const rows = getAppliedVersions(db);
   db.close();
-  expect(rows).toHaveLength(6);
-  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6]);
+  expect(rows).toHaveLength(7);
+  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7]);
   expect(rows.map(r => r.name)).toEqual([
     'add_branch',
     'add_work_tokens',
@@ -103,6 +103,7 @@ test('ObservationsStore — schema_versions records all migrations after constru
     'add_retrieval_tracking',
     'add_retrieval_provenance',
     'add_dreaming_scaffold',
+    'add_last_surfaced_source',
   ]);
   store = new ObservationsStore(join(workDir, 'observations.db'));
 });
@@ -272,6 +273,284 @@ test('ObservationsStore — getRecallStats handles empty / never-retrieved corpu
   expect(stats.totals).toEqual({ auto: 0, search: 0, drill: 0 });
   expect(stats.top_surfaced).toEqual([]);
   expect(stats.top_recalled).toEqual([]);
+});
+
+// ── v7: last_surfaced_source + recency + collapse + archived exclusion ──
+
+const mkObs = (store: ObservationsStore, title: string, type = 'discovery') =>
+  store.insert({
+    session_id: 's1', project_id: 'p1', prompt_number: 1,
+    type: type as any, title, narrative: '', facts: [], concepts: [],
+    files_read: [], files_modified: [], created_at_epoch: 100,
+    branch: null, work_tokens: null,
+  });
+
+test('ObservationsStore — last_surfaced_source defaults null and bumpRetrieval stamps it', () => {
+  const id = mkObs(store, 't');
+  expect(store.findById(id)!.last_surfaced_source).toBeNull();
+  store.bumpRetrieval([id], 'drill');
+  expect(store.findById(id)!.last_surfaced_source).toBe('drill');
+  store.bumpRetrieval([id], 'auto');
+  expect(store.findById(id)!.last_surfaced_source).toBe('auto');  // latest wins
+});
+
+test('ObservationsStore — bumpRetrieval accepts an explicit epoch for deterministic ordering', () => {
+  const id = mkObs(store, 't');
+  store.bumpRetrieval([id], 'search', 1_234);
+  expect(store.findById(id)!.last_surfaced_at).toBe(1_234);
+});
+
+test('ObservationsStore — getRecentlySurfaced returns most-recent-first with source', () => {
+  const a = mkObs(store, 'alpha');
+  const b = mkObs(store, 'beta');
+  const c = mkObs(store, 'gamma');
+  store.bumpRetrieval([a], 'search', 1_000);
+  store.bumpRetrieval([b], 'auto', 2_000);
+  store.bumpRetrieval([c], 'drill', 3_000);
+
+  const recent = store.getRecentlySurfaced(10);
+  expect(recent.map(r => r.id)).toEqual([c, b, a]);
+  expect(recent.map(r => r.source)).toEqual(['drill', 'auto', 'search']);
+  expect(recent[0]!.last_surfaced_at).toBe(3_000);
+
+  expect(store.getRecentlySurfaced(2).map(r => r.id)).toEqual([c, b]); // limit
+});
+
+test('ObservationsStore — getRecentlySurfaced skips never-surfaced and archived rows', () => {
+  const a = mkObs(store, 'surfaced');
+  mkObs(store, 'never-surfaced');               // no bump → excluded
+  const victim = mkObs(store, 'to-be-archived');
+  store.bumpRetrieval([a], 'auto', 1_000);
+  store.bumpRetrieval([victim], 'auto', 9_000);
+  store.mergeDuplicateGroup(a, [victim]);       // victim archived into a
+
+  const ids = store.getRecentlySurfaced(10).map(r => r.id);
+  expect(ids).toContain(a);
+  expect(ids).not.toContain(victim);            // archived excluded
+});
+
+test('ObservationsStore — mergeDuplicateGroup sums member counts into survivor and archives members', () => {
+  const survivor = mkObs(store, 'canonical');
+  const m1 = mkObs(store, 'dup one');
+  const m2 = mkObs(store, 'dup two');
+  store.bumpRetrieval([survivor], 'auto', 100);  store.bumpRetrieval([survivor], 'auto', 110); store.bumpRetrieval([survivor], 'auto', 120);
+  store.bumpRetrieval([m1], 'auto', 200);        store.bumpRetrieval([m1], 'auto', 210);       store.bumpRetrieval([m1], 'auto', 220);
+  store.bumpRetrieval([m2], 'search', 300);      store.bumpRetrieval([m2], 'search', 310);     store.bumpRetrieval([m2], 'drill', 320);
+
+  store.mergeDuplicateGroup(survivor, [m1, m2]);
+
+  const s = store.findById(survivor)!;
+  expect(s.from_auto).toBe(6);     // 3 + 3
+  expect(s.from_search).toBe(2);   // 0 + 2
+  expect(s.from_drill).toBe(1);    // 0 + 1
+  expect(s.archived).toBe(false);
+  expect(s.theme_member_ids).toEqual([m1, m2]);
+  expect(s.last_surfaced_at).toBe(320); // max across the group
+
+  expect(store.findById(m1)!.archived).toBe(true);
+  expect(store.findById(m1)!.archived_into_theme_id).toBe(survivor);
+  expect(store.findById(m2)!.archived).toBe(true);
+});
+
+test('ObservationsStore — getRecallStats collapses near-duplicate titles, summing counts + variants', () => {
+  const titles = [
+    'update-status skill command verified and available',
+    'update-status skill command available in erp-platform',
+    'update-status skill command verified in erp-platform',
+    'update-status skill command is available',
+    'update-status skill registered and callable',
+  ];
+  for (const t of titles) {
+    const id = mkObs(store, t);
+    store.bumpRetrieval([id], 'auto'); store.bumpRetrieval([id], 'auto'); store.bumpRetrieval([id], 'auto');
+  }
+
+  const stats = store.getRecallStats(5);
+  // surfaced_count counts distinct rows (collapse is display-only).
+  expect(stats.surfaced_count).toBe(5);
+  // At the 0.5 default, 4 phrasings collapse, the 5th stands alone → 2 entries.
+  expect(stats.top_surfaced).toHaveLength(2);
+  expect(stats.top_surfaced[0]!.variants).toBe(4);
+  expect(stats.top_surfaced[0]!.from_auto).toBe(12);   // 4 × 3
+  expect(stats.top_surfaced[1]!.variants).toBe(1);
+  expect(stats.top_surfaced[1]!.from_auto).toBe(3);
+});
+
+test('ObservationsStore — getRecallStats excludes archived rows from counts and top lists', () => {
+  const kept = mkObs(store, 'kept alpha distinct');
+  const victim = mkObs(store, 'victim beta distinct');
+  for (let i = 0; i < 5; i++) store.bumpRetrieval([kept], 'auto');
+  for (let i = 0; i < 9; i++) store.bumpRetrieval([victim], 'auto');
+  store.mergeDuplicateGroup(kept, [victim]);   // kept → 5 + 9 = 14, victim archived
+
+  const stats = store.getRecallStats(5);
+  expect(stats.surfaced_count).toBe(1);                       // victim excluded
+  expect(stats.top_surfaced.map(r => r.title)).toEqual(['kept alpha distinct']);
+  expect(stats.top_surfaced[0]!.from_auto).toBe(14);
+});
+
+test('ObservationsStore — archivedAmong returns only the archived subset', () => {
+  const a = mkObs(store, 'a'); const b = mkObs(store, 'b'); const c = mkObs(store, 'c');
+  store.mergeDuplicateGroup(a, [b]);   // b archived into a
+  const set = store.archivedAmong([a, b, c]);
+  expect(set.has(b)).toBe(true);
+  expect(set.has(a)).toBe(false);
+  expect(set.has(c)).toBe(false);
+  expect(store.archivedAmong([]).size).toBe(0);
+});
+
+test('ObservationsStore — getRecallStats includes recent_surfaced', () => {
+  const a = mkObs(store, 'recent one');
+  store.bumpRetrieval([a], 'auto', 5_000);
+  const stats = store.getRecallStats(5);
+  expect(stats.recent_surfaced.map(r => r.id)).toEqual([a]);
+  expect(stats.recent_surfaced[0]!.source).toBe('auto');
+});
+
+// ── queryRecall: server-side sort / filter / page / collapse for `top` ──
+
+function seedSurfaced(store: ObservationsStore, title: string, type: string,
+  auto: number, search: number, drill: number, ts: number) {
+  const id = mkObs(store, title, type);
+  for (let i = 0; i < auto; i++)   store.bumpRetrieval([id], 'auto', ts);
+  for (let i = 0; i < search; i++) store.bumpRetrieval([id], 'search', ts);
+  for (let i = 0; i < drill; i++)  store.bumpRetrieval([id], 'drill', ts);
+  return id;
+}
+
+test('queryRecall — view=surfaced sort=total ranks by total bumps, raw (no collapse)', () => {
+  seedSurfaced(store, 'alpha', 'feature', 10, 0, 0, 100);
+  seedSurfaced(store, 'beta', 'bugfix', 2, 3, 0, 200);   // total 5
+  seedSurfaced(store, 'gamma', 'change', 1, 0, 0, 300);
+  const page = store.queryRecall({ view: 'surfaced', sort: 'total', limit: 50, offset: 0, collapse: false });
+  expect(page.rows.map(r => r.title)).toEqual(['alpha', 'beta', 'gamma']);
+  expect(page.rows[0]!.total).toBe(10);
+  expect(page.total).toBe(3);
+});
+
+test('queryRecall — view=recalled only includes drilled rows, sort by drill', () => {
+  seedSurfaced(store, 'no-drill', 'feature', 9, 0, 0, 100);
+  seedSurfaced(store, 'drilled', 'bugfix', 0, 0, 4, 200);
+  const page = store.queryRecall({ view: 'recalled', sort: 'drill', limit: 50, offset: 0, collapse: false });
+  expect(page.rows.map(r => r.title)).toEqual(['drilled']);
+  expect(page.rows[0]!.from_drill).toBe(4);
+});
+
+test('queryRecall — view=recent sort=recency orders by last_surfaced_at desc', () => {
+  seedSurfaced(store, 'old', 'feature', 1, 0, 0, 100);
+  seedSurfaced(store, 'new', 'feature', 1, 0, 0, 900);
+  seedSurfaced(store, 'mid', 'feature', 1, 0, 0, 500);
+  const page = store.queryRecall({ view: 'recent', sort: 'recency', limit: 50, offset: 0, collapse: false });
+  expect(page.rows.map(r => r.title)).toEqual(['new', 'mid', 'old']);
+});
+
+test('queryRecall — type filter and case-insensitive title substring (q)', () => {
+  seedSurfaced(store, 'Calendar team filter', 'feature', 5, 0, 0, 100);
+  seedSurfaced(store, 'calendar bug squashed', 'bugfix', 5, 0, 0, 200);
+  seedSurfaced(store, 'unrelated thing', 'feature', 5, 0, 0, 300);
+
+  const byType = store.queryRecall({ view: 'surfaced', sort: 'total', type: 'bugfix', limit: 50, offset: 0, collapse: false });
+  expect(byType.rows.map(r => r.title)).toEqual(['calendar bug squashed']);
+
+  const byQ = store.queryRecall({ view: 'surfaced', sort: 'total', q: 'CALENDAR', limit: 50, offset: 0, collapse: false });
+  expect(byQ.rows.map(r => r.title).sort()).toEqual(['Calendar team filter', 'calendar bug squashed']);
+  expect(byQ.total).toBe(2);
+});
+
+test('queryRecall — limit/offset paginate while total reflects the full match count', () => {
+  for (let i = 0; i < 5; i++) seedSurfaced(store, `row${i}`, 'feature', 10 - i, 0, 0, 100 + i);
+  const page = store.queryRecall({ view: 'surfaced', sort: 'total', limit: 2, offset: 2, collapse: false });
+  expect(page.rows.map(r => r.title)).toEqual(['row2', 'row3']);
+  expect(page.total).toBe(5);
+});
+
+test('queryRecall — collapse=true folds near-duplicate titles and sums counts', () => {
+  seedSurfaced(store, 'update-status skill command verified and available', 'discovery', 3, 0, 0, 100);
+  seedSurfaced(store, 'update-status skill command available in erp-platform', 'discovery', 3, 0, 0, 110);
+  seedSurfaced(store, 'update-status skill command is available', 'discovery', 3, 0, 0, 120);
+  seedSurfaced(store, 'totally different observation here', 'feature', 1, 0, 0, 130);
+
+  const collapsed = store.queryRecall({ view: 'surfaced', sort: 'total', limit: 50, offset: 0, collapse: true });
+  const top = collapsed.rows[0]!;
+  expect(top.variants).toBe(3);
+  expect(top.total).toBe(9);                 // 3 × 3 summed
+  expect(collapsed.rows).toHaveLength(2);    // 3 dupes → 1, plus the unrelated
+  expect(collapsed.total).toBe(4);           // page.total = pre-collapse match count, NOT group count
+
+  const raw = store.queryRecall({ view: 'surfaced', sort: 'total', limit: 50, offset: 0, collapse: false });
+  expect(raw.rows).toHaveLength(4);          // raw shows every row
+});
+
+test('queryRecall — collapse ties break deterministically by id (descending)', () => {
+  const lo = seedSurfaced(store, 'apple distinct alpha', 'feature', 2, 0, 0, 500);
+  const hi = seedSurfaced(store, 'zebra distinct beta', 'feature', 2, 0, 0, 500);  // same total + ts
+  const a = store.queryRecall({ view: 'surfaced', sort: 'total', limit: 50, offset: 0, collapse: true });
+  const b = store.queryRecall({ view: 'surfaced', sort: 'total', limit: 50, offset: 0, collapse: true });
+  expect(a.rows.map(r => r.id)).toEqual(b.rows.map(r => r.id));   // deterministic
+  expect(a.rows[0]!.id).toBe(Math.max(lo, hi));                   // higher id first on full tie
+});
+
+test('mergeDuplicateGroup — preserves NULL last_surfaced_at when nothing was ever surfaced', () => {
+  const s = mkObs(store, 'never surfaced survivor');
+  const m = mkObs(store, 'never surfaced member');
+  store.mergeDuplicateGroup(s, [m]);
+  expect(store.findById(s)!.last_surfaced_at).toBeNull();   // not coerced to epoch 0
+});
+
+test('queryRecall — excludes archived rows', () => {
+  const keep = seedSurfaced(store, 'kept', 'feature', 5, 0, 0, 100);
+  const drop = seedSurfaced(store, 'dropped', 'feature', 5, 0, 0, 200);
+  store.mergeDuplicateGroup(keep, [drop]);
+  const page = store.queryRecall({ view: 'surfaced', sort: 'total', limit: 50, offset: 0, collapse: false });
+  expect(page.rows.map(r => r.title)).toEqual(['kept']);
+  expect(page.total).toBe(1);
+});
+
+// ── dedup: find near-duplicate groups + reverse a merge ──
+
+test('findDuplicateGroups — groups surfaced near-dupes, survivor is the highest-count row', () => {
+  const a = seedSurfaced(store, 'update-status skill command verified and available', 'discovery', 5, 0, 0, 100);
+  const b = seedSurfaced(store, 'update-status skill command is available', 'discovery', 3, 0, 0, 110);
+  const c = seedSurfaced(store, 'update-status skill command available now', 'discovery', 2, 0, 0, 120);
+  seedSurfaced(store, 'totally unrelated observation', 'feature', 9, 0, 0, 130);  // own group → excluded
+  mkObs(store, 'never surfaced dup of update-status skill command', 'discovery'); // total 0 → excluded
+
+  const groups = store.findDuplicateGroups(0.5);
+  expect(groups).toHaveLength(1);
+  expect(groups[0]!.survivor.id).toBe(a);                 // count 5 leads
+  expect(groups[0]!.members.map(m => m.id).sort((x, y) => x - y)).toEqual([b, c].sort((x, y) => x - y));
+});
+
+test('mergeDuplicateGroup + unmergeDuplicateGroup round-trips counts and archive flags', () => {
+  const s = seedSurfaced(store, 'survivor row', 'feature', 5, 0, 0, 100);
+  const m = seedSurfaced(store, 'member row', 'feature', 3, 0, 0, 110);
+
+  store.mergeDuplicateGroup(s, [m]);
+  expect(store.findById(s)!.from_auto).toBe(8);
+  expect(store.findById(m)!.archived).toBe(true);
+  expect(store.findById(s)!.theme_member_ids).toEqual([m]);
+
+  store.unmergeDuplicateGroup(s);
+  expect(store.findById(s)!.from_auto).toBe(5);           // restored
+  expect(store.findById(m)!.archived).toBe(false);        // un-archived
+  expect(store.findById(m)!.archived_into_theme_id).toBeNull();
+  expect(store.findById(s)!.theme_member_ids).toBeNull();
+});
+
+test('mergedSurvivorIds — lists rows that have folded-in members (for --undo all)', () => {
+  const s = seedSurfaced(store, 'survivor', 'feature', 5, 0, 0, 100);
+  const m = seedSurfaced(store, 'member', 'feature', 3, 0, 0, 110);
+  expect(store.mergedSurvivorIds()).toEqual([]);
+  store.mergeDuplicateGroup(s, [m]);
+  expect(store.mergedSurvivorIds()).toEqual([s]);
+  store.unmergeDuplicateGroup(s);
+  expect(store.mergedSurvivorIds()).toEqual([]);
+});
+
+test('unmergeDuplicateGroup — no-op when the row has no merged members', () => {
+  const s = seedSurfaced(store, 'lonely', 'feature', 4, 0, 0, 100);
+  expect(() => store.unmergeDuplicateGroup(s)).not.toThrow();
+  expect(store.findById(s)!.from_auto).toBe(4);
 });
 
 test('ObservationsStore — countMissingStoredTokens / listMissingStoredTokens', () => {

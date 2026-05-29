@@ -184,6 +184,73 @@ test('/inject/context bumps from_auto — the high-volume path that was missing 
   expect(entry!.from_drill).toBe(0);
 });
 
+test('/search/all drops archived observation hits (and the survivor still surfaces)', async () => {
+  const keep = await seedObservation('kiwimark alpha');
+  const drop = await seedObservation('kiwimark beta');
+  // Fold `drop` into `keep`: drop is now archived and must not surface.
+  worker.store!.mergeDuplicateGroup(keep, [drop]);
+
+  const r = await fetch(`http://localhost:${PORT}/search/all`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ query: 'kiwimark', top_k: 10 }),
+  });
+  const body = await r.json() as { results: Array<{ metadata: { observation_id?: number } }> };
+  const ids = body.results.map(x => x.metadata?.observation_id);
+  expect(ids).toContain(keep);        // survivor still surfaces
+  expect(ids).not.toContain(drop);    // archived dup suppressed
+});
+
+test('/inject/context never injects an archived observation', async () => {
+  const keep = await seedObservation('plummark alpha');
+  const drop = await seedObservation('plummark beta');
+  worker.store!.mergeDuplicateGroup(keep, [drop]);
+
+  const r = await fetch(`http://localhost:${PORT}/inject/context`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      prompt: 'tell me about plummark', top_k: 10,
+      session_id: 's', project_id: 'track-test',
+    }),
+  });
+  const body = await r.json() as { envelope: string };
+  expect(body.envelope).toContain('plummark alpha');     // survivor injected
+  expect(body.envelope).not.toContain('plummark beta');  // archived not injected
+});
+
+test('/recall/list returns sorted, filtered rows with a total', async () => {
+  const a = await seedObservation('mango alpha');
+  const b = await seedObservation('mango beta');
+  worker.store!.bumpRetrieval([a], 'search');
+  worker.store!.bumpRetrieval([a], 'search');
+  worker.store!.bumpRetrieval([b], 'search');
+
+  const r = await fetch(`http://localhost:${PORT}/recall/list?view=surfaced&sort=total&q=mango`);
+  const body = await r.json() as { rows: Array<{ id: number; total: number }>; total: number };
+  expect(body.total).toBe(2);
+  expect(body.rows[0]!.id).toBe(a);     // a (2) outranks b (1)
+  expect(body.rows[0]!.total).toBe(2);
+});
+
+test('/observation/full returns the observation and bumps from_drill', async () => {
+  const id = await seedObservation('nectarine solo');
+  const before = await getRecall();
+
+  const r = await fetch(`http://localhost:${PORT}/observation/full?id=${id}`);
+  const body = await r.json() as { observation: { id: number; title: string; narrative: string } };
+  expect(body.observation.id).toBe(id);
+  expect(body.observation.title).toContain('nectarine solo');
+
+  const after = await getRecall();
+  expect(after.totals.drill).toBe(before.totals.drill + 1);
+});
+
+test('/observation/full 404s on a missing id', async () => {
+  const r = await fetch(`http://localhost:${PORT}/observation/full?id=999999`);
+  expect(r.status).toBe(404);
+});
+
 test('surfaced_count and recalled_count reflect distinct observations not total bumps', async () => {
   const id = await seedObservation('elderberry-marker-xyz');
 

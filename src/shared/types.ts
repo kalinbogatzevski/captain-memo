@@ -125,6 +125,9 @@ export interface Observation {
   from_drill: number;
   /** Epoch seconds of the most recent bump from any source, or null. */
   last_surfaced_at: number | null;
+  /** Source of the most recent bump (auto/search/drill), or null for rows whose
+   *  last surfacing predates v7 (the source wasn't recorded then). */
+  last_surfaced_source: RetrievalSource | null;
   /** v6 Dreaming scaffold — TRUE when this observation has been folded into
    *  a theme and should be skipped by the default search path. Reversible
    *  via UPDATE archived = 0. */
