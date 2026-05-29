@@ -187,6 +187,8 @@ These fire when the model decides retrieval would help your prompt — no slash 
 ```bash
 captain-memo status              # is the worker reachable?
 captain-memo stats               # corpus stats by channel + indexing progress
+captain-memo top                 # interactive live stats (htop-style); press ? for help
+captain-memo dedup               # fold near-duplicate observations (dry-run by default)
 captain-memo reindex             # cheap sha-diff reindex (or --force to re-embed)
 captain-memo observation list    # recent captured observations
 captain-memo observation flush   # force-drain the queue
@@ -198,7 +200,22 @@ captain-memo inspect-claude-mem        # read-only row counts of ~/.claude-mem/
 captain-memo migrate-from-claude-mem   # one-time migration (--dry-run for preview)
 ```
 
-`status` and `stats` accept `--json` for machine-readable output — handy for statuslines, dashboards, monitoring probes.
+`status` and `stats` accept `--json` for machine-readable output — handy for statuslines, dashboards, monitoring probes. `captain-memo watch` is a deprecated alias for `top`.
+
+### Interactive `top` (v0.1.16)
+
+`captain-memo top` is an htop-style live view of how memory is being used. A
+compact dashboard (corpus + recall + a "last surfaced" pulse) opens onto a
+navigable table you can reshape in place:
+
+- `s` / `r` / `n` — Surfaced / Recalled / Recent views
+- `↑↓` / `j` `k`, `PgUp` / `PgDn`, `g` / `G` — move + page the selection
+- `o` sort · `t` type filter · `/` find-by-title · `c` collapse near-duplicates
+- `⏎` open the full observation (counts as a drill) · `Esc` back · `?` help · `q` quit
+
+A live date/time clock sits top-right and advances on every refresh, so you can
+see the data updating. Piped (non-TTY) stdout falls back to a single static
+`stats` render.
 
 ## Recipes
 
@@ -245,8 +262,8 @@ Without a per-path breakdown, "this observation was retrieved 142 times" is ambi
 `captain-memo stats` surfaces this directly:
 
 ```
-RECALL ───────────────────────────────────────────────────
-tracks how memory actually gets used
+Recall ──────────────────────────── how memory actually gets used
+Last surfaced  4s ago · [discovery] update-status skill… · auto
 Surfaced      9 876 / 18 470   (53.5% of corpus)
 Recalled         42 / 18 470   (0.23% of corpus)
 Drill-in rate  0.43%   (42/9876 recalled out of surfaced)
@@ -254,13 +271,12 @@ Drill-in rate  0.43%   (42/9876 recalled out of surfaced)
 Top surfaced
   142×  [feature] Add retrieval tracking fields…
         auto: 138   search: 3   drill: 1
-   98×  [discovery] InjectContextSchema validation…
-        auto: 85    search: 12  drill: 1
-
-Top recalled
-    3×  [discovery] Claude Dreams API enables memory…
-        auto: 0     search: 1   drill: 2
+   17×  [discovery] update-status skill command… (+3 similar)
+        auto: 17    search: 0   drill: 0
 ```
+
+The "last surfaced" pulse and the `(+N similar)` near-duplicate collapse are new
+in v0.1.16; `captain-memo top` makes the same data interactive.
 
 You can also query directly:
 
