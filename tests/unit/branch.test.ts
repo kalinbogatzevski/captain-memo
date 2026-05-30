@@ -11,6 +11,21 @@ import { join } from 'node:path';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 
+// CI runners have no git user.name/email configured and — unlike a dev box —
+// git won't auto-derive one there, so `git commit` aborts with "Please tell me
+// who you are." Supply an identity via env on every git call so these tests are
+// hermetic: they pass regardless of the runner's global/system git config.
+const GIT_ENV = {
+  ...process.env,
+  GIT_AUTHOR_NAME: 'Captain Memo Test',
+  GIT_AUTHOR_EMAIL: 'test@captain-memo.local',
+  GIT_COMMITTER_NAME: 'Captain Memo Test',
+  GIT_COMMITTER_EMAIL: 'test@captain-memo.local',
+};
+function git(cmd: string, dir: string): Buffer {
+  return execSync(cmd, { cwd: dir, env: GIT_ENV });
+}
+
 // Flush the TTL cache before each test so cases don't bleed into each other.
 beforeEach(() => _resetBranchCache());
 
@@ -18,8 +33,8 @@ describe('detectBranchSync', () => {
   test('returns branch name inside a git repo', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cm-branch-test-'));
     try {
-      execSync('git init -b feature/widget', { cwd: dir });
-      execSync('git commit --allow-empty -m init', { cwd: dir });
+      git('git init -b feature/widget', dir);
+      git('git commit --allow-empty -m init', dir);
       expect(detectBranchSync(dir)).toBe('feature/widget');
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -42,10 +57,10 @@ describe('detectBranchSync', () => {
   test('returns HEAD literal when detached', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cm-branch-test-'));
     try {
-      execSync('git init', { cwd: dir });
-      execSync('git commit --allow-empty -m init', { cwd: dir });
-      const sha = execSync('git rev-parse HEAD', { cwd: dir }).toString().trim();
-      execSync(`git checkout ${sha}`, { cwd: dir });
+      git('git init', dir);
+      git('git commit --allow-empty -m init', dir);
+      const sha = git('git rev-parse HEAD', dir).toString().trim();
+      git(`git checkout ${sha}`, dir);
       expect(detectBranchSync(dir)).toBe('HEAD');
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -57,8 +72,8 @@ describe('detectBranchSyncCached', () => {
   test('first call misses cache and resolves branch from git', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cm-branch-cache-'));
     try {
-      execSync('git init -b feature/cached', { cwd: dir });
-      execSync('git commit --allow-empty -m init', { cwd: dir });
+      git('git init -b feature/cached', dir);
+      git('git commit --allow-empty -m init', dir);
 
       expect(branchCache.has(dir)).toBe(false);
       const branch = detectBranchSyncCached(dir);
@@ -72,8 +87,8 @@ describe('detectBranchSyncCached', () => {
 
   test('second call within TTL returns cached value without spawning git', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cm-branch-cache-'));
-    execSync('git init -b feature/cached', { cwd: dir });
-    execSync('git commit --allow-empty -m init', { cwd: dir });
+    git('git init -b feature/cached', dir);
+    git('git commit --allow-empty -m init', dir);
 
     const first = detectBranchSyncCached(dir);
     expect(first).toBe('feature/cached');
@@ -88,8 +103,8 @@ describe('detectBranchSyncCached', () => {
   test('after TTL expires the cache entry is refreshed', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cm-branch-cache-'));
     try {
-      execSync('git init -b feature/cached', { cwd: dir });
-      execSync('git commit --allow-empty -m init', { cwd: dir });
+      git('git init -b feature/cached', dir);
+      git('git commit --allow-empty -m init', dir);
 
       detectBranchSyncCached(dir);
 
