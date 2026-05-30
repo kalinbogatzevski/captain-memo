@@ -126,4 +126,26 @@ describe('buildTaskXml', () => {
     expect(xml).not.toContain('<c>');
     expect(xml).not.toContain('<v>');
   });
+
+  test('scopes the task to the current user via <UserId> in Principal AND LogonTrigger (BUG-2 fix)', () => {
+    const prevDom = process.env.USERDOMAIN;
+    const prevUser = process.env.USERNAME;
+    process.env.USERDOMAIN = 'TESTDOM';
+    process.env.USERNAME = 'testuser';
+    try {
+      const xml = buildTaskXml(sampleSpec());
+      // Without <UserId>, schtasks /Create can't bind the task to the logged-on
+      // user and demands an elevated token (the v0.2.3 "Access is denied" bug).
+      expect(count(xml, '<UserId>TESTDOM\\testuser</UserId>')).toBe(2); // Principal + LogonTrigger
+    } finally {
+      if (prevDom === undefined) delete process.env.USERDOMAIN; else process.env.USERDOMAIN = prevDom;
+      if (prevUser === undefined) delete process.env.USERNAME; else process.env.USERNAME = prevUser;
+    }
+  });
+
+  test('declares UTF-8 encoding to match the UTF-8 file install() writes', () => {
+    const xml = buildTaskXml(sampleSpec());
+    expect(xml).toContain('<?xml version="1.0" encoding="UTF-8"?>');
+    expect(xml).not.toContain('UTF-16');
+  });
 });

@@ -5,6 +5,23 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.2.4] — 2026-05-30
+
+### Fixed (Windows)
+- **The worker Scheduled Task now installs without admin.** v0.2.3 switched to
+  `schtasks /Create /XML`, but the generated task XML omitted `<UserId>`, so
+  `schtasks` couldn't scope the task to the current user and demanded an elevated
+  token (`Access is denied` for a normal user). The `<Principal>` **and**
+  `<LogonTrigger>` now carry the current user's `<UserId>`, and the XML
+  declaration is `UTF-8` to match the bytes written to disk.
+- **Per-release plugin version.** `plugin/.claude-plugin/plugin.json` was pinned
+  at `0.1.0`, so the plugin **cache key never changed between releases** and
+  `claude plugin update` could reuse a stale (broken) cached copy. It now tracks
+  the release version, so an update actually delivers the new bundle.
+
+### Docs
+- README marketplace example uses the unambiguous `owner/repo` form.
+
 ## [0.2.3] — 2026-05-30
 
 ### Fixed (Windows — from a native field-install report)

@@ -132,8 +132,15 @@ export function buildTaskXml(spec: ServiceSpec): string {
   execLines.push(`      <WorkingDirectory>${xmlEscape(spec.workingDir)}</WorkingDirectory>`);
   execLines.push('    </Exec>');
 
+  // Scope the task to the current user. WITHOUT <UserId>, schtasks /Create can't
+  // bind the task to the logged-on user and falls back to a registration that
+  // needs an elevated token → "Access is denied" for a normal user (field-verified).
+  const userId = xmlEscape(
+    `${process.env.USERDOMAIN ?? process.env.COMPUTERNAME ?? ''}\\${process.env.USERNAME ?? ''}`,
+  );
   const lines = [
-    '<?xml version="1.0" encoding="UTF-16"?>',
+    // Declaration must match the bytes install() writes (UTF-8 via writeFileSync).
+    '<?xml version="1.0" encoding="UTF-8"?>',
     '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
     '  <RegistrationInfo>',
     `    <Description>${xmlEscape(spec.description)}</Description>`,
@@ -142,10 +149,12 @@ export function buildTaskXml(spec: ServiceSpec): string {
     '  <Triggers>',
     '    <LogonTrigger>',
     '      <Enabled>true</Enabled>',
+    `      <UserId>${userId}</UserId>`,
     '    </LogonTrigger>',
     '  </Triggers>',
     '  <Principals>',
     '    <Principal id="Author">',
+    `      <UserId>${userId}</UserId>`,
     '      <LogonType>InteractiveToken</LogonType>',
     '      <RunLevel>LeastPrivilege</RunLevel>',
     '    </Principal>',

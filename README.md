@@ -137,7 +137,7 @@ Installs to `/opt/captain-memo-embed/` + `/etc/systemd/system/` + `/etc/captain-
 If you already have a Captain Memo worker running on another box and just want THIS Claude Code install to talk to it:
 
 ```bash
-claude plugin marketplace add github.com/kalinbogatzevski/captain-memo
+claude plugin marketplace add kalinbogatzevski/captain-memo
 claude plugin install captain-memo@captain-memo
 ```
 
