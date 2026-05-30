@@ -97,7 +97,7 @@ test('UserPromptSubmit — empty stdin is tolerated', async () => {
 });
 
 test('UserPromptSubmit — envelope conforms to spec §3 template', async () => {
-  const PORT2 = 39907;
+  const PORT2 = 39910;  // unique per test file — 39907 collided with worker-retrieval-tracking.test.ts
   const workDir = mkdtempSync(join(tmpdir(), 'captain-memo-hook-contract-'));
   const memDir = join(workDir, 'memory');
   mkdirSync(memDir, { recursive: true });

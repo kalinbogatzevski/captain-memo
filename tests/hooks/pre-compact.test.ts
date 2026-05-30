@@ -3,7 +3,7 @@ import { join } from 'path';
 import { readFileSync } from 'fs';
 import { spawn } from 'bun';
 
-const PORT = 39906;
+const PORT = 39909;  // unique per test file — 39906 collided with stop.test.ts under CI's parallel/TIME_WAIT timing
 const FIXTURE = readFileSync(
   join(import.meta.dir, '../fixtures/hooks/pre-compact.input.json'),
   'utf-8',
