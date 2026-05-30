@@ -3,7 +3,7 @@ import { join } from 'path';
 import { readFileSync } from 'fs';
 import { spawn } from 'bun';
 
-const PORT = 39909;  // unique per test file — 39906 collided with stop.test.ts under CI's parallel/TIME_WAIT timing
+let port = 0;  // OS-assigned ephemeral port (port:0) — avoids EADDRINUSE under CI's parallel/TIME_WAIT timing
 const FIXTURE = readFileSync(
   join(import.meta.dir, '../fixtures/hooks/pre-compact.input.json'),
   'utf-8',
@@ -16,7 +16,7 @@ let server: ReturnType<typeof Bun.serve>;
 
 beforeAll(() => {
   server = Bun.serve({
-    port: PORT,
+    port: 0,
     async fetch(req) {
       const url = new URL(req.url);
       if (url.pathname === '/observation/enqueue') {
@@ -27,6 +27,7 @@ beforeAll(() => {
       return new Response('nf', { status: 404 });
     },
   });
+  port = server.port;
 });
 
 afterAll(() => server.stop());
@@ -35,7 +36,7 @@ async function runHook(input: string, env: Record<string, string> = {}) {
   const proc = spawn({
     cmd: ['bun', HOOK_PATH],
     stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
-    env: { ...process.env, CAPTAIN_MEMO_WORKER_PORT: String(PORT), ...env },
+    env: { ...process.env, CAPTAIN_MEMO_WORKER_PORT: String(port), ...env },
   });
   proc.stdin.write(input);
   proc.stdin.end();

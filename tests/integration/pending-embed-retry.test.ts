@@ -4,9 +4,9 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
 
-const PORT = 39908;
 let worker: WorkerHandle | null;
 let workDir: string;
+let port = 0;
 
 beforeEach(async () => {
   workDir = mkdtempSync(join(tmpdir(), 'captain-memo-pe-int-'));
@@ -20,7 +20,7 @@ afterEach(async () => {
 
 test('POST /pending_embed/retry returns due_count + total_pending', async () => {
   worker = await startWorker({
-    port: PORT,
+    port: 0,
     projectId: 'pe-test',
     metaDbPath: ':memory:',
     embedderEndpoint: 'http://localhost:0/unused',
@@ -30,8 +30,9 @@ test('POST /pending_embed/retry returns due_count + total_pending', async () => 
     skipEmbed: true,
     pendingEmbedDbPath: join(workDir, 'pending.db'),
   });
+  port = worker.port;
 
-  const res = await fetch(`http://localhost:${PORT}/pending_embed/retry`, {
+  const res = await fetch(`http://localhost:${port}/pending_embed/retry`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ max: 50 }),
@@ -45,7 +46,7 @@ test('POST /pending_embed/retry returns due_count + total_pending', async () => 
 
 test('observation ingest with embed-failure pushes rows to pending_embed', async () => {
   worker = await startWorker({
-    port: PORT,
+    port: 0,
     projectId: 'pe-test',
     metaDbPath: ':memory:',
     embedderEndpoint: 'http://localhost:1/will-fail',
@@ -62,8 +63,9 @@ test('observation ingest with embed-failure pushes rows to pending_embed', async
     }),
     observationTickMs: 0,
   });
+  port = worker.port;
 
-  await fetch(`http://localhost:${PORT}/observation/enqueue`, {
+  await fetch(`http://localhost:${port}/observation/enqueue`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -72,13 +74,13 @@ test('observation ingest with embed-failure pushes rows to pending_embed', async
       files_read: [], files_modified: [], ts_epoch: 1_700_000_000,
     }),
   });
-  await fetch(`http://localhost:${PORT}/observation/flush`, {
+  await fetch(`http://localhost:${port}/observation/flush`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ session_id: 's' }),
   });
 
-  const res = await fetch(`http://localhost:${PORT}/pending_embed/retry`, {
+  const res = await fetch(`http://localhost:${port}/pending_embed/retry`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ max: 50 }),

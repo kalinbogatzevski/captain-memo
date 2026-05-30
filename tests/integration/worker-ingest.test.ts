@@ -7,7 +7,7 @@ import { join } from 'path';
 let worker: WorkerHandle;
 let workDir: string;
 let memoryDir: string;
-const PORT = 39892;
+let port = 0;
 
 beforeAll(async () => {
   workDir = mkdtempSync(join(tmpdir(), 'captain-memo-worker-ingest-'));
@@ -20,7 +20,7 @@ beforeAll(async () => {
   );
 
   worker = await startWorker({
-    port: PORT,
+    port: 0,
     projectId: 'ingest-test',
     metaDbPath: ':memory:',
     embedderEndpoint: 'http://localhost:0/unused',
@@ -31,6 +31,7 @@ beforeAll(async () => {
     watchPaths: [join(memoryDir, '*.md')],
     watchChannel: 'memory',
   });
+  port = worker.port;
 
   // Initial indexing happens during startWorker; small grace period for FS to settle.
   await new Promise(r => setTimeout(r, 500));
@@ -42,13 +43,13 @@ afterAll(async () => {
 });
 
 test('worker — initial indexing picks up existing files', async () => {
-  const res = await fetch(`http://localhost:${PORT}/stats`);
+  const res = await fetch(`http://localhost:${port}/stats`);
   const body = await res.json() as any;
   expect(body.total_chunks).toBeGreaterThan(0);
 });
 
 test('worker — /reindex --force re-embeds all', async () => {
-  const res = await fetch(`http://localhost:${PORT}/reindex`, {
+  const res = await fetch(`http://localhost:${port}/reindex`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ channel: 'memory', force: true }),

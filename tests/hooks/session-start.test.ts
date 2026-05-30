@@ -3,7 +3,7 @@ import { join } from 'path';
 import { readFileSync } from 'fs';
 import { spawn } from 'bun';
 
-const PORT = 39904;
+let port = 0;
 const FIXTURE = readFileSync(
   join(import.meta.dir, '../fixtures/hooks/session-start.input.json'),
   'utf-8',
@@ -15,7 +15,7 @@ let server: ReturnType<typeof Bun.serve>;
 
 beforeAll(() => {
   server = Bun.serve({
-    port: PORT,
+    port: 0,
     async fetch(req) {
       const url = new URL(req.url);
       if (url.pathname === '/stats') {
@@ -32,6 +32,7 @@ beforeAll(() => {
       return new Response('nf', { status: 404 });
     },
   });
+  port = server.port;
 });
 
 afterAll(() => server.stop());
@@ -40,7 +41,7 @@ async function runHook(env: Record<string, string> = {}) {
   const proc = spawn({
     cmd: ['bun', HOOK_PATH],
     stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
-    env: { ...process.env, CAPTAIN_MEMO_WORKER_PORT: String(PORT), ...env },
+    env: { ...process.env, CAPTAIN_MEMO_WORKER_PORT: String(port), ...env },
   });
   proc.stdin.write(FIXTURE);
   proc.stdin.end();

@@ -5,7 +5,7 @@ import { join } from 'path';
 import { spawn } from 'bun';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
 
-const PORT = 39920;
+let port = 0;
 let worker: WorkerHandle;
 let workDir: string;
 const HOOK = (name: string) => join(import.meta.dir, `../../src/hooks/${name}.ts`);
@@ -20,7 +20,7 @@ beforeAll(async () => {
   );
 
   worker = await startWorker({
-    port: PORT,
+    port: 0,
     projectId: 'release-gate',
     metaDbPath: ':memory:',
     embedderEndpoint: 'http://localhost:0/unused',
@@ -43,6 +43,7 @@ beforeAll(async () => {
     }),
     observationTickMs: 0,
   });
+  port = worker.port;
   await new Promise(r => setTimeout(r, 600));
 });
 
@@ -57,7 +58,7 @@ async function runHook(script: string, payload: unknown): Promise<{ stdout: stri
     stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
     env: {
       ...process.env,
-      CAPTAIN_MEMO_WORKER_PORT: String(PORT),
+      CAPTAIN_MEMO_WORKER_PORT: String(port),
       // Bun cold-start + fetch may exceed 250ms on dev hardware; loosen for
       // this end-to-end test (production cap remains 250ms).
       CAPTAIN_MEMO_HOOK_TIMEOUT_MS: '2000',
@@ -104,11 +105,11 @@ test('plan2 release-gate — full session round trip', async () => {
   expect(r.exitCode).toBe(0);
 
   // Verify observations landed
-  const recent = await fetch(`http://localhost:${PORT}/observations/recent?limit=10`).then(r2 => r2.json()) as any;
+  const recent = await fetch(`http://localhost:${port}/observations/recent?limit=10`).then(r2 => r2.json()) as any;
   expect(recent.items.length).toBeGreaterThan(0);
   expect(recent.items[0].title).toMatch(/Plan-2 stub/);
 
   // Stats should now show observation chunks too
-  const stats = await fetch(`http://localhost:${PORT}/stats`).then(r2 => r2.json()) as any;
+  const stats = await fetch(`http://localhost:${port}/stats`).then(r2 => r2.json()) as any;
   expect(stats.by_channel.observation ?? 0).toBeGreaterThan(0);
 }, 30_000);

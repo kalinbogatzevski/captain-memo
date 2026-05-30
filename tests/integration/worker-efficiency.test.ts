@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
 import { ObservationsStore } from '../../src/worker/observations-store.ts';
 
-const PORT = 39912;
+let port = 0;
 let worker: WorkerHandle;
 let workDir: string;
 let obsDbPath: string;
@@ -14,7 +14,7 @@ beforeEach(async () => {
   workDir = mkdtempSync(join(tmpdir(), 'captain-memo-eff-'));
   obsDbPath = join(workDir, 'obs.db');
   worker = await startWorker({
-    port: PORT,
+    port: 0,
     projectId: 'eff-test',
     metaDbPath: ':memory:',
     embedderEndpoint: 'http://localhost:0/unused',
@@ -34,6 +34,7 @@ beforeEach(async () => {
     }),
     observationTickMs: 0,
   });
+  port = worker.port;
 });
 
 afterEach(async () => {
@@ -42,7 +43,7 @@ afterEach(async () => {
 });
 
 test('GET /stats — efficiency object has the expected shape', async () => {
-  const stats = await (await fetch(`http://localhost:${PORT}/stats`)).json() as any;
+  const stats = await (await fetch(`http://localhost:${port}/stats`)).json() as any;
   expect(stats.efficiency).toBeDefined();
   expect(stats.efficiency.corpus).toMatchObject({
     work_tokens: expect.any(Number),
@@ -80,7 +81,7 @@ test('worker startup backfills stored_tokens for pre-existing observations', asy
   seed.close();
 
   const seedWorker = await startWorker({
-    port: 39913,
+    port: 0,
     projectId: 'eff-test',
     metaDbPath: ':memory:',
     embedderEndpoint: 'http://localhost:0/unused',
@@ -94,11 +95,12 @@ test('worker startup backfills stored_tokens for pre-existing observations', asy
     summarize: async () => ({ type: 'change', title: 't', narrative: '', facts: [], concepts: [] }),
     observationTickMs: 0,
   });
+  const seedPort = seedWorker.port;
 
   // Poll /stats until the background backfill has populated all 3 rows.
   let corpus: any = null;
   for (let i = 0; i < 50; i++) {
-    const s = await (await fetch('http://localhost:39913/stats')).json() as any;
+    const s = await (await fetch(`http://localhost:${seedPort}/stats`)).json() as any;
     corpus = s.efficiency.corpus;
     if (corpus.coverage.with_data === 3) break;
     await new Promise(r => setTimeout(r, 100));
@@ -116,7 +118,7 @@ test('worker startup backfills stored_tokens for pre-existing observations', asy
 });
 
 test('ingesting an observation populates stored_tokens', async () => {
-  await fetch(`http://localhost:${PORT}/observation/enqueue`, {
+  await fetch(`http://localhost:${port}/observation/enqueue`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -126,7 +128,7 @@ test('ingesting an observation populates stored_tokens', async () => {
       ts_epoch: 1_700_000_000,
     }),
   });
-  await fetch(`http://localhost:${PORT}/observation/flush`, {
+  await fetch(`http://localhost:${port}/observation/flush`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ session_id: 's-eff' }),

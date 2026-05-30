@@ -5,7 +5,6 @@ import { tmpdir } from 'os';
 import { spawn } from 'bun';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
 
-const PORT = 39903;
 const FIXTURE = readFileSync(
   join(import.meta.dir, '../fixtures/hooks/user-prompt-submit.input.json'),
   'utf-8',
@@ -13,11 +12,12 @@ const FIXTURE = readFileSync(
 const HOOK_PATH = join(import.meta.dir, '../../src/hooks/user-prompt-submit.ts');
 
 let server: ReturnType<typeof Bun.serve>;
+let port = 0;
 let lastReceived: unknown = null;
 
 beforeAll(() => {
   server = Bun.serve({
-    port: PORT,
+    port: 0,
     async fetch(req) {
       const url = new URL(req.url);
       if (url.pathname === '/inject/context') {
@@ -35,6 +35,7 @@ beforeAll(() => {
       return new Response('not found', { status: 404 });
     },
   });
+  port = server.port;
 });
 
 afterAll(() => server.stop());
@@ -47,7 +48,7 @@ async function runHook(input: string, env: Record<string, string> = {}): Promise
     stderr: 'pipe',
     env: {
       ...process.env,
-      CAPTAIN_MEMO_WORKER_PORT: String(PORT),
+      CAPTAIN_MEMO_WORKER_PORT: String(port),
       ...env,
     },
   });
@@ -97,7 +98,6 @@ test('UserPromptSubmit — empty stdin is tolerated', async () => {
 });
 
 test('UserPromptSubmit — envelope conforms to spec §3 template', async () => {
-  const PORT2 = 39910;  // unique per test file — 39907 collided with worker-retrieval-tracking.test.ts
   const workDir = mkdtempSync(join(tmpdir(), 'captain-memo-hook-contract-'));
   const memDir = join(workDir, 'memory');
   mkdirSync(memDir, { recursive: true });
@@ -107,7 +107,7 @@ test('UserPromptSubmit — envelope conforms to spec §3 template', async () => 
   );
 
   const worker: WorkerHandle = await startWorker({
-    port: PORT2,
+    port: 0,
     projectId: 'contract-test',
     metaDbPath: ':memory:',
     embedderEndpoint: 'http://localhost:0/unused',
@@ -119,6 +119,7 @@ test('UserPromptSubmit — envelope conforms to spec §3 template', async () => 
     watchChannel: 'memory',
     hookBudgetTokens: 2000,
   });
+  const workerPort = worker.port;
   await new Promise(r => setTimeout(r, 500));
 
   try {
@@ -131,7 +132,7 @@ test('UserPromptSubmit — envelope conforms to spec §3 template', async () => 
       stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
       env: {
         ...process.env,
-        CAPTAIN_MEMO_WORKER_PORT: String(PORT2),
+        CAPTAIN_MEMO_WORKER_PORT: String(workerPort),
         // Bun cold-start + fetch can exceed 250ms on the dev box; loosen for
         // this specific contract test (production cap is unchanged).
         CAPTAIN_MEMO_HOOK_TIMEOUT_MS: '2000',

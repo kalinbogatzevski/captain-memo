@@ -4,14 +4,14 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
 
-const PORT = 39901;
+let port = 0;
 let worker: WorkerHandle;
 let workDir: string;
 
 beforeEach(async () => {
   workDir = mkdtempSync(join(tmpdir(), 'captain-memo-obs-int-'));
   worker = await startWorker({
-    port: PORT,
+    port: 0,
     projectId: 'obs-test',
     metaDbPath: ':memory:',
     embedderEndpoint: 'http://localhost:0/unused',
@@ -31,6 +31,7 @@ beforeEach(async () => {
     }),
     observationTickMs: 0, // Disable auto-tick; test calls flush manually.
   });
+  port = worker.port;
 });
 
 afterEach(async () => {
@@ -39,7 +40,7 @@ afterEach(async () => {
 });
 
 test('POST /observation/enqueue accepts a raw event and returns id', async () => {
-  const res = await fetch(`http://localhost:${PORT}/observation/enqueue`, {
+  const res = await fetch(`http://localhost:${port}/observation/enqueue`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -62,7 +63,7 @@ test('POST /observation/enqueue accepts a raw event and returns id', async () =>
 
 test('POST /observation/flush drains queued events into observations', async () => {
   for (let i = 0; i < 3; i++) {
-    await fetch(`http://localhost:${PORT}/observation/enqueue`, {
+    await fetch(`http://localhost:${port}/observation/enqueue`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -72,7 +73,7 @@ test('POST /observation/flush drains queued events into observations', async () 
       }),
     });
   }
-  const res = await fetch(`http://localhost:${PORT}/observation/flush`, {
+  const res = await fetch(`http://localhost:${port}/observation/flush`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ session_id: 's-flush' }),
@@ -84,7 +85,7 @@ test('POST /observation/flush drains queued events into observations', async () 
 });
 
 test('POST /observation/flush — empty queue returns processed=0', async () => {
-  const res = await fetch(`http://localhost:${PORT}/observation/flush`, {
+  const res = await fetch(`http://localhost:${port}/observation/flush`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ session_id: 'nope' }),
@@ -95,7 +96,7 @@ test('POST /observation/flush — empty queue returns processed=0', async () => 
 });
 
 test('POST /observation/enqueue — invalid body → 400', async () => {
-  const res = await fetch(`http://localhost:${PORT}/observation/enqueue`, {
+  const res = await fetch(`http://localhost:${port}/observation/enqueue`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ session_id: 's1' }), // missing fields

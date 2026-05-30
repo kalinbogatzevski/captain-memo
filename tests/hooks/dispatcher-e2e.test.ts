@@ -14,16 +14,16 @@ import { join } from 'path';
 import { readFileSync } from 'fs';
 import { spawn } from 'bun';
 
-const PORT = 39915;
 const HOOK_BIN = join(import.meta.dir, '../../bin/captain-memo-hook');
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let received: Array<{ path: string; body: any }> = [];
 let server: ReturnType<typeof Bun.serve>;
+let port = 0;
 
 beforeAll(() => {
   server = Bun.serve({
-    port: PORT,
+    port: 0,
     async fetch(req) {
       const url = new URL(req.url);
       if (req.method === 'POST') {
@@ -39,6 +39,7 @@ beforeAll(() => {
       return new Response('not found', { status: 404 });
     },
   });
+  port = server.port;
 });
 
 afterAll(() => server.stop());
@@ -48,7 +49,7 @@ async function runDispatcher(event: string, input: string) {
   const proc = spawn({
     cmd: ['bun', HOOK_BIN, event],
     stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
-    env: { ...process.env, CAPTAIN_MEMO_WORKER_PORT: String(PORT) },
+    env: { ...process.env, CAPTAIN_MEMO_WORKER_PORT: String(port) },
   });
   proc.stdin.write(input);
   proc.stdin.end();

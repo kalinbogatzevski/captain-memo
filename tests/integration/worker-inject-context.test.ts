@@ -4,7 +4,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
 
-const PORT = 39902;
+let port = 0;
 let worker: WorkerHandle;
 let workDir: string;
 
@@ -15,7 +15,7 @@ beforeEach(async () => {
   writeFileSync(join(memDir, 'feedback_seed.md'), `---\ntype: feedback\ndescription: Seeded\n---\nAlways use erp-components, no custom page styles.\n`);
 
   worker = await startWorker({
-    port: PORT,
+    port: 0,
     projectId: 'inject-test',
     metaDbPath: ':memory:',
     embedderEndpoint: 'http://localhost:0/unused',
@@ -27,6 +27,7 @@ beforeEach(async () => {
     watchChannel: 'memory',
     hookBudgetTokens: 2000,
   });
+  port = worker.port;
   // Wait for initial indexing
   await new Promise(r => setTimeout(r, 500));
 });
@@ -38,7 +39,7 @@ afterEach(async () => {
 
 test('POST /inject/context returns envelope under budget', async () => {
   const start = Date.now();
-  const res = await fetch(`http://localhost:${PORT}/inject/context`, {
+  const res = await fetch(`http://localhost:${port}/inject/context`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ prompt: 'erp-components rule', top_k: 5 }),
@@ -55,7 +56,7 @@ test('POST /inject/context returns envelope under budget', async () => {
 });
 
 test('POST /inject/context — short prompts return empty envelope', async () => {
-  const res = await fetch(`http://localhost:${PORT}/inject/context`, {
+  const res = await fetch(`http://localhost:${port}/inject/context`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ prompt: 'ok' }),
@@ -67,7 +68,7 @@ test('POST /inject/context — short prompts return empty envelope', async () =>
 });
 
 test('POST /inject/context — invalid body → 400', async () => {
-  const res = await fetch(`http://localhost:${PORT}/inject/context`, {
+  const res = await fetch(`http://localhost:${port}/inject/context`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({}),

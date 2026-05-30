@@ -16,7 +16,7 @@ let worker: WorkerHandle;
 let workDir: string;
 let memoryDir: string;
 let voyageServer: ReturnType<typeof Bun.serve>;
-const PORT = 39893;
+let port = 0;
 const EMBEDDING_DIM = 8;
 
 beforeAll(async () => {
@@ -40,7 +40,7 @@ beforeAll(async () => {
   });
 
   worker = await startWorker({
-    port: PORT,
+    port: 0,
     projectId: 'e2e-test',
     metaDbPath: ':memory:',
     embedderEndpoint: `http://localhost:${voyageServer.port}/v1/embeddings`,
@@ -50,6 +50,7 @@ beforeAll(async () => {
     watchPaths: [join(memoryDir, '*.md')],
     watchChannel: 'memory',
   });
+  port = worker.port;
 });
 
 afterAll(async () => {
@@ -68,10 +69,10 @@ test('e2e — write file → indexed → searchable via /search/all', async () =
   // Wait for watcher to pick up + index.
   await new Promise((r) => setTimeout(r, 1500));
 
-  const stats = (await fetch(`http://localhost:${PORT}/stats`).then((r) => r.json())) as any;
+  const stats = (await fetch(`http://localhost:${port}/stats`).then((r) => r.json())) as any;
   expect(stats.total_chunks).toBeGreaterThan(0);
 
-  const search = (await fetch(`http://localhost:${PORT}/search/all`, {
+  const search = (await fetch(`http://localhost:${port}/search/all`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ query: 'erp-components', top_k: 5 }),
@@ -89,7 +90,7 @@ test('e2e — edit file → only changed chunks re-embedded', async () => {
   writeFileSync(filePath, '---\ntype: feedback\n---\nUpdated version.');
   await new Promise((r) => setTimeout(r, 1500));
 
-  const afterSearch = (await fetch(`http://localhost:${PORT}/search/all`, {
+  const afterSearch = (await fetch(`http://localhost:${port}/search/all`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ query: 'Updated version', top_k: 5 }),
@@ -106,7 +107,7 @@ test('e2e — delete file → chunks removed', async () => {
   unlinkSync(filePath);
   await new Promise((r) => setTimeout(r, 1500));
 
-  const search = (await fetch(`http://localhost:${PORT}/search/all`, {
+  const search = (await fetch(`http://localhost:${port}/search/all`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ query: 'will be deleted', top_k: 5 }),

@@ -12,7 +12,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
 
-const PORT = 39907;
+let port = 0;
 let worker: WorkerHandle;
 let workDir: string;
 
@@ -25,13 +25,13 @@ interface RecallBlock {
 }
 
 async function getRecall(): Promise<RecallBlock> {
-  const r = await fetch(`http://localhost:${PORT}/stats`);
+  const r = await fetch(`http://localhost:${port}/stats`);
   const body = await r.json() as { recall: RecallBlock };
   return body.recall;
 }
 
 async function seedObservation(title: string): Promise<number> {
-  await fetch(`http://localhost:${PORT}/observation/enqueue`, {
+  await fetch(`http://localhost:${port}/observation/enqueue`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -40,7 +40,7 @@ async function seedObservation(title: string): Promise<number> {
       files_read: [], files_modified: [], ts_epoch: 1_700_000_000,
     }),
   });
-  const flush = await fetch(`http://localhost:${PORT}/observation/flush`, {
+  const flush = await fetch(`http://localhost:${port}/observation/flush`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ session_id: 'seed' }),
@@ -49,7 +49,7 @@ async function seedObservation(title: string): Promise<number> {
   expect(body.observations_created).toBeGreaterThanOrEqual(1);
 
   // Find the freshly-created observation id via the recent listing.
-  const recent = await fetch(`http://localhost:${PORT}/observations/recent?limit=10`);
+  const recent = await fetch(`http://localhost:${port}/observations/recent?limit=10`);
   const list = await recent.json() as { items: Array<{ id: number; title: string }> };
   const match = list.items.find(i => i.title.includes(title));
   expect(match).toBeDefined();
@@ -59,7 +59,7 @@ async function seedObservation(title: string): Promise<number> {
 beforeEach(async () => {
   workDir = mkdtempSync(join(tmpdir(), 'captain-memo-track-'));
   worker = await startWorker({
-    port: PORT,
+    port: 0,
     projectId: 'track-test',
     metaDbPath: ':memory:',
     embedderEndpoint: 'http://localhost:0/unused',
@@ -81,6 +81,7 @@ beforeEach(async () => {
     }),
     observationTickMs: 0,
   });
+  port = worker.port;
 });
 
 afterEach(async () => {
@@ -94,7 +95,7 @@ test('/search/all bumps from_search on observation hits', async () => {
   const before = await getRecall();
   expect(before.totals.search).toBe(0);
 
-  const r = await fetch(`http://localhost:${PORT}/search/all`, {
+  const r = await fetch(`http://localhost:${port}/search/all`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ query: 'apricot-marker-xyz', top_k: 5 }),
@@ -113,7 +114,7 @@ test('/search/all bumps from_search on observation hits', async () => {
 
 test('/search/observations bumps from_search', async () => {
   const id = await seedObservation('banana-marker-xyz');
-  await fetch(`http://localhost:${PORT}/search/observations`, {
+  await fetch(`http://localhost:${port}/search/observations`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ query: 'banana-marker-xyz', top_k: 5 }),
@@ -129,7 +130,7 @@ test('/get_full bumps from_drill (NOT from_search)', async () => {
   await seedObservation('cherry-marker-xyz');
   // First do a search to discover the doc_id (mirrors how the slash skill
   // calls /search/all then /get_full).
-  const search = await fetch(`http://localhost:${PORT}/search/all`, {
+  const search = await fetch(`http://localhost:${port}/search/all`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ query: 'cherry-marker-xyz', top_k: 1 }),
@@ -144,7 +145,7 @@ test('/get_full bumps from_drill (NOT from_search)', async () => {
   const baselineSearch = beforeDrill.totals.search;
   const baselineDrill = beforeDrill.totals.drill;
 
-  await fetch(`http://localhost:${PORT}/get_full`, {
+  await fetch(`http://localhost:${port}/get_full`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ doc_id: sbody.results[0]!.doc_id }),
@@ -164,7 +165,7 @@ test('/inject/context bumps from_auto — the high-volume path that was missing 
   const before = await getRecall();
   expect(before.totals.auto).toBe(0);
 
-  await fetch(`http://localhost:${PORT}/inject/context`, {
+  await fetch(`http://localhost:${port}/inject/context`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -190,7 +191,7 @@ test('/search/all drops archived observation hits (and the survivor still surfac
   // Fold `drop` into `keep`: drop is now archived and must not surface.
   worker.store!.mergeDuplicateGroup(keep, [drop]);
 
-  const r = await fetch(`http://localhost:${PORT}/search/all`, {
+  const r = await fetch(`http://localhost:${port}/search/all`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ query: 'kiwimark', top_k: 10 }),
@@ -206,7 +207,7 @@ test('/inject/context never injects an archived observation', async () => {
   const drop = await seedObservation('plummark beta');
   worker.store!.mergeDuplicateGroup(keep, [drop]);
 
-  const r = await fetch(`http://localhost:${PORT}/inject/context`, {
+  const r = await fetch(`http://localhost:${port}/inject/context`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -226,7 +227,7 @@ test('/recall/list returns sorted, filtered rows with a total', async () => {
   worker.store!.bumpRetrieval([a], 'search');
   worker.store!.bumpRetrieval([b], 'search');
 
-  const r = await fetch(`http://localhost:${PORT}/recall/list?view=surfaced&sort=total&q=mango`);
+  const r = await fetch(`http://localhost:${port}/recall/list?view=surfaced&sort=total&q=mango`);
   const body = await r.json() as { rows: Array<{ id: number; total: number }>; total: number };
   expect(body.total).toBe(2);
   expect(body.rows[0]!.id).toBe(a);     // a (2) outranks b (1)
@@ -237,7 +238,7 @@ test('/observation/full returns the observation and bumps from_drill', async () 
   const id = await seedObservation('nectarine solo');
   const before = await getRecall();
 
-  const r = await fetch(`http://localhost:${PORT}/observation/full?id=${id}`);
+  const r = await fetch(`http://localhost:${port}/observation/full?id=${id}`);
   const body = await r.json() as { observation: { id: number; title: string; narrative: string } };
   expect(body.observation.id).toBe(id);
   expect(body.observation.title).toContain('nectarine solo');
@@ -247,7 +248,7 @@ test('/observation/full returns the observation and bumps from_drill', async () 
 });
 
 test('/observation/full 404s on a missing id', async () => {
-  const r = await fetch(`http://localhost:${PORT}/observation/full?id=999999`);
+  const r = await fetch(`http://localhost:${port}/observation/full?id=999999`);
   expect(r.status).toBe(404);
 });
 
@@ -256,7 +257,7 @@ test('surfaced_count and recalled_count reflect distinct observations not total 
 
   // Bump the same observation many times across all three sources.
   for (let i = 0; i < 5; i++) {
-    await fetch(`http://localhost:${PORT}/inject/context`, {
+    await fetch(`http://localhost:${port}/inject/context`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -265,7 +266,7 @@ test('surfaced_count and recalled_count reflect distinct observations not total 
       }),
     });
   }
-  await fetch(`http://localhost:${PORT}/search/observations`, {
+  await fetch(`http://localhost:${port}/search/observations`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ query: 'elderberry-marker-xyz', top_k: 3 }),
