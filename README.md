@@ -171,6 +171,32 @@ Requirements and behavior on the native path:
 
 After the wizard, **fully restart Claude Code** (run it on Windows too) for the plugin to load.
 
+#### Upgrading on Windows
+
+To move an existing native install to a newer release:
+
+```powershell
+# The worker runs from your checkout; find it if you're unsure:
+#   (Get-ScheduledTask -TaskName 'captain-memo-worker').Actions[0].WorkingDirectory
+cd <your captain-memo checkout>
+git pull
+bun install                       # refresh deps (and vec0.dll) on this x64 box
+Stop-ScheduledTask -TaskName 'captain-memo-worker'; Start-ScheduledTask -TaskName 'captain-memo-worker'
+captain-memo doctor               # confirm the worker is healthy on :39888
+```
+
+The Windows CLI shim runs the TypeScript source directly (`captain-memo.cmd` → `bun "<repo>\src\cli\index.ts"`), so `git pull` makes the new CLI live **with no rebuild** — `captain-memo help` then prints the new version. Re-running `bun .\bin\captain-memo install` is an equivalent, idempotent alternative: it replaces the Scheduled Task in place (`schtasks … /F`) and re-grants permissions. If `captain-memo` isn't on PATH, prefix every command with `bun bin\captain-memo` from the checkout.
+
+A `WARN` from `captain-memo doctor` about the **plugin-cache version is expected and harmless**: the plugin bundle (`plugin/dist/*.js`) is intentionally pinned at `plugin.json` 0.2.4 and is byte-identical across CLI releases, so there's nothing for `claude plugin update` to refresh. Only run `claude plugin update captain-memo@captain-memo` when a release note says the bundle itself changed.
+
+If Claude Code is in a restrictive permission mode (e.g. "don't ask") and the plugin's tools get auto-denied, allowlist them once in `%USERPROFILE%\.claude\settings.json` — `captain-memo install` (v0.2.7+) writes this for you, and `--no-grant-permissions` opts out:
+
+```json
+{ "permissions": { "allow": ["mcp__plugin_captain-memo_captain-memo__*"] } }
+```
+
+`settings.json` is read at session start, so **restart the CLI after editing it.**
+
 ### WSL2 fallback
 
 If you'd rather not run the native path — or you want the local Python sidecar with zero native-Windows work — run Captain Memo inside **WSL2** and treat it as a Linux box:
