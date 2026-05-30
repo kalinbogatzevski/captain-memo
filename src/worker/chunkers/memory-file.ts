@@ -28,6 +28,11 @@ function parseFrontmatter(content: string): ParsedFrontmatter {
 }
 
 export function chunkMemoryFile(content: string, sourcePath: string): ChunkInput[] {
+  // Normalize CRLF → LF up front so frontmatter and H2-section parsing work
+  // regardless of the file's line endings. A Windows user's memory .md files
+  // (or an autocrlf git checkout) use CRLF, which the LF-only frontmatter regex
+  // would otherwise fail to match — silently dropping frontmatter from the index.
+  content = content.replace(/\r\n/g, '\n');
   const { body, fields } = parseFrontmatter(content);
   const filenameId = basename(sourcePath, '.md');
 

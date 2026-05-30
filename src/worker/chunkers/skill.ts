@@ -25,6 +25,9 @@ function parseFrontmatter(content: string): SkillFrontmatter {
 }
 
 export function chunkSkill(content: string, sourcePath: string): ChunkInput[] {
+  // Normalize CRLF → LF so the LF-only frontmatter regex matches skill files
+  // with Windows line endings (same fix as chunkMemoryFile).
+  content = content.replace(/\r\n/g, '\n');
   const { body, fields } = parseFrontmatter(content);
   const skillId = basename(sourcePath, '.md');
   const description = fields.description ?? '';
