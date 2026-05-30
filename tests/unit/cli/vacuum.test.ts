@@ -48,7 +48,7 @@ test('VACUUM reclaims pages after a DELETE', () => {
   // Sanity: after vacuum the file should be small (well under 100 KB for
   // an empty single-table DB)
   expect(after).toBeLessThan(100 * 1024);
-});
+}, 30000);  // VACUUM rewrites the whole file — slow on CI Windows disk; 5s default is too tight
 
 test('VACUUM is a no-op on an already-compact DB', () => {
   const path = join(TMP_DIR, 'compact.db');
@@ -60,7 +60,7 @@ test('VACUUM is a no-op on an already-compact DB', () => {
   const { before, after } = vacuumDb(path);
   // No data deleted → size shouldn't grow and shouldn't shrink meaningfully
   expect(Math.abs(before - after)).toBeLessThan(64 * 1024);
-});
+}, 30000);
 
 test('VACUUM handles a missing wal_checkpoint pragma gracefully (non-WAL DB)', () => {
   const path = join(TMP_DIR, 'rollback.db');
@@ -76,4 +76,4 @@ test('VACUUM handles a missing wal_checkpoint pragma gracefully (non-WAL DB)', (
   // Should not throw on the wal_checkpoint pragma; the CLI command swallows
   // the error and still runs VACUUM.
   expect(() => vacuumDb(path)).not.toThrow();
-});
+}, 30000);
