@@ -143,6 +143,14 @@ claude plugin install captain-memo@captain-memo
 
 You'll need to set `CAPTAIN_MEMO_WORKER_BASE` in your environment to point at the remote worker's `:39888`. This is a power-user setup; most people should run the wizard.
 
+### Updating
+
+```bash
+claude plugin update captain-memo@captain-memo
+```
+
+Use the **fully-qualified id** (`captain-memo@captain-memo`). If you added the plugin from a **local directory** (a checkout, not GitHub), Claude Code caches the marketplace metadata at the version it was added with — after pulling a new release, refresh it with `claude plugin marketplace remove captain-memo` then `claude plugin marketplace add <path>` before `update`. A GitHub marketplace re-fetches on its own.
+
 ### Windows (native)
 
 Captain Memo runs natively on **Windows x64** — no WSL required.

@@ -287,13 +287,13 @@ function entryProblems(pluginRoot: string): string[] {
 function findCachedPluginRoot(): string | null {
   const cacheRoot = join(homedir(), '.claude', 'plugins', 'cache');
   if (!existsSync(cacheRoot)) return null;
-  let found: string | null = null;
+  const matches: string[] = [];
   const walk = (dir: string, depth: number) => {
-    if (found || depth > 5) return;
+    if (depth > 5) return;
     if (existsSync(join(dir, '.claude-plugin', 'plugin.json'))) {
       try {
         const m = JSON.parse(readFileSync(join(dir, '.claude-plugin', 'plugin.json'), 'utf-8')) as { name?: string };
-        if (m.name === 'captain-memo') { found = dir; return; }
+        if (m.name === 'captain-memo') { matches.push(dir); return; } // matched — don't descend further
       } catch { /* keep walking */ }
     }
     let kids: string[] = [];
@@ -302,7 +302,19 @@ function findCachedPluginRoot(): string | null {
     for (const k of kids) walk(join(dir, k), depth + 1);
   };
   walk(cacheRoot, 0);
-  return found;
+  if (matches.length === 0) return null;
+  // Several version dirs can coexist (e.g. 0.1.0 + 0.2.4). Report the ACTIVE one
+  // — the highest version, by its dir name — not whichever readdir listed first.
+  const versionOf = (p: string): number[] => ((p.split(/[\\/]/).pop() ?? '').match(/\d+/g) ?? []).map(Number);
+  const cmpDesc = (a: number[], b: number[]): number => {
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      const d = (b[i] ?? 0) - (a[i] ?? 0);
+      if (d !== 0) return d;
+    }
+    return 0;
+  };
+  matches.sort((x, y) => cmpDesc(versionOf(x), versionOf(y)));
+  return matches[0] ?? null;
 }
 
 function checkPluginEntries(): void {

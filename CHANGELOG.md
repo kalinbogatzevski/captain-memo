@@ -5,6 +5,18 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.2.6] — 2026-05-30
+
+### Internal / Docs
+- `doctor`'s `plugin entry (cache)` check now reports the **active (highest-version)**
+  cache dir instead of whichever the filesystem listed first — it could name a
+  stale `0.1.0` dir while a newer version was installed. Cosmetic: the check
+  already passed; it just named the wrong directory.
+- README: documented updating (`claude plugin update captain-memo@captain-memo`,
+  fully-qualified id) and that a **local-directory** marketplace needs a
+  `marketplace remove` + `add` refresh after a version bump (a GitHub marketplace
+  re-fetches automatically).
+
 ## [0.2.5] — 2026-05-30
 
 ### Fixed (Windows)
