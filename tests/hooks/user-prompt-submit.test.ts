@@ -35,7 +35,7 @@ beforeAll(() => {
       return new Response('not found', { status: 404 });
     },
   });
-  port = server.port;
+  port = server.port ?? 0;
 });
 
 afterAll(() => server.stop());
