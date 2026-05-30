@@ -1,8 +1,12 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test';
 import { MetaStore } from '../../src/worker/meta.ts';
 import { unlinkSync, existsSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
-const TEST_DB = '/tmp/captain-memo-test-meta.sqlite3';
+// Use the OS temp dir, not a hardcoded '/tmp' — '/tmp' doesn't exist on Windows,
+// so `new Database('/tmp/…')` throws "unable to open database file" there.
+const TEST_DB = join(tmpdir(), 'captain-memo-test-meta.sqlite3');
 let store: MetaStore;
 
 beforeEach(() => {
@@ -11,7 +15,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  store.close();
+  // Guard: if a beforeEach `new MetaStore` ever throws, `store` is undefined —
+  // close defensively so the real error surfaces instead of a cascade.
+  store?.close();
 });
 
 test('MetaStore — initializes schema on first open', () => {
