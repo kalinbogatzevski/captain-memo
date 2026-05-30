@@ -1,6 +1,7 @@
 import { sha256Hex } from '../shared/sha.ts';
 import { chunkObservation } from '../worker/chunkers/observation.ts';
 import type { ChannelType, Observation, ObservationType } from '../shared/types.ts';
+import { UNSURFACED_OBSERVATION_FIELDS } from '../shared/types.ts';
 import type {
   ClaudeMemObservationRow,
   ClaudeMemSessionSummaryRow,
@@ -93,8 +94,9 @@ export function transformObservation(
     branch: null,
     work_tokens: row.discovery_tokens ? Number(row.discovery_tokens) : null,
     stored_tokens: null,
-    retrieval_count: 0,
-    last_retrieved_at: null,
+    // Migrated rows start unsurfaced/unarchived — shared defaults keep this in
+    // sync with the Observation type as it grows (provenance, Dreaming, …).
+    ...UNSURFACED_OBSERVATION_FIELDS,
   };
   const chunks: MigrationChunk[] = chunkObservation(obsLike).map(c => ({
     text: c.text,

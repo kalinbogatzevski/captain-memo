@@ -139,6 +139,24 @@ export interface Observation {
   theme_member_ids: number[] | null;
 }
 
+/** Default retrieval-provenance + Dreaming-scaffold fields for an observation
+ *  that has never been surfaced and isn't archived/themed — the correct initial
+ *  state for a freshly-migrated row or a test fixture. Mirrors the DB column
+ *  defaults in observations-store.ts (from_* DEFAULT 0, archived = 0). Spread
+ *  into a full Observation; `satisfies` keeps it in sync if the type grows. */
+export const UNSURFACED_OBSERVATION_FIELDS = {
+  retrieval_count: 0,
+  last_retrieved_at: null,
+  from_auto: 0,
+  from_search: 0,
+  from_drill: 0,
+  last_surfaced_at: null,
+  last_surfaced_source: null,
+  archived: false,
+  archived_into_theme_id: null,
+  theme_member_ids: null,
+} satisfies Partial<Observation>;
+
 /** Provenance tag for a retrieval bump.
  *  - 'auto'   → bumped by /inject/context (UserPromptSubmit hook)
  *  - 'search' → bumped by /search/all|memory|skill|observations

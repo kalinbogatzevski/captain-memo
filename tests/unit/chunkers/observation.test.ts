@@ -1,5 +1,6 @@
 import { test, expect } from 'bun:test';
 import { chunkObservation, chunkSummary } from '../../../src/worker/chunkers/observation.ts';
+import { UNSURFACED_OBSERVATION_FIELDS } from '../../../src/shared/types.ts';
 
 const observation = {
   id: 1234,
@@ -20,8 +21,7 @@ const observation = {
   branch: null,
   work_tokens: null,
   stored_tokens: null,
-  retrieval_count: 0,
-  last_retrieved_at: null,
+  ...UNSURFACED_OBSERVATION_FIELDS,
 };
 
 test('chunkObservation — produces a single bundled chunk per observation (v0.1.8)', () => {
