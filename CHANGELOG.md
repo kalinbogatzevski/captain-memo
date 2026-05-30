@@ -5,6 +5,23 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.2.1] — 2026-05-30
+
+### Fixed
+- **Windows: memory/skill frontmatter is now parsed regardless of line endings.**
+  The memory-file and skill chunkers used an LF-only frontmatter parser, so `.md`
+  files with CRLF line endings (common on Windows, or an autocrlf git checkout)
+  silently lost their frontmatter — its fields (`type`/`name`/`description`) were
+  dropped from the index and the `---` delimiters leaked into chunk text. Content
+  is now normalized CRLF→LF before parsing.
+
+### Internal
+- CI now runs the full suite on both `ubuntu-latest` and `windows-latest` (green
+  on both). Fixed test portability the first real Windows run exposed: hermetic
+  git identity in the branch tests, `os.tmpdir()` instead of a hardcoded `/tmp`
+  SQLite path, deduplicated worker ports, and a pre-existing `Observation`-type
+  typecheck error.
+
 ## [0.2.0] — 2026-05-30
 
 ### Added
