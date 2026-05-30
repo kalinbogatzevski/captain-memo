@@ -5,6 +5,20 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.2.2] — 2026-05-30
+
+### Internal
+- **Deterministic CI on ubuntu + windows.** No runtime change from v0.2.1 — this
+  is test-infrastructure hardening so the green check is trustworthy:
+  - All worker-starting tests now bind **OS-assigned ephemeral ports** (`port: 0`,
+    reading the actual port back from the handle) instead of hardcoded ports,
+    eliminating intermittent `EADDRINUSE` collisions under CI timing / TIME_WAIT.
+  - The I/O-bound `VACUUM` tests get a Windows-safe 30 s timeout (SQLite `VACUUM`
+    rewrites the whole file and the windows-latest disk is slow).
+  - Hermetic git identity in the branch tests; `os.tmpdir()` instead of a
+    hardcoded `/tmp` SQLite path; resolved a pre-existing `Observation`-type
+    `tsc` error.
+
 ## [0.2.1] — 2026-05-30
 
 ### Fixed
