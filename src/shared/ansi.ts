@@ -34,11 +34,25 @@ export const goldBold = (s: string): string => wrap('33;1', s);
 
 const ANSI_SGR_RE = /\x1b\[[0-9;]*m/g;
 
-/** Length of a string as the terminal would print it — strips SGR escape
- *  codes before counting. Required for aligning columns of color-wrapped
- *  text where .length would over-count by 8–12 chars per escape sequence. */
+// Code points with default emoji presentation (e.g. ⚓ U+2693, the stats
+// wordmark anchor) render as TWO terminal cells. A BMP emoji is a single UTF-16
+// unit, so .length under-counts it by 1 and right-aligned headers overflow.
+// Ambiguous-width SYMBOLS (⟳ U+27F3, · U+00B7) are font/terminal-dependent and
+// deliberately NOT counted here — callers that right-align against an exact
+// width reserve a trailing column for that ±1 (see spread() / headerPanel()).
+const EMOJI_PRESENTATION_RE = /\p{Emoji_Presentation}/u;
+
+/** Width of a string as the terminal would print it — strips SGR escape codes,
+ *  then counts cells. Base is the code-unit length (unchanged for all non-emoji
+ *  text, so existing column alignment is untouched); each BMP emoji-presentation
+ *  glyph adds 1 (it's 1 unit but 2 cells). Astral emoji are already 2 units. */
 export function visibleWidth(s: string): number {
-  return s.replace(ANSI_SGR_RE, '').length;
+  const stripped = s.replace(ANSI_SGR_RE, '');
+  let width = stripped.length;
+  for (const ch of stripped) {
+    if (ch.length === 1 && EMOJI_PRESENTATION_RE.test(ch)) width += 1;
+  }
+  return width;
 }
 
 /** Pad a possibly-colored string with spaces on the RIGHT until its visible

@@ -189,9 +189,12 @@ function headerPanel(version: string, panelWidth: number, headerRight?: string):
   const subtitle = 'corpus statistics';
   const ver = `v${version}`;
   const base = `  ${goldBold(wordmark)}   ${dim(subtitle)} ${dim('·')} ${bold(ver)}`;
-  // Optional right-aligned status (e.g. the `top` live clock).
+  // Optional right-aligned status (e.g. the `top` live clock). Reserve the final
+  // column: both `base` (⚓ anchor emoji) and `headerRight` (⟳ stamp) can render
+  // 1 cell wider than their code-point count, and touching the last column wraps
+  // the trailing char onto the next row. Budget to panelWidth-1 to absorb it.
   const titleLine = headerRight
-    ? base + ' '.repeat(Math.max(1, panelWidth - visibleWidth(base) - visibleWidth(headerRight))) + headerRight
+    ? base + ' '.repeat(Math.max(1, panelWidth - 1 - visibleWidth(base) - visibleWidth(headerRight))) + headerRight
     : base;
   // ═ matches the section-rule indent so the eye sees a continuous left
   // rail down the left edge of the panel.

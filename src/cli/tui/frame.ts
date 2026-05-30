@@ -101,7 +101,13 @@ function liveStamp(refreshMs: number): string {
 /** Place `right` flush against the right edge after `left` (both may be
  *  colored). `left` includes its own leading indent. */
 function spread(left: string, right: string, cols: number): string {
-  const pad = Math.max(1, cols - visibleWidth(left) - visibleWidth(right));
+  // Reserve the final column. `right` (the live stamp) contains ambiguous-width
+  // glyphs (⟳, ·) that some terminals/fonts render 1 cell wider than their
+  // code-point count; writing into the last column then triggers auto-margin
+  // wrap and the trailing char spills onto the next row. Budgeting to cols-1
+  // absorbs that single-cell undercount. visibleWidth() is left untouched so
+  // alignment elsewhere (rows, separators) is unaffected.
+  const pad = Math.max(1, cols - 1 - visibleWidth(left) - visibleWidth(right));
   return left + ' '.repeat(pad) + right;
 }
 
