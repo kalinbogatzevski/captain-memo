@@ -5,6 +5,19 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.2.7] — 2026-05-30
+
+### Added
+- **`install` now allowlists captain-memo's own MCP tools.** A plugin can't
+  self-grant permissions via `claude plugin install` (by design), so in
+  restrictive modes like "don't ask" the agent's calls to the plugin's tools
+  (`stats`, `search_*`, `get_full`, …) were auto-denied. `captain-memo install`
+  now adds `mcp__plugin_captain-memo_captain-memo__*` to the user's
+  `~/.claude/settings.json` `permissions.allow` — idempotent and non-destructive
+  (existing entries and other settings are preserved) — so the plugin's tools
+  work without a per-call prompt. Opt out with `--no-grant-permissions`.
+  (Installer/CLI-side only — the plugin bundle is unchanged from v0.2.4.)
+
 ## [0.2.6] — 2026-05-30
 
 ### Internal / Docs

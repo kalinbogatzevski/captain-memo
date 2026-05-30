@@ -19,6 +19,7 @@ interface HookGroup {
 
 interface ClaudeSettings {
   hooks?: Partial<Record<EventName, HookGroup[]>>;
+  permissions?: { allow?: string[]; [k: string]: unknown };
   [other: string]: unknown;
 }
 
@@ -49,6 +50,28 @@ function readSettings(path: string): ClaudeSettings {
 function writeSettings(path: string, settings: ClaudeSettings): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(settings, null, 2));
+}
+
+// Wildcard permission that allows all of captain-memo's MCP tools (search_*,
+// get_full, stats, status, reindex) without a per-call prompt. A plugin can't
+// self-grant this via `claude plugin install` (by design), but `captain-memo
+// install` is a user-run, consented step that already writes this settings file
+// — so it grants its own tools here, otherwise "don't ask" mode auto-denies them.
+export const CAPTAIN_MEMO_MCP_PERMISSION = 'mcp__plugin_captain-memo_captain-memo__*';
+
+/** Add captain-memo's MCP-tool permission to settings.json `permissions.allow`,
+ *  merging non-destructively (preserves existing entries + other settings).
+ *  Idempotent — returns { added:false } when it's already present. */
+export function grantPluginToolPermissions(settingsPath: string): { added: boolean } {
+  const settings = readSettings(settingsPath);
+  if (!settings.permissions) settings.permissions = {};
+  if (!Array.isArray(settings.permissions.allow)) settings.permissions.allow = [];
+  if (settings.permissions.allow.includes(CAPTAIN_MEMO_MCP_PERMISSION)) {
+    return { added: false };
+  }
+  settings.permissions.allow.push(CAPTAIN_MEMO_MCP_PERMISSION);
+  writeSettings(settingsPath, settings);
+  return { added: true };
 }
 
 export function applyHookInstall(opts: ApplyHookInstallOptions): ApplyHookInstallResult {

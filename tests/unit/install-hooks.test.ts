@@ -2,7 +2,7 @@ import { test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { applyHookInstall, CAPTAIN_MEMO_HOOK_MARKER } from '../../src/cli/commands/install-hooks.ts';
+import { applyHookInstall, CAPTAIN_MEMO_HOOK_MARKER, grantPluginToolPermissions, CAPTAIN_MEMO_MCP_PERMISSION } from '../../src/cli/commands/install-hooks.ts';
 
 let workDir: string;
 let settingsPath: string;
@@ -74,4 +74,23 @@ test('applyHookInstall — preserves non-hook keys in settings.json', () => {
   const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
   expect(settings.permissions.allow).toEqual(['Read']);
   expect(settings.statusLine.text).toBe('foo');
+});
+
+test('grantPluginToolPermissions — adds the MCP wildcard to permissions.allow', () => {
+  grantPluginToolPermissions(settingsPath);
+  const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+  expect(settings.permissions.allow).toContain(CAPTAIN_MEMO_MCP_PERMISSION);
+});
+
+test('grantPluginToolPermissions — idempotent + preserves existing allow and other keys', () => {
+  writeFileSync(settingsPath, JSON.stringify({ permissions: { allow: ['Bash(ls)'] }, model: 'opus' }, null, 2));
+  const r1 = grantPluginToolPermissions(settingsPath);
+  const r2 = grantPluginToolPermissions(settingsPath);
+  expect(r1.added).toBe(true);
+  expect(r2.added).toBe(false);  // already present → no duplicate
+  const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+  expect(settings.permissions.allow).toContain('Bash(ls)');          // preserved
+  expect(settings.permissions.allow).toContain(CAPTAIN_MEMO_MCP_PERMISSION);
+  expect(settings.permissions.allow.filter((p: string) => p === CAPTAIN_MEMO_MCP_PERMISSION).length).toBe(1);
+  expect(settings.model).toBe('opus');                               // other keys untouched
 });

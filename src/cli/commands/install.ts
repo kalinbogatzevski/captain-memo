@@ -24,6 +24,7 @@ import { printMiniBanner } from '../banner.ts';
 import { isWindows, totalMemGb, diskFreeGb, whichBun as probeBun } from '../../shared/platform.ts';
 import { WORKER_ENV_PATH, CONFIG_DIR, LOGS_DIR, DATA_DIR, DEFAULT_WORKER_PORT } from '../../shared/paths.ts';
 import { getServiceManager } from '../../services/service-manager/index.ts';
+import { grantPluginToolPermissions } from './install-hooks.ts';
 import { getEmbedderInstaller } from '../../services/embedder-installer/index.ts';
 
 const REPO_ROOT = resolve(import.meta.dir, '../../..');
@@ -88,6 +89,8 @@ interface InstallOptions {
   openaiKey?: string;
   // Raw --watch value: 'all-projects' | 'none' | <glob/path>. 'none' → skip.
   watch?: string;
+  // Skip adding captain-memo's MCP tools to the user's settings `permissions.allow`.
+  noGrantPermissions?: boolean;
 }
 
 const SUMMARIZER_VALUES: readonly SummarizerProvider[] = ['claude-oauth', 'anthropic', 'claude-code', 'openai-compatible', 'skip'];
@@ -162,6 +165,8 @@ export function parseInstallOptions(args: string[], env: NodeJS.ProcessEnv = pro
   if (openaiKey !== undefined) opts.openaiKey = openaiKey;
   const watch = flagValue(args, '--watch') ?? env.CAPTAIN_MEMO_WATCH_MEMORY;
   if (watch !== undefined) opts.watch = watch;
+
+  if (args.includes('--no-grant-permissions')) opts.noGrantPermissions = true;
 
   return opts;
 }
@@ -727,6 +732,23 @@ function probeHealth(): void {
 // byte-for-byte untouched. Supervision is per-user Scheduled Tasks via the
 // ServiceManager abstraction; secrets reach the worker via worker.env +
 // loadWorkerEnv() (no EnvironmentFile= equivalent on Windows).
+// Add captain-memo's MCP tools to the user's settings `permissions.allow` so the
+// agent can call them without a per-call prompt — and so "don't ask" mode doesn't
+// auto-deny them. A plugin can't self-grant via `claude plugin install`, but this
+// user-run installer can. Best-effort: a settings-write failure never aborts install.
+function grantMcpPermissions(opts: InstallOptions, settingsPath: string): void {
+  if (opts.noGrantPermissions) { info('skipped MCP-tool permission grant (--no-grant-permissions)'); return; }
+  try {
+    const { added } = grantPluginToolPermissions(settingsPath);
+    ok(added
+      ? `allowed captain-memo's MCP tools in ${settingsPath} (no per-call prompts)`
+      : `captain-memo's MCP tools already allowed in ${settingsPath}`);
+  } catch (e) {
+    warn(`couldn't update permissions in ${settingsPath}: ${(e as Error).message}`);
+    info('Allow them manually: add "mcp__plugin_captain-memo_captain-memo__*" to permissions.allow');
+  }
+}
+
 async function installWindows(args: string[], opts: InstallOptions): Promise<number> {
   printMiniBanner();
 
@@ -882,6 +904,7 @@ async function installWindows(args: string[], opts: InstallOptions): Promise<num
   // ----- register the plugin with Claude Code (best-effort) -----
   header('Registering Claude Code plugin');
   registerPlugin('user');
+  grantMcpPermissions(opts, join(homedir(), '.claude', 'settings.json'));
 
   // ----- health probe -----
   header('Health probe');
@@ -1040,6 +1063,7 @@ Both modes: idempotent re-runs reconfigure. To remove: captain-memo uninstall`);
 
   header('Registering Claude Code plugin');
   registerPlugin(mode);
+  grantMcpPermissions(opts, join(realUserAndGroup().home, '.claude', 'settings.json'));
 
   header('Linking CLI shim');
   installCliShim(mode);
