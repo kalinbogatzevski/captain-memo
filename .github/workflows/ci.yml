@@ -36,7 +36,11 @@ jobs:
         run: bun run typecheck
 
       - name: Test
-        run: bun test
+        # 30s per-test/hook timeout (default 5s): the windows-latest runner's disk
+        # is slow, so I/O-heavy worker/VACUUM setup+teardown hooks intermittently
+        # blew the 5s default. Generous CI timeout removes that flake class; local
+        # `bun test` keeps the fast 5s default.
+        run: bun test --timeout 30000
 
       # Windows-only: prove the native sqlite-vec loadable extension (vec0.dll)
       # is present and loads under bun:sqlite. A node_modules built off-target
