@@ -12,7 +12,7 @@
 
 Captain Memo is a Claude Code plugin (and a self-contained local-memory layer for any AI coding agent that speaks the standard hook + MCP shapes). Every session leaves a wake; Captain Memo keeps the log so the next session sails with what was learned in the last one.
 
-> **v0.1.0 "Europe Day" — Linux only.** The runtime is portable, but the installer assumes systemd. macOS and Windows support are planned for v0.2.0. Mac users wanting to try v0.1.0 today can run the worker manually under launchd / tmux / nohup; see [issue #1](https://github.com/kalinbogatzevski/captain-memo/issues/1).
+> **v0.2.0 — Linux + native Windows (x64).** Linux runs under `systemd --user`; Windows runs natively under a per-user Scheduled Task (no WSL, no admin) — see [Windows (native)](#windows-native) below, or use the [WSL2 fallback](#wsl2-fallback). macOS support is still pending; Mac users can run the worker manually under launchd / tmux / nohup, see [issue #1](https://github.com/kalinbogatzevski/captain-memo/issues/1).
 
 ---
 
@@ -56,7 +56,7 @@ So I sat down to build that "something different" for myself, and ended up with 
 
 | Component | Minimum | Notes |
 |---|---|---|
-| OS | Linux (systemd) | macOS / Windows port not yet implemented |
+| OS | Linux (systemd) **or** Windows x64 | Windows uses a per-user Scheduled Task; `win32-arm64` and macOS not yet supported |
 | Bun | ≥ 1.1.14 | https://bun.com |
 | Disk | ~50 MB | The corpus itself + worker code; grows ~1 MB per few hundred chunks |
 | Sudo | **not required** | The default install runs entirely as your user. Sudo only needed for `--system` (multi-user / always-on server). |
@@ -142,6 +142,36 @@ claude plugin install captain-memo@captain-memo
 ```
 
 You'll need to set `CAPTAIN_MEMO_WORKER_BASE` in your environment to point at the remote worker's `:39888`. This is a power-user setup; most people should run the wizard.
+
+### Windows (native)
+
+Captain Memo runs natively on **Windows x64** — no WSL required.
+
+```powershell
+git clone https://github.com/kalinbogatzevski/captain-memo
+cd captain-memo
+bun install            # MUST run on Windows x64 — see note below
+bun .\bin\captain-memo install
+```
+
+Requirements and behavior on the native path:
+
+- **Bun on PATH** ([bun.com](https://bun.com)). The same `bun` runs the worker, the MCP server, and the hooks.
+- **Run `bun install` on the Windows x64 machine.** `sqlite-vec` ships its native loadable extension per-platform; the x64 install pulls in `vec0.dll`. A `node_modules` copied from Linux/macOS lacks the DLL and the worker can't load vectors. **`win32-arm64` is unsupported** — on ARM64 hardware, run x64 Bun under emulation.
+- **Hosted Voyage is the default embedder** — pure HTTPS, nothing local to install or misconfigure. The local Python sidecar (`local-sidecar`) is still available on Windows via a PowerShell installer if you want offline embeddings.
+- **Supervision is a per-user Scheduled Task**, not systemd. The wizard registers `captain-memo-worker` to start at logon with restart-on-failure — no admin / UAC prompt. Config lives at `%APPDATA%\captain-memo\worker.env`.
+
+After the wizard, **fully restart Claude Code** (run it on Windows too) for the plugin to load.
+
+### WSL2 fallback
+
+If you'd rather not run the native path — or you want the local Python sidecar with zero native-Windows work — run Captain Memo inside **WSL2** and treat it as a Linux box:
+
+1. Enable WSL2 and install a distro (e.g. `wsl --install`).
+2. Inside the WSL distro, run the **unchanged Linux installer** exactly as documented above (`git clone` → `bun install` → `./bin/captain-memo install`).
+3. **Run Claude Code inside WSL too**, so its hooks and MCP server reach the worker over localhost in the same Linux environment.
+
+This is the simplest route for local-sidecar-heavy users: everything stays on the supported Linux path.
 
 ### Other lifecycle commands
 

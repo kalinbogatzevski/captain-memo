@@ -121,7 +121,9 @@ export async function workerFetch<T>(
 export function resolveProjectId(cwd: string | undefined): string {
   if (process.env.CAPTAIN_MEMO_PROJECT_ID) return process.env.CAPTAIN_MEMO_PROJECT_ID;
   if (!cwd) return 'default';
-  const parts = cwd.split('/').filter(Boolean);
+  // Split on BOTH separators so a Windows cwd ("C:\\Users\\me\\project") keys to
+  // the folder name, not the whole backslash path. POSIX paths are unaffected.
+  const parts = cwd.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] ?? 'default';
 }
 

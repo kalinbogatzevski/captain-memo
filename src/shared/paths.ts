@@ -12,6 +12,18 @@ export const LOGS_DIR = join(DATA_DIR, 'logs');
 export const ARCHIVE_DIR = join(DATA_DIR, 'archive');
 export const CONFIG_PATH = join(DATA_DIR, 'config.json');
 
+// Config dir holds worker.env (API keys etc). Kept SEPARATE from DATA_DIR to
+// match the existing Linux layout (~/.config/captain-memo) and the platform
+// idiom on Windows (%APPDATA%\captain-memo). On Linux the system-mode install
+// also uses /etc/captain-memo/worker.env — see src/shared/worker-env.ts, which
+// checks both. Override via CAPTAIN_MEMO_CONFIG_DIR.
+export const CONFIG_DIR = process.env.CAPTAIN_MEMO_CONFIG_DIR ?? (
+  process.platform === 'win32'
+    ? join(process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming'), 'captain-memo')
+    : join(homedir(), '.config', 'captain-memo')
+);
+export const WORKER_ENV_PATH = join(CONFIG_DIR, 'worker.env');
+
 export const DEFAULT_WORKER_PORT = 39888;
 export const DEFAULT_VOYAGE_ENDPOINT = 'http://localhost:8124/v1/embeddings';
 

@@ -6,6 +6,11 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { DEFAULT_WORKER_PORT } from './shared/paths.ts';
+import { loadWorkerEnv } from './shared/worker-env.ts';
+
+// Seed worker.env so a custom CAPTAIN_MEMO_WORKER_PORT set there is honored even
+// when Claude Code launches the MCP server without that var in its environment.
+loadWorkerEnv();
 
 const WORKER_BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
 

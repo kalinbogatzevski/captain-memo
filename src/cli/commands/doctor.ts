@@ -11,14 +11,15 @@ import { Database } from 'bun:sqlite';
 import { getAppliedVersions } from '../../worker/migrations.ts';
 import { OBSERVATIONS_STORE_MIGRATIONS } from '../../worker/observations-store.ts';
 import { OBSERVATION_QUEUE_MIGRATIONS } from '../../worker/observation-queue.ts';
+import { getServiceManager } from '../../services/service-manager/index.ts';
+import { workerEnvPaths } from '../../shared/worker-env.ts';
+import { DEFAULT_WORKER_PORT } from '../../shared/paths.ts';
+import { isWindows } from '../../shared/platform.ts';
 
-// Lookup a single key from worker.env (user-mode first, then system-mode).
+// Lookup a single key from worker.env (CONFIG_DIR per platform, then the /etc
+// system-mode fallback on Linux — workerEnvPaths() supplies the right list).
 function readWorkerEnvVar(key: string): string | null {
-  const candidates = [
-    join(homedir(), '.config', 'captain-memo', 'worker.env'),
-    '/etc/captain-memo/worker.env',
-  ];
-  for (const path of candidates) {
+  for (const path of workerEnvPaths()) {
     if (!existsSync(path)) continue;
     const m = readFileSync(path, 'utf-8').match(new RegExp(`^${key}=(.+)$`, 'm'));
     if (m) return m[1] ?? null;
@@ -39,21 +40,6 @@ const checks: Check[] = [];
 
 function record(c: Check): void { checks.push(c); }
 
-function svcActive(name: string): boolean {
-  // Try user-level first, then system. Either being active means we're up.
-  const userR = spawnSync('systemctl', ['--user', 'is-active', name], { encoding: 'utf-8' });
-  if (userR.stdout.trim() === 'active') return true;
-  const sysR = spawnSync('systemctl', ['is-active', name], { encoding: 'utf-8' });
-  return sysR.stdout.trim() === 'active';
-}
-
-function svcExists(name: string): boolean {
-  const userR = spawnSync('systemctl', ['--user', 'list-unit-files', name], { encoding: 'utf-8' });
-  if (userR.stdout.includes(name)) return true;
-  const sysR = spawnSync('systemctl', ['list-unit-files', name], { encoding: 'utf-8' });
-  return sysR.stdout.includes(name);
-}
-
 function svcMode(name: string): 'user' | 'system' | null {
   const userR = spawnSync('systemctl', ['--user', 'list-unit-files', name], { encoding: 'utf-8' });
   if (userR.stdout.includes(name)) return 'user';
@@ -62,14 +48,22 @@ function svcMode(name: string): 'user' | 'system' | null {
   return null;
 }
 
-function curlJson(url: string, timeoutMs = 3000): { ok: boolean; body: unknown } {
-  const r = spawnSync('curl', ['-s', '-m', String(timeoutMs / 1000), url], { encoding: 'utf-8' });
-  if (r.status !== 0 || !r.stdout) return { ok: false, body: null };
-  try { return { ok: true, body: JSON.parse(r.stdout) }; }
-  catch { return { ok: false, body: r.stdout }; }
+// Cross-platform HTTP probe (replaces the old `curl` shell-out). Returns the
+// parsed JSON body on success; { ok:false } on connection refused / timeout /
+// non-2xx / unparseable body.
+async function fetchJson(url: string, timeoutMs = 3000): Promise<{ ok: boolean; body: unknown }> {
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!r.ok) return { ok: false, body: null };
+    const text = await r.text();
+    try { return { ok: true, body: JSON.parse(text) }; }
+    catch { return { ok: false, body: text }; }
+  } catch {
+    return { ok: false, body: null };
+  }
 }
 
-function checkEmbedder(): void {
+async function checkEmbedder(): Promise<void> {
   // Read worker.env to figure out what backend the user actually picked.
   // Hosted Voyage / OpenAI / aelita endpoints are normal — not warnings.
   const endpoint = readWorkerEnvVar('CAPTAIN_MEMO_EMBEDDER_ENDPOINT') ?? '';
@@ -80,40 +74,31 @@ function checkEmbedder(): void {
     record({ name: 'embedder backend', status: 'PASS', detail: `external endpoint @ ${host}` });
     return;
   }
-  if (!svcExists('captain-memo-embed.service')) {
-    record({ name: 'embedder service', status: 'FAIL', detail: 'worker.env points at local sidecar but the service is not installed',
-             remedy: 'captain-memo install   (pick "local sidecar"), or change CAPTAIN_MEMO_EMBEDDER_ENDPOINT to a hosted backend' });
-    return;
-  }
-  if (!svcActive('captain-memo-embed.service')) {
-    record({ name: 'embedder service', status: 'FAIL', detail: 'systemd unit installed but not running',
-             remedy: 'sudo systemctl start captain-memo-embed' });
-    return;
-  }
-  const h = curlJson('http://127.0.0.1:8124/health');
+  // Local sidecar: the HTTP /health probe is authoritative for liveness; the
+  // service-manager state only tells us why it's down (installed vs. not).
+  const h = await fetchJson('http://127.0.0.1:8124/health');
   if (h.ok && (h.body as { healthy?: boolean }).healthy) {
     const b = h.body as { model?: string; dim?: number };
     record({ name: 'embedder service', status: 'PASS', detail: `${b.model} dim=${b.dim} on :8124` });
-  } else {
-    record({ name: 'embedder service', status: 'FAIL', detail: 'systemd active but /health not responding',
-             remedy: 'journalctl -u captain-memo-embed -n 30 --no-pager' });
+    return;
   }
+  if (await getServiceManager().isActive('captain-memo-embed')) {
+    record({ name: 'embedder service', status: 'FAIL', detail: 'service active but /health not responding',
+             remedy: isWindows ? 'Get-ScheduledTaskInfo captain-memo-embed' : 'journalctl -u captain-memo-embed -n 30 --no-pager' });
+    return;
+  }
+  record({ name: 'embedder service', status: 'FAIL', detail: 'worker.env points at local sidecar but the service is not running',
+           remedy: 'captain-memo install   (pick "local sidecar"), or change CAPTAIN_MEMO_EMBEDDER_ENDPOINT to a hosted backend' });
 }
 
-function checkWorker(): void {
-  if (!svcExists('captain-memo-worker.service')) {
-    record({ name: 'worker service', status: 'FAIL', detail: 'not installed',
-             remedy: 'captain-memo install' });
-    return;
-  }
-  if (!svcActive('captain-memo-worker.service')) {
-    record({ name: 'worker service', status: 'FAIL', detail: 'systemd unit installed but not running',
-             remedy: 'sudo systemctl start captain-memo-worker' });
-    return;
-  }
-  const h = curlJson('http://127.0.0.1:39888/health');
+async function checkWorker(): Promise<void> {
+  // The HTTP /health probe is the AUTHORITATIVE liveness signal — lead with it.
+  // The Windows Scheduled-Task state has no 'failed' notion, so /health (not the
+  // supervisor) decides whether the worker is truly up.
+  const base = `http://127.0.0.1:${DEFAULT_WORKER_PORT}`;
+  const h = await fetchJson(`${base}/health`);
   if (h.ok && (h.body as { healthy?: boolean }).healthy) {
-    const s = curlJson('http://127.0.0.1:39888/stats');
+    const s = await fetchJson(`${base}/stats`);
     if (s.ok) {
       const b = s.body as {
         total_chunks?: number; project_id?: string;
@@ -123,31 +108,38 @@ function checkWorker(): void {
       const idx = b.indexing;
       if (idx?.status === 'indexing') {
         record({ name: 'worker service', status: 'PASS',
-                 detail: `:39888 ready · indexing ${idx.done}/${idx.total} (${idx.percent}%) · ${b.total_chunks} chunks so far` });
+                 detail: `:${DEFAULT_WORKER_PORT} ready · indexing ${idx.done}/${idx.total} (${idx.percent}%) · ${b.total_chunks} chunks so far` });
       } else if (idx?.status === 'error') {
         record({ name: 'worker service', status: 'WARN',
-                 detail: `:39888 reachable but indexing reported error (chunks=${b.total_chunks})`,
-                 remedy: 'journalctl -u captain-memo-worker -n 30 --no-pager' });
+                 detail: `:${DEFAULT_WORKER_PORT} reachable but indexing reported error (chunks=${b.total_chunks})`,
+                 remedy: isWindows ? 'Get-ScheduledTaskInfo captain-memo-worker' : 'journalctl -u captain-memo-worker -n 30 --no-pager' });
       } else {
         record({ name: 'worker service', status: 'PASS',
-                 detail: `:39888 healthy · ${b.total_chunks} chunks · ${b.observations?.total ?? 0} observations · project=${b.project_id}` });
+                 detail: `:${DEFAULT_WORKER_PORT} healthy · ${b.total_chunks} chunks · ${b.observations?.total ?? 0} observations · project=${b.project_id}` });
       }
     } else {
-      record({ name: 'worker service', status: 'WARN', detail: ':39888 healthy but /stats failed' });
+      record({ name: 'worker service', status: 'WARN', detail: `:${DEFAULT_WORKER_PORT} healthy but /stats failed` });
     }
-  } else {
-    record({ name: 'worker service', status: 'FAIL', detail: 'systemd active but /health not responding',
-             remedy: 'journalctl -u captain-memo-worker -n 30 --no-pager' });
+    return;
   }
+  // /health did not answer. Use the service-manager state to explain why:
+  // installed-but-not-responding vs. not installed/running.
+  if (await getServiceManager().isActive('captain-memo-worker')) {
+    record({ name: 'worker service', status: 'FAIL', detail: 'service active but /health not responding',
+             remedy: isWindows ? 'Get-ScheduledTaskInfo captain-memo-worker' : 'journalctl -u captain-memo-worker -n 30 --no-pager' });
+    return;
+  }
+  record({ name: 'worker service', status: 'FAIL', detail: 'not running',
+           remedy: 'captain-memo install' });
 }
 
 function checkConfig(): void {
-  // Look for worker.env in both user-mode and system-mode locations.
-  const userPath = join(homedir(), '.config/captain-memo/worker.env');
-  const sysPath = '/etc/captain-memo/worker.env';
-  const path = existsSync(userPath) ? userPath : existsSync(sysPath) ? sysPath : null;
+  // Look for worker.env in the per-platform CONFIG_DIR (plus the /etc system-mode
+  // fallback on Linux) — workerEnvPaths() returns the correct candidate list.
+  const candidates = workerEnvPaths();
+  const path = candidates.find(existsSync) ?? null;
   if (!path) {
-    record({ name: 'worker config', status: 'FAIL', detail: `not found at ${userPath} or ${sysPath}`,
+    record({ name: 'worker config', status: 'FAIL', detail: `not found at ${candidates.join(' or ')}`,
              remedy: 'captain-memo install' });
     return;
   }
@@ -274,8 +266,8 @@ function checkMigrations(dataDir: string): void {
 export async function doctorCommand(_args: string[]): Promise<number> {
   console.log('\n\x1b[1;36mCaptain Memo doctor\x1b[0m\n───────────────────');
 
-  checkEmbedder();
-  checkWorker();
+  await checkEmbedder();
+  await checkWorker();
   checkConfig();
   checkPluginRegistration();
   checkPluginManifest();

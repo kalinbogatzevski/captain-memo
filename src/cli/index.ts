@@ -121,3 +121,10 @@ export async function main(args: string[]): Promise<void> {
   }
   process.exit(exit);
 }
+
+// Run directly when invoked as the entry point (e.g. `bun src/cli/index.ts …`,
+// used by the Windows `captain-memo.cmd` shim). When imported by bin/captain-memo
+// this stays false, so there is no double-invocation.
+if (import.meta.main) {
+  await main(process.argv.slice(2));
+}

@@ -1,11 +1,22 @@
-import { spawnSync } from 'child_process';
 import { MetaStore } from '../../worker/meta.ts';
-import { META_DB_PATH } from '../../shared/paths.ts';
+import { DEFAULT_WORKER_PORT, META_DB_PATH } from '../../shared/paths.ts';
 import { workerGet, workerPost } from '../client.ts';
 import { vacuumCommand } from './vacuum.ts';
 import { cyanBold, dim, green, yellow } from '../../shared/ansi.ts';
+import { isWindows } from '../../shared/platform.ts';
+import { getServiceManager } from '../../services/service-manager/index.ts';
 
-const SERVICE = 'captain-memo-worker.service';
+// Bare service id the ServiceManager expects (the systemd impl appends '.service').
+const SERVICE = 'captain-memo-worker';
+
+// Worker HTTP port — mirrors the resolution in cli/client.ts so graceful stop
+// (POST /shutdown) hits the same worker the reindex talked to.
+const WORKER_PORT = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
+
+// OS-aware manual-start hint for the failure paths (no `systemctl` on Windows).
+const MANUAL_START_HINT = isWindows
+  ? 'Start-ScheduledTask -TaskName captain-memo-worker'
+  : 'systemctl --user start captain-memo-worker';
 
 async function workerIsRunning(): Promise<boolean> {
   try {
@@ -14,11 +25,6 @@ async function workerIsRunning(): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function systemctlUser(action: 'start' | 'stop' | 'is-enabled'): { ok: boolean; output: string } {
-  const r = spawnSync('systemctl', ['--user', action, SERVICE], { encoding: 'utf-8' });
-  return { ok: r.status === 0, output: (r.stdout + r.stderr).trim() };
 }
 
 async function waitForWorker(timeoutMs = 15_000): Promise<boolean> {
@@ -118,9 +124,10 @@ export async function upgradeCommand(args: string[]): Promise<number> {
   let restartedByUs = false;
   if (!wasRunning) {
     console.log('Starting worker for reindex ...');
-    const r = systemctlUser('start');
-    if (!r.ok) {
-      console.error(`Could not start ${SERVICE}: ${r.output}`);
+    try {
+      await getServiceManager().start(SERVICE);
+    } catch (e) {
+      console.error(`Could not start ${SERVICE}: ${(e as Error).message}`);
       console.error('Start it manually, then re-run: captain-memo upgrade');
       return 1;
     }
@@ -153,9 +160,10 @@ export async function upgradeCommand(args: string[]): Promise<number> {
 
   // 3. Vacuum phase — needs an exclusive lock, so stop the worker first.
   console.log('Stopping worker for VACUUM ...');
-  const stopR = systemctlUser('stop');
-  if (!stopR.ok) {
-    console.error(`Could not stop ${SERVICE}: ${stopR.output}`);
+  try {
+    await getServiceManager().stop(SERVICE, { graceful: true, port: WORKER_PORT });
+  } catch (e) {
+    console.error(`Could not stop ${SERVICE}: ${(e as Error).message}`);
     console.error('Stop it manually, then re-run `captain-memo vacuum`.');
     return 1;
   }
@@ -167,10 +175,11 @@ export async function upgradeCommand(args: string[]): Promise<number> {
   //    it ourselves (we should leave the system in a useful state by default).
   if (wasRunning || restartedByUs) {
     console.log('Starting worker ...');
-    const startR = systemctlUser('start');
-    if (!startR.ok) {
-      console.error(yellow(`Could not start ${SERVICE}: ${startR.output}`));
-      console.error('Start it manually: systemctl --user start captain-memo-worker');
+    try {
+      await getServiceManager().start(SERVICE);
+    } catch (e) {
+      console.error(yellow(`Could not start ${SERVICE}: ${(e as Error).message}`));
+      console.error(`Start it manually: ${MANUAL_START_HINT}`);
       return 1;
     }
     await waitForWorker();
@@ -184,16 +193,19 @@ async function runVacuumPhase(): Promise<number> {
   const wasRunning = await workerIsRunning();
   if (wasRunning) {
     console.log('Stopping worker for VACUUM ...');
-    const r = systemctlUser('stop');
-    if (!r.ok) {
-      console.error(`Could not stop ${SERVICE}: ${r.output}`);
+    try {
+      await getServiceManager().stop(SERVICE, { graceful: true, port: WORKER_PORT });
+    } catch (e) {
+      console.error(`Could not stop ${SERVICE}: ${(e as Error).message}`);
       return 1;
     }
   }
   const code = await vacuumCommand([]);
   if (wasRunning) {
     console.log('Starting worker ...');
-    systemctlUser('start');
+    try {
+      await getServiceManager().start(SERVICE);
+    } catch { /* best-effort restart — leave the user a reachable worker if possible */ }
     await waitForWorker();
   }
   return code;

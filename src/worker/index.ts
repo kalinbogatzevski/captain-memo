@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { MetaStore } from './meta.ts';
 import { Embedder } from './embedder.ts';
 import { embedderMaxTokens } from '../shared/embedder-limits.ts';
+import { loadWorkerEnv } from '../shared/worker-env.ts';
 import { VectorStore } from './vector-store.ts';
 import { HybridSearcher } from './search.ts';
 import { IngestPipeline } from './ingest.ts';
@@ -830,6 +831,15 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       if (req.method === 'GET' && url.pathname === '/health') {
         return Response.json({ healthy: true });
       }
+      if (req.method === 'POST' && url.pathname === '/shutdown') {
+        // Graceful-stop hook for a supervisor (the Windows Scheduled-Task manager,
+        // or `upgrade`/`vacuum` which need SQLite locks released before mutating).
+        // Reply first, then exit on the next tick so the response flushes. Stores
+        // are WAL-backed and queues persist to disk, so process.exit is safe — the
+        // OS releases the file locks and pending work resumes on restart.
+        setTimeout(() => process.exit(0), 100);
+        return Response.json({ stopping: true });
+      }
       if (req.method === 'GET' && url.pathname === '/stats') {
         const { total_chunks, by_channel } = meta.stats();
         const obsTotal = obsStore ? obsStore.countAll() : 0;
@@ -1395,6 +1405,30 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 // (rather than invoked directly), `import.meta.main` is false and the
 // startup body would silently no-op.
 export async function runWorkerCli(): Promise<void> {
+  // Seed process.env from worker.env BEFORE reading any config below. On Linux the
+  // systemd unit already injected these via EnvironmentFile (loadWorkerEnv then
+  // no-ops, since it never overwrites a set var); on Windows the Scheduled Task
+  // launches `bun` with no env injection, so this is the ONLY place secrets load.
+  loadWorkerEnv();
+
+  // Windows has no journal: a Scheduled-Task-launched worker runs detached, so its
+  // console output would vanish. Tee stdout/stderr to LOGS_DIR/worker.log so doctor
+  // and the user can diagnose. No-op on Linux (systemd journals stdout). Best-effort.
+  if (process.platform === 'win32') {
+    try {
+      const { createWriteStream, mkdirSync: mkdir } = await import('fs');
+      const { LOGS_DIR } = await import('../shared/paths.ts');
+      mkdir(LOGS_DIR, { recursive: true });
+      const logStream = createWriteStream(join(LOGS_DIR, 'worker.log'), { flags: 'a' });
+      const tee = (orig: (...a: unknown[]) => void) => (...args: unknown[]) => {
+        try { logStream.write(args.map((a) => (typeof a === 'string' ? a : String(a))).join(' ') + '\n'); } catch { /* ignore */ }
+        orig(...args);
+      };
+      console.log = tee(console.log.bind(console)) as typeof console.log;
+      console.error = tee(console.error.bind(console)) as typeof console.error;
+    } catch { /* logging is best-effort; never block startup */ }
+  }
+
   const { mkdirSync } = await import('fs');
   const { dirname } = await import('path');
   const { DATA_DIR } = await import('../shared/paths.ts');

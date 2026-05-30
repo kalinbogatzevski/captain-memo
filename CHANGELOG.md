@@ -5,6 +5,59 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.2.0] — 2026-05-30
+
+### Added
+- **Native Windows support (x64).** Captain Memo now installs and runs on
+  Windows without WSL. The runtime was already portable (Bun, `bun:sqlite` +
+  `sqlite-vec`, all CLI↔worker↔embedder IPC over localhost HTTP); this release
+  ports the operational layer — install / supervise / uninstall / upgrade /
+  doctor — off its systemd + POSIX-shell assumptions.
+- **Per-user Scheduled Task supervision.** A new OS-agnostic `ServiceManager`
+  interface backs daemon supervision: `systemd` (`systemctl --user`) on Linux,
+  a per-user **Scheduled Task** (PowerShell `Register-ScheduledTask`, registered
+  at logon with restart-on-failure, no admin/UAC) on Windows. The five lifecycle
+  commands call only this interface, never the OS directly.
+- **In-process `worker.env` loader (`loadWorkerEnv`).** Replaces the systemd
+  `EnvironmentFile=` mechanism that has no Windows equivalent. Runs at the top of
+  the worker / MCP / CLI bootstrap on every platform, parsing `KEY=VALUE` lines
+  from `CONFIG_DIR/worker.env` (plus `/etc/captain-memo/worker.env` on Linux) and
+  seeding `process.env` **without overwriting** vars already set — so a shell
+  `export` or systemd `EnvironmentFile` still wins.
+- **Optional local Python embedder on Windows.** The `local-sidecar` backend is
+  now installable on Windows via a PowerShell port (`install-embedder.ps1`),
+  behind a new `EmbedderInstaller` interface (bash on Linux, PowerShell on
+  Windows). Hosted Voyage remains the default and needs no installer at all.
+- **`CLAUDE_CODE_OAUTH_TOKEN` override** for the `claude-oauth` summarizer — a
+  guaranteed escape hatch when the token lives in the OS keychain / Credential
+  Manager rather than `~/.claude/.credentials.json`.
+- **CI** (`.github/workflows/ci.yml`) on `ubuntu-latest` + `windows-latest`:
+  `bun install`, `bun run typecheck`, `bun test`, plus a Windows-only smoke test
+  that loads the native `sqlite-vec` `vec0.dll` (`Database` + `sqliteVec.load`).
+
+### Changed
+- **Hosted Voyage is the default embedder** on Windows — no Python to
+  misconfigure for the recommended path.
+- Hook commands in `plugin/hooks/hooks.json` are now interpreter-explicit
+  (`bun "${CLAUDE_PLUGIN_ROOT}/bin/captain-memo-hook.ts" <Event>`), dropping the
+  `"shell": "bash"` pin and the shebang/extension dependence — identical on
+  Linux and Windows. `bin/captain-memo-hook` is renamed to
+  `bin/captain-memo-hook.ts` (content unchanged).
+- `project_id` resolution now splits the cwd on `[\\/]`, so a Windows
+  `C:\Users\…` path keys to the folder name rather than the whole path.
+
+### Fixed
+- **Linux behavior is unchanged.** The `systemd` `ServiceManager` reproduces the
+  prior `systemctl --user` behavior; `bun test` + `bun run typecheck` stay green
+  and `install` / `doctor` / `uninstall` behave exactly as before.
+
+### Notes
+- `win32-arm64` is **unsupported**; run x64 Bun (under emulation on arm64).
+  `bun install` must run on the Windows x64 target so `sqlite-vec`'s `vec0.dll`
+  is present (a Linux-built `node_modules` lacks it).
+- **WSL2 remains a fully supported fallback** — run the unchanged Linux installer
+  inside the distro and run Claude Code inside WSL too.
+
 ## [0.1.16] — 2026-05-29
 
 ### Added
@@ -63,6 +116,7 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 ## [0.1.9] — 2026-05-16
 - Snapshot efficiency stats.
 
+[0.2.0]: https://github.com/kalinbogatzevski/captain-memo/releases/tag/v0.2.0
 [0.1.16]: https://github.com/kalinbogatzevski/captain-memo/releases/tag/v0.1.16
 [0.1.15]: https://github.com/kalinbogatzevski/captain-memo/releases/tag/v0.1.15
 [0.1.14]: https://github.com/kalinbogatzevski/captain-memo/releases/tag/v0.1.14

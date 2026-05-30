@@ -4,10 +4,14 @@
 // it finds. Does NOT delete ~/.captain-memo (your data) by default — pass
 // --purge for that.
 
-import { existsSync, unlinkSync, lstatSync, rmSync } from 'fs';
+import { existsSync, unlinkSync, lstatSync, rmSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { spawnSync } from 'child_process';
+import { isWindows } from '../../shared/platform.ts';
+import { WORKER_ENV_PATH, CONFIG_DIR, DATA_DIR } from '../../shared/paths.ts';
+import { getServiceManager } from '../../services/service-manager/index.ts';
+import { getEmbedderInstaller } from '../../services/embedder-installer/index.ts';
 
 const WORKER_UNIT = 'captain-memo-worker.service';
 const EMBED_UNIT = 'captain-memo-embed.service';
@@ -123,6 +127,72 @@ function removePlugin(): void {
   }
 }
 
+// Windows removal — Scheduled Tasks instead of systemd, no sudo/userdel, NTFS
+// CLI shim instead of a symlink. Best-effort on every step so one failure
+// (e.g. a task already gone) never blocks the rest of the teardown.
+async function removeWindows(purge: boolean): Promise<void> {
+  const sm = getServiceManager();
+
+  header('Removing Captain Memo (Windows)');
+
+  // Worker Scheduled Task. remove() unregisters; tolerate "already gone".
+  try { await sm.remove('captain-memo-worker'); ok('removed worker Scheduled Task'); }
+  catch { warn('could not remove worker Scheduled Task (may not exist)'); }
+
+  // Embedder (local-sidecar only). Present if its task is registered or the
+  // install dir survives. ServiceManager owns the task; EmbedderInstaller.remove
+  // only deletes the dir — so call both.
+  const embedDir = join(DATA_DIR, 'embed');
+  let embedTaskPresent = false;
+  try { embedTaskPresent = (await sm.status('captain-memo-embed')) !== 'not-installed'; }
+  catch { /* treat as absent */ }
+  if (embedTaskPresent || existsSync(embedDir)) {
+    try { await sm.remove('captain-memo-embed'); ok('removed embed Scheduled Task'); }
+    catch { warn('could not remove embed Scheduled Task (may not exist)'); }
+    if (existsSync(embedDir)) {
+      try { await getEmbedderInstaller().remove(embedDir); ok(`removed ${embedDir}`); }
+      catch { warn(`could not remove ${embedDir}`); }
+    }
+  }
+
+  // worker.env (API keys) and the config dir if it's now empty.
+  if (existsSync(WORKER_ENV_PATH)) {
+    try { unlinkSync(WORKER_ENV_PATH); ok(`removed ${WORKER_ENV_PATH}`); }
+    catch { warn(`could not remove ${WORKER_ENV_PATH}`); }
+  }
+  if (existsSync(CONFIG_DIR)) {
+    try {
+      if (readdirSync(CONFIG_DIR).length === 0) { rmSync(CONFIG_DIR, { recursive: true, force: true }); ok(`removed ${CONFIG_DIR}`); }
+      else info(`(left ${CONFIG_DIR} — not empty)`);
+    } catch { warn(`could not inspect ${CONFIG_DIR}`); }
+  }
+
+  // CLI shim dir (%LOCALAPPDATA%\captain-memo\bin). Mirrors the install-side
+  // user-writable PATH dir; we drop the whole bin folder we created.
+  const localAppData = process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local');
+  const shimDir = join(localAppData, 'captain-memo', 'bin');
+  if (existsSync(shimDir)) {
+    try { rmSync(shimDir, { recursive: true, force: true }); ok(`removed CLI shim dir ${shimDir}`); }
+    catch { warn(`could not remove ${shimDir}`); }
+  }
+
+  removePlugin();
+
+  if (purge) {
+    header('Purging data');
+    if (existsSync(DATA_DIR)) {
+      try { rmSync(DATA_DIR, { recursive: true, force: true }); ok(`removed ${DATA_DIR}`); }
+      catch { warn(`could not remove ${DATA_DIR}`); }
+    }
+  } else {
+    info(`(your indexed data at ${DATA_DIR} is preserved; pass --purge to remove it too)`);
+  }
+
+  console.log();
+  ok('Captain Memo uninstalled.');
+  info('Restart any open Claude Code sessions to drop the plugin entirely.');
+}
+
 export async function uninstallCommand(args: string[]): Promise<number> {
   const purge = args.includes('--purge');
   const userOnly = args.includes('--user');
@@ -135,6 +205,13 @@ finds. Restrict to one with --user or --system.
 
 Without --purge: ~/.captain-memo/ (your indexed data) is preserved.
 With    --purge: also deletes ~/.captain-memo/ entirely.`);
+    return 0;
+  }
+
+  // Windows has no systemd/sudo/userdel — fork to the Scheduled-Task teardown.
+  // The --user/--system distinction is Linux-only (Windows is always user-scope).
+  if (isWindows) {
+    await removeWindows(purge);
     return 0;
   }
 

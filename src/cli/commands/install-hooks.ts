@@ -103,7 +103,11 @@ export async function installHooksCommand(args: string[]): Promise<number> {
     ? join(cwd, '.claude', 'settings.json')
     : join(homedir(), '.claude', 'settings.json');
 
-  const hookCommand = resolve(import.meta.dir, '../../../bin/captain-memo-hook');
+  const hookEntry = resolve(import.meta.dir, '../../../bin/captain-memo-hook.ts');
+  // Invoke via an explicit `bun "<path>.ts"` so the command is portable: it does
+  // not rely on shebang dispatch (which Windows cmd/PowerShell cannot honor) or on
+  // the file being marked executable. Quotes guard against spaces in the path.
+  const hookCommand = `bun "${hookEntry}"`;
 
   console.log(`Installing hooks to: ${settingsPath}`);
   console.log(`Hook command:        ${hookCommand}`);

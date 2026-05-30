@@ -6,12 +6,16 @@
 // 700–1500 ms HTTP roundtrip, vs the 5–15 s of the subprocess transport.
 //
 // Token storage locations checked, in order:
+//   0. $CLAUDE_CODE_OAUTH_TOKEN env override — the guaranteed escape hatch when
+//      the OS keychain backends below aren't implemented (notably Windows, where
+//      Claude Code may keep the token in Credential Manager rather than the file).
 //   1. ~/.claude/.credentials.json (file fallback when libsecret/Keychain
 //      isn't available; default on most Linux installs without
-//      `secret-tool` from libsecret-tools).
+//      `secret-tool` from libsecret-tools). Path is homedir()-based, so it
+//      resolves correctly on Windows too when the file IS present.
 //   2. macOS Keychain via `security` (TODO: not yet implemented).
 //   3. Linux libsecret via `secret-tool` (TODO: not yet implemented).
-//   4. Windows Credential Manager via PowerShell (TODO: not yet implemented).
+//   4. Windows Credential Manager via PowerShell (TODO: not yet implemented — v0.3).
 //
 // On 401 we surface a clear "your OAuth token has expired — run `claude
 // login` to refresh" error so the operator knows what to do.
@@ -48,6 +52,15 @@ const OAUTH_BETA = 'oauth-2025-04-20';
 let cached: CachedToken | null = null;
 
 export function readClaudeOauthToken(): CachedToken | null {
+  // 0. Env override wins — works on every platform without a credentials file
+  //    or keychain backend. We can't know its real expiry, so treat it as
+  //    non-expiring locally and let the server return 401 if it's actually stale
+  //    (the transport's 401 path already surfaces a clear "run `claude login`").
+  const envToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  if (envToken) {
+    return { accessToken: envToken, expiresAt: Number.MAX_SAFE_INTEGER, loadedAt: Date.now() };
+  }
+
   if (cached && Date.now() < cached.expiresAt - 60_000) return cached;
 
   if (!existsSync(CREDENTIALS_PATH)) return null;

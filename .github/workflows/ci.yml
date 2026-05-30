@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        run: bun test
+
+      # Windows-only: prove the native sqlite-vec loadable extension (vec0.dll)
+      # is present and loads under bun:sqlite. A node_modules built off-target
+      # would silently miss the DLL — this catches it before it reaches a user.
+      - name: Smoke-test native vec0.dll (Windows)
+        if: runner.os == 'Windows'
+        run: >
+          bun -e "import { Database } from 'bun:sqlite'; import * as sqliteVec from 'sqlite-vec'; const db = new Database(':memory:'); sqliteVec.load(db); const { v } = db.query('select vec_version() as v').get(); console.log('sqlite-vec', v); db.close();"
