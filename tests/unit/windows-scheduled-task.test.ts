@@ -5,7 +5,7 @@
 // out to the Windows Task Scheduler), but buildTaskXml is a pure string builder,
 // so the XML contract is fully testable here.
 import { test, expect, describe } from 'bun:test';
-import { buildTaskXml } from '../../src/services/service-manager/windows-scheduled-task.ts';
+import { buildTaskXml, toTaskXmlBuffer } from '../../src/services/service-manager/windows-scheduled-task.ts';
 import type { ServiceSpec } from '../../src/services/service-manager/types.ts';
 
 function sampleSpec(overrides: Partial<ServiceSpec> = {}): ServiceSpec {
@@ -143,9 +143,16 @@ describe('buildTaskXml', () => {
     }
   });
 
-  test('declares UTF-8 encoding to match the UTF-8 file install() writes', () => {
+  test('declares UTF-16 (the encoding schtasks /Create /XML requires)', () => {
     const xml = buildTaskXml(sampleSpec());
-    expect(xml).toContain('<?xml version="1.0" encoding="UTF-8"?>');
-    expect(xml).not.toContain('UTF-16');
+    expect(xml).toContain('<?xml version="1.0" encoding="UTF-16"?>');
+    expect(xml).not.toContain('UTF-8');
+  });
+
+  test('toTaskXmlBuffer encodes UTF-16 LE with a BOM (schtasks rejects UTF-8)', () => {
+    const buf = toTaskXmlBuffer(buildTaskXml(sampleSpec()));
+    expect(buf[0]).toBe(0xff);  // UTF-16 LE BOM = FF FE
+    expect(buf[1]).toBe(0xfe);
+    expect(buf.toString('utf16le').replace(/^﻿/, '')).toContain('<Task version="1.2"');
   });
 });

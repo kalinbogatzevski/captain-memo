@@ -139,8 +139,10 @@ export function buildTaskXml(spec: ServiceSpec): string {
     `${process.env.USERDOMAIN ?? process.env.COMPUTERNAME ?? ''}\\${process.env.USERNAME ?? ''}`,
   );
   const lines = [
-    // Declaration must match the bytes install() writes (UTF-8 via writeFileSync).
-    '<?xml version="1.0" encoding="UTF-8"?>',
+    // schtasks /Create /XML requires UTF-16 LE + BOM (the native Task Scheduler
+    // format — UTF-8 is rejected with "unable to switch the encoding"). install()
+    // writes the file that way via toTaskXmlBuffer(); the declaration must match.
+    '<?xml version="1.0" encoding="UTF-16"?>',
     '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
     '  <RegistrationInfo>',
     `    <Description>${xmlEscape(spec.description)}</Description>`,
@@ -212,13 +214,20 @@ async function runSchtasks(args: string[]): Promise<{ exitCode: number; stdout: 
   return { exitCode, stdout, stderr };
 }
 
+// schtasks /Create /XML rejects UTF-8 ("unable to switch the encoding") — it
+// requires UTF-16 LE with a BOM. Encode the document accordingly. Exported so the
+// encoding is unit-testable (assert the FF FE BOM) without invoking schtasks.
+export function toTaskXmlBuffer(xml: string): Buffer {
+  return Buffer.from('﻿' + xml, 'utf16le');
+}
+
 class WindowsScheduledTaskServiceManager implements ServiceManager {
   async install(spec: ServiceSpec): Promise<void> {
     const xml = buildTaskXml(spec);
     // Write the spec to a temp file and hand it to schtasks /XML. We do NOT pipe
     // it on stdin — schtasks only reads the XML from a path.
     const xmlPath = join(tmpdir(), `captain-memo-task-${spec.name}-${process.pid}-${Date.now()}.xml`);
-    writeFileSync(xmlPath, xml);
+    writeFileSync(xmlPath, toTaskXmlBuffer(xml));
     try {
       const r = await runSchtasks(['/Create', '/TN', spec.name, '/XML', xmlPath, '/F']);
       if (r.exitCode !== 0) {

@@ -5,6 +5,17 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.2.5] — 2026-05-30
+
+### Fixed (Windows)
+- **The no-admin worker install now actually completes.** v0.2.4 added the
+  required `<UserId>` to the task XML (correct), but also flipped the XML to
+  `encoding="UTF-8"` — and `schtasks /Create /XML` **requires UTF-16 LE + BOM**
+  (UTF-8 is rejected: *"unable to switch the encoding"*). The task XML is again
+  declared `UTF-16` and written UTF-16 LE + BOM (`toTaskXmlBuffer`), so a normal
+  user's `captain-memo install` registers the worker task with no elevation.
+  (The plugin bundle is unchanged from v0.2.4 — this is installer-side only.)
+
 ## [0.2.4] — 2026-05-30
 
 ### Fixed (Windows)
