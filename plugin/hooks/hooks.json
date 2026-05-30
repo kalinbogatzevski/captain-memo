@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/bin/captain-memo-hook.ts\" UserPromptSubmit"
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/captain-memo-hook.js\" UserPromptSubmit"
           }
         ]
       }
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/bin/captain-memo-hook.ts\" SessionStart",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/captain-memo-hook.js\" SessionStart",
             "timeout": 60
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/bin/captain-memo-hook.ts\" PostToolUse"
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/captain-memo-hook.js\" PostToolUse"
           }
         ]
       }
@@ -37,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/bin/captain-memo-hook.ts\" Stop"
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/captain-memo-hook.js\" Stop"
           }
         ]
       }
@@ -47,7 +47,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/bin/captain-memo-hook.ts\" PreCompact",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/captain-memo-hook.js\" PreCompact",
             "timeout": 10
           }
         ]

@@ -63,9 +63,108 @@ function resolvePaths(mode: InstallMode): ModePaths {
   };
 }
 
-type SummarizerProvider = 'claude-code' | 'anthropic' | 'openai-compatible' | 'skip';
+// 'claude-oauth' is a runtime-valid provider offered by the wizard prompt (and a
+// documented --summarizer value) even though writeWorkerEnv just passes the
+// string straight through; keep it in the union so flag parsing is type-checked.
+type SummarizerProvider = 'claude-oauth' | 'claude-code' | 'anthropic' | 'openai-compatible' | 'skip';
 type EmbedderProvider = 'voyage-hosted' | 'local-sidecar' | 'openai-compatible' | 'skip';
 type WatchPaths = 'all-projects' | 'user-global' | 'custom' | 'skip';
+
+// Parsed CLI flags + env fallbacks that let the wizard run headless (no TTY /
+// CI / worker spawning the installer). Every field is optional — an absent
+// field falls back to env, then interactive prompt (TTY only), then default.
+interface InstallOptions {
+  // Accept defaults for anything unspecified and NEVER prompt.
+  yes: boolean;
+  // True when we must not call prompt() at all: --yes was passed OR stdin is
+  // not a TTY (a piped/headless invocation would hang on prompt()).
+  nonInteractive: boolean;
+  embedder?: EmbedderProvider;
+  voyageKey?: string;
+  voyageModel?: string;
+  embeddingDim?: number;
+  summarizer?: SummarizerProvider;
+  openaiEndpoint?: string;
+  openaiKey?: string;
+  // Raw --watch value: 'all-projects' | 'none' | <glob/path>. 'none' → skip.
+  watch?: string;
+}
+
+const SUMMARIZER_VALUES: readonly SummarizerProvider[] = ['claude-oauth', 'anthropic', 'claude-code', 'openai-compatible', 'skip'];
+const EMBEDDER_VALUES: readonly EmbedderProvider[] = ['voyage-hosted', 'local-sidecar', 'openai-compatible', 'skip'];
+
+// Pull the value following a flag (`--flag value`). Returns undefined if the
+// flag is absent; fails loudly if the flag is present but the value is missing
+// (next token is another flag or end of args) so typos surface immediately.
+function flagValue(args: string[], flag: string): string | undefined {
+  const i = args.indexOf(flag);
+  if (i === -1) return undefined;
+  const v = args[i + 1];
+  if (v === undefined || v.startsWith('-')) {
+    fail(`${flag} requires a value (e.g. \`${flag} <value>\`).`);
+  }
+  return v;
+}
+
+function parseEnum<T extends string>(raw: string | undefined, allowed: readonly T[], flag: string): T | undefined {
+  if (raw === undefined) return undefined;
+  if (!allowed.includes(raw as T)) {
+    fail(`invalid value for ${flag}: '${raw}'. Allowed: ${allowed.join(' | ')}.`);
+  }
+  return raw as T;
+}
+
+function parseIntFlag(raw: string | undefined, flag: string): number | undefined {
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    fail(`invalid value for ${flag}: '${raw}'. Expected a positive integer.`);
+  }
+  return n;
+}
+
+// Build InstallOptions from argv + CAPTAIN_MEMO_* env. Precedence baked in here
+// is flag > env; the prompt-vs-default fallback happens later in gatherConfig.
+// Exported so flag parsing can be unit-tested without running a real install.
+export function parseInstallOptions(args: string[], env: NodeJS.ProcessEnv = process.env): InstallOptions {
+  const yes = args.includes('--yes') || args.includes('-y');
+  // stdin can be undefined in odd runtimes; treat "no isTTY" as non-interactive.
+  const isTTY = Boolean(process.stdin && (process.stdin as { isTTY?: boolean }).isTTY);
+  const nonInteractive = yes || !isTTY;
+
+  const embedder = parseEnum(
+    flagValue(args, '--embedder') ?? env.CAPTAIN_MEMO_EMBEDDER,
+    EMBEDDER_VALUES,
+    '--embedder',
+  );
+  const summarizer = parseEnum(
+    flagValue(args, '--summarizer') ?? env.CAPTAIN_MEMO_SUMMARIZER_PROVIDER,
+    SUMMARIZER_VALUES,
+    '--summarizer',
+  );
+  const embeddingDim = parseIntFlag(
+    flagValue(args, '--embedding-dim') ?? env.CAPTAIN_MEMO_EMBEDDING_DIM,
+    '--embedding-dim',
+  );
+
+  const opts: InstallOptions = { yes, nonInteractive };
+  if (embedder !== undefined) opts.embedder = embedder;
+  if (summarizer !== undefined) opts.summarizer = summarizer;
+  if (embeddingDim !== undefined) opts.embeddingDim = embeddingDim;
+
+  const voyageKey = flagValue(args, '--voyage-key') ?? env.CAPTAIN_MEMO_EMBEDDER_API_KEY;
+  if (voyageKey !== undefined) opts.voyageKey = voyageKey;
+  const voyageModel = flagValue(args, '--voyage-model') ?? env.CAPTAIN_MEMO_EMBEDDER_MODEL;
+  if (voyageModel !== undefined) opts.voyageModel = voyageModel;
+  const openaiEndpoint = flagValue(args, '--openai-endpoint') ?? env.CAPTAIN_MEMO_OPENAI_ENDPOINT;
+  if (openaiEndpoint !== undefined) opts.openaiEndpoint = openaiEndpoint;
+  const openaiKey = flagValue(args, '--openai-key') ?? env.CAPTAIN_MEMO_OPENAI_API_KEY;
+  if (openaiKey !== undefined) opts.openaiKey = openaiKey;
+  const watch = flagValue(args, '--watch') ?? env.CAPTAIN_MEMO_WATCH_MEMORY;
+  if (watch !== undefined) opts.watch = watch;
+
+  return opts;
+}
 
 interface WizardConfig {
   summarizer: SummarizerProvider;
@@ -130,6 +229,37 @@ function askYesNo(question: string, defaultYes = true): boolean {
   const trimmed = (raw ?? '').trim().toLowerCase();
   if (trimmed === '') return defaultYes;
   return trimmed === 'y' || trimmed === 'yes';
+}
+
+// --- non-interactive resolvers -------------------------------------------
+// Each resolver returns the pre-supplied value when one exists (from flag/env,
+// already merged in parseInstallOptions). Otherwise it prompts ONLY when
+// interactive; in non-interactive mode it returns the default without touching
+// prompt() (which would hang on a non-TTY stdin).
+
+// Choice: pre-supplied wins; else prompt (interactive) / default value (headless).
+function resolveChoice<T extends string>(
+  preset: T | undefined,
+  nonInteractive: boolean,
+  question: string,
+  options: { value: string; label: string; recommended?: boolean }[],
+  defaultIdx = 0,
+): T {
+  if (preset !== undefined) return preset;
+  if (nonInteractive) return options[defaultIdx]!.value as T;
+  return ask(question, options, defaultIdx) as T;
+}
+
+// Free text: pre-supplied wins; else prompt (interactive) / default (headless).
+function resolveText(
+  preset: string | undefined,
+  nonInteractive: boolean,
+  question: string,
+  defaultValue: string,
+): string {
+  if (preset !== undefined) return preset;
+  if (nonInteractive) return defaultValue;
+  return askText(question, defaultValue);
 }
 
 interface PreflightResult {
@@ -305,12 +435,18 @@ function realUserAndGroup(): { user: string; group: string; home: string } {
   return { user: u, group: groupId || u, home: home.trim() };
 }
 
-function gatherConfig(existing?: Partial<WizardConfig>): WizardConfig {
+function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOptions): WizardConfig {
+  // Default to interactive (TTY) behaviour when no options were threaded
+  // through — preserves the original prompt-everything path exactly.
+  const nonInteractive = opts?.nonInteractive ?? false;
   header('Captain Memo install wizard');
-  info('A few questions, then I install everything in one go.');
+  if (nonInteractive) info('Non-interactive mode — using flags/env/defaults (no prompts).');
+  else info('A few questions, then I install everything in one go.');
 
   // ----- summarizer -----
-  const summarizer = ask(
+  const summarizer = resolveChoice<SummarizerProvider>(
+    opts?.summarizer,
+    nonInteractive,
     'Which summarizer should I use to compress session events into observations?',
     [
       { value: 'claude-oauth', label: 'Claude Max plan via OAuth (~700 ms/call, no API key, requires `claude login`)', recommended: true },
@@ -319,23 +455,28 @@ function gatherConfig(existing?: Partial<WizardConfig>): WizardConfig {
       { value: 'openai-compatible', label: 'OpenAI / Ollama / OpenRouter / etc. (any /v1/chat/completions)' },
       { value: 'skip', label: "Skip — events queue but don't summarize" },
     ],
-  ) as SummarizerProvider;
+  );
 
   let anthropicApiKey: string | undefined;
   let summarizerOpenaiEndpoint: string | undefined;
   let summarizerOpenaiKey: string | undefined;
   let summarizerModel = 'claude-haiku-4-5';
   if (summarizer === 'anthropic') {
-    anthropicApiKey = askText('Anthropic API key (sk-ant-...)', existing?.anthropicApiKey);
-    summarizerModel = askText('Summarizer model', 'claude-haiku-4-5');
+    // No dedicated key flag; fall back to existing config then ANTHROPIC_API_KEY
+    // env (used as the prompt default interactively, returned directly headless).
+    const anthropicDefault = existing?.anthropicApiKey ?? process.env.ANTHROPIC_API_KEY ?? '';
+    anthropicApiKey = resolveText(undefined, nonInteractive, 'Anthropic API key (sk-ant-...)', anthropicDefault);
+    summarizerModel = resolveText(undefined, nonInteractive, 'Summarizer model', 'claude-haiku-4-5');
   } else if (summarizer === 'openai-compatible') {
-    summarizerOpenaiEndpoint = askText('OpenAI-compatible endpoint URL', existing?.summarizerOpenaiEndpoint ?? 'http://localhost:11434/v1/chat/completions');
-    summarizerOpenaiKey = askText('API key (leave blank for local servers)', existing?.summarizerOpenaiKey ?? '');
-    summarizerModel = askText('Summarizer model', existing?.summarizerModel ?? 'qwen2.5:14b-instruct');
+    summarizerOpenaiEndpoint = resolveText(opts?.openaiEndpoint, nonInteractive, 'OpenAI-compatible endpoint URL', existing?.summarizerOpenaiEndpoint ?? 'http://localhost:11434/v1/chat/completions');
+    summarizerOpenaiKey = resolveText(opts?.openaiKey, nonInteractive, 'API key (leave blank for local servers)', existing?.summarizerOpenaiKey ?? '');
+    summarizerModel = resolveText(undefined, nonInteractive, 'Summarizer model', existing?.summarizerModel ?? 'qwen2.5:14b-instruct');
   }
 
   // ----- embedder -----
-  const embedder = ask(
+  const embedder = resolveChoice<EmbedderProvider>(
+    opts?.embedder,
+    nonInteractive,
     'Which embedder should I use for vector search?',
     [
       { value: 'voyage-hosted', label: 'Voyage hosted API (fast on any hardware, ~$0.30/year typical use, needs free API key)', recommended: true },
@@ -343,7 +484,7 @@ function gatherConfig(existing?: Partial<WizardConfig>): WizardConfig {
       { value: 'openai-compatible', label: 'External /v1/embeddings (Ollama / OpenAI / OpenRouter / your own)' },
       { value: 'skip', label: 'Skip — keyword-only retrieval (works without any embedder)' },
     ],
-  ) as EmbedderProvider;
+  );
 
   let embedderEndpoint = 'http://127.0.0.1:8124/v1/embeddings';
   let embedderModel = 'voyageai/voyage-4-nano';
@@ -351,42 +492,65 @@ function gatherConfig(existing?: Partial<WizardConfig>): WizardConfig {
   let embeddingDimension = 2048;
   if (embedder === 'voyage-hosted') {
     embedderEndpoint = 'https://api.voyageai.com/v1/embeddings';
-    embedderModel = askText(
+    embedderModel = resolveText(
+      opts?.voyageModel,
+      nonInteractive,
       'Voyage model (voyage-4-lite recommended — fast, cheap, 1024-dim)',
       existing?.embedderModel?.startsWith('voyage-') ? existing.embedderModel : 'voyage-4-lite',
     );
-    embeddingDimension = Number(askText('Embedding dimension (voyage-4-lite default 1024)', '1024'));
-    embedderApiKey = askText(
+    embeddingDimension = opts?.embeddingDim ?? Number(resolveText(undefined, nonInteractive, 'Embedding dimension (voyage-4-lite default 1024)', '1024'));
+    embedderApiKey = resolveText(
+      opts?.voyageKey,
+      nonInteractive,
       'Voyage API key (get one free at https://dash.voyageai.com — paste it here, or leave blank to set via worker.env later)',
       existing?.embedderApiKey ?? '',
     );
     if (!embedderApiKey) {
-      console.log('  (no key entered — worker.env will be written without one; add it manually before starting)');
+      // A keyless hosted-Voyage worker.env can't actually embed — the worker
+      // will fail every call until a key lands. Loud, explicit warning matters
+      // most in non-interactive installs where nobody is reading prompts.
+      if (nonInteractive) {
+        warn('hosted Voyage selected but NO API key (no --voyage-key / CAPTAIN_MEMO_EMBEDDER_API_KEY) — worker.env will be keyless and the embedder WILL fail until you add CAPTAIN_MEMO_EMBEDDER_API_KEY and restart the worker.');
+      } else {
+        console.log('  (no key entered — worker.env will be written without one; add it manually before starting)');
+      }
     }
   } else if (embedder === 'openai-compatible') {
-    embedderEndpoint = askText('Embedder endpoint URL', existing?.embedderEndpoint ?? 'http://localhost:11434/v1/embeddings');
-    embedderModel = askText('Embedder model', existing?.embedderModel ?? 'nomic-embed-text');
-    embeddingDimension = Number(askText('Embedding dimension', String(existing?.embeddingDimension ?? 768)));
-    embedderApiKey = askText('API key (leave blank for local servers like Ollama)', existing?.embedderApiKey ?? '');
+    embedderEndpoint = resolveText(opts?.openaiEndpoint, nonInteractive, 'Embedder endpoint URL', existing?.embedderEndpoint ?? 'http://localhost:11434/v1/embeddings');
+    embedderModel = resolveText(opts?.voyageModel, nonInteractive, 'Embedder model', existing?.embedderModel ?? 'nomic-embed-text');
+    embeddingDimension = opts?.embeddingDim ?? Number(resolveText(undefined, nonInteractive, 'Embedding dimension', String(existing?.embeddingDimension ?? 768)));
+    embedderApiKey = resolveText(opts?.openaiKey, nonInteractive, 'API key (leave blank for local servers like Ollama)', existing?.embedderApiKey ?? '');
   } else if (embedder === 'skip') {
     embeddingDimension = 8; // dummy for the vec0 table
   }
 
   // ----- watch paths -----
-  const watchChoice = ask(
-    'Which directories should the worker watch for memory files?',
-    [
-      { value: 'all-projects', label: 'All Claude project memories (~/.claude/projects/*/memory/*.md)', recommended: true },
-      { value: 'user-global', label: 'User-global only (~/.claude/memory/*.md)' },
-      { value: 'custom', label: 'Custom paths (I prompt for them)' },
-      { value: 'skip', label: 'Skip watching — observations only' },
-    ],
-  ) as WatchPaths;
+  // --watch carries either a keyword ('all-projects'/'none') or a literal
+  // glob/path. Map keyword → choice; anything else is treated as a custom path.
   const { home } = realUserAndGroup();
+  let watchChoice: WatchPaths;
+  let watchPreset: string | undefined;
+  if (opts?.watch !== undefined) {
+    if (opts.watch === 'all-projects') watchChoice = 'all-projects';
+    else if (opts.watch === 'none') watchChoice = 'skip';
+    else { watchChoice = 'custom'; watchPreset = opts.watch; }
+  } else {
+    watchChoice = resolveChoice<WatchPaths>(
+      undefined,
+      nonInteractive,
+      'Which directories should the worker watch for memory files?',
+      [
+        { value: 'all-projects', label: 'All Claude project memories (~/.claude/projects/*/memory/*.md)', recommended: true },
+        { value: 'user-global', label: 'User-global only (~/.claude/memory/*.md)' },
+        { value: 'custom', label: 'Custom paths (I prompt for them)' },
+        { value: 'skip', label: 'Skip watching — observations only' },
+      ],
+    );
+  }
   let watchMemory = '';
   if (watchChoice === 'all-projects') watchMemory = join(home, '.claude/projects/*/memory/*.md');
   else if (watchChoice === 'user-global') watchMemory = join(home, '.claude/memory/*.md');
-  else if (watchChoice === 'custom') watchMemory = askText('Comma-separated glob patterns', existing?.watchMemory ?? join(home, '.claude/memory/*.md'));
+  else if (watchChoice === 'custom') watchMemory = resolveText(watchPreset, nonInteractive, 'Comma-separated glob patterns', existing?.watchMemory ?? join(home, '.claude/memory/*.md'));
 
   return {
     summarizer,
@@ -563,7 +727,7 @@ function probeHealth(): void {
 // byte-for-byte untouched. Supervision is per-user Scheduled Tasks via the
 // ServiceManager abstraction; secrets reach the worker via worker.env +
 // loadWorkerEnv() (no EnvironmentFile= equivalent on Windows).
-async function installWindows(args: string[]): Promise<number> {
+async function installWindows(args: string[], opts: InstallOptions): Promise<number> {
   printMiniBanner();
 
   // The captain-memo project/plugin root (where src/worker/index.ts lives).
@@ -589,12 +753,13 @@ async function installWindows(args: string[]): Promise<number> {
   let existing: Partial<WizardConfig> | undefined;
   if (existsSync(WORKER_ENV_PATH)) {
     info(`detected existing config: ${WORKER_ENV_PATH}`);
-    if (askYesNo('Reconfigure (re-ask all questions)?', true)) existing = {};
+    // Non-interactive: reconfigure from flags/env/defaults (don't prompt).
+    if (opts.nonInteractive || askYesNo('Reconfigure (re-ask all questions)?', true)) existing = {};
     else info('keeping current config; re-running setup steps only.');
   }
 
-  // gatherConfig() is the same pure-prompt wizard the Linux path uses.
-  const cfg = gatherConfig(existing);
+  // gatherConfig() is the same wizard the Linux path uses; opts make it headless.
+  const cfg = gatherConfig(existing, opts);
 
   console.log();
   header('Summary');
@@ -633,7 +798,8 @@ async function installWindows(args: string[]): Promise<number> {
   }
 
   console.log();
-  if (!askYesNo('Proceed with install?', true)) {
+  // Non-interactive: proceed without the confirmation prompt.
+  if (!opts.nonInteractive && !askYesNo('Proceed with install?', true)) {
     info('aborted; nothing changed.');
     return 0;
   }
@@ -743,7 +909,7 @@ async function installWindows(args: string[]): Promise<number> {
 
 export async function installCommand(args: string[]): Promise<number> {
   if (args.includes('--help') || args.includes('-h')) {
-    console.log(`Usage: captain-memo install [--user|--system]
+    console.log(`Usage: captain-memo install [--user|--system] [--yes] [flags]
 
 DEFAULT: --user (no sudo)
   Embedder:    ~/.captain-memo/embed/  (Python venv + voyage-4-nano)
@@ -754,13 +920,40 @@ DEFAULT: --user (no sudo)
 WITH --system (sudo): for headless servers / multi-user / always-on boxes.
   Installs to /opt + /etc + /etc/systemd/system. Survives any user logout.
 
+NON-INTERACTIVE (headless / CI / non-TTY stdin):
+  Pass --yes (or -y) to accept defaults for anything unspecified and NEVER
+  prompt. A non-TTY stdin is auto-detected and also disables prompts. Each
+  setting can be supplied by a flag, an env var, or (TTY only) the prompt;
+  precedence is: flag > env > prompt > default.
+
+  --embedder <voyage-hosted|local-sidecar|openai-compatible|skip>
+                                   (env CAPTAIN_MEMO_EMBEDDER)
+  --voyage-key <key>               Voyage API key for the hosted embedder
+                                   (env CAPTAIN_MEMO_EMBEDDER_API_KEY)
+  --voyage-model <model>           Voyage / external embedder model
+                                   (env CAPTAIN_MEMO_EMBEDDER_MODEL)
+  --embedding-dim <n>              Embedding dimension
+                                   (env CAPTAIN_MEMO_EMBEDDING_DIM)
+  --summarizer <claude-oauth|anthropic|claude-code|openai-compatible>
+                                   (env CAPTAIN_MEMO_SUMMARIZER_PROVIDER)
+  --openai-endpoint <url>          OpenAI-compatible endpoint (summarizer/embedder)
+                                   (env CAPTAIN_MEMO_OPENAI_ENDPOINT)
+  --openai-key <key>               OpenAI-compatible API key
+                                   (env CAPTAIN_MEMO_OPENAI_API_KEY)
+  --watch <all-projects|none|path> Memory dirs to watch; a path/glob = custom
+                                   (env CAPTAIN_MEMO_WATCH_MEMORY)
+  --yes, -y                        Accept defaults for unspecified settings; no prompts
+
 Both modes: idempotent re-runs reconfigure. To remove: captain-memo uninstall`);
     return 0;
   }
 
+  // Parse flags + env once; threaded through both the Windows and Linux paths.
+  const opts = parseInstallOptions(args);
+
   // Windows fork — the whole Linux flow below this point is systemd/sudo/POSIX
   // and stays byte-for-byte untouched. Native Windows takes its own path.
-  if (isWindows) return installWindows(args);
+  if (isWindows) return installWindows(args, opts);
 
   printMiniBanner();
 
@@ -768,7 +961,11 @@ Both modes: idempotent re-runs reconfigure. To remove: captain-memo uninstall`);
   let mode: InstallMode;
   if (args.includes('--system')) mode = 'system';
   else if (args.includes('--user')) mode = 'user';
-  else if (process.getuid && process.getuid() === 0) {
+  else if (process.getuid && process.getuid() === 0 && opts.nonInteractive) {
+    // Root, no explicit flag, can't prompt — default to system-wide (the only
+    // mode that makes sense for root; user-level would install into /root).
+    mode = 'system';
+  } else if (process.getuid && process.getuid() === 0) {
     // Running as root without an explicit flag — ask once.
     console.log('\n\x1b[1;36mCaptain Memo install wizard\x1b[0m\n───────────────────────────');
     mode = ask('Install as user-level (recommended for personal use) or system-wide (headless server / multi-user)?', [
@@ -794,11 +991,12 @@ Both modes: idempotent re-runs reconfigure. To remove: captain-memo uninstall`);
   let existing: Partial<WizardConfig> | undefined;
   if (existsSync(paths.envFile)) {
     info(`detected existing config: ${paths.envFile}`);
-    if (askYesNo('Reconfigure (re-ask all questions)?', true)) existing = {};
+    // Non-interactive: reconfigure from flags/env/defaults (don't prompt).
+    if (opts.nonInteractive || askYesNo('Reconfigure (re-ask all questions)?', true)) existing = {};
     else info('keeping current config; re-running setup steps only.');
   }
 
-  const cfg = gatherConfig(existing);
+  const cfg = gatherConfig(existing, opts);
 
   console.log();
   header('Summary');
@@ -811,6 +1009,11 @@ Both modes: idempotent re-runs reconfigure. To remove: captain-memo uninstall`);
   const pfOk = printPreflight(pf);
   if (!pfOk) {
     console.log();
+    // Non-interactive: a failing pre-flight check is fatal — there's nobody to
+    // confirm "continue anyway", and silently proceeding could install broken.
+    if (opts.nonInteractive) {
+      fail('pre-flight checks failed (non-interactive mode aborts rather than guess). Fix the FAIL items above, or re-run interactively to override.');
+    }
     if (!askYesNo('Some checks failed. Continue anyway?', false)) {
       info('aborted.');
       return 1;
@@ -818,7 +1021,8 @@ Both modes: idempotent re-runs reconfigure. To remove: captain-memo uninstall`);
   }
 
   console.log();
-  if (!askYesNo('Proceed with install?', true)) {
+  // Non-interactive: proceed without the confirmation prompt.
+  if (!opts.nonInteractive && !askYesNo('Proceed with install?', true)) {
     info('aborted; nothing changed.');
     return 0;
   }

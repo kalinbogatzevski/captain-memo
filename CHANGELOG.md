@@ -5,6 +5,34 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.2.3] — 2026-05-30
+
+### Fixed (Windows — from a native field-install report)
+- **The plugin is now self-contained — no more git symlinks.** `plugin/src` and
+  `plugin/bin` were committed as symlinks (`→ ../src`, `→ ../bin`); on a Windows
+  checkout (`core.symlinks=false`) they materialized as 6-byte text files, got
+  copied into the plugin cache, and the configured entry paths didn't resolve —
+  so the **MCP server never started and all 5 hooks were silent no-ops** (and
+  `doctor` stayed green). The HTTP-only entrypoints are now bundled into
+  `plugin/dist/{mcp-server,captain-memo-hook}.js` (via `bun run build:plugin`),
+  the manifests point there, and the symlinks are gone. Works on a fresh Windows
+  install with no junction workarounds.
+- **Worker Scheduled Task installs without admin.** Replaced the
+  `Register-ScheduledTask` call (which needs elevation on Windows 11) with
+  `schtasks /Create /XML` (per-user, `InteractiveToken` / `LeastPrivilege`,
+  logon trigger, restart-on-failure) — no UAC, matching the installer's promise.
+
+### Added
+- **Non-interactive install.** `captain-memo install` accepts flags (`--embedder`,
+  `--voyage-key`, `--summarizer`, `--watch`, `-y/--yes`, …) and `CAPTAIN_MEMO_*`
+  env fallbacks, so it works over a non-TTY stdin (headless / remote / Windows).
+
+### Internal
+- `doctor` now validates the plugin **entry bundles** resolve (FAIL if the
+  manifests point at missing/placeholder files) and WARNs on a stale cache copy.
+- CI rebuilds `plugin/dist` and fails on drift, so the committed bundles can't
+  go stale vs. their source.
+
 ## [0.2.2] — 2026-05-30
 
 ### Internal

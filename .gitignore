@@ -1,6 +1,10 @@
 node_modules/
 bun.lockb
 dist/
+# plugin/dist holds the committed, self-contained plugin entrypoints (bundled
+# from src/bin so a git checkout/install works on Windows without symlinks).
+!plugin/dist/
+!plugin/dist/**
 .captain-memo/
 .captain-memo.dev/
 *.tsbuildinfo

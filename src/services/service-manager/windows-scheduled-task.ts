@@ -1,13 +1,21 @@
 // src/services/service-manager/windows-scheduled-task.ts — Windows ServiceManager
 // over per-user Scheduled Tasks (PowerShell ScheduledTasks module).
 //
-// Design (spec §4.1): no admin / no UAC. Tasks register in the *current user's*
-// context with RunLevel Limited, trigger -AtLogOn, and (when restartOnFailure)
-// restart up to 3× at 1-minute intervals with no execution time limit — the
-// closest Scheduled-Task analogue to the rootless `systemd --user` + Restart=on-failure
-// the Linux impl provides. We prefer `pwsh` (PowerShell 7+) and fall back to the
-// in-box `powershell` (Windows PowerShell 5.1); both expose the ScheduledTasks
-// cmdlets used here.
+// Design (spec §4.1): no admin / no UAC. Registration goes through
+// `schtasks /Create /XML` (Task Scheduler 1.2 XML) rather than
+// Register-ScheduledTask — on Win11 the cmdlet trips a UAC/admin requirement,
+// whereas schtasks /XML registers a per-user task non-elevated (verified in the
+// field). The XML pins LogonType=InteractiveToken + RunLevel=LeastPrivilege (the
+// current user's normal token, no elevation), a LogonTrigger, and (when
+// restartOnFailure) restart up to 3× at 1-minute intervals with no execution
+// time limit — the closest Scheduled-Task analogue to the rootless
+// `systemd --user` + Restart=on-failure the Linux impl provides.
+//
+// start/stop/status/isActive/remove still use the ScheduledTasks cmdlets
+// (Start-/Stop-/Get-/Unregister-ScheduledTask), which need no admin and operate
+// fine on a schtasks-created task — Unregister-ScheduledTask cleans it up. We
+// prefer `pwsh` (PowerShell 7+) and fall back to the in-box `powershell`
+// (Windows PowerShell 5.1); both expose the cmdlets used here.
 //
 // LIVENESS: status()/isActive() report the Scheduled-Task State, but that only
 // says whether the task's *process* is running — not whether the worker's HTTP
@@ -19,6 +27,9 @@
 // and the worker itself writes its own log file into spec.logDir. We deliberately
 // do NOT redirect stdout/stderr from the task here — worker-side logging owns that.
 
+import { writeFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import type { ServiceManager, ServiceSpec, ServiceState, StopOptions } from './types.ts';
 import { DEFAULT_WORKER_PORT } from '../../shared/paths.ts';
 
@@ -31,11 +42,26 @@ function psSingleQuote(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
-// Build the `-Argument` value for New-ScheduledTaskAction: everything in
-// spec.exec after the executable (exec[0]), joined as a single command-line
-// string. Each token is double-quoted so a token containing spaces survives the
-// round-trip into the task's argument string. The whole thing is then wrapped in
-// a PowerShell single-quoted literal by the caller.
+// --- XML escaping -----------------------------------------------------------
+// Every value interpolated into the Task Scheduler XML (paths, names,
+// arguments) must be escaped so a path/value containing &, <, >, ", or ' can't
+// break the document or smuggle markup. We escape the full set rather than the
+// minimal element/attribute subset — it's always valid in both contexts and
+// leaves no room to get it wrong.
+function xmlEscape(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;');
+}
+
+// Build the <Arguments> value for the Exec action: everything in spec.exec
+// after the executable (exec[0]), joined as a single command-line string. Each
+// token is double-quoted so a token containing spaces survives the round-trip
+// into the task's argument string. The whole thing is XML-escaped by the caller
+// before it lands in the document.
 function buildArgumentString(exec: string[]): string {
   return exec
     .slice(1)
@@ -44,62 +70,93 @@ function buildArgumentString(exec: string[]): string {
 }
 
 /**
- * Pure builder for the PowerShell command that registers the Scheduled Task.
- * Exported so the construction can be unit-tested WITHOUT spawning PowerShell
- * (the test runs on Linux CI). The returned string is passed verbatim to
- * `pwsh -Command <this>` (or `powershell -Command <this>`).
+ * Pure builder for the Task Scheduler 1.2 XML that `schtasks /Create /XML`
+ * registers. Exported so the construction can be unit-tested WITHOUT spawning
+ * schtasks (the test runs on Linux CI). The returned string is written to a
+ * temp file and passed to `schtasks /Create /TN <name> /XML <tmpfile> /F`.
  *
- * Mirrors spec §4.1:
- *   New-ScheduledTaskAction -Execute <exec[0]> -Argument '<exec[1..]>' -WorkingDirectory <workingDir>
- *   New-ScheduledTaskTrigger -AtLogOn
- *   New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) \
- *       -MultipleInstances IgnoreNew -ExecutionTimeLimit 0    (only when restartOnFailure)
- *   Register-ScheduledTask -TaskName <name> -Action $a -Trigger $t [-Settings $s] -RunLevel Limited -Force
+ * Why schtasks /XML rather than Register-ScheduledTask: on Win11 the latter
+ * trips a UAC/admin requirement, whereas `schtasks /Create … /XML` is verified
+ * to register a per-user task non-elevated in the field.
+ *
+ * The XML encodes (spec §4.1, rootless / no-admin):
+ *   - LogonTrigger                          → autostart at this user's logon
+ *   - Principal LogonType=InteractiveToken
+ *     RunLevel=LeastPrivilege               → current user's normal token, no UAC
+ *   - Settings (when restartOnFailure):
+ *       RestartCount=3, RestartInterval=PT1M,
+ *       MultipleInstancesPolicy=IgnoreNew,
+ *       ExecutionTimeLimit=PT0S             → restart up to 3× at 1-min, run forever
+ *   - Actions/Exec: Command=exec[0],
+ *       Arguments=quoted exec[1..],
+ *       WorkingDirectory=workingDir
  */
-export function buildRegisterTaskCommand(spec: ServiceSpec): string {
+export function buildTaskXml(spec: ServiceSpec): string {
   const exe = spec.exec[0] ?? 'bun';
   const argString = buildArgumentString(spec.exec);
 
-  // -Argument is optional: only emit it when there actually are arguments, so a
-  // bare executable doesn't get an empty '' argument string.
-  const actionParts = [
-    'New-ScheduledTaskAction',
-    `-Execute ${psSingleQuote(exe)}`,
-  ];
-  if (argString.length > 0) actionParts.push(`-Argument ${psSingleQuote(argString)}`);
-  actionParts.push(`-WorkingDirectory ${psSingleQuote(spec.workingDir)}`);
-  const action = actionParts.join(' ');
+  const settings = spec.restartOnFailure
+    ? [
+        '  <Settings>',
+        '    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>',
+        '    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>',
+        '    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>',
+        '    <AllowHardTerminate>true</AllowHardTerminate>',
+        '    <StartWhenAvailable>true</StartWhenAvailable>',
+        '    <Enabled>true</Enabled>',
+        '    <RestartOnFailure>',
+        '      <Interval>PT1M</Interval>',
+        '      <Count>3</Count>',
+        '    </RestartOnFailure>',
+        '    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>',
+        '  </Settings>',
+      ]
+    : [
+        '  <Settings>',
+        '    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>',
+        '    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>',
+        '    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>',
+        '    <StartWhenAvailable>true</StartWhenAvailable>',
+        '    <Enabled>true</Enabled>',
+        '    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>',
+        '  </Settings>',
+      ];
 
-  // At-logon trigger → autostart without admin (no boot-time / system trigger).
-  const trigger = 'New-ScheduledTaskTrigger -AtLogOn';
+  // Arguments is optional: only emit it when there actually are arguments, so a
+  // bare executable doesn't get an empty <Arguments/> element.
+  const execLines = [
+    '    <Exec>',
+    `      <Command>${xmlEscape(exe)}</Command>`,
+  ];
+  if (argString.length > 0) execLines.push(`      <Arguments>${xmlEscape(argString)}</Arguments>`);
+  execLines.push(`      <WorkingDirectory>${xmlEscape(spec.workingDir)}</WorkingDirectory>`);
+  execLines.push('    </Exec>');
 
   const lines = [
-    `$action = ${action}`,
-    `$trigger = ${trigger}`,
+    '<?xml version="1.0" encoding="UTF-16"?>',
+    '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
+    '  <RegistrationInfo>',
+    `    <Description>${xmlEscape(spec.description)}</Description>`,
+    `    <URI>\\${xmlEscape(spec.name)}</URI>`,
+    '  </RegistrationInfo>',
+    '  <Triggers>',
+    '    <LogonTrigger>',
+    '      <Enabled>true</Enabled>',
+    '    </LogonTrigger>',
+    '  </Triggers>',
+    '  <Principals>',
+    '    <Principal id="Author">',
+    '      <LogonType>InteractiveToken</LogonType>',
+    '      <RunLevel>LeastPrivilege</RunLevel>',
+    '    </Principal>',
+    '  </Principals>',
+    ...settings,
+    '  <Actions Context="Author">',
+    ...execLines,
+    '  </Actions>',
+    '</Task>',
   ];
-
-  // Restart-on-failure settings only when requested — otherwise omit -Settings
-  // entirely so a failed task just stops (matching a unit without Restart=).
-  const registerParts = [
-    'Register-ScheduledTask',
-    `-TaskName ${psSingleQuote(spec.name)}`,
-    '-Action $action',
-    '-Trigger $trigger',
-  ];
-  if (spec.restartOnFailure) {
-    const settings =
-      'New-ScheduledTaskSettingsSet -RestartCount 3 ' +
-      '-RestartInterval (New-TimeSpan -Minutes 1) ' +
-      '-MultipleInstances IgnoreNew -ExecutionTimeLimit 0';
-    lines.push(`$settings = ${settings}`);
-    registerParts.push('-Settings $settings');
-  }
-  // RunLevel Limited = current user's normal token (no elevation / no UAC).
-  registerParts.push('-RunLevel Limited');
-  registerParts.push('-Force');
-
-  lines.push(registerParts.join(' '));
-  return lines.join('; ');
+  return lines.join('\n');
 }
 
 // --- PowerShell process plumbing -------------------------------------------
@@ -130,12 +187,43 @@ async function runPowerShell(command: string): Promise<{ exitCode: number; stdou
   throw new Error('neither pwsh nor powershell is available on PATH');
 }
 
+// --- schtasks process plumbing ---------------------------------------------
+// Registration goes through `schtasks /Create … /XML`, NOT
+// Register-ScheduledTask: on Win11 the cmdlet trips a UAC/admin requirement,
+// while schtasks /XML registers a per-user task non-elevated (verified in the
+// field). argv is an ARRAY (never string concat) so the temp-file path with
+// spaces survives. /F overwrites an existing task (idempotent reinstall).
+async function runSchtasks(args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const proc = Bun.spawn(['schtasks', ...args], { stdout: 'pipe', stderr: 'pipe' });
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  const exitCode = await proc.exited;
+  return { exitCode, stdout, stderr };
+}
+
 class WindowsScheduledTaskServiceManager implements ServiceManager {
   async install(spec: ServiceSpec): Promise<void> {
-    const command = buildRegisterTaskCommand(spec);
-    const r = await runPowerShell(command);
-    if (r.exitCode !== 0) {
-      throw new Error(`Register-ScheduledTask failed for ${spec.name}: ${r.stderr.trim() || r.stdout.trim()}`);
+    const xml = buildTaskXml(spec);
+    // Write the spec to a temp file and hand it to schtasks /XML. We do NOT pipe
+    // it on stdin — schtasks only reads the XML from a path.
+    const xmlPath = join(tmpdir(), `captain-memo-task-${spec.name}-${process.pid}-${Date.now()}.xml`);
+    writeFileSync(xmlPath, xml);
+    try {
+      const r = await runSchtasks(['/Create', '/TN', spec.name, '/XML', xmlPath, '/F']);
+      if (r.exitCode !== 0) {
+        throw new Error(
+          `schtasks /Create failed for ${spec.name}: ${r.stderr.trim() || r.stdout.trim()}`,
+        );
+      }
+    } finally {
+      // Best-effort cleanup of the temp file regardless of success/failure.
+      try {
+        rmSync(xmlPath, { force: true });
+      } catch {
+        // ignore — temp dir cleanup is not load-bearing
+      }
     }
   }
 

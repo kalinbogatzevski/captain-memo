@@ -3,7 +3,7 @@
 // Reports PASS / WARN / FAIL for each component and prints a one-line
 // remediation hint when something's wrong. Read-only — never changes state.
 
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, statSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { spawnSync } from 'child_process';
@@ -199,6 +199,146 @@ function checkPluginManifest(): void {
   record({ name: 'plugin manifest', status: 'PASS', detail: 'plugin.json + hooks.json present in repo' });
 }
 
+// Bug-1 guardrail: the plugin's MCP server + hook ENTRY FILES must resolve as
+// real, non-trivial files. On a Windows checkout the old plugin/src + plugin/bin
+// git symlinks (mode 120000) materialise as 6-byte text placeholders ("../src"),
+// so the entry paths in the manifests point at files that either don't exist or
+// are far too small to be a real bundle — the MCP server never starts and the
+// hooks fire silently into nothing. We read the configured entry paths straight
+// from the manifests (so this keeps verifying whatever the manifests reference)
+// and existsSync + size-check each one relative to the plugin root.
+const MIN_ENTRY_BYTES = 400; // a real bundle is many KB; a 6-byte symlink placeholder is the failure mode
+
+// Pull the file path out of a manifest reference, stripping the
+// ${CLAUDE_PLUGIN_ROOT} prefix (with or without a trailing slash) and any
+// surrounding quotes, so it can be resolved relative to the plugin root.
+function entryPathFromRef(ref: string, pluginRoot: string): string | null {
+  const m = ref.match(/\$\{CLAUDE_PLUGIN_ROOT\}[\/\\]?([^"'\s]+)/);
+  if (!m || !m[1]) return null;
+  return join(pluginRoot, m[1]);
+}
+
+// Collect the entry-file references from plugin.json (mcpServers args) and
+// hooks.json (hook commands). Returns a de-duplicated list of { label, file }.
+function collectPluginEntryFiles(pluginRoot: string): Array<{ label: string; file: string }> {
+  const entries: Array<{ label: string; file: string }> = [];
+  const seen = new Set<string>();
+
+  const add = (label: string, ref: string) => {
+    const file = entryPathFromRef(ref, pluginRoot);
+    if (!file || seen.has(file)) return;
+    seen.add(file);
+    entries.push({ label, file });
+  };
+
+  // plugin.json → mcpServers.<name>.args[] (look for the *.js / *.ts entry file)
+  try {
+    const manifest = JSON.parse(readFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), 'utf-8')) as {
+      mcpServers?: Record<string, { args?: string[] }>;
+    };
+    for (const [name, srv] of Object.entries(manifest.mcpServers ?? {})) {
+      for (const arg of srv.args ?? []) {
+        if (/\$\{CLAUDE_PLUGIN_ROOT\}.+\.(js|ts)$/.test(arg)) add(`mcp:${name}`, arg);
+      }
+    }
+  } catch { /* manifest parse handled by checkPluginManifest */ }
+
+  // hooks.json → hooks.<event>[].hooks[].command (extract the *.js / *.ts token)
+  try {
+    const hooks = JSON.parse(readFileSync(join(pluginRoot, 'hooks', 'hooks.json'), 'utf-8')) as {
+      hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
+    };
+    for (const groups of Object.values(hooks.hooks ?? {})) {
+      for (const group of groups) {
+        for (const h of group.hooks ?? []) {
+          const cmd = h.command ?? '';
+          const tok = cmd.match(/\$\{CLAUDE_PLUGIN_ROOT\}[^"'\s]+\.(js|ts)/);
+          if (tok) add('hook', tok[0]);
+        }
+      }
+    }
+  } catch { /* hooks parse handled by checkPluginManifest */ }
+
+  return entries;
+}
+
+// Verify each entry file under a given plugin root resolves as a real,
+// non-trivial file. Returns the list of problems (empty == all good).
+function entryProblems(pluginRoot: string): string[] {
+  const problems: string[] = [];
+  for (const { label, file } of collectPluginEntryFiles(pluginRoot)) {
+    if (!existsSync(file)) {
+      problems.push(`${label} → ${file} missing`);
+      continue;
+    }
+    let size = 0;
+    try { size = statSync(file).size; } catch { /* treated as 0 below */ }
+    if (size < MIN_ENTRY_BYTES) {
+      problems.push(`${label} → ${file} only ${size}B (symlink placeholder / empty — not a real bundle)`);
+    }
+  }
+  return problems;
+}
+
+// Best-effort: find the installed plugin cache copy under ~/.claude/plugins/cache.
+// The layout is cache/<marketplace>/plugins/<plugin>/ (or a direct <plugin>/);
+// we look for a dir that actually contains our plugin.json. Returns null when no
+// cache dir / no copy is found — never hard-fails.
+function findCachedPluginRoot(): string | null {
+  const cacheRoot = join(homedir(), '.claude', 'plugins', 'cache');
+  if (!existsSync(cacheRoot)) return null;
+  let found: string | null = null;
+  const walk = (dir: string, depth: number) => {
+    if (found || depth > 5) return;
+    if (existsSync(join(dir, '.claude-plugin', 'plugin.json'))) {
+      try {
+        const m = JSON.parse(readFileSync(join(dir, '.claude-plugin', 'plugin.json'), 'utf-8')) as { name?: string };
+        if (m.name === 'captain-memo') { found = dir; return; }
+      } catch { /* keep walking */ }
+    }
+    let kids: string[] = [];
+    try { kids = readdirSync(dir, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name); }
+    catch { return; }
+    for (const k of kids) walk(join(dir, k), depth + 1);
+  };
+  walk(cacheRoot, 0);
+  return found;
+}
+
+function checkPluginEntries(): void {
+  const repoRoot = join(import.meta.dir, '../../..');
+  const pluginRoot = join(repoRoot, 'plugin');
+
+  const repoProblems = entryProblems(pluginRoot);
+  if (repoProblems.length > 0) {
+    record({ name: 'plugin entry files', status: 'FAIL',
+             detail: repoProblems.join('; '),
+             remedy: 'run `bun run build:plugin` to (re)generate plugin/dist (the entry bundles the manifests point at)' });
+  } else {
+    const files = collectPluginEntryFiles(pluginRoot);
+    record({ name: 'plugin entry files', status: 'PASS',
+             detail: `${files.length} entr${files.length === 1 ? 'y' : 'ies'} resolve as real bundles in repo plugin/` });
+  }
+
+  // Best-effort: also validate the installed cache copy if we can locate one.
+  const cachedRoot = findCachedPluginRoot();
+  if (cachedRoot) {
+    const cacheProblems = entryProblems(cachedRoot);
+    if (cacheProblems.length > 0) {
+      // WARN, not FAIL: the repo `plugin entry files` check above is authoritative
+      // for the fix. A stale/unresolved CACHE copy (e.g. predating a bundle rebuild,
+      // or a Windows checkout's symlink placeholders) just needs a refresh — it
+      // shouldn't make `doctor` go red for an otherwise-working install.
+      record({ name: 'plugin entry (cache)', status: 'WARN',
+               detail: `installed cache copy is stale/unresolved (${cacheProblems.join('; ')})`,
+               remedy: 'refresh the cached plugin: `claude plugin update captain-memo` (or re-run `captain-memo install`); the repo bundles above are the source of truth' });
+    } else {
+      record({ name: 'plugin entry (cache)', status: 'PASS',
+               detail: `installed cache copy entries resolve (${cachedRoot})` });
+    }
+  }
+}
+
 function statusIcon(s: Status): string {
   return s === 'PASS' ? '\x1b[32m✓\x1b[0m' : s === 'WARN' ? '\x1b[33m!\x1b[0m' : '\x1b[31m✗\x1b[0m';
 }
@@ -271,6 +411,7 @@ export async function doctorCommand(_args: string[]): Promise<number> {
   checkConfig();
   checkPluginRegistration();
   checkPluginManifest();
+  checkPluginEntries();
 
   const dataDir = process.env.CAPTAIN_MEMO_DATA_DIR ?? join(homedir(), '.captain-memo');
   checkMigrations(dataDir);

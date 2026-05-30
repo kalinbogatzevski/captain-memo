@@ -21,6 +21,15 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      # Guardrail (BUG 1): the committed plugin/dist bundles must never drift
+      # from source. Rebuild on the Linux leg and fail if anything changed —
+      # a stale or missing bundle is exactly what left the Windows plugin dead.
+      - name: Plugin bundles in sync with source
+        if: runner.os == 'Linux'
+        run: |
+          bun run build:plugin
+          git diff --exit-status plugin/dist
+
       - name: Typecheck
         run: bun run typecheck
 
