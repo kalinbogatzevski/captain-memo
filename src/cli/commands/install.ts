@@ -693,14 +693,28 @@ function registerPlugin(mode: InstallMode): void {
   // In user mode we just run `claude` directly. In system mode, the wizard is
   // running as root — we drop privileges to SUDO_USER so claude reads/writes
   // the user's settings, not root's.
-  const runAsUser = (cmd: string, args: string[]) => {
+  const runAsUser = (cmd: string, args: string[], opts: { quiet?: boolean } = {}) => {
+    // quiet → capture output instead of inheriting the terminal. Used for the
+    // best-effort marketplace-remove below, whose "marketplace not found" on a
+    // fresh install is expected and shouldn't alarm the user.
+    const stdio = opts.quiet ? 'pipe' : 'inherit';
     // Windows: no sudo / no privilege-drop — always run `claude` directly as the
     // current user. (`mode` is always 'user' on the Windows fork.)
     if (!isWindows && mode === 'system' && process.env.SUDO_USER) {
-      return spawnSync('sudo', ['-u', process.env.SUDO_USER, '-E', cmd, ...args], { stdio: 'inherit' });
+      return spawnSync('sudo', ['-u', process.env.SUDO_USER, '-E', cmd, ...args], { stdio });
     }
-    return spawnSync(cmd, args, { stdio: 'inherit' });
+    return spawnSync(cmd, args, { stdio });
   };
+
+  // Force a fresh copy of the plugin into Claude Code's cache on EVERY install/upgrade.
+  // A `directory`-source marketplace is snapshotted at add-time; a bare `marketplace add`
+  // is a no-op once the entry exists, so a plugin file that changed since the marketplace
+  // was first added (notably hooks.json) stays FROZEN in the cache and the hooks keep
+  // launching the OLD command. This is exactly what broke after the bin/→dist/ hook move:
+  // caches first added at 0.1.0 kept invoking the since-deleted `bin/captain-memo-hook`.
+  // Removing first guarantees the `add` below re-copies the current plugin. Best-effort
+  // and quiet — on a fresh install there's nothing to remove and that non-zero exit is fine.
+  runAsUser('claude', ['plugin', 'marketplace', 'remove', 'captain-memo'], { quiet: true });
 
   // Idempotent — if the marketplace already exists, claude prints a notice and exits 0.
   const r1 = runAsUser('claude', ['plugin', 'marketplace', 'add', REPO_ROOT]);

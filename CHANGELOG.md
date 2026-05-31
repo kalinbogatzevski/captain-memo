@@ -5,6 +5,31 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.2.8] — 2026-05-31
+
+### Fixed
+- **`install`/upgrade now repairs a frozen plugin cache.** A `directory`-source
+  marketplace is snapshotted by Claude Code at *add* time, and a bare
+  `claude plugin marketplace add` is a no-op once the entry exists — so a plugin
+  file that changed after the marketplace was first added (notably `hooks.json`)
+  stayed **frozen** in the cache. After the v0.2.3 `bin/`→`dist/` hook move, any
+  install whose marketplace had been added at 0.1.0 kept launching the deleted
+  `bin/captain-memo-hook`, producing `… /plugin/bin/captain-memo-hook: not found`
+  on every hook event. `registerPlugin` now does a best-effort
+  `marketplace remove` before `add`, forcing a fresh re-copy of the current plugin
+  on **every** install/upgrade.
+
+### Changed
+- **`marketplace.json` plugin version synced to `plugin.json` (→ 0.2.4).** It had
+  silently lagged at 0.1.0, which is what froze the directory-marketplace cache.
+
+### Added
+- **Guard tests (`tests/unit/plugin-manifest.test.ts`).** Assert `marketplace.json`
+  and `plugin.json` versions stay in lockstep, and that the shipped hooks reference
+  the committed `dist/` bundle (never the deleted `bin/captain-memo-hook` symlink)
+  with both bundles present — turning this class of drift into a CI failure rather
+  than a field break.
+
 ## [0.2.7] — 2026-05-30
 
 ### Added
