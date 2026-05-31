@@ -614,11 +614,12 @@ export function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOpt
     // existing watch glob) so `--yes` doesn't reset skip/custom/user-global to the
     // recommended 'all-projects'. '' is the skip choice (see loadExistingConfig).
     const ew = existing?.watchMemory;
-    const existingChoice: WatchPaths | undefined =
-      ew === undefined ? undefined :
-      ew === '' ? 'skip' :
-      ew === allProjectsGlob ? 'all-projects' :
-      ew === userGlobalGlob ? 'user-global' : 'custom';
+    let existingChoice: WatchPaths | undefined;
+    if (ew === undefined) existingChoice = undefined;
+    else if (ew === '') existingChoice = 'skip';
+    else if (ew === allProjectsGlob) existingChoice = 'all-projects';
+    else if (ew === userGlobalGlob) existingChoice = 'user-global';
+    else existingChoice = 'custom';
     if (existingChoice === 'custom') watchPreset = ew;
     watchChoice = resolveChoice<WatchPaths>(
       nonInteractive ? existingChoice : undefined,
