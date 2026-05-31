@@ -12683,6 +12683,74 @@ function loadWorkerEnv() {
     }
   }
 }
+// package.json
+var package_default = {
+  name: "captain-memo",
+  version: "0.2.9",
+  description: "Local memory layer for Claude Code \u2014 Voyage-embedded, hybrid search, federated remotes",
+  type: "module",
+  private: true,
+  license: "Apache-2.0",
+  author: {
+    name: "Kalin Bogatzevski",
+    url: "https://github.com/kalinbogatzevski"
+  },
+  homepage: "https://github.com/kalinbogatzevski/captain-memo",
+  repository: {
+    type: "git",
+    url: "https://github.com/kalinbogatzevski/captain-memo.git"
+  },
+  bugs: {
+    url: "https://github.com/kalinbogatzevski/captain-memo/issues"
+  },
+  keywords: [
+    "claude-code",
+    "claude-code-plugin",
+    "memory",
+    "rag",
+    "embeddings",
+    "voyage-ai",
+    "sqlite-vec",
+    "mcp",
+    "anthropic"
+  ],
+  engines: {
+    bun: ">=1.1.14"
+  },
+  bin: {
+    "captain-memo": "./bin/captain-memo"
+  },
+  scripts: {
+    test: "bun test",
+    "test:unit": "bun test tests/unit/",
+    "test:integration": "bun test tests/integration/",
+    "test:hooks": "bun test tests/hooks/",
+    typecheck: "tsc --noEmit",
+    "worker:start": "bun src/worker/index.ts",
+    "worker:dev": "CAPTAIN_MEMO_DATA_DIR=./.captain-memo.dev bun --watch src/worker/index.ts",
+    "mcp:start": "bun src/mcp-server.ts",
+    cli: "bun bin/captain-memo",
+    hook: "bun bin/captain-memo-hook",
+    "build:plugin": "bun build src/mcp-server.ts --target bun --outfile plugin/dist/mcp-server.js && bun build bin/captain-memo-hook.ts --target bun --outfile plugin/dist/captain-memo-hook.js"
+  },
+  dependencies: {
+    "@anthropic-ai/sdk": "^0.95.0",
+    "@modelcontextprotocol/sdk": "^1.25.1",
+    chokidar: "^4.0.3",
+    "gpt-tokenizer": "^2.5.1",
+    nanoid: "^5.0.7",
+    "sqlite-vec": "^0.1.9",
+    zod: "^3.24.0"
+  },
+  devDependencies: {
+    "@types/bun": "^1.1.0",
+    "@types/node": "^20.0.0",
+    typescript: "^5.6.0"
+  }
+};
+
+// src/shared/version.ts
+var VERSION = package_default.version;
 
 // src/mcp-server.ts
 loadWorkerEnv();
@@ -12786,7 +12854,7 @@ var TOOLS = [
   }
 ];
 async function runMcpServer() {
-  const server = new Server({ name: "captain-memo", version: "0.1.0-alpha" }, { capabilities: { tools: {} } });
+  const server = new Server({ name: "captain-memo", version: VERSION }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;

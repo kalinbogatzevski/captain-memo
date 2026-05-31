@@ -94,3 +94,12 @@ test('grantPluginToolPermissions — idempotent + preserves existing allow and o
   expect(settings.permissions.allow.filter((p: string) => p === CAPTAIN_MEMO_MCP_PERMISSION).length).toBe(1);
   expect(settings.model).toBe('opus');                               // other keys untouched
 });
+
+test('grantPluginToolPermissions — refuses to overwrite a corrupt settings.json (no silent data loss)', () => {
+  // A present-but-unparseable file (e.g. a trailing comma mid-edit) must NOT be
+  // treated as empty and overwritten — that would destroy the user's hooks/model.
+  const original = '{ "model": "opus", "hooks": {} ,}';   // trailing comma → invalid JSON
+  writeFileSync(settingsPath, original);
+  expect(() => grantPluginToolPermissions(settingsPath)).toThrow(/not valid JSON/);
+  expect(readFileSync(settingsPath, 'utf-8')).toBe(original);   // left byte-for-byte untouched
+});

@@ -149,7 +149,7 @@ You'll need to set `CAPTAIN_MEMO_WORKER_BASE` in your environment to point at th
 claude plugin update captain-memo@captain-memo
 ```
 
-Use the **fully-qualified id** (`captain-memo@captain-memo`). If you added the plugin from a **local directory** (a checkout, not GitHub), Claude Code caches the marketplace metadata at the version it was added with — after pulling a new release, refresh it with `claude plugin marketplace remove captain-memo` then `claude plugin marketplace add <path>` before `update`. A GitHub marketplace re-fetches on its own.
+Use the **fully-qualified id** (`captain-memo@captain-memo`). The simplest upgrade is to **re-run `captain-memo install`** — it refreshes Claude Code's plugin cache for you. (A `directory`-source marketplace is snapshotted at *add* time, so a bare `claude plugin marketplace add` is a no-op once it exists; the installer does `marketplace remove`→`add` to force a fresh copy of the current hooks + bundle.) To refresh by hand instead: `claude plugin marketplace remove captain-memo` then `claude plugin marketplace add <path>`. A GitHub marketplace re-fetches on its own.
 
 ### Windows (native)
 
@@ -187,7 +187,7 @@ captain-memo doctor               # confirm the worker is healthy on :39888
 
 The Windows CLI shim runs the TypeScript source directly (`captain-memo.cmd` → `bun "<repo>\src\cli\index.ts"`), so `git pull` makes the new CLI live **with no rebuild** — `captain-memo help` then prints the new version. Re-running `bun .\bin\captain-memo install` is an equivalent, idempotent alternative: it replaces the Scheduled Task in place (`schtasks … /F`) and re-grants permissions. If `captain-memo` isn't on PATH, prefix every command with `bun bin\captain-memo` from the checkout.
 
-A `WARN` from `captain-memo doctor` about the **plugin-cache version is expected and harmless**: the plugin bundle (`plugin/dist/*.js`) is intentionally pinned at `plugin.json` 0.2.4 and is byte-identical across CLI releases, so there's nothing for `claude plugin update` to refresh. Only run `claude plugin update captain-memo@captain-memo` when a release note says the bundle itself changed.
+Re-running `bun .\bin\captain-memo install` also **refreshes the plugin cache** for you (it does `marketplace remove`→`add`), so the cached hooks and MCP bundle always match your checkout — there's no separate `claude plugin update` step to remember. `captain-memo doctor` should then report all green. The `/stats` version (`captain-memo stats`) updates once the worker task has restarted, since the worker reads its version at process start.
 
 If Claude Code is in a restrictive permission mode (e.g. "don't ask") and the plugin's tools get auto-denied, allowlist them once in `%USERPROFILE%\.claude\settings.json` — `captain-memo install` (v0.2.7+) writes this for you, and `--no-grant-permissions` opts out:
 

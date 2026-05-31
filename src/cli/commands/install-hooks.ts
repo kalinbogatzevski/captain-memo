@@ -40,10 +40,20 @@ function isOurEntry(entry: HookCommandEntry): boolean {
 
 function readSettings(path: string): ClaudeSettings {
   if (!existsSync(path)) return {};
+  const raw = readFileSync(path, 'utf-8');
+  if (raw.trim() === '') return {};
   try {
-    return JSON.parse(readFileSync(path, 'utf-8'));
-  } catch {
-    return {};
+    return JSON.parse(raw);
+  } catch (e) {
+    // NEVER silently return {} for a present-but-unparseable file: the caller
+    // would then write a near-empty settings.json back over it, destroying the
+    // user's hooks / model / statusLine (e.g. a stray trailing comma mid-edit).
+    // Surface it so the caller warns and leaves the file untouched.
+    throw new Error(
+      `${path} exists but is not valid JSON (${(e as Error).message}). ` +
+      `Refusing to modify it so your settings aren't lost — fix the JSON ` +
+      `(or move the file aside), then re-run.`,
+    );
   }
 }
 
@@ -135,7 +145,13 @@ export async function installHooksCommand(args: string[]): Promise<number> {
   console.log(`Installing hooks to: ${settingsPath}`);
   console.log(`Hook command:        ${hookCommand}`);
 
-  const result = applyHookInstall({ settingsPath, hookCommand });
+  let result;
+  try {
+    result = applyHookInstall({ settingsPath, hookCommand });
+  } catch (e) {
+    console.error(`\n✗ ${(e as Error).message}`);
+    return 1;
+  }
 
   console.log(`events_added:        ${result.events_added}`);
   console.log(`events_already:      ${result.events_already_present}`);

@@ -5,6 +5,40 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.2.9] — 2026-05-31
+
+### Changed
+- **One version, everywhere.** The version is now sourced from a single global
+  (`src/shared/version.ts`, re-exporting `package.json`'s version) consumed by the
+  CLI banner, the worker `/stats` response, and the MCP `serverInfo`. The MCP
+  server had a stray hardcoded `'0.1.0-alpha'`; the CLI and worker each imported
+  `package.json` independently. Now there is exactly one place to read from — and
+  exactly one place to bump.
+- **`package.json`, `plugin.json`, and `marketplace.json` versions are unified**
+  (all → 0.2.9) and a guard test asserts they stay identical. Because the
+  plugin-cache key is the manifest version, bumping all three every release makes
+  the cache key advance each time — so the frozen-cache class of bug (v0.2.8)
+  cannot recur, with the `marketplace remove`→`add` refresh as belt-and-suspenders.
+
+### Fixed (review hardening)
+- **`install` no longer risks destroying a corrupt `settings.json`.** `readSettings`
+  treated a present-but-unparseable file as empty and then wrote a near-empty file
+  back over it — a stray trailing comma mid-edit could have wiped a user's hooks /
+  model / statusLine on upgrade. It now refuses to modify a file it can't parse and
+  surfaces a fix-it message.
+- **The plugin-cache refresh `marketplace remove` is now `--scope user`,** so it
+  can't silently migrate a deliberately project/local-scoped marketplace to user
+  scope. The remove→add order is extracted into a pure, exported
+  `pluginRegistrationSteps()` and unit-tested (the v0.2.8 fix was previously
+  untested). Added guards for committed-bundle version freshness (catches a
+  bump-without-rebuild) and `--no-grant-permissions` parsing.
+
+### Note
+- The worker reports its version as of process **start** (it reads the source once
+  and Bun doesn't hot-reload), so after upgrading, restart the worker
+  (`systemctl --user restart captain-memo-worker`, or `captain-memo install`) for
+  `/stats` to show the new number.
+
 ## [0.2.8] — 2026-05-31
 
 ### Fixed

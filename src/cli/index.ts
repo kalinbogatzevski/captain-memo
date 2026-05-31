@@ -16,7 +16,7 @@ import { dedupCommand } from './commands/dedup.ts';
 import { watchCommand } from './commands/watch.ts';
 import { topCommand } from './commands/top.ts';
 import { printBanner } from './banner.ts';
-import pkg from '../../package.json' with { type: 'json' };
+import { VERSION } from '../shared/version.ts';
 
 const HELP = `captain-memo — local memory layer for Claude Code
 
@@ -111,7 +111,7 @@ export async function main(args: string[]): Promise<void> {
     case 'help':
     case '--help':
     case '-h':
-      printBanner(`v${pkg.version}`);
+      printBanner(`v${VERSION}`);
       console.log(HELP);
       break;
     default:

@@ -52,7 +52,7 @@ import { Summarizer } from './summarizer.ts';
 import { createWorkerMetrics, recordEmbed, recordIndexResult } from './metrics.ts';
 import { computeEfficiency } from './efficiency.ts';
 import { countTokens } from '../shared/tokens.ts';
-import pkg from '../../package.json' with { type: 'json' };
+import { VERSION } from '../shared/version.ts';
 
 // Recursive directory size in bytes. Returns 0 for missing dirs (fail-open
 // for /stats — better an under-counted disk number than a 500 response).
@@ -885,7 +885,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           efficiency,
           recall,
           dream,
-          version: pkg.version,
+          version: VERSION,
         });
       }
       if (req.method === 'GET' && url.pathname === '/observations/recent') {

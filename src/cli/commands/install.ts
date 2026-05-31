@@ -684,6 +684,20 @@ function installCliShim(mode: InstallMode): void {
   }
 }
 
+/** The exact `claude` command sequence registerPlugin() runs, as arg arrays.
+ *  Pure + exported so the cache-refresh contract is unit-testable without
+ *  spawning `claude`: the remove MUST precede the add (that's the whole fix —
+ *  a bare `add` is a no-op on an existing entry, so the cache stays frozen),
+ *  and the remove is scoped to `user` so it never wipes a project/local-scoped
+ *  marketplace declaration the user set up deliberately. */
+export function pluginRegistrationSteps(repoRoot: string): string[][] {
+  return [
+    ['plugin', 'marketplace', 'remove', 'captain-memo', '--scope', 'user'],
+    ['plugin', 'marketplace', 'add', repoRoot],
+    ['plugin', 'install', 'captain-memo@captain-memo'],
+  ];
+}
+
 function registerPlugin(mode: InstallMode): void {
   // Run `claude plugin marketplace add <repo> && claude plugin install captain-memo@captain-memo`
   // — that's how Claude Code actually picks up the plugin (manifest, hooks,
@@ -714,10 +728,12 @@ function registerPlugin(mode: InstallMode): void {
   // caches first added at 0.1.0 kept invoking the since-deleted `bin/captain-memo-hook`.
   // Removing first guarantees the `add` below re-copies the current plugin. Best-effort
   // and quiet — on a fresh install there's nothing to remove and that non-zero exit is fine.
-  runAsUser('claude', ['plugin', 'marketplace', 'remove', 'captain-memo'], { quiet: true });
+  // (Scoped to `user` so a project/local-scoped declaration is left untouched.)
+  const steps = pluginRegistrationSteps(REPO_ROOT);
+  runAsUser('claude', steps[0]!, { quiet: true });
 
   // Idempotent — if the marketplace already exists, claude prints a notice and exits 0.
-  const r1 = runAsUser('claude', ['plugin', 'marketplace', 'add', REPO_ROOT]);
+  const r1 = runAsUser('claude', steps[1]!);
   if (r1.status !== 0) {
     warn(`'claude plugin marketplace add' failed (exit ${r1.status})`);
     info('You can register manually later:');
@@ -726,7 +742,7 @@ function registerPlugin(mode: InstallMode): void {
     return;
   }
 
-  const r2 = runAsUser('claude', ['plugin', 'install', 'captain-memo@captain-memo']);
+  const r2 = runAsUser('claude', steps[2]!);
   if (r2.status !== 0) {
     warn(`'claude plugin install' failed (exit ${r2.status})`);
     info('You can install manually later: claude plugin install captain-memo@captain-memo');

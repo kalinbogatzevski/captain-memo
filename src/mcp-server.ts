@@ -7,6 +7,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { DEFAULT_WORKER_PORT } from './shared/paths.ts';
 import { loadWorkerEnv } from './shared/worker-env.ts';
+import { VERSION } from './shared/version.ts';
 
 // Seed worker.env so a custom CAPTAIN_MEMO_WORKER_PORT set there is honored even
 // when Claude Code launches the MCP server without that var in its environment.
@@ -120,7 +121,7 @@ const TOOLS = [
 // server would silently never start.
 export async function runMcpServer(): Promise<void> {
   const server = new Server(
-    { name: 'captain-memo', version: '0.1.0-alpha' },
+    { name: 'captain-memo', version: VERSION },
     { capabilities: { tools: {} } },
   );
 

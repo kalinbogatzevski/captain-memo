@@ -303,8 +303,9 @@ function findCachedPluginRoot(): string | null {
   };
   walk(cacheRoot, 0);
   if (matches.length === 0) return null;
-  // Several version dirs can coexist (e.g. 0.1.0 + 0.2.4). Report the ACTIVE one
-  // — the highest version, by its dir name — not whichever readdir listed first.
+  // Several version dirs can coexist (a prior release dir + the current one).
+  // Report the ACTIVE one — the highest version, by its dir name — not whichever
+  // readdir listed first.
   const versionOf = (p: string): number[] => ((p.split(/[\\/]/).pop() ?? '').match(/\d+/g) ?? []).map(Number);
   const cmpDesc = (a: number[], b: number[]): number => {
     for (let i = 0; i < Math.max(a.length, b.length); i++) {
@@ -343,7 +344,7 @@ function checkPluginEntries(): void {
       // shouldn't make `doctor` go red for an otherwise-working install.
       record({ name: 'plugin entry (cache)', status: 'WARN',
                detail: `installed cache copy is stale/unresolved (${cacheProblems.join('; ')})`,
-               remedy: 'refresh the cached plugin: `claude plugin update captain-memo` (or re-run `captain-memo install`); the repo bundles above are the source of truth' });
+               remedy: 're-run `captain-memo install` (refreshes the cache for you), or `claude plugin update captain-memo@captain-memo`; the repo bundles above are the source of truth' });
     } else {
       record({ name: 'plugin entry (cache)', status: 'PASS',
                detail: `installed cache copy entries resolve (${cachedRoot})` });
