@@ -20,6 +20,11 @@ export interface ServiceSpec {
   /** Start automatically at logon (Windows) / boot (systemd WantedBy). */
   autostart: boolean;
   restartOnFailure: boolean;
+  /** Windows only: register a periodic watchdog trigger that re-launches the task
+   *  every N seconds (a no-op when already running, via MultipleInstancesPolicy=
+   *  IgnoreNew). The backstop for a clean-killed task that RestartOnFailure won't
+   *  catch. Ignored by systemd, where Restart=always is continuous. Default 300. */
+  watchdogIntervalSec?: number;
   /** Where stdout/stderr land. Windows has no journal, so the daemon logs here. */
   logDir: string;
 }

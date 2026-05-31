@@ -28,6 +28,7 @@ test('committed hook bundle dispatches end-to-end (UserPromptSubmit echoes the p
       ...process.env,
       CAPTAIN_MEMO_WORKER_PORT: '1', // closed port → fetch fails fast, no real worker
       CAPTAIN_MEMO_HOOK_TIMEOUT_MS: '300',
+      CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1', // keep hermetic: don't let revival touch the real service
     },
     stdout: 'pipe',
     stderr: 'ignore',
@@ -48,6 +49,7 @@ test('SessionStart emits a degraded banner (not silence) when the worker is unre
       ...process.env,
       CAPTAIN_MEMO_WORKER_PORT: '1', // closed → /stats fails fast
       CAPTAIN_MEMO_SESSION_START_TIMEOUT_MS: '300',
+      CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1', // isolate the degraded-banner path (no self-heal)
     },
     stdout: 'pipe',
     stderr: 'ignore',

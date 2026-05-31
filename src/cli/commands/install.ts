@@ -970,6 +970,7 @@ async function installWindows(args: string[], opts: InstallOptions): Promise<num
         workingDir: join(INSTALL_DIR, 'services', 'embed'),
         autostart: true,
         restartOnFailure: true,
+        watchdogIntervalSec: 300,
         logDir: LOGS_DIR,
       });
       await getServiceManager().start('captain-memo-embed');
@@ -990,6 +991,7 @@ async function installWindows(args: string[], opts: InstallOptions): Promise<num
     envFile: WORKER_ENV_PATH,
     autostart: true,
     restartOnFailure: true,
+    watchdogIntervalSec: 300,
     logDir: LOGS_DIR,
   });
   await getServiceManager().start('captain-memo-worker');

@@ -1,5 +1,8 @@
 import { readStdinJson, writeStdout, workerFetch, logHookError, workerFailureMessage } from './shared.ts';
-import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS } from '../shared/paths.ts';
+import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS, DEFAULT_WORKER_PORT } from '../shared/paths.ts';
+import { VERSION } from '../shared/version.ts';
+import { ensureWorkerHealthy } from '../shared/worker-health.ts';
+import { acquireHealLock, releaseHealLock } from '../shared/worker-heal-lock.ts';
 
 interface SessionStartPayload {
   session_id?: string;
@@ -111,10 +114,62 @@ export async function main(): Promise<void> {
     ?? 10_000,
   );
 
-  const stats = await workerFetch<StatsResponse>('/stats', {
-    method: 'GET',
-    timeoutMs,
-  });
+  async function probeStats() {
+    return workerFetch<StatsResponse>('/stats', { method: 'GET', timeoutMs });
+  }
+
+  let stats = await probeStats();
+
+  // Self-heal: start a dead worker / restart a stale one (running code older than
+  // the installed VERSION), then re-probe. Routed through the OS service manager
+  // (it owns the process — nothing is orphaned when this short-lived hook exits).
+  // We block here, because SessionStart fires once per session and a live worker
+  // on entry is worth the wait. Fully fail-open: any error → degraded banner
+  // below, never a thrown hook. Opt out with CAPTAIN_MEMO_DISABLE_SELF_HEAL=1.
+  const selfHealOff = process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL === '1';
+  const running = stats.ok && !!stats.body;
+  const stale = running && stats.body!.version !== undefined && stats.body!.version !== VERSION;
+  if (!selfHealOff && (!running || stale)) {
+    try {
+      const { getServiceManager } = await import('../services/service-manager/index.ts');
+      const sm = getServiceManager();
+      const WORKER = 'captain-memo-worker';
+      const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
+      const outcome = await ensureWorkerHealthy({
+        diskVersion: VERSION,
+        probeVersion: async () => (running ? (stats.body!.version ?? null) : null),
+        acquireLock: () => acquireHealLock(),
+        releaseLock: () => releaseHealLock(),
+        start: () => sm.start(WORKER),
+        restart: async () => { await sm.stop(WORKER, { graceful: true, port }); await sm.start(WORKER); },
+        waitHealthy: async () => {
+          const deadline = Date.now() + 8000;
+          while (Date.now() < deadline) {
+            const r = await workerFetch<StatsResponse>('/stats', { method: 'GET', timeoutMs: 1500 });
+            if (r.ok) { stats = r; return true; }
+            await new Promise((res) => setTimeout(res, 500));
+          }
+          return false;
+        },
+      });
+      if (outcome.action === 'skipped') {
+        // Another session is healing — give it a moment, then re-probe for the banner.
+        await new Promise((res) => setTimeout(res, 1500));
+        stats = await probeStats();
+      } else if (outcome.action === 'failed') {
+        logHookError('SessionStart', new Error(`self-heal ${outcome.reason} failed: ${outcome.error}`));
+      } else if ((outcome.action === 'started' || outcome.action === 'restarted') && !outcome.healthy) {
+        // The supervisor accepted the start/restart, but the worker never answered
+        // within the deadline (crash-loop on boot: bad env, port in use, corrupt DB).
+        // Without this, that's indistinguishable in the log from "never tried".
+        logHookError('SessionStart', new Error(
+          `self-heal ${outcome.action} the worker but it did not become healthy within 8s (reason: ${outcome.reason})`,
+        ));
+      }
+    } catch (err) {
+      logHookError('SessionStart', err);
+    }
+  }
 
   if (stats.ok && stats.body) {
     // Claude Code's SessionStart hook protocol expects a JSON envelope on

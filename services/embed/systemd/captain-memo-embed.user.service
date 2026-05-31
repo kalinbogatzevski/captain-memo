@@ -1,6 +1,7 @@
 [Unit]
 Description=Captain Memo embedder sidecar (user-level, voyage-4-nano via FastAPI)
 After=default.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -8,7 +9,7 @@ WorkingDirectory=__INSTALL_DIR__
 Environment="PATH=__INSTALL_DIR__/venv/bin:/usr/bin:/bin"
 Environment="HF_HOME=__INSTALL_DIR__/models"
 ExecStart=__INSTALL_DIR__/venv/bin/uvicorn app:app --host 127.0.0.1 --port 8124 --log-level info
-Restart=on-failure
+Restart=always
 RestartSec=5
 
 [Install]

@@ -2,6 +2,7 @@
 Description=Captain Memo worker (HTTP search + observation pipeline)
 After=network-online.target captain-memo-embed.service
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -10,7 +11,7 @@ Group=__GROUP__
 WorkingDirectory=__INSTALL_DIR__
 EnvironmentFile=-/etc/captain-memo/worker.env
 ExecStart=__BUN__ src/worker/index.ts
-Restart=on-failure
+Restart=always
 RestartSec=5
 # Log to stderr → systemd journal.
 StandardOutput=journal

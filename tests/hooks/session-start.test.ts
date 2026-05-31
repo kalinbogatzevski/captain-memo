@@ -2,6 +2,7 @@ import { test, expect, beforeAll, afterAll } from 'bun:test';
 import { join } from 'path';
 import { readFileSync } from 'fs';
 import { spawn } from 'bun';
+import { VERSION } from '../../src/shared/version.ts';
 
 let port = 0;
 const FIXTURE = readFileSync(
@@ -27,6 +28,7 @@ beforeAll(() => {
           indexing: { status: 'ready', total: 100, done: 100, errors: 0, percent: 100 },
           project_id: 'test',
           embedder: { model: 'voyage-4-lite', endpoint: 'https://api.voyageai.com/v1/embeddings' },
+          version: VERSION,
         });
       }
       return new Response('nf', { status: 404 });
@@ -62,6 +64,14 @@ test('SessionStart — fetches /stats and prints corpus banner', async () => {
 });
 
 test('SessionStart — exits 0 even when worker unreachable', async () => {
-  const { exitCode } = await runHook({ CAPTAIN_MEMO_WORKER_PORT: '1' });
+  const { exitCode } = await runHook({ CAPTAIN_MEMO_WORKER_PORT: '1', CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1' });
   expect(exitCode).toBe(0);
+});
+
+test('SessionStart — current worker: shows banner, no heal attempted', async () => {
+  statsCalls = 0;
+  const { stdout, exitCode } = await runHook(); // fake /stats returns version === VERSION
+  expect(exitCode).toBe(0);
+  expect(stdout).toContain('Captain Memo');
+  expect(stdout).toContain('1,234 chunks');
 });

@@ -1,31 +1,400 @@
 #!/usr/bin/env bun
 // @bun
-
-// src/hooks/shared.ts
-import { appendFileSync, mkdirSync, statSync, renameSync, existsSync } from "fs";
-import { homedir as homedir2 } from "os";
-import { join as join2 } from "path";
+var __defProp = Object.defineProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, {
+      get: all[name],
+      enumerable: true,
+      configurable: true,
+      set: (newValue) => all[name] = () => newValue
+    });
+};
+var __esm = (fn, res) => () => (fn && (res = fn(fn = 0)), res);
 
 // src/shared/paths.ts
 import { homedir } from "os";
 import { join } from "path";
-var DATA_DIR = process.env.CAPTAIN_MEMO_DATA_DIR ?? join(homedir(), ".captain-memo");
-var META_DB_PATH = join(DATA_DIR, "meta.sqlite3");
-var QUEUE_DB_PATH = join(DATA_DIR, "queue.db");
-var OBSERVATIONS_DB_PATH = join(DATA_DIR, "observations.db");
-var PENDING_EMBED_DB_PATH = join(DATA_DIR, "pending_embed.db");
-var VECTOR_DB_DIR = join(DATA_DIR, "vector-db");
-var LOGS_DIR = join(DATA_DIR, "logs");
-var ARCHIVE_DIR = join(DATA_DIR, "archive");
-var CONFIG_PATH = join(DATA_DIR, "config.json");
-var CONFIG_DIR = process.env.CAPTAIN_MEMO_CONFIG_DIR ?? (process.platform === "win32" ? join(process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"), "captain-memo") : join(homedir(), ".config", "captain-memo"));
-var WORKER_ENV_PATH = join(CONFIG_DIR, "worker.env");
-var DEFAULT_WORKER_PORT = 39888;
-var ENV_HOOK_TIMEOUT_MS = "CAPTAIN_MEMO_HOOK_TIMEOUT_MS";
-var DEFAULT_HOOK_TIMEOUT_MS = 1500;
-var DEFAULT_STOP_DRAIN_BUDGET_MS = 5000;
+var DATA_DIR, META_DB_PATH, QUEUE_DB_PATH, OBSERVATIONS_DB_PATH, PENDING_EMBED_DB_PATH, VECTOR_DB_DIR, LOGS_DIR, ARCHIVE_DIR, CONFIG_PATH, CONFIG_DIR, WORKER_ENV_PATH, DEFAULT_WORKER_PORT = 39888, ENV_HOOK_TIMEOUT_MS = "CAPTAIN_MEMO_HOOK_TIMEOUT_MS", DEFAULT_HOOK_TIMEOUT_MS = 1500, DEFAULT_STOP_DRAIN_BUDGET_MS = 5000;
+var init_paths = __esm(() => {
+  DATA_DIR = process.env.CAPTAIN_MEMO_DATA_DIR ?? join(homedir(), ".captain-memo");
+  META_DB_PATH = join(DATA_DIR, "meta.sqlite3");
+  QUEUE_DB_PATH = join(DATA_DIR, "queue.db");
+  OBSERVATIONS_DB_PATH = join(DATA_DIR, "observations.db");
+  PENDING_EMBED_DB_PATH = join(DATA_DIR, "pending_embed.db");
+  VECTOR_DB_DIR = join(DATA_DIR, "vector-db");
+  LOGS_DIR = join(DATA_DIR, "logs");
+  ARCHIVE_DIR = join(DATA_DIR, "archive");
+  CONFIG_PATH = join(DATA_DIR, "config.json");
+  CONFIG_DIR = process.env.CAPTAIN_MEMO_CONFIG_DIR ?? (process.platform === "win32" ? join(process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"), "captain-memo") : join(homedir(), ".config", "captain-memo"));
+  WORKER_ENV_PATH = join(CONFIG_DIR, "worker.env");
+});
+
+// src/shared/worker-heal-lock.ts
+var exports_worker_heal_lock = {};
+__export(exports_worker_heal_lock, {
+  releaseHealLock: () => releaseHealLock,
+  acquireHealLock: () => acquireHealLock,
+  HEAL_LOCK_TTL_MS: () => HEAL_LOCK_TTL_MS,
+  HEAL_LOCK_PATH: () => HEAL_LOCK_PATH
+});
+import { openSync, closeSync, readFileSync, unlinkSync, writeSync } from "fs";
+import { join as join3 } from "path";
+function acquireHealLock(lockPath = HEAL_LOCK_PATH, now = Date.now()) {
+  try {
+    const fd = openSync(lockPath, "wx");
+    writeSync(fd, String(now));
+    closeSync(fd);
+    return true;
+  } catch {
+    try {
+      const stamp = Number(readFileSync(lockPath, "utf-8").trim());
+      const age = now - (Number.isFinite(stamp) ? stamp : 0);
+      if (age > HEAL_LOCK_TTL_MS) {
+        unlinkSync(lockPath);
+        const fd = openSync(lockPath, "wx");
+        writeSync(fd, String(now));
+        closeSync(fd);
+        return true;
+      }
+    } catch {}
+    return false;
+  }
+}
+function releaseHealLock(lockPath = HEAL_LOCK_PATH) {
+  try {
+    unlinkSync(lockPath);
+  } catch {}
+}
+var HEAL_LOCK_PATH, HEAL_LOCK_TTL_MS = 20000;
+var init_worker_heal_lock = __esm(() => {
+  init_paths();
+  HEAL_LOCK_PATH = join3(DATA_DIR, ".worker-heal.lock");
+});
+
+// src/services/service-manager/systemd.ts
+import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, rmSync, writeFileSync } from "fs";
+import { homedir as homedir3 } from "os";
+import { join as join4, resolve } from "path";
+import { spawnSync } from "child_process";
+function unitName(name) {
+  return name.endsWith(".service") ? name : `${name}.service`;
+}
+function templateFor(name) {
+  const bare = name.replace(/\.service$/, "");
+  if (bare === "captain-memo-embed") {
+    return join4(REPO_ROOT, "services/embed/systemd/captain-memo-embed.user.service");
+  }
+  return join4(REPO_ROOT, "services/worker/systemd/captain-memo-worker.user.service");
+}
+function systemctl(args) {
+  const userR = spawnSync("systemctl", ["--user", ...args], { encoding: "utf-8", timeout: 1e4 });
+  if (userR.status === 0)
+    return userR;
+  const stderr = userR.stderr ?? "";
+  const noUserManager = userR.error != null || /Failed to connect to (the )?bus/i.test(stderr) || /No medium found/i.test(stderr);
+  if (!noUserManager)
+    return userR;
+  return spawnSync("systemctl", [...args], { encoding: "utf-8", timeout: 1e4 });
+}
+
+class SystemdServiceManager {
+  async install(spec) {
+    const tpl = templateFor(spec.name);
+    if (!existsSync2(tpl))
+      throw new Error(`missing systemd unit template: ${tpl}`);
+    const bun = spec.exec[0] ?? "bun";
+    const unit = readFileSync2(tpl, "utf-8").replaceAll("__INSTALL_DIR__", spec.workingDir).replaceAll("__ENV_FILE__", spec.envFile ?? "").replaceAll("__BUN__", bun);
+    if (!existsSync2(USER_SYSTEMD_DIR))
+      mkdirSync2(USER_SYSTEMD_DIR, { recursive: true });
+    writeFileSync(join4(USER_SYSTEMD_DIR, unitName(spec.name)), unit, { mode: 420 });
+    systemctl(["daemon-reload"]);
+    if (spec.autostart)
+      systemctl(["enable", unitName(spec.name)]);
+    systemctl(["restart", unitName(spec.name)]);
+  }
+  async remove(name) {
+    systemctl(["stop", unitName(name)]);
+    systemctl(["disable", unitName(name)]);
+    const unitPath = join4(USER_SYSTEMD_DIR, unitName(name));
+    if (existsSync2(unitPath))
+      rmSync(unitPath, { force: true });
+    systemctl(["daemon-reload"]);
+  }
+  async start(name) {
+    const r = systemctl(["start", unitName(name)]);
+    if (r.status !== 0) {
+      throw new Error(`systemctl start ${unitName(name)} failed (status ${r.status ?? "?"}): ` + `${(r.stderr ?? "").trim() || r.error?.message || "no stderr"}`);
+    }
+  }
+  async stop(name, opts) {
+    if (opts?.graceful) {
+      const port = opts.port ?? DEFAULT_WORKER_PORT;
+      const ctl = new AbortController;
+      const t = setTimeout(() => ctl.abort(), 3000);
+      try {
+        await fetch(`http://127.0.0.1:${port}/shutdown`, { method: "POST", signal: ctl.signal });
+      } catch {} finally {
+        clearTimeout(t);
+      }
+    }
+    const r = systemctl(["stop", unitName(name)]);
+    if (r.status !== 0) {
+      throw new Error(`systemctl stop ${unitName(name)} failed (status ${r.status ?? "?"}): ` + `${(r.stderr ?? "").trim() || r.error?.message || "no stderr"}`);
+    }
+  }
+  async status(name) {
+    if (await this.isActive(name))
+      return "running";
+    const lu = systemctl(["list-unit-files", unitName(name)]);
+    const installed = (lu.stdout ?? "").includes(unitName(name));
+    if (!installed)
+      return "not-installed";
+    const failed = systemctl(["is-failed", unitName(name)]);
+    if ((failed.stdout ?? "").trim() === "failed")
+      return "failed";
+    return "stopped";
+  }
+  async isActive(name) {
+    const r = systemctl(["is-active", unitName(name)]);
+    return (r.stdout ?? "").trim() === "active";
+  }
+  async enable(name) {
+    systemctl(["enable", unitName(name)]);
+  }
+  async disable(name) {
+    systemctl(["disable", unitName(name)]);
+  }
+}
+function createSystemdServiceManager() {
+  return new SystemdServiceManager;
+}
+var REPO_ROOT, USER_SYSTEMD_DIR;
+var init_systemd = __esm(() => {
+  init_paths();
+  REPO_ROOT = resolve(import.meta.dir, "../../..");
+  USER_SYSTEMD_DIR = join4(homedir3(), ".config/systemd/user");
+});
+
+// src/services/service-manager/windows-scheduled-task.ts
+import { writeFileSync as writeFileSync2, rmSync as rmSync2 } from "fs";
+import { tmpdir } from "os";
+import { join as join5 } from "path";
+function psSingleQuote(value) {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+function xmlEscape(value) {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
+}
+function isoDuration(totalSeconds) {
+  const s = Math.max(1, Math.floor(totalSeconds));
+  const mins = Math.floor(s / 60);
+  const secs = s % 60;
+  let out = "PT";
+  if (mins > 0)
+    out += `${mins}M`;
+  if (secs > 0 || mins === 0)
+    out += `${secs}S`;
+  return out;
+}
+function buildArgumentString(exec) {
+  return exec.slice(1).map((tok) => /\s/.test(tok) ? `"${tok}"` : tok).join(" ");
+}
+function buildTaskXml(spec) {
+  const exe = spec.exec[0] ?? "bun";
+  const argString = buildArgumentString(spec.exec);
+  const settings = spec.restartOnFailure ? [
+    "  <Settings>",
+    "    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>",
+    "    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>",
+    "    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>",
+    "    <AllowHardTerminate>true</AllowHardTerminate>",
+    "    <StartWhenAvailable>true</StartWhenAvailable>",
+    "    <Enabled>true</Enabled>",
+    "    <RestartOnFailure>",
+    "      <Interval>PT1M</Interval>",
+    "      <Count>3</Count>",
+    "    </RestartOnFailure>",
+    "    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",
+    "  </Settings>"
+  ] : [
+    "  <Settings>",
+    "    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>",
+    "    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>",
+    "    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>",
+    "    <StartWhenAvailable>true</StartWhenAvailable>",
+    "    <Enabled>true</Enabled>",
+    "    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",
+    "  </Settings>"
+  ];
+  const execLines = [
+    "    <Exec>",
+    `      <Command>${xmlEscape(exe)}</Command>`
+  ];
+  if (argString.length > 0)
+    execLines.push(`      <Arguments>${xmlEscape(argString)}</Arguments>`);
+  execLines.push(`      <WorkingDirectory>${xmlEscape(spec.workingDir)}</WorkingDirectory>`);
+  execLines.push("    </Exec>");
+  const userId = xmlEscape(`${process.env.USERDOMAIN ?? process.env.COMPUTERNAME ?? ""}\\${process.env.USERNAME ?? ""}`);
+  const watchdogInterval = isoDuration(spec.watchdogIntervalSec ?? 300);
+  const lines = [
+    '<?xml version="1.0" encoding="UTF-16"?>',
+    '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
+    "  <RegistrationInfo>",
+    `    <Description>${xmlEscape(spec.description)}</Description>`,
+    `    <URI>\\${xmlEscape(spec.name)}</URI>`,
+    "  </RegistrationInfo>",
+    "  <Triggers>",
+    "    <LogonTrigger>",
+    "      <Enabled>true</Enabled>",
+    `      <UserId>${userId}</UserId>`,
+    "    </LogonTrigger>",
+    "    <TimeTrigger>",
+    "      <Enabled>true</Enabled>",
+    "      <StartBoundary>2020-01-01T00:00:00</StartBoundary>",
+    "      <Repetition>",
+    `        <Interval>${watchdogInterval}</Interval>`,
+    "        <StopAtDurationEnd>false</StopAtDurationEnd>",
+    "      </Repetition>",
+    "    </TimeTrigger>",
+    "  </Triggers>",
+    "  <Principals>",
+    '    <Principal id="Author">',
+    `      <UserId>${userId}</UserId>`,
+    "      <LogonType>InteractiveToken</LogonType>",
+    "      <RunLevel>LeastPrivilege</RunLevel>",
+    "    </Principal>",
+    "  </Principals>",
+    ...settings,
+    '  <Actions Context="Author">',
+    ...execLines,
+    "  </Actions>",
+    "</Task>"
+  ];
+  return lines.join(`
+`);
+}
+async function runPowerShell(command) {
+  for (const shell of ["pwsh", "powershell"]) {
+    try {
+      const proc = Bun.spawn([shell, ...PS_PREFIX_ARGS, command], {
+        stdout: "pipe",
+        stderr: "pipe"
+      });
+      const [stdout, stderr] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text()
+      ]);
+      const exitCode = await proc.exited;
+      return { exitCode, stdout, stderr };
+    } catch {
+      continue;
+    }
+  }
+  throw new Error("neither pwsh nor powershell is available on PATH");
+}
+async function runSchtasks(args) {
+  const proc = Bun.spawn(["schtasks", ...args], { stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text()
+  ]);
+  const exitCode = await proc.exited;
+  return { exitCode, stdout, stderr };
+}
+function toTaskXmlBuffer(xml) {
+  return Buffer.from("\uFEFF" + xml, "utf16le");
+}
+
+class WindowsScheduledTaskServiceManager {
+  async install(spec) {
+    const xml = buildTaskXml(spec);
+    const xmlPath = join5(tmpdir(), `captain-memo-task-${spec.name}-${process.pid}-${Date.now()}.xml`);
+    writeFileSync2(xmlPath, toTaskXmlBuffer(xml));
+    try {
+      const r = await runSchtasks(["/Create", "/TN", spec.name, "/XML", xmlPath, "/F"]);
+      if (r.exitCode !== 0) {
+        throw new Error(`schtasks /Create failed for ${spec.name}: ${r.stderr.trim() || r.stdout.trim()}`);
+      }
+    } finally {
+      try {
+        rmSync2(xmlPath, { force: true });
+      } catch {}
+    }
+  }
+  async remove(name) {
+    await runPowerShell(`Unregister-ScheduledTask -TaskName ${psSingleQuote(name)} -Confirm:$false -ErrorAction SilentlyContinue`);
+  }
+  async start(name) {
+    const r = await runPowerShell(`Start-ScheduledTask -TaskName ${psSingleQuote(name)}`);
+    if (r.exitCode !== 0) {
+      throw new Error(`Start-ScheduledTask ${name} failed (exit ${r.exitCode}): ${r.stderr.trim() || "no stderr"}`);
+    }
+  }
+  async stop(name, opts) {
+    if (opts?.graceful) {
+      const port = opts.port ?? DEFAULT_WORKER_PORT;
+      const ctl = new AbortController;
+      const t = setTimeout(() => ctl.abort(), 3000);
+      try {
+        await fetch(`http://127.0.0.1:${port}/shutdown`, { method: "POST", signal: ctl.signal });
+      } catch {} finally {
+        clearTimeout(t);
+      }
+    }
+    const r = await runPowerShell(`Stop-ScheduledTask -TaskName ${psSingleQuote(name)}`);
+    if (r.exitCode !== 0) {
+      throw new Error(`Stop-ScheduledTask ${name} failed (exit ${r.exitCode}): ${r.stderr.trim() || "no stderr"}`);
+    }
+  }
+  async status(name) {
+    const q = psSingleQuote(name);
+    const command = `$ErrorActionPreference='Stop'; ` + `try { $t = Get-ScheduledTask -TaskName ${q}; ` + `Get-ScheduledTaskInfo -TaskName ${q} | Out-Null; ` + `Write-Output $t.State } ` + `catch { Write-Output 'NotInstalled' }`;
+    const r = await runPowerShell(command);
+    const state = r.stdout.trim();
+    if (state === "NotInstalled")
+      return "not-installed";
+    if (state === "Running")
+      return "running";
+    return "stopped";
+  }
+  async isActive(name) {
+    return await this.status(name) === "running";
+  }
+  async enable(name) {
+    await runPowerShell(`Enable-ScheduledTask -TaskName ${psSingleQuote(name)}`);
+  }
+  async disable(name) {
+    await runPowerShell(`Disable-ScheduledTask -TaskName ${psSingleQuote(name)}`);
+  }
+}
+function createWindowsScheduledTaskServiceManager() {
+  return new WindowsScheduledTaskServiceManager;
+}
+var PS_PREFIX_ARGS;
+var init_windows_scheduled_task = __esm(() => {
+  init_paths();
+  PS_PREFIX_ARGS = ["-NoProfile", "-NonInteractive", "-Command"];
+});
+
+// src/services/service-manager/index.ts
+var exports_service_manager = {};
+__export(exports_service_manager, {
+  getServiceManager: () => getServiceManager
+});
+function getServiceManager() {
+  return process.platform === "win32" ? createWindowsScheduledTaskServiceManager() : createSystemdServiceManager();
+}
+var init_service_manager = __esm(() => {
+  init_systemd();
+  init_windows_scheduled_task();
+});
 
 // src/hooks/shared.ts
+init_paths();
+import { appendFileSync, mkdirSync, statSync, renameSync, existsSync } from "fs";
+import { homedir as homedir2 } from "os";
+import { join as join2 } from "path";
 var HOOK_LOG_DIR = join2(homedir2(), ".captain-memo", "logs");
 var HOOK_LOG_FILE = join2(HOOK_LOG_DIR, "hook.log");
 var HOOK_LOG_ROTATE_BYTES = 10 * 1024 * 1024;
@@ -130,6 +499,7 @@ function summarize(value, max = 1500) {
 }
 
 // src/hooks/user-prompt-submit.ts
+init_paths();
 async function main() {
   let payload = {};
   try {
@@ -151,6 +521,21 @@ async function main() {
     timeoutMs
   });
   logWorkerFailure("UserPromptSubmit", "/inject/context", result);
+  if (!result.ok && process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL !== "1") {
+    try {
+      const { acquireHealLock: acquireHealLock2, releaseHealLock: releaseHealLock2 } = await Promise.resolve().then(() => (init_worker_heal_lock(), exports_worker_heal_lock));
+      if (acquireHealLock2()) {
+        try {
+          const { getServiceManager: getServiceManager2 } = await Promise.resolve().then(() => (init_service_manager(), exports_service_manager));
+          await getServiceManager2().start("captain-memo-worker");
+        } finally {
+          releaseHealLock2();
+        }
+      }
+    } catch (err) {
+      logHookError("UserPromptSubmit", err);
+    }
+  }
   if (result.ok && result.body && result.body.envelope) {
     writeStdout(result.body.envelope);
     writeStdout(`
@@ -162,6 +547,113 @@ async function main() {
 if (false) {}
 
 // src/hooks/session-start.ts
+init_paths();
+// package.json
+var package_default = {
+  name: "captain-memo",
+  version: "0.2.14",
+  description: "Local memory layer for Claude Code \u2014 Voyage-embedded, hybrid search, federated remotes",
+  type: "module",
+  private: true,
+  license: "Apache-2.0",
+  author: {
+    name: "Kalin Bogatzevski",
+    url: "https://github.com/kalinbogatzevski"
+  },
+  homepage: "https://github.com/kalinbogatzevski/captain-memo",
+  repository: {
+    type: "git",
+    url: "https://github.com/kalinbogatzevski/captain-memo.git"
+  },
+  bugs: {
+    url: "https://github.com/kalinbogatzevski/captain-memo/issues"
+  },
+  keywords: [
+    "claude-code",
+    "claude-code-plugin",
+    "memory",
+    "rag",
+    "embeddings",
+    "voyage-ai",
+    "sqlite-vec",
+    "mcp",
+    "anthropic"
+  ],
+  engines: {
+    bun: ">=1.1.14"
+  },
+  bin: {
+    "captain-memo": "./bin/captain-memo"
+  },
+  scripts: {
+    test: "bun test",
+    "test:unit": "bun test tests/unit/",
+    "test:integration": "bun test tests/integration/",
+    "test:hooks": "bun test tests/hooks/",
+    typecheck: "tsc --noEmit",
+    "worker:start": "bun src/worker/index.ts",
+    "worker:dev": "CAPTAIN_MEMO_DATA_DIR=./.captain-memo.dev bun --watch src/worker/index.ts",
+    "mcp:start": "bun src/mcp-server.ts",
+    cli: "bun bin/captain-memo",
+    hook: "bun bin/captain-memo-hook",
+    "build:plugin": "bun build src/mcp-server.ts --target bun --outfile plugin/dist/mcp-server.js && bun build bin/captain-memo-hook.ts --target bun --outfile plugin/dist/captain-memo-hook.js"
+  },
+  dependencies: {
+    "@anthropic-ai/sdk": "^0.95.0",
+    "@modelcontextprotocol/sdk": "^1.25.1",
+    chokidar: "^4.0.3",
+    "gpt-tokenizer": "^2.5.1",
+    nanoid: "^5.0.7",
+    "sqlite-vec": "^0.1.9",
+    zod: "^3.24.0"
+  },
+  devDependencies: {
+    "@types/bun": "^1.1.0",
+    "@types/node": "^20.0.0",
+    typescript: "^5.6.0"
+  }
+};
+
+// src/shared/version.ts
+var VERSION = package_default.version;
+
+// src/shared/worker-health.ts
+async function ensureWorkerHealthy(deps) {
+  const version = await deps.probeVersion();
+  if (version !== null && version === deps.diskVersion) {
+    return { action: "none", reason: "healthy" };
+  }
+  if (!deps.acquireLock()) {
+    return { action: "skipped", reason: "lock-held" };
+  }
+  try {
+    if (version === null) {
+      try {
+        await deps.start();
+      } catch (e) {
+        return { action: "failed", reason: "unreachable", error: e.message };
+      }
+      return { action: "started", reason: "unreachable", healthy: await deps.waitHealthy() };
+    }
+    try {
+      await deps.restart();
+    } catch (e) {
+      return { action: "failed", reason: "stale", error: e.message };
+    }
+    return {
+      action: "restarted",
+      reason: "stale",
+      fromVersion: version,
+      toVersion: deps.diskVersion,
+      healthy: await deps.waitHealthy()
+    };
+  } finally {
+    deps.releaseLock();
+  }
+}
+
+// src/hooks/session-start.ts
+init_worker_heal_lock();
 function fmtNum(n) {
   return n.toLocaleString("en-US");
 }
@@ -229,10 +721,54 @@ async function main2() {
     logHookError("SessionStart", err);
   }
   const timeoutMs = Number(process.env.CAPTAIN_MEMO_SESSION_START_TIMEOUT_MS ?? process.env[ENV_HOOK_TIMEOUT_MS] ?? 1e4);
-  const stats = await workerFetch("/stats", {
-    method: "GET",
-    timeoutMs
-  });
+  async function probeStats() {
+    return workerFetch("/stats", { method: "GET", timeoutMs });
+  }
+  let stats = await probeStats();
+  const selfHealOff = process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL === "1";
+  const running = stats.ok && !!stats.body;
+  const stale = running && stats.body.version !== undefined && stats.body.version !== VERSION;
+  if (!selfHealOff && (!running || stale)) {
+    try {
+      const { getServiceManager: getServiceManager2 } = await Promise.resolve().then(() => (init_service_manager(), exports_service_manager));
+      const sm = getServiceManager2();
+      const WORKER = "captain-memo-worker";
+      const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
+      const outcome = await ensureWorkerHealthy({
+        diskVersion: VERSION,
+        probeVersion: async () => running ? stats.body.version ?? null : null,
+        acquireLock: () => acquireHealLock(),
+        releaseLock: () => releaseHealLock(),
+        start: () => sm.start(WORKER),
+        restart: async () => {
+          await sm.stop(WORKER, { graceful: true, port });
+          await sm.start(WORKER);
+        },
+        waitHealthy: async () => {
+          const deadline = Date.now() + 8000;
+          while (Date.now() < deadline) {
+            const r = await workerFetch("/stats", { method: "GET", timeoutMs: 1500 });
+            if (r.ok) {
+              stats = r;
+              return true;
+            }
+            await new Promise((res) => setTimeout(res, 500));
+          }
+          return false;
+        }
+      });
+      if (outcome.action === "skipped") {
+        await new Promise((res) => setTimeout(res, 1500));
+        stats = await probeStats();
+      } else if (outcome.action === "failed") {
+        logHookError("SessionStart", new Error(`self-heal ${outcome.reason} failed: ${outcome.error}`));
+      } else if ((outcome.action === "started" || outcome.action === "restarted") && !outcome.healthy) {
+        logHookError("SessionStart", new Error(`self-heal ${outcome.action} the worker but it did not become healthy within 8s (reason: ${outcome.reason})`));
+      }
+    } catch (err) {
+      logHookError("SessionStart", err);
+    }
+  }
   if (stats.ok && stats.body) {
     writeStdout(JSON.stringify({
       continue: true,
@@ -249,13 +785,13 @@ async function main2() {
 if (false) {}
 
 // src/worker/branch.ts
-import { spawnSync } from "child_process";
-import { existsSync as existsSync2 } from "fs";
+import { spawnSync as spawnSync2 } from "child_process";
+import { existsSync as existsSync3 } from "fs";
 function detectBranchSync(cwd) {
-  if (!existsSync2(cwd))
+  if (!existsSync3(cwd))
     return null;
   try {
-    const result = spawnSync("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf-8", timeout: 2000 });
+    const result = spawnSync2("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf-8", timeout: 2000 });
     if (result.status !== 0)
       return null;
     const out = result.stdout.trim();
@@ -316,6 +852,7 @@ async function main3() {
 if (false) {}
 
 // src/hooks/stop.ts
+init_paths();
 async function main4() {
   let payload = {};
   try {

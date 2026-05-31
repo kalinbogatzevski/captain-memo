@@ -155,4 +155,28 @@ describe('buildTaskXml', () => {
     expect(buf[1]).toBe(0xfe);
     expect(buf.toString('utf16le').replace(/^﻿/, '')).toContain('<Task version="1.2"');
   });
+
+  test('emits a periodic watchdog TimeTrigger from watchdogIntervalSec', () => {
+    const xml = buildTaskXml(sampleSpec({ watchdogIntervalSec: 300 }));
+    expect(xml).toContain('<TimeTrigger>');
+    expect(xml).toContain('<Repetition>');
+    expect(xml).toContain('<Interval>PT5M</Interval>');
+    // Repeat indefinitely — no duration cap.
+    expect(xml).toContain('<StopAtDurationEnd>false</StopAtDurationEnd>');
+    // A StartBoundary is required for a TimeTrigger to be valid.
+    expect(xml).toContain('<StartBoundary>');
+    // The LogonTrigger still co-exists (autostart at logon).
+    expect(xml).toContain('<LogonTrigger>');
+  });
+
+  test('defaults the watchdog to PT5M when watchdogIntervalSec is omitted', () => {
+    const xml = buildTaskXml(sampleSpec()); // sampleSpec has no watchdogIntervalSec
+    expect(xml).toContain('<TimeTrigger>');
+    expect(xml).toContain('<Interval>PT5M</Interval>');
+  });
+
+  test('renders a sub-minute watchdog interval as PT{n}S', () => {
+    const xml = buildTaskXml(sampleSpec({ watchdogIntervalSec: 90 }));
+    expect(xml).toContain('<Interval>PT1M30S</Interval>');
+  });
 });

@@ -57,6 +57,18 @@ function xmlEscape(value: string): string {
     .replaceAll("'", '&apos;');
 }
 
+// Render seconds as an ISO-8601 duration (PT…) for a Task Scheduler <Interval>.
+// 300 → PT5M, 90 → PT1M30S, 45 → PT45S. Whole minutes drop the seconds segment.
+function isoDuration(totalSeconds: number): string {
+  const s = Math.max(1, Math.floor(totalSeconds));
+  const mins = Math.floor(s / 60);
+  const secs = s % 60;
+  let out = 'PT';
+  if (mins > 0) out += `${mins}M`;
+  if (secs > 0 || mins === 0) out += `${secs}S`;
+  return out;
+}
+
 // Build the <Arguments> value for the Exec action: everything in spec.exec
 // after the executable (exec[0]), joined as a single command-line string. Each
 // token is double-quoted so a token containing spaces survives the round-trip
@@ -138,6 +150,12 @@ export function buildTaskXml(spec: ServiceSpec): string {
   const userId = xmlEscape(
     `${process.env.USERDOMAIN ?? process.env.COMPUTERNAME ?? ''}\\${process.env.USERNAME ?? ''}`,
   );
+  // Periodic watchdog: a TimeTrigger with an indefinite <Repetition> re-launches
+  // the task every interval. With MultipleInstancesPolicy=IgnoreNew it is a no-op
+  // when the worker is alive and a relaunch when it is dead — the only OS-native
+  // way to recover a clean-killed task (STATUS_CONTROL_C_EXIT) that
+  // RestartOnFailure does not count as a failure.
+  const watchdogInterval = isoDuration(spec.watchdogIntervalSec ?? 300);
   const lines = [
     // schtasks /Create /XML requires UTF-16 LE + BOM (the native Task Scheduler
     // format — UTF-8 is rejected with "unable to switch the encoding"). install()
@@ -153,6 +171,14 @@ export function buildTaskXml(spec: ServiceSpec): string {
     '      <Enabled>true</Enabled>',
     `      <UserId>${userId}</UserId>`,
     '    </LogonTrigger>',
+    '    <TimeTrigger>',
+    '      <Enabled>true</Enabled>',
+    '      <StartBoundary>2020-01-01T00:00:00</StartBoundary>',
+    '      <Repetition>',
+    `        <Interval>${watchdogInterval}</Interval>`,
+    '        <StopAtDurationEnd>false</StopAtDurationEnd>',
+    '      </Repetition>',
+    '    </TimeTrigger>',
     '  </Triggers>',
     '  <Principals>',
     '    <Principal id="Author">',
@@ -255,21 +281,33 @@ class WindowsScheduledTaskServiceManager implements ServiceManager {
   }
 
   async start(name: string): Promise<void> {
-    await runPowerShell(`Start-ScheduledTask -TaskName ${psSingleQuote(name)}`);
+    // Throw on a non-zero exit so the self-heal orchestrator's `failed` branch
+    // fires and the PowerShell error reaches hook.log (mirrors install()'s check).
+    const r = await runPowerShell(`Start-ScheduledTask -TaskName ${psSingleQuote(name)}`);
+    if (r.exitCode !== 0) {
+      throw new Error(`Start-ScheduledTask ${name} failed (exit ${r.exitCode}): ${r.stderr.trim() || 'no stderr'}`);
+    }
   }
 
   async stop(name: string, opts?: StopOptions): Promise<void> {
     if (opts?.graceful) {
       // POST /shutdown first so the worker drains + releases SQLite locks before
-      // the task is force-stopped. Best-effort — ignore connection failures.
+      // the task is force-stopped. Best-effort + bounded — ignore connection failures.
       const port = opts.port ?? DEFAULT_WORKER_PORT;
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 3_000);
       try {
-        await fetch(`http://127.0.0.1:${port}/shutdown`, { method: 'POST' });
+        await fetch(`http://127.0.0.1:${port}/shutdown`, { method: 'POST', signal: ctl.signal });
       } catch {
         // ignore — fall through to Stop-ScheduledTask
+      } finally {
+        clearTimeout(t);
       }
     }
-    await runPowerShell(`Stop-ScheduledTask -TaskName ${psSingleQuote(name)}`);
+    const r = await runPowerShell(`Stop-ScheduledTask -TaskName ${psSingleQuote(name)}`);
+    if (r.exitCode !== 0) {
+      throw new Error(`Stop-ScheduledTask ${name} failed (exit ${r.exitCode}): ${r.stderr.trim() || 'no stderr'}`);
+    }
   }
 
   async status(name: string): Promise<ServiceState> {

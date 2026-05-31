@@ -5,6 +5,31 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.2.14] — 2026-05-31
+
+### Added
+- **Worker auto-recovery — a killed worker now returns on its own.** systemd units
+  use `Restart=always` (+ `StartLimitIntervalSec=0`, so a flapping worker is never
+  permanently abandoned by systemd's start-rate limiter); the Windows Scheduled Task
+  gains a 5-minute watchdog repetition trigger (`MultipleInstancesPolicy=IgnoreNew`
+  makes it a no-op when the worker is alive). This closes the gap where a clean-signal
+  kill (`SIGINT`/`SIGTERM`; Windows `STATUS_CONTROL_C_EXIT` / `0xC000013A`) was NOT
+  treated as a restartable failure, leaving the worker dead until a manual restart or
+  logon. Applies to both the worker and the embedder.
+- **`SessionStart` self-heal.** A dead worker is started, and a *stale* one — running
+  code older than the installed `VERSION` — is graceful-restarted (bounded wait), so a
+  new session always opens on a healthy, current worker. `UserPromptSubmit` nudges a
+  dead worker back without blocking the prompt. The heal policy lives in a pure,
+  unit-tested `ensureWorkerHealthy` orchestrator and is serialized across concurrent
+  sessions by an advisory lock. Opt out with `CAPTAIN_MEMO_DISABLE_SELF_HEAL=1`.
+
+### Tests
+- New unit tests: the Windows watchdog trigger XML, the always-on systemd templates,
+  the advisory heal-lock (acquire / TTL-reclaim / idempotent release), and the
+  `ensureWorkerHealthy` policy (healthy / unreachable→start / stale→restart /
+  lock-held→skip / start-failure→report). The SessionStart and UserPromptSubmit hook
+  tests were updated to exercise the self-heal gate.
+
 ## [0.2.13] — 2026-05-31
 
 ### Changed

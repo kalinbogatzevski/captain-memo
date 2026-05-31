@@ -49,7 +49,11 @@ async function runDispatcher(event: string, input: string) {
   const proc = spawn({
     cmd: ['bun', HOOK_BIN, event],
     stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
-    env: { ...process.env, CAPTAIN_MEMO_WORKER_PORT: String(port) },
+    // Disable worker self-heal: these tests exercise the dispatch/delivery wiring,
+    // not recovery. Without this, the SessionStart case would find /stats unhandled
+    // by the stub (404), attempt a real `systemctl start`, and block on the health
+    // poll until the test times out.
+    env: { ...process.env, CAPTAIN_MEMO_WORKER_PORT: String(port), CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1' },
   });
   proc.stdin.write(input);
   proc.stdin.end();

@@ -74,7 +74,7 @@ test('UserPromptSubmit — preserves the original prompt at the bottom', async (
 });
 
 test('UserPromptSubmit — fails open when worker is unreachable (no envelope, exit 0)', async () => {
-  const { stdout, exitCode } = await runHook(FIXTURE, { CAPTAIN_MEMO_WORKER_PORT: '1' });
+  const { stdout, exitCode } = await runHook(FIXTURE, { CAPTAIN_MEMO_WORKER_PORT: '1', CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1' });
   expect(exitCode).toBe(0);
   expect(stdout).not.toContain('<memory-context');
   expect(stdout).toContain('How do I run the worker');
@@ -85,6 +85,7 @@ test('UserPromptSubmit — respects CAPTAIN_MEMO_HOOK_TIMEOUT_MS', async () => {
   const { stdout, exitCode } = await runHook(FIXTURE, {
     CAPTAIN_MEMO_WORKER_PORT: '1',
     CAPTAIN_MEMO_HOOK_TIMEOUT_MS: '50',
+    CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1',
   });
   const elapsed = Date.now() - start;
   expect(exitCode).toBe(0);

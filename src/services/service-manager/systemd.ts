@@ -43,7 +43,7 @@ function templateFor(name: string): string {
 // "Failed to connect to bus"), retry in system scope. Mirrors doctor.ts's
 // two-probe pattern. Returns the spawn result of whichever scope answered.
 function systemctl(args: string[]): ReturnType<typeof spawnSync> {
-  const userR = spawnSync('systemctl', ['--user', ...args], { encoding: 'utf-8' });
+  const userR = spawnSync('systemctl', ['--user', ...args], { encoding: 'utf-8', timeout: 10_000 });
   // exit 0 → user manager handled it. A user manager that simply reports the
   // unit inactive/missing still exits non-zero but DID answer; only a missing
   // bus warrants the system-scope fallback.
@@ -53,7 +53,7 @@ function systemctl(args: string[]): ReturnType<typeof spawnSync> {
     || /Failed to connect to (the )?bus/i.test(stderr)
     || /No medium found/i.test(stderr);
   if (!noUserManager) return userR;
-  return spawnSync('systemctl', [...args], { encoding: 'utf-8' });
+  return spawnSync('systemctl', [...args], { encoding: 'utf-8', timeout: 10_000 });
 }
 
 class SystemdServiceManager implements ServiceManager {
@@ -84,21 +84,42 @@ class SystemdServiceManager implements ServiceManager {
   }
 
   async start(name: string): Promise<void> {
-    systemctl(['start', unitName(name)]);
+    const r = systemctl(['start', unitName(name)]);
+    // Surface the failure (masked unit, bad unit file, polkit denial, systemctl
+    // missing → spawn error, wedged bus → timeout). The self-heal orchestrator is
+    // built around start() THROWING on failure: swallowing the exit code here would
+    // make its `failed` branch dead and drop systemctl's actionable stderr.
+    if (r.status !== 0) {
+      throw new Error(
+        `systemctl start ${unitName(name)} failed (status ${r.status ?? '?'}): ` +
+        `${((r.stderr ?? '') as string).trim() || r.error?.message || 'no stderr'}`,
+      );
+    }
   }
 
   async stop(name: string, opts?: StopOptions): Promise<void> {
     if (opts?.graceful) {
       // Ask the worker to drain + release SQLite locks before we yank it.
       // Best-effort — a worker that's already down just refuses the connection.
+      // Bounded so a half-open socket can't wedge the heal path's in-process budget.
       const port = opts.port ?? DEFAULT_WORKER_PORT;
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 3_000);
       try {
-        await fetch(`http://127.0.0.1:${port}/shutdown`, { method: 'POST' });
+        await fetch(`http://127.0.0.1:${port}/shutdown`, { method: 'POST', signal: ctl.signal });
       } catch {
         // ignore — fall through to systemctl stop
+      } finally {
+        clearTimeout(t);
       }
     }
-    systemctl(['stop', unitName(name)]);
+    const r = systemctl(['stop', unitName(name)]);
+    if (r.status !== 0) {
+      throw new Error(
+        `systemctl stop ${unitName(name)} failed (status ${r.status ?? '?'}): ` +
+        `${((r.stderr ?? '') as string).trim() || r.error?.message || 'no stderr'}`,
+      );
+    }
   }
 
   async status(name: string): Promise<ServiceState> {
