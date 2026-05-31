@@ -5,6 +5,43 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.2.11] — 2026-05-31
+
+### Fixed
+- **`install` (re-run / upgrade) no longer silently drops the user's config.** A
+  re-install — notably `install --yes` — now loads the existing `worker.env` as the
+  fallback (precedence: flag → env → existing → default), via a new exported
+  `loadExistingConfig()` that reverse-parses `worker.env` into a `WizardConfig`.
+  Previously it passed `{}`, so a headless upgrade rewrote `worker.env` from
+  defaults and **silently produced a keyless, non-embedding file** (the reported
+  bug). Now preserved across an upgrade:
+  - the embedder **API key**, model, endpoint, and a **non-default embedding
+    dimension** (was reset to 1024 → model/dimension mismatch);
+  - the **summarizer provider + model** (anthropic model was reset to
+    `claude-haiku-4-5`), and `summarizer=skip` (was flipped to `claude-oauth`);
+  - the **watch choice** including `skip` and custom globs (was reset to
+    `all-projects`), and a tuned `CAPTAIN_MEMO_HOOK_TIMEOUT_MS`.
+  `skip` choices are inferred from the absence of their line (the worker treats an
+  unknown provider as "fall back to default", so writing a literal `=skip` would
+  wrongly re-enable it — no worker change was made).
+- **Embedder-provider inference no longer misclassifies a remote `:8124` endpoint**
+  as the local sidecar (which dropped its endpoint/model/dim/key); only a loopback
+  `127.0.0.1`/`localhost` `:8124` is treated as the sidecar.
+- **`loadExistingConfig` is best-effort** — an unreadable `worker.env` warns and
+  degrades to "no preserved values" instead of aborting the upgrade with a stack
+  trace.
+
+### Added
+- Guard tests for every preservation case above
+  (`tests/unit/install-preserve-config.test.ts`) and for the v0.2.10 doctor
+  orphan-skip (`tests/unit/doctor-cache.test.ts`; `findCachedPluginRoot` is now
+  exported + parameterized by cache root for testability).
+
+### Known limitation
+- A hand-edited `CAPTAIN_MEMO_DATA_DIR` is **not** preserved across re-install (it's
+  a fixed/computed location, not a wizard field) — the wizard never produces a
+  non-standard one, so this only affects manual edits.
+
 ## [0.2.10] — 2026-05-31
 
 ### Fixed

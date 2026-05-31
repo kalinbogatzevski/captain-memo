@@ -284,8 +284,7 @@ function entryProblems(pluginRoot: string): string[] {
 // The layout is cache/<marketplace>/plugins/<plugin>/ (or a direct <plugin>/);
 // we look for a dir that actually contains our plugin.json. Returns null when no
 // cache dir / no copy is found — never hard-fails.
-function findCachedPluginRoot(): string | null {
-  const cacheRoot = join(homedir(), '.claude', 'plugins', 'cache');
+export function findCachedPluginRoot(cacheRoot: string = join(homedir(), '.claude', 'plugins', 'cache')): string | null {
   if (!existsSync(cacheRoot)) return null;
   const matches: string[] = [];
   const walk = (dir: string, depth: number) => {

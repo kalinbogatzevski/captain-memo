@@ -14,7 +14,7 @@
 //   Plugin symlink:    ~/.claude/plugins/captain-memo  (still per-user)
 //   Re-execs sudo if not already root.
 //
-// Idempotent: re-running reconfigures rather than crashes.
+// Idempotent: re-running PRESERVES existing config (flags/env override) rather than resetting to defaults or crashing.
 
 import { existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync, statSync, chmodSync, readdirSync, copyFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
@@ -440,7 +440,75 @@ function realUserAndGroup(): { user: string; group: string; home: string } {
   return { user: u, group: groupId || u, home: home.trim() };
 }
 
-function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOptions): WizardConfig {
+// Reverse of workerEnvLines(): parse an existing worker.env back into a partial
+// WizardConfig so a re-install / upgrade PRESERVES the user's settings (API keys,
+// models, endpoints, summarizer, watch paths) instead of rewriting from defaults.
+// Only keys actually present are returned — anything missing stays undefined so
+// gatherConfig falls back to flag → env → default. This is what stops `install
+// --yes` from silently dropping the API key (and summarizer/watch) on upgrade.
+export function loadExistingConfig(envPath: string): Partial<WizardConfig> {
+  if (!existsSync(envPath)) return {};
+  const map: Record<string, string> = {};
+  try {
+    for (const raw of readFileSync(envPath, 'utf-8').split('\n')) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      const eq = line.indexOf('=');
+      if (eq < 0) continue;
+      const key = line.slice(0, eq).trim();
+      let val = line.slice(eq + 1).trim();
+      // Strip matching surrounding quotes (length>=2 so a lone quote isn't eaten).
+      if (val.length >= 2 && ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'")))) val = val.slice(1, -1);
+      map[key] = val;
+    }
+  } catch (e) {
+    // Best-effort: an unreadable worker.env must not abort the upgrade with a raw
+    // stack trace — degrade to "no existing values" (flags/env/defaults still apply).
+    warn(`could not read existing ${envPath} (${(e as Error).message}); proceeding without preserving its values`);
+    return {};
+  }
+
+  // Is this actually a captain-memo worker.env? The "skip" choices are encoded as
+  // the ABSENCE of a line (workerEnvLines omits the provider line for summarizer=skip
+  // and the watch line for watch=skip — and the worker treats an unknown provider as
+  // "fall back to default", so we must NOT write a literal `=skip`). So on one of our
+  // files, a missing provider/watch line means the user chose skip — infer it back.
+  const isOurs = Object.keys(map).some((k) => k.startsWith('CAPTAIN_MEMO_'));
+
+  const cfg: Partial<WizardConfig> = {};
+  // ----- embedder (provider inferred from endpoint/model; not stored directly) -----
+  const endpoint = map['CAPTAIN_MEMO_EMBEDDER_ENDPOINT'];
+  // Only a LOOPBACK :8124 is our local sidecar — a remote host on :8124 is a normal
+  // openai-compatible endpoint and must not be misclassified (which would drop it).
+  const isLocalSidecar = !!endpoint && (endpoint.includes('127.0.0.1:8124') || endpoint.includes('localhost:8124'));
+  if (map['CAPTAIN_MEMO_SKIP_EMBED'] === '1') cfg.embedder = 'skip';
+  else if (endpoint?.includes('voyageai.com')) cfg.embedder = 'voyage-hosted';
+  else if (isLocalSidecar || map['CAPTAIN_MEMO_EMBEDDER_MODEL']?.includes('voyage-4-nano')) cfg.embedder = 'local-sidecar';
+  else if (endpoint) cfg.embedder = 'openai-compatible';
+  if (endpoint) cfg.embedderEndpoint = endpoint;
+  if (map['CAPTAIN_MEMO_EMBEDDER_MODEL']) cfg.embedderModel = map['CAPTAIN_MEMO_EMBEDDER_MODEL'];
+  if (map['CAPTAIN_MEMO_EMBEDDER_API_KEY']) cfg.embedderApiKey = map['CAPTAIN_MEMO_EMBEDDER_API_KEY'];
+  const dim = Number(map['CAPTAIN_MEMO_EMBEDDING_DIM']);
+  if (map['CAPTAIN_MEMO_EMBEDDING_DIM'] && Number.isFinite(dim)) cfg.embeddingDimension = dim;
+  // ----- summarizer (skip == no provider line on one of our files) -----
+  if (map['CAPTAIN_MEMO_SUMMARIZER_PROVIDER']) cfg.summarizer = map['CAPTAIN_MEMO_SUMMARIZER_PROVIDER'] as SummarizerProvider;
+  else if (isOurs) cfg.summarizer = 'skip';
+  if (map['CAPTAIN_MEMO_SUMMARIZER_MODEL']) cfg.summarizerModel = map['CAPTAIN_MEMO_SUMMARIZER_MODEL'];
+  if (map['ANTHROPIC_API_KEY']) cfg.anthropicApiKey = map['ANTHROPIC_API_KEY'];
+  if (map['CAPTAIN_MEMO_OPENAI_ENDPOINT']) cfg.summarizerOpenaiEndpoint = map['CAPTAIN_MEMO_OPENAI_ENDPOINT'];
+  if (map['CAPTAIN_MEMO_OPENAI_API_KEY']) cfg.summarizerOpenaiKey = map['CAPTAIN_MEMO_OPENAI_API_KEY'];
+  // ----- watch (skip == no watch line on one of our files; '' is the skip choice) -----
+  if (map['CAPTAIN_MEMO_WATCH_MEMORY']) cfg.watchMemory = map['CAPTAIN_MEMO_WATCH_MEMORY'];
+  else if (isOurs) cfg.watchMemory = '';
+  const hto = Number(map['CAPTAIN_MEMO_HOOK_TIMEOUT_MS']);
+  if (map['CAPTAIN_MEMO_HOOK_TIMEOUT_MS'] && Number.isFinite(hto)) cfg.hookTimeoutMs = hto;
+  // NOTE: CAPTAIN_MEMO_DATA_DIR / PROJECT_ID / WORKER_PORT are intentionally NOT
+  // preserved — they are fixed/computed, not WizardConfig fields. A hand-edited
+  // DATA_DIR is reset to the standard location on re-install (rare; documented).
+  return cfg;
+}
+
+export function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOptions): WizardConfig {
   // Default to interactive (TTY) behaviour when no options were threaded
   // through — preserves the original prompt-everything path exactly.
   const nonInteractive = opts?.nonInteractive ?? false;
@@ -450,7 +518,7 @@ function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOptions): 
 
   // ----- summarizer -----
   const summarizer = resolveChoice<SummarizerProvider>(
-    opts?.summarizer,
+    opts?.summarizer ?? (nonInteractive ? existing?.summarizer : undefined),
     nonInteractive,
     'Which summarizer should I use to compress session events into observations?',
     [
@@ -471,7 +539,7 @@ function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOptions): 
     // env (used as the prompt default interactively, returned directly headless).
     const anthropicDefault = existing?.anthropicApiKey ?? process.env.ANTHROPIC_API_KEY ?? '';
     anthropicApiKey = resolveText(undefined, nonInteractive, 'Anthropic API key (sk-ant-...)', anthropicDefault);
-    summarizerModel = resolveText(undefined, nonInteractive, 'Summarizer model', 'claude-haiku-4-5');
+    summarizerModel = resolveText(undefined, nonInteractive, 'Summarizer model', (existing?.summarizer === 'anthropic' ? existing?.summarizerModel : undefined) ?? 'claude-haiku-4-5');
   } else if (summarizer === 'openai-compatible') {
     summarizerOpenaiEndpoint = resolveText(opts?.openaiEndpoint, nonInteractive, 'OpenAI-compatible endpoint URL', existing?.summarizerOpenaiEndpoint ?? 'http://localhost:11434/v1/chat/completions');
     summarizerOpenaiKey = resolveText(opts?.openaiKey, nonInteractive, 'API key (leave blank for local servers)', existing?.summarizerOpenaiKey ?? '');
@@ -480,7 +548,7 @@ function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOptions): 
 
   // ----- embedder -----
   const embedder = resolveChoice<EmbedderProvider>(
-    opts?.embedder,
+    opts?.embedder ?? (nonInteractive ? existing?.embedder : undefined),
     nonInteractive,
     'Which embedder should I use for vector search?',
     [
@@ -503,7 +571,7 @@ function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOptions): 
       'Voyage model (voyage-4-lite recommended — fast, cheap, 1024-dim)',
       existing?.embedderModel?.startsWith('voyage-') ? existing.embedderModel : 'voyage-4-lite',
     );
-    embeddingDimension = opts?.embeddingDim ?? Number(resolveText(undefined, nonInteractive, 'Embedding dimension (voyage-4-lite default 1024)', '1024'));
+    embeddingDimension = opts?.embeddingDim ?? Number(resolveText(undefined, nonInteractive, 'Embedding dimension (voyage-4-lite default 1024)', String(existing?.embeddingDimension ?? 1024)));
     embedderApiKey = resolveText(
       opts?.voyageKey,
       nonInteractive,
@@ -533,6 +601,8 @@ function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOptions): 
   // --watch carries either a keyword ('all-projects'/'none') or a literal
   // glob/path. Map keyword → choice; anything else is treated as a custom path.
   const { home } = realUserAndGroup();
+  const allProjectsGlob = join(home, '.claude/projects/*/memory/*.md');
+  const userGlobalGlob = join(home, '.claude/memory/*.md');
   let watchChoice: WatchPaths;
   let watchPreset: string | undefined;
   if (opts?.watch !== undefined) {
@@ -540,8 +610,18 @@ function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOptions): 
     else if (opts.watch === 'none') watchChoice = 'skip';
     else { watchChoice = 'custom'; watchPreset = opts.watch; }
   } else {
+    // Preserve the prior choice on a non-interactive re-install (derive it from the
+    // existing watch glob) so `--yes` doesn't reset skip/custom/user-global to the
+    // recommended 'all-projects'. '' is the skip choice (see loadExistingConfig).
+    const ew = existing?.watchMemory;
+    const existingChoice: WatchPaths | undefined =
+      ew === undefined ? undefined :
+      ew === '' ? 'skip' :
+      ew === allProjectsGlob ? 'all-projects' :
+      ew === userGlobalGlob ? 'user-global' : 'custom';
+    if (existingChoice === 'custom') watchPreset = ew;
     watchChoice = resolveChoice<WatchPaths>(
-      undefined,
+      nonInteractive ? existingChoice : undefined,
       nonInteractive,
       'Which directories should the worker watch for memory files?',
       [
@@ -553,9 +633,9 @@ function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOptions): 
     );
   }
   let watchMemory = '';
-  if (watchChoice === 'all-projects') watchMemory = join(home, '.claude/projects/*/memory/*.md');
-  else if (watchChoice === 'user-global') watchMemory = join(home, '.claude/memory/*.md');
-  else if (watchChoice === 'custom') watchMemory = resolveText(watchPreset, nonInteractive, 'Comma-separated glob patterns', existing?.watchMemory ?? join(home, '.claude/memory/*.md'));
+  if (watchChoice === 'all-projects') watchMemory = allProjectsGlob;
+  else if (watchChoice === 'user-global') watchMemory = userGlobalGlob;
+  else if (watchChoice === 'custom') watchMemory = resolveText(watchPreset, nonInteractive, 'Comma-separated glob patterns', existing?.watchMemory ?? userGlobalGlob);
 
   return {
     summarizer,
@@ -569,7 +649,7 @@ function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOptions): 
     ...(embedderApiKey !== undefined && embedderApiKey !== '' && { embedderApiKey }),
     embeddingDimension,
     watchMemory,
-    hookTimeoutMs: 2000, // generous default; user can tune later
+    hookTimeoutMs: existing?.hookTimeoutMs ?? 2000, // preserve a tuned value; generous default otherwise
   };
 }
 
@@ -805,8 +885,11 @@ async function installWindows(args: string[], opts: InstallOptions): Promise<num
   let existing: Partial<WizardConfig> | undefined;
   if (existsSync(WORKER_ENV_PATH)) {
     info(`detected existing config: ${WORKER_ENV_PATH}`);
-    // Non-interactive: reconfigure from flags/env/defaults (don't prompt).
-    if (opts.nonInteractive || askYesNo('Reconfigure (re-ask all questions)?', true)) existing = {};
+    // Re-installing: load the existing config as the fallback so an upgrade NEVER
+    // drops the user's settings (API key, models, endpoints, watch paths) — flags
+    // and env still override. (Passing {} here was the bug: `install --yes` rewrote
+    // worker.env from defaults and silently produced a keyless, non-embedding file.)
+    if (opts.nonInteractive || askYesNo('Reconfigure (re-ask all questions)?', true)) existing = loadExistingConfig(WORKER_ENV_PATH);
     else info('keeping current config; re-running setup steps only.');
   }
 
@@ -974,10 +1057,11 @@ WITH --system (sudo): for headless servers / multi-user / always-on boxes.
   Installs to /opt + /etc + /etc/systemd/system. Survives any user logout.
 
 NON-INTERACTIVE (headless / CI / non-TTY stdin):
-  Pass --yes (or -y) to accept defaults for anything unspecified and NEVER
-  prompt. A non-TTY stdin is auto-detected and also disables prompts. Each
-  setting can be supplied by a flag, an env var, or (TTY only) the prompt;
-  precedence is: flag > env > prompt > default.
+  Pass --yes (or -y) to never prompt. A non-TTY stdin is auto-detected and
+  also disables prompts. Each setting can be supplied by a flag, an env var,
+  or (TTY only) the prompt; on a re-install the EXISTING worker.env is the
+  fallback, so an upgrade never drops your settings. Precedence:
+  flag > env > existing config > default.
 
   --embedder <voyage-hosted|local-sidecar|openai-compatible|skip>
                                    (env CAPTAIN_MEMO_EMBEDDER)
@@ -995,9 +1079,9 @@ NON-INTERACTIVE (headless / CI / non-TTY stdin):
                                    (env CAPTAIN_MEMO_OPENAI_API_KEY)
   --watch <all-projects|none|path> Memory dirs to watch; a path/glob = custom
                                    (env CAPTAIN_MEMO_WATCH_MEMORY)
-  --yes, -y                        Accept defaults for unspecified settings; no prompts
+  --yes, -y                        No prompts; reuse existing config (flags/env override, defaults fill the rest)
 
-Both modes: idempotent re-runs reconfigure. To remove: captain-memo uninstall`);
+Both modes: re-running preserves existing config (flags/env override). To remove: captain-memo uninstall`);
     return 0;
   }
 
@@ -1044,8 +1128,11 @@ Both modes: idempotent re-runs reconfigure. To remove: captain-memo uninstall`);
   let existing: Partial<WizardConfig> | undefined;
   if (existsSync(paths.envFile)) {
     info(`detected existing config: ${paths.envFile}`);
-    // Non-interactive: reconfigure from flags/env/defaults (don't prompt).
-    if (opts.nonInteractive || askYesNo('Reconfigure (re-ask all questions)?', true)) existing = {};
+    // Re-installing: load the existing config as the fallback so an upgrade NEVER
+    // drops the user's settings (API key, models, endpoints, watch paths) — flags
+    // and env still override. (Passing {} here was the bug: `install --yes` rewrote
+    // worker.env from defaults and silently produced a keyless, non-embedding file.)
+    if (opts.nonInteractive || askYesNo('Reconfigure (re-ask all questions)?', true)) existing = loadExistingConfig(paths.envFile);
     else info('keeping current config; re-running setup steps only.');
   }
 
