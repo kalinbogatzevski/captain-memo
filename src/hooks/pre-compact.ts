@@ -1,4 +1,4 @@
-import { readStdinJson, workerFetch, summarize, resolveProjectId, logHookError } from './shared.ts';
+import { readStdinJson, workerFetch, summarize, resolveProjectId, logHookError, logWorkerFailure } from './shared.ts';
 import type { RawObservationEvent } from '../shared/types.ts';
 import { detectBranchSync } from '../worker/branch.ts';
 
@@ -16,7 +16,7 @@ const HOOK_TIMEOUT_MS = Number(process.env.CAPTAIN_MEMO_PRE_COMPACT_TIMEOUT_MS ?
 
 export async function main(): Promise<void> {
   let payload: PreCompactPayload = {};
-  try { payload = await readStdinJson<PreCompactPayload>(); } catch { return; }
+  try { payload = await readStdinJson<PreCompactPayload>(); } catch (err) { logHookError('PreCompact', err); return; }
 
   const event: RawObservationEvent = {
     session_id: payload.session_id ?? 'unknown',
@@ -32,11 +32,12 @@ export async function main(): Promise<void> {
     source: 'pre-compact',
   };
 
-  await workerFetch('/observation/enqueue', {
+  const res = await workerFetch('/observation/enqueue', {
     method: 'POST',
     body: event,
     timeoutMs: HOOK_TIMEOUT_MS,
   });
+  logWorkerFailure('PreCompact', '/observation/enqueue', res);
 }
 
 if (import.meta.main) {

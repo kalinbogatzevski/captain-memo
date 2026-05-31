@@ -1,4 +1,4 @@
-import { readStdinJson, workerFetch, summarize, resolveProjectId, logHookError } from './shared.ts';
+import { readStdinJson, workerFetch, summarize, resolveProjectId, logHookError, logWorkerFailure } from './shared.ts';
 import type { RawObservationEvent } from '../shared/types.ts';
 import { detectBranchSync } from '../worker/branch.ts';
 
@@ -33,7 +33,7 @@ function extractFiles(input: unknown, response: unknown): { read: string[]; modi
 
 export async function main(): Promise<void> {
   let payload: PostToolUsePayload = {};
-  try { payload = await readStdinJson<PostToolUsePayload>(); } catch { return; }
+  try { payload = await readStdinJson<PostToolUsePayload>(); } catch (err) { logHookError('PostToolUse', err); return; }
 
   if (!payload.tool_name) return;
   const { read, modified } = extractFiles(payload.tool_input, payload.tool_response);
@@ -51,11 +51,12 @@ export async function main(): Promise<void> {
     branch: detectBranchSync(process.cwd()),
   };
 
-  await workerFetch('/observation/enqueue', {
+  const res = await workerFetch('/observation/enqueue', {
     method: 'POST',
     body: event,
     timeoutMs: HOOK_TIMEOUT_MS,
   });
+  logWorkerFailure('PostToolUse', '/observation/enqueue', res);
 }
 
 if (import.meta.main) {

@@ -94,6 +94,17 @@ async function workerFetch(path, opts) {
     clearTimeout(timer);
   }
 }
+function workerFailureMessage(path, res) {
+  if (res.ok)
+    return null;
+  const detail = res.timedOut ? "timed out" : res.errorMessage ?? `status ${res.status}`;
+  return `worker ${path} failed: ${detail}`;
+}
+function logWorkerFailure(event, path, res) {
+  const msg = workerFailureMessage(path, res);
+  if (msg)
+    logHookError(event, new Error(msg));
+}
 function resolveProjectId(cwd) {
   if (process.env.CAPTAIN_MEMO_PROJECT_ID)
     return process.env.CAPTAIN_MEMO_PROJECT_ID;
@@ -123,7 +134,8 @@ async function main() {
   let payload = {};
   try {
     payload = await readStdinJson();
-  } catch {
+  } catch (err) {
+    logHookError("UserPromptSubmit", err);
     return;
   }
   const prompt = payload.prompt ?? "";
@@ -138,6 +150,7 @@ async function main() {
     },
     timeoutMs
   });
+  logWorkerFailure("UserPromptSubmit", "/inject/context", result);
   if (result.ok && result.body && result.body.envelope) {
     writeStdout(result.body.envelope);
     writeStdout(`
@@ -196,10 +209,25 @@ function formatBanner(stats) {
   return lines.join(`
 `);
 }
+function formatDegradedBanner(detail) {
+  return [
+    "",
+    "",
+    "\u2693 Captain Memo \u2014 worker unreachable",
+    "\u2500".repeat(60),
+    `  Memory is paused this session (${detail}).`,
+    "  Search and observation capture resume automatically once the worker is back.",
+    "  Details: ~/.captain-memo/logs/hook.log",
+    ""
+  ].join(`
+`);
+}
 async function main2() {
   try {
     await readStdinJson();
-  } catch {}
+  } catch (err) {
+    logHookError("SessionStart", err);
+  }
   const timeoutMs = Number(process.env.CAPTAIN_MEMO_SESSION_START_TIMEOUT_MS ?? process.env[ENV_HOOK_TIMEOUT_MS] ?? 1e4);
   const stats = await workerFetch("/stats", {
     method: "GET",
@@ -209,6 +237,12 @@ async function main2() {
     writeStdout(JSON.stringify({
       continue: true,
       systemMessage: formatBanner(stats.body)
+    }));
+  } else {
+    logHookError("SessionStart", new Error(workerFailureMessage("/stats", stats) ?? "worker /stats returned no body"));
+    writeStdout(JSON.stringify({
+      continue: true,
+      systemMessage: formatDegradedBanner(stats.timedOut ? "worker timed out" : "worker not reachable")
     }));
   }
 }
@@ -253,7 +287,8 @@ async function main3() {
   let payload = {};
   try {
     payload = await readStdinJson();
-  } catch {
+  } catch (err) {
+    logHookError("PostToolUse", err);
     return;
   }
   if (!payload.tool_name)
@@ -271,11 +306,12 @@ async function main3() {
     ts_epoch: Math.floor(Date.now() / 1000),
     branch: detectBranchSync(process.cwd())
   };
-  await workerFetch("/observation/enqueue", {
+  const res = await workerFetch("/observation/enqueue", {
     method: "POST",
     body: event,
     timeoutMs: HOOK_TIMEOUT_MS
   });
+  logWorkerFailure("PostToolUse", "/observation/enqueue", res);
 }
 if (false) {}
 
@@ -284,16 +320,18 @@ async function main4() {
   let payload = {};
   try {
     payload = await readStdinJson();
-  } catch {
+  } catch (err) {
+    logHookError("Stop", err);
     return;
   }
   if (!payload.session_id)
     return;
-  await workerFetch("/observation/flush", {
+  const res = await workerFetch("/observation/flush", {
     method: "POST",
     body: { session_id: payload.session_id, max: 200 },
     timeoutMs: DEFAULT_STOP_DRAIN_BUDGET_MS
   });
+  logWorkerFailure("Stop", "/observation/flush", res);
 }
 if (false) {}
 
@@ -303,7 +341,8 @@ async function main5() {
   let payload = {};
   try {
     payload = await readStdinJson();
-  } catch {
+  } catch (err) {
+    logHookError("PreCompact", err);
     return;
   }
   const event = {
@@ -319,11 +358,12 @@ async function main5() {
     branch: detectBranchSync(process.cwd()),
     source: "pre-compact"
   };
-  await workerFetch("/observation/enqueue", {
+  const res = await workerFetch("/observation/enqueue", {
     method: "POST",
     body: event,
     timeoutMs: HOOK_TIMEOUT_MS2
   });
+  logWorkerFailure("PreCompact", "/observation/enqueue", res);
 }
 if (false) {}
 

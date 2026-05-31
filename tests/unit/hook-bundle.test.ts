@@ -37,6 +37,27 @@ test('committed hook bundle dispatches end-to-end (UserPromptSubmit echoes the p
   expect(out).toContain(TOKEN);
 });
 
+// Degraded-banner contract (v0.2.13): when the worker is unreachable, SessionStart
+// must no longer fall silent — it emits a "worker unreachable" banner so the user
+// can tell "worker is down" from "the hook regressed" (the ambiguity that made the
+// v0.2.3 outage so confusing). Closed worker port (1) forces /stats to fail fast.
+test('SessionStart emits a degraded banner (not silence) when the worker is unreachable', async () => {
+  const proc = Bun.spawn(['bun', BUNDLE, 'SessionStart'], {
+    stdin: new TextEncoder().encode(JSON.stringify({ source: 'startup' })),
+    env: {
+      ...process.env,
+      CAPTAIN_MEMO_WORKER_PORT: '1', // closed → /stats fails fast
+      CAPTAIN_MEMO_SESSION_START_TIMEOUT_MS: '300',
+    },
+    stdout: 'pipe',
+    stderr: 'ignore',
+  });
+  const out = await new Response(proc.stdout).text();
+  await proc.exited;
+  expect(out).toContain('systemMessage');
+  expect(out).toContain('worker unreachable');
+});
+
 // Drift guard: the COMMITTED bundle could rot relative to src/hooks/dispatcher.ts
 // if someone edits the source and forgets `bun run build:plugin`. The committed-
 // bundle test catches a stale/broken artifact; this one catches a regressed

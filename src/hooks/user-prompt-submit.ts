@@ -1,4 +1,4 @@
-import { readStdinJson, writeStdout, workerFetch, logHookError, resolveProjectId } from './shared.ts';
+import { readStdinJson, writeStdout, workerFetch, logHookError, logWorkerFailure, resolveProjectId } from './shared.ts';
 import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS } from '../shared/paths.ts';
 import type { EnvelopePayload } from '../shared/types.ts';
 
@@ -13,7 +13,8 @@ export async function main(): Promise<void> {
   let payload: UserPromptSubmitPayload = {};
   try {
     payload = await readStdinJson<UserPromptSubmitPayload>();
-  } catch {
+  } catch (err) {
+    logHookError('UserPromptSubmit', err);
     return;
   }
   const prompt = payload.prompt ?? '';
@@ -29,6 +30,12 @@ export async function main(): Promise<void> {
     },
     timeoutMs,
   });
+
+  // A non-OK result means the memory envelope was dropped — log it (the prompt
+  // still passes through bare below, so this stays fail-open). logWorkerFailure
+  // no-ops on an OK result, so the normal "no hits" case (ok, no envelope) stays
+  // quiet without an extra guard.
+  logWorkerFailure('UserPromptSubmit', '/inject/context', result);
 
   if (result.ok && result.body && result.body.envelope) {
     writeStdout(result.body.envelope);

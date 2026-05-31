@@ -117,6 +117,24 @@ export async function workerFetch<T>(
   }
 }
 
+/** Build a log message for a failed workerFetch result, or null if it succeeded.
+ *  Pure (no I/O) so it is unit-testable; logWorkerFailure() does the logging. */
+export function workerFailureMessage(path: string, res: FetchResult<unknown>): string | null {
+  if (res.ok) return null;
+  const detail = res.timedOut ? 'timed out' : (res.errorMessage ?? `status ${res.status}`);
+  return `worker ${path} failed: ${detail}`;
+}
+
+/** Log a non-OK workerFetch result via logHookError (no-op when ok). This is the
+ *  missing half of the fail-open contract (shared.ts top comment): hooks stay
+ *  fail-open, but a worker outage is now WRITTEN to hook.log instead of vanishing.
+ *  Discarding the workerFetch result is exactly how a silent freeze hides — the
+ *  same failure mode as the v0.2.3 dispatch regression, only undebuggable. */
+export function logWorkerFailure(event: string, path: string, res: FetchResult<unknown>): void {
+  const msg = workerFailureMessage(path, res);
+  if (msg) logHookError(event, new Error(msg));
+}
+
 /** Coerce hook-time CWD → project_id for non-installed flows. Honors $CAPTAIN_MEMO_PROJECT_ID. */
 export function resolveProjectId(cwd: string | undefined): string {
   if (process.env.CAPTAIN_MEMO_PROJECT_ID) return process.env.CAPTAIN_MEMO_PROJECT_ID;

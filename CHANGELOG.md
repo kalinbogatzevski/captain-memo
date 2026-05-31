@@ -5,6 +5,28 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.2.13] — 2026-05-31
+
+### Changed
+- **Hook failures are now visible instead of silently swallowed.** The v0.2.12 fix
+  restored hook *dispatch*, but the handlers still discarded their `workerFetch`
+  results — so a worker outage would have reproduced the same silent freeze
+  (frozen stats, no banner) with an **empty `hook.log`**, undebuggable. Now every
+  worker call in `PostToolUse`, `Stop`, `PreCompact`, `UserPromptSubmit`, and
+  `SessionStart` logs non-OK/timeout results via a new `logWorkerFailure` helper,
+  and every previously-swallowed stdin-parse error is logged too. Fail-open is
+  unchanged — no hook ever throws, exits non-zero, or blocks Claude Code.
+- **`SessionStart` shows a degraded banner when the worker is unreachable** —
+  `⚓ Captain Memo — worker unreachable / Memory is paused this session …` — instead
+  of falling silent, so a missing banner can no longer be mistaken for a broken
+  hook. Memory resumes automatically once the worker answers again.
+
+### Tests
+- New pure unit tests for `workerFailureMessage` (the OK→no-log path plus the
+  timeout / HTTP-error / status-fallback branches), and a behavioral test that
+  spawns the committed bundle against a closed worker port and asserts the
+  degraded banner is emitted (not silence).
+
 ## [0.2.12] — 2026-05-31
 
 ### Fixed

@@ -1,4 +1,4 @@
-import { readStdinJson, writeStdout, workerFetch, logHookError } from './shared.ts';
+import { readStdinJson, writeStdout, workerFetch, logHookError, workerFailureMessage } from './shared.ts';
 import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS } from '../shared/paths.ts';
 
 interface SessionStartPayload {
@@ -80,8 +80,27 @@ function formatBanner(stats: StatsResponse): string {
   return lines.join('\n');
 }
 
+// Shown instead of falling silent when /stats can't be reached. The original
+// v0.2.3 outage was confusing precisely because a missing banner could mean
+// EITHER "worker down" OR "hook broken" — this names which it is, and points at
+// the log. Memory resumes automatically once the worker answers again.
+function formatDegradedBanner(detail: string): string {
+  return [
+    '',
+    '',
+    '⚓ Captain Memo — worker unreachable',
+    '─'.repeat(60),
+    `  Memory is paused this session (${detail}).`,
+    '  Search and observation capture resume automatically once the worker is back.',
+    '  Details: ~/.captain-memo/logs/hook.log',
+    '',
+  ].join('\n');
+}
+
 export async function main(): Promise<void> {
-  try { await readStdinJson<SessionStartPayload>(); } catch { /* ignore */ }
+  // Payload is unused (the banner needs no input) — we only drain stdin. A parse
+  // failure is non-fatal but worth a log line so a payload-shape change is visible.
+  try { await readStdinJson<SessionStartPayload>(); } catch (err) { logHookError('SessionStart', err); }
 
   // SessionStart isn't on a hot path — it fires once per session, not per
   // prompt. Use a generous timeout so the banner appears even when the
@@ -105,6 +124,17 @@ export async function main(): Promise<void> {
     writeStdout(JSON.stringify({
       continue: true,
       systemMessage: formatBanner(stats.body),
+    }));
+  } else {
+    // Worker unreachable / timed out / errored / empty body: log it AND tell the
+    // user, rather than emitting nothing (which reads as "memory broke"). We log
+    // unconditionally here (not via logWorkerFailure, which no-ops on ok) so the
+    // log line and the banner always stay in lockstep — including the near-dead
+    // ok-but-no-body corner. Still fail-open: a systemMessage never blocks the session.
+    logHookError('SessionStart', new Error(workerFailureMessage('/stats', stats) ?? 'worker /stats returned no body'));
+    writeStdout(JSON.stringify({
+      continue: true,
+      systemMessage: formatDegradedBanner(stats.timedOut ? 'worker timed out' : 'worker not reachable'),
     }));
   }
 }
