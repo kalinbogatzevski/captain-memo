@@ -5,6 +5,31 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.2.12] — 2026-05-31
+
+### Fixed
+- **Every Claude Code hook was a silent no-op (regression in v0.2.3–v0.2.11).** The
+  committed plugin bundle (`plugin/dist/captain-memo-hook.js`) dispatched to its
+  handlers via `await import(target)` with a **variable** specifier. `bun build`
+  only inlines a dynamic import whose specifier is a string **literal** — a variable
+  is left as a *runtime* import, which then resolved `../hooks/*.ts` next to the
+  single-file bundle (where no such files ship) and threw `Cannot find module`. The
+  dispatcher's fail-open `catch → exit(0)` swallowed it, so **the SessionStart stats
+  banner never appeared and PostToolUse never captured observations** — yet every
+  hook reported success. Fix: `src/hooks/dispatcher.ts` now **statically imports**
+  all five handlers and dispatches by function reference, so `bun build` inlines
+  every handler into a genuinely self-contained bundle (89 → 359 lines).
+- This restores the startup banner, prompt-time memory injection, observation
+  capture, the Stop drain, and the PreCompact recap — all of which had been dormant.
+
+### Tests
+- New guards so this cannot silently recur: a **behavioral** test spawns the
+  committed bundle and asserts it dispatches end-to-end (the prompt echoes back), a
+  **self-contained** test asserts every handler body is inlined and no `../hooks/`
+  path reference survives, and a **source-rebuild** test builds the bundle fresh
+  from source and re-checks the same invariants (catching committed-vs-source drift
+  on every OS, not just Linux CI).
+
 ## [0.2.11] — 2026-05-31
 
 ### Fixed

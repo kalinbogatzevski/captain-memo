@@ -56,3 +56,25 @@ test('committed mcp-server bundle embeds the current version (no stale dist afte
   const bundle = readFileSync(join(ROOT, 'plugin/dist/mcp-server.js'), 'utf-8');
   expect(bundle).toContain(pkg.version);
 });
+
+// Guards the exact regression that silenced EVERY hook (commit 8295f08): the
+// dispatcher dynamic-imported handler SOURCES by a VARIABLE specifier
+// (`await import(target)`), which Bun cannot inline — so the committed bundle
+// shipped as an 89-line shim that resolved `../hooks/session-start.ts` next to
+// itself at runtime, failed `Cannot find module`, and fail-open exit(0)'d. The
+// SessionStart banner vanished and the observation queue froze. The bundle MUST
+// be self-contained: every handler body inlined, no runtime `../hooks/*` import.
+// These endpoint strings are unique to one handler each, so their presence proves
+// that specific handler was bundled — not just that *a* file exists.
+test('committed hook bundle is self-contained (handlers inlined, no runtime ../hooks import)', () => {
+  const bundle = readFileSync(join(ROOT, 'plugin/dist/captain-memo-hook.js'), 'utf-8');
+  expect(bundle).toContain('silent envelope on each prompt'); // session-start banner
+  expect(bundle).toContain('/observation/enqueue');           // post-tool-use
+  expect(bundle).toContain('/inject/context');                // user-prompt-submit
+  // The exact bug signature: the buggy shim dispatched via `await import(target)`
+  // with the handler paths sitting in a `var EVENTS = { ...: "../hooks/x.ts" }`
+  // literal (bun never inlined a variable-specifier import). A correctly bundled
+  // file inlines every handler and carries ZERO "../hooks/" references — so the
+  // presence of that path fragment is a precise, non-overfit regression signal.
+  expect(bundle).not.toContain('../hooks/');
+});
