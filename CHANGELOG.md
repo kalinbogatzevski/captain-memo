@@ -5,6 +5,19 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.2.10] — 2026-05-31
+
+### Fixed
+- **`doctor` now respects Claude Code's plugin-cache grace period.** After an
+  upgrade, Claude Code keeps the previous version's cache dir for 7 days (marked
+  with `.orphaned_at`) before garbage-collecting it itself. `findCachedPluginRoot`
+  now skips orphaned dirs and evaluates only the active copy, so a normal
+  grace-period leftover is never mistaken for the install or reported as "stale" —
+  which would have wrongly suggested a manual cache cleanup. (Researched against
+  the Claude Code plugins reference: there is no sanctioned command to prune stale
+  versions and reaching into the cache is unsupported, so the correct behavior is
+  to leave the cache to Claude Code and just read it correctly.)
+
 ## [0.2.9] — 2026-05-31
 
 ### Changed

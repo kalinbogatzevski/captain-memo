@@ -303,9 +303,14 @@ function findCachedPluginRoot(): string | null {
   };
   walk(cacheRoot, 0);
   if (matches.length === 0) return null;
-  // Several version dirs can coexist (a prior release dir + the current one).
-  // Report the ACTIVE one — the highest version, by its dir name — not whichever
-  // readdir listed first.
+  // Claude Code keeps the previous version dir for a 7-day grace period after an
+  // upgrade — marked with an `.orphaned_at` file — then garbage-collects it itself
+  // (per the plugins reference). Evaluate only the ACTIVE copies so a grace-period
+  // leftover is never mistaken for the installed plugin, nor reported as "stale"
+  // (which would wrongly nudge toward a manual cache cleanup we must never ask for).
+  const active = matches.filter((p) => !existsSync(join(p, '.orphaned_at')));
+  const pool = active.length > 0 ? active : matches;
+  // Among the active copies, the installed one is the highest version by dir name.
   const versionOf = (p: string): number[] => ((p.split(/[\\/]/).pop() ?? '').match(/\d+/g) ?? []).map(Number);
   const cmpDesc = (a: number[], b: number[]): number => {
     for (let i = 0; i < Math.max(a.length, b.length); i++) {
@@ -314,8 +319,8 @@ function findCachedPluginRoot(): string | null {
     }
     return 0;
   };
-  matches.sort((x, y) => cmpDesc(versionOf(x), versionOf(y)));
-  return matches[0] ?? null;
+  pool.sort((x, y) => cmpDesc(versionOf(x), versionOf(y)));
+  return pool[0] ?? null;
 }
 
 function checkPluginEntries(): void {
