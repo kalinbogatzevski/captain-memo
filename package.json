@@ -44,7 +44,7 @@
     "worker:dev": "CAPTAIN_MEMO_DATA_DIR=./.captain-memo.dev bun --watch src/worker/index.ts",
     "mcp:start": "bun src/mcp-server.ts",
     "cli": "bun bin/captain-memo",
-    "hook": "bun bin/captain-memo-hook",
+    "hook": "bun bin/captain-memo-hook.ts",
     "build:plugin": "bun build src/mcp-server.ts --target bun --outfile plugin/dist/mcp-server.js && bun build bin/captain-memo-hook.ts --target bun --outfile plugin/dist/captain-memo-hook.js"
   },
   "dependencies": {

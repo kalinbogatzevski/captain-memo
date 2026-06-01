@@ -29,6 +29,10 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
   `ensureWorkerHealthy` policy (healthy / unreachable→start / stale→restart /
   lock-held→skip / start-failure→report). The SessionStart and UserPromptSubmit hook
   tests were updated to exercise the self-heal gate.
+- `dispatcher-e2e` and the `hook` dev script now reference `bin/captain-memo-hook.ts`
+  directly (not the extensionless `bin/captain-memo-hook` symlink), so the suite is
+  green on a Windows checkout where `core.symlinks=false` materializes the symlink as
+  plain text.
 
 ## [0.2.13] — 2026-05-31
 

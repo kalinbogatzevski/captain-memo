@@ -1,20 +1,23 @@
 // End-to-end test for the production hook entry chain:
-//   bin/captain-memo-hook EVENT  →  src/hooks/dispatcher.ts  →  src/hooks/<event>.ts
+//   bin/captain-memo-hook.ts EVENT  →  src/hooks/dispatcher.ts  →  src/hooks/<event>.ts
 //
 // Per-handler tests spawn `bun src/hooks/<event>.ts` directly, which makes
 // the handler the main module — its `import.meta.main` guard is true and
 // main() runs as a side-effect of import. That code path is NOT what runs
-// in production. This test invokes `bin/captain-memo-hook` exactly as
-// Claude Code does and asserts the dispatcher chain delivers payloads to
-// the worker, catching any regression where dynamic-import + main-guard
-// shape break the wiring.
+// in production. This test invokes the real entry file `bin/captain-memo-hook.ts`
+// — NOT the legacy extensionless `bin/captain-memo-hook` symlink, which a Windows
+// checkout (core.symlinks=false) materializes as a 20-byte text file that `bun`
+// then runs as JS (→ "captain is not defined"). It asserts the dispatcher chain
+// delivers payloads to the worker, catching any regression where dynamic-import +
+// main-guard shape break the wiring. The production-bundled entry
+// (dist/captain-memo-hook.js) is covered separately by tests/unit/hook-bundle.test.ts.
 
 import { test, expect, beforeAll, afterAll } from 'bun:test';
 import { join } from 'path';
 import { readFileSync } from 'fs';
 import { spawn } from 'bun';
 
-const HOOK_BIN = join(import.meta.dir, '../../bin/captain-memo-hook');
+const HOOK_BIN = join(import.meta.dir, '../../bin/captain-memo-hook.ts');
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let received: Array<{ path: string; body: any }> = [];
