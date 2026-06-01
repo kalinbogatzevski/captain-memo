@@ -6,7 +6,7 @@
 // all live here so they can be unit-tested without a terminal.
 
 import {
-  bold, cyan, cyanBold, dim, gold, green, padVisibleEnd, visibleWidth,
+  bold, boldRed, cyan, cyanBold, dim, gold, green, padVisibleEnd, visibleWidth,
 } from '../../shared/ansi.ts';
 import { renderStats, type StatsResponse } from '../stats-render.ts';
 import type { TopState } from './state.ts';
@@ -45,6 +45,12 @@ export interface FrameData {
   stats?: StatsResponse;
   page?: { rows: RecallRowView[]; total: number };
   detail?: DetailObs;
+  /** The most recent worker fetch failed — everything on screen is the last-good
+   *  snapshot, not live. Drives the prominent stale-data banner so a dead/zombie
+   *  worker can't masquerade as live (the clock keeps ticking regardless). */
+  workerUnreachable?: boolean;
+  /** When the last successful fetch landed (epoch ms), shown in the banner. */
+  lastOkAtMs?: number | null;
 }
 
 export interface Dims {
@@ -57,12 +63,36 @@ const VIEW_LABEL: Record<string, string> = {
 };
 
 export function buildFrame(state: TopState, data: FrameData, dims: Dims): string[] {
-  switch (state.mode) {
-    case 'dashboard': return dashboardFrame(state, data, dims);
-    case 'table':     return tableFrame(state, data, dims);
-    case 'detail':    return detailFrame(state, data, dims);
-    case 'help':      return helpFrame(state, dims);
+  const frame = (() => {
+    switch (state.mode) {
+      case 'dashboard': return dashboardFrame(state, data, dims);
+      case 'table':     return tableFrame(state, data, dims);
+      case 'detail':    return detailFrame(state, data, dims);
+      case 'help':      return helpFrame(state, dims);
+    }
+  })();
+  // A dead/zombie worker keeps the last-good stats on screen with a live clock —
+  // which reads as "live". Prepend a loud banner on EVERY mode so staleness is
+  // impossible to miss (replaces the old easy-to-overlook dim footnote).
+  if (data.workerUnreachable) {
+    return [...unreachableBanner(dims.cols, data.lastOkAtMs ?? null), ...frame];
   }
+  return frame;
+}
+
+/** The prominent "data is stale" banner shown while the worker is unreachable.
+ *  Pure + exported so its wording is unit-testable. `lastOkAtMs` is formatted as
+ *  a wall-clock time (HH:MM:SS) so the user can see how old the on-screen data is. */
+export function unreachableBanner(cols: number, lastOkAtMs: number | null): string[] {
+  let when = '';
+  if (lastOkAtMs) {
+    const d = new Date(lastOkAtMs);
+    const p = (n: number) => String(n).padStart(2, '0');
+    when = ` · last ok ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  }
+  const msg = `⚠ WORKER UNREACHABLE — data below is STALE${when} · see ~/.captain-memo/logs/worker.log`;
+  // Pad across the panel so the colored bar spans the width and dominates the eye.
+  return [boldRed(' ' + padVisibleEnd(msg, Math.max(0, cols - 2)))];
 }
 
 // ── shared bits ────────────────────────────────────────────────────────────

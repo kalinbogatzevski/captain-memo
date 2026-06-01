@@ -240,6 +240,43 @@ async function runSchtasks(args: string[]): Promise<{ exitCode: number; stdout: 
   return { exitCode, stdout, stderr };
 }
 
+// Build the PowerShell that hard-kills a ZOMBIE worker: any `bun` process still
+// LISTENING on `port`. This is the reliable kill — Stop-ScheduledTask asks the
+// scheduler to end the task but does NOT always terminate a detached worker
+// process (field-verified 2026-06-01: a zombie survived Stop-ScheduledTask and
+// held the task "Running", so IgnoreNew no-op'd every restart for ~2.7h).
+//
+// Exported so the command text is unit-testable without spawning PowerShell.
+// Safety: the `bun`-name guard means an unrelated process that happens to own the
+// port is left alone. Bounded poll so the caller's subsequent start() never races
+// a still-bound port. NB: NEVER name a loop var `$pid` — that is a PowerShell
+// AUTOMATIC variable (this very process's PID); we use `$ownerPid`.
+export function buildReclaimPortCommand(port: number, timeoutMs = 5000): string {
+  // Defensive: a garbage CAPTAIN_MEMO_WORKER_PORT (NaN / out of range) would
+  // otherwise emit `-LocalPort NaN` and silently match nothing. Fail loud — the
+  // caller (stop with force) swallows it, so a bad port skips the reclaim rather
+  // than running a malformed command that "succeeds" while killing nothing.
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`buildReclaimPortCommand: invalid port ${port} (expected integer 1-65535)`);
+  }
+  const deadlineMs = Math.max(0, Math.floor(timeoutMs));
+  return [
+    `$ErrorActionPreference='SilentlyContinue'`,
+    `$deadline=(Get-Date).AddMilliseconds(${deadlineMs})`,
+    `do {`,
+    `  $owners=@(Get-NetTCPConnection -LocalPort ${port} -State Listen | Select-Object -ExpandProperty OwningProcess -Unique)`,
+    `  if ($owners.Count -eq 0) { break }`,
+    `  foreach ($ownerPid in $owners) {`,
+    `    $proc=Get-Process -Id $ownerPid -ErrorAction SilentlyContinue`,
+    // Exact 'bun' (Get-Process strips the .exe) — tighter than a 'bun*' prefix so a
+    // stray process like 'bunny.exe' can never be caught, even on the worker port.
+    `    if ($proc -and $proc.ProcessName -eq 'bun') { Stop-Process -Id $ownerPid -Force }`,
+    `  }`,
+    `  Start-Sleep -Milliseconds 200`,
+    `} while ((Get-Date) -lt $deadline)`,
+  ].join('\n');
+}
+
 // schtasks /Create /XML rejects UTF-8 ("unable to switch the encoding") — it
 // requires UTF-16 LE with a BOM. Encode the document accordingly. Exported so the
 // encoding is unit-testable (assert the FF FE BOM) without invoking schtasks.
@@ -307,6 +344,25 @@ class WindowsScheduledTaskServiceManager implements ServiceManager {
     const r = await runPowerShell(`Stop-ScheduledTask -TaskName ${psSingleQuote(name)}`);
     if (r.exitCode !== 0) {
       throw new Error(`Stop-ScheduledTask ${name} failed (exit ${r.exitCode}): ${r.stderr.trim() || 'no stderr'}`);
+    }
+    // force: guarantee the worker PROCESS is gone. Stop-ScheduledTask above only
+    // asks the scheduler to end the task and does NOT reliably kill a detached/
+    // zombie worker — so hard-kill whatever bun process still holds the port, or
+    // the next start() will no-op under IgnoreNew (field 2026-06-01). Best-effort:
+    // a reclaim failure is non-fatal — the caller's start()+health check surfaces
+    // a still-down worker rather than this masking it.
+    if (opts?.force) {
+      const port = opts.port ?? DEFAULT_WORKER_PORT;
+      // Best-effort, exactly as the comment above promises: a reclaim failure (no
+      // pwsh/powershell on PATH, an invalid port, a cmdlet error) must NOT
+      // propagate — a thrown stop() would skip the caller's subsequent start() and
+      // leave the worker STOPPED. The start()+health check is the real safety net;
+      // a persistent failure surfaces there, and the next watchdog tick retries.
+      try {
+        await runPowerShell(buildReclaimPortCommand(port));
+      } catch {
+        // swallow — reclaim is opportunistic; the worker start proceeds regardless
+      }
     }
   }
 

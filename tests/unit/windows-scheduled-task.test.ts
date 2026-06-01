@@ -5,7 +5,7 @@
 // out to the Windows Task Scheduler), but buildTaskXml is a pure string builder,
 // so the XML contract is fully testable here.
 import { test, expect, describe } from 'bun:test';
-import { buildTaskXml, toTaskXmlBuffer } from '../../src/services/service-manager/windows-scheduled-task.ts';
+import { buildTaskXml, toTaskXmlBuffer, buildReclaimPortCommand } from '../../src/services/service-manager/windows-scheduled-task.ts';
 import type { ServiceSpec } from '../../src/services/service-manager/types.ts';
 
 function sampleSpec(overrides: Partial<ServiceSpec> = {}): ServiceSpec {
@@ -178,5 +178,47 @@ describe('buildTaskXml', () => {
   test('renders a sub-minute watchdog interval as PT{n}S', () => {
     const xml = buildTaskXml(sampleSpec({ watchdogIntervalSec: 90 }));
     expect(xml).toContain('<Interval>PT1M30S</Interval>');
+  });
+});
+
+describe('buildReclaimPortCommand', () => {
+  test('targets the given port and force-kills the owning process', () => {
+    const cmd = buildReclaimPortCommand(39888);
+    expect(cmd).toContain('-LocalPort 39888');
+    expect(cmd).toContain('Stop-Process');
+    expect(cmd).toContain('-Force');
+  });
+
+  test('guards on the EXACT bun process name so an unrelated port owner is spared', () => {
+    const cmd = buildReclaimPortCommand(39888);
+    expect(cmd).toContain("ProcessName -eq 'bun'");
+    expect(cmd).not.toContain("-like 'bun*'"); // tightened: no prefix match (e.g. 'bunny.exe')
+  });
+
+  test('rejects an invalid port instead of emitting a no-op `-LocalPort NaN` command', () => {
+    expect(() => buildReclaimPortCommand(Number('garbage'))).toThrow(/invalid port/);
+    expect(() => buildReclaimPortCommand(0)).toThrow(/invalid port/);
+    expect(() => buildReclaimPortCommand(70000)).toThrow(/invalid port/);
+    expect(() => buildReclaimPortCommand(39888)).not.toThrow();
+  });
+
+  test('NEVER uses the $pid automatic variable (that is THIS process — would self-kill)', () => {
+    const cmd = buildReclaimPortCommand(39888);
+    // $ownerPid is fine; a bare $pid would resolve to the PowerShell host's own PID.
+    expect(cmd).not.toContain('$pid');
+    expect(cmd).toContain('$ownerPid');
+  });
+
+  test('is bounded by a deadline loop (cannot spin forever)', () => {
+    const cmd = buildReclaimPortCommand(39888, 1234);
+    expect(cmd).toContain('1234');
+    expect(cmd).toMatch(/while\s*\(/);
+    expect(cmd).toContain('$deadline');
+  });
+
+  test('breaks as soon as no listener remains on the port', () => {
+    const cmd = buildReclaimPortCommand(39888);
+    expect(cmd).toContain('$owners.Count -eq 0');
+    expect(cmd).toContain('break');
   });
 });

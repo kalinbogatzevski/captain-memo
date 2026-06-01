@@ -98,6 +98,10 @@ class SystemdServiceManager implements ServiceManager {
   }
 
   async stop(name: string, opts?: StopOptions): Promise<void> {
+    // StopOptions.force is intentionally a no-op here: `systemctl stop` already
+    // guarantees the process is gone (SIGTERM → SIGKILL on timeout). force exists
+    // for the Windows impl, where Stop-ScheduledTask does NOT reliably kill a
+    // detached/zombie worker; it stays in the shared interface for symmetry.
     if (opts?.graceful) {
       // Ask the worker to drain + release SQLite locks before we yank it.
       // Best-effort — a worker that's already down just refuses the connection.

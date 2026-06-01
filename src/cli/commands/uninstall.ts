@@ -139,6 +139,11 @@ async function removeWindows(purge: boolean): Promise<void> {
   try { await sm.remove('captain-memo-worker'); ok('removed worker Scheduled Task'); }
   catch { warn('could not remove worker Scheduled Task (may not exist)'); }
 
+  // Watchdog Scheduled Task (autonomous zombie recovery; installed alongside the
+  // worker since v0.2.15). Tolerate "already gone" on older installs.
+  try { await sm.remove('captain-memo-watchdog'); ok('removed watchdog Scheduled Task'); }
+  catch { warn('could not remove watchdog Scheduled Task (may not exist)'); }
+
   // Embedder (local-sidecar only). Present if its task is registered or the
   // install dir survives. ServiceManager owns the task; EmbedderInstaller.remove
   // only deletes the dir — so call both.

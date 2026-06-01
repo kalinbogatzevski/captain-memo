@@ -997,6 +997,33 @@ async function installWindows(args: string[], opts: InstallOptions): Promise<num
   await getServiceManager().start('captain-memo-worker');
   ok('worker task registered + started (captain-memo-worker)');
 
+  // ----- watchdog Scheduled Task (autonomous zombie recovery) -----
+  // A SEPARATE short-lived task: its 5-min TimeTrigger runs `worker-watchdog`,
+  // which probes /health and — if the worker is unreachable (dead OR a ZOMBIE:
+  // process alive, HTTP server wedged) — hard-kills the port owner and restarts
+  // it. It MUST be its own task: the worker task is IgnoreNew, so while a zombie
+  // holds IT "Running" the worker task's own relaunch trigger can't fire. This
+  // task has independent instance state, so it always runs. restartOnFailure is
+  // off — a failed probe simply re-runs on the next tick.
+  try {
+    await getServiceManager().install({
+      name: 'captain-memo-watchdog',
+      description: 'Captain Memo worker watchdog (probe + reclaim a dead/zombie worker)',
+      exec: [bunPath, 'src/cli/index.ts', 'worker-watchdog'],
+      workingDir: INSTALL_DIR,
+      envFile: WORKER_ENV_PATH,
+      autostart: true,
+      restartOnFailure: false,
+      watchdogIntervalSec: 300,
+      logDir: LOGS_DIR,
+    });
+    ok('watchdog task registered (captain-memo-watchdog · probes every 5 min)');
+  } catch (e) {
+    // Non-fatal: the worker + hook self-heal still work without the autonomous
+    // watchdog; surface it but don't abort an otherwise-good install.
+    warn(`could not register watchdog task: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
   // ----- CLI shim -----
   header('Linking CLI shim');
   const binDir = join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'captain-memo', 'bin');

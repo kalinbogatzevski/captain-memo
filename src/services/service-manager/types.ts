@@ -34,6 +34,11 @@ export interface StopOptions {
    *  Used by upgrade/vacuum so SQLite locks are released cleanly. */
   graceful?: boolean;
   port?: number;
+  /** Guarantee the worker PROCESS is actually gone, not just that the supervisor
+   *  was asked to stop it. Windows: Stop-ScheduledTask does NOT reliably terminate
+   *  a detached/zombie worker, so additionally hard-kill whatever still holds
+   *  `port` (field 2026-06-01). systemd: no-op — `systemctl stop` already kills. */
+  force?: boolean;
 }
 
 export interface ServiceManager {

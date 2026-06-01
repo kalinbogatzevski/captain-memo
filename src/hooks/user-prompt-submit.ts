@@ -1,5 +1,5 @@
 import { readStdinJson, writeStdout, workerFetch, logHookError, logWorkerFailure, resolveProjectId } from './shared.ts';
-import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS } from '../shared/paths.ts';
+import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS, DEFAULT_WORKER_PORT } from '../shared/paths.ts';
 import type { EnvelopePayload } from '../shared/types.ts';
 
 interface UserPromptSubmitPayload {
@@ -37,20 +37,26 @@ export async function main(): Promise<void> {
   // quiet without an extra guard.
   logWorkerFailure('UserPromptSubmit', '/inject/context', result);
 
-  // Fire-and-forget revival: if the worker was unreachable, ask the OS supervisor
-  // to start it. We await only the one-shot start command (bounded — fast for a
-  // Type=simple systemd unit; a cold PowerShell start on Windows adds a sub-second
-  // one-shot cost), never the /health probe — the supervisor owns the process.
-  // Never re-checks the version. A rejected start is logged (start() throws on a
-  // non-zero exit). The lock keeps concurrent prompts from stampeding the
-  // supervisor. Opt out with CAPTAIN_MEMO_DISABLE_SELF_HEAL=1.
+  // Fire-and-forget revival: if the worker was unreachable, RECLAIM-then-start via
+  // the OS supervisor. Unreachable can mean a ZOMBIE (process alive, HTTP dead), so
+  // a bare start would no-op on Windows (IgnoreNew while the corpse holds the task
+  // "Running") — restartWorker force-kills whatever still holds the port first. We
+  // await only this one-shot reclaim+start, never the /health probe; the supervisor
+  // owns the process. Latency: instant on a systemd unit; on Windows the reclaim
+  // polls the port (up to ~5s) but returns the moment the port frees, so a
+  // successful kill is sub-second and only a stuck port pays the full budget. The
+  // heal lock keeps concurrent prompts from stampeding the supervisor (and bounds
+  // the worst case to one in-flight reclaim). Never re-checks the version. Opt out
+  // with CAPTAIN_MEMO_DISABLE_SELF_HEAL=1.
   if (!result.ok && process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL !== '1') {
     try {
       const { acquireHealLock, releaseHealLock } = await import('../shared/worker-heal-lock.ts');
       if (acquireHealLock()) {
         try {
           const { getServiceManager } = await import('../services/service-manager/index.ts');
-          await getServiceManager().start('captain-memo-worker');
+          const { restartWorker } = await import('../shared/worker-control.ts');
+          const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
+          await restartWorker(getServiceManager(), 'captain-memo-worker', { port });
         } finally {
           releaseHealLock();
         }

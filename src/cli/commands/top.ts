@@ -64,6 +64,9 @@ export async function topCommand(args: string[]): Promise<number> {
   const data: FrameData = {};
   let loadedDetailId: number | null = null;
   let lastError: string | null = null;
+  // When the last fetch succeeded — drives the "stale since HH:MM:SS" banner so a
+  // dead/zombie worker can't keep masquerading as live behind the ticking clock.
+  let lastOkAtMs: number | null = null;
 
   // ── terminal lifecycle ────────────────────────────────────────────────────
   let torn = false;
@@ -139,6 +142,7 @@ export async function topCommand(args: string[]): Promise<number> {
       if (page) { data.page = page; dispatch({ type: 'data', ids: page.rows.map(r => r.id) }); }
       if (detail) { data.detail = detail; loadedDetailId = detailId; }
       lastError = null;
+      lastOkAtMs = Date.now();
     } catch (err) {
       // Strip control chars (incl. ESC) so a corrupted worker message can't
       // inject ANSI sequences into the rendered frame.
@@ -149,7 +153,12 @@ export async function topCommand(args: string[]): Promise<number> {
   const render = () => {
     const d = dims();
     dispatch({ type: 'resize', pageSize: tablePageSize(d) });
+    // Feed liveness into the frame so it can show the prominent stale-data banner.
+    data.workerUnreachable = lastError !== null;
+    data.lastOkAtMs = lastOkAtMs;
     const lines = buildFrame(state, data, d);
+    // Keep the raw error as a dim detail line below (the banner is the alarm; this
+    // is the "why" — timed out vs. connection refused).
     if (lastError) lines.push('  \x1b[2m(worker: ' + lastError + ')\x1b[0m');
     let buf = HOME;
     for (const line of lines) buf += line + CLEAR_EOL + '\r\n';

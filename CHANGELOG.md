@@ -5,6 +5,41 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.2.15] — 2026-06-01
+
+### Fixed
+- **Zombie-worker recovery — a worker whose HTTP server died (but the process is still
+  alive) is now recovered automatically.** A worker can become a *zombie*: the process
+  is up but `Bun.serve` no longer answers `/health`. On Windows this defeated every
+  recovery path — a bare `Start-ScheduledTask` is a no-op under
+  `MultipleInstancesPolicy=IgnoreNew` while the zombie holds the task "Running", and the
+  5-minute watchdog trigger is blocked for the same reason. In the field this left the
+  worker unreachable for ~2.7 h until a manual kill. The `SessionStart`/`UserPromptSubmit`
+  self-heal now *reclaims* before starting: `stop` gained a `force` option that hard-kills
+  whatever `bun` process still holds the worker port (best-effort, never fatal — a reclaim
+  failure can't block the restart), so the next start binds a fresh worker. systemd is
+  unaffected (`systemctl stop` already kills; `force` is a documented no-op there).
+
+### Added
+- **Autonomous watchdog task (`captain-memo-watchdog`, Windows).** A *separate* per-user
+  Scheduled Task runs `captain-memo worker-watchdog` every 5 minutes: it probes `/health`
+  and, if the worker is unreachable, reclaims the port and restarts it — recovering a
+  zombie even with no Claude session open. It must be its own task because `IgnoreNew`
+  blocks the worker task's own relaunch while the zombie holds it "Running". Registered by
+  `install`, removed by `uninstall`.
+- **`top` / `watch` stale-data banner.** When the worker stops answering, the live
+  dashboard now shows a prominent "WORKER UNREACHABLE — data is STALE" banner (with the
+  last-good timestamp) instead of rendering the last snapshot behind a ticking clock as if
+  it were live.
+
+### Tests
+- New unit tests: `restartWorker` (reclaim-then-start ordering; `force` always set), the
+  pure `runWorkerWatchdog` policy (healthy no-op / unreachable→reclaim / lock-held→skip /
+  reclaim-failure / still-down), the `buildReclaimPortCommand` PowerShell builder (exact
+  `bun` guard, no `$pid` self-kill footgun, bounded loop, invalid-port rejection), and the
+  `top` unreachable banner. Validated end-to-end against a live zombie on real Windows
+  Task Scheduler.
+
 ## [0.2.14] — 2026-05-31
 
 ### Added

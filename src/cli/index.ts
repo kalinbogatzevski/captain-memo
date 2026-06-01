@@ -15,6 +15,7 @@ import { dreamCommand } from './commands/dream.ts';
 import { dedupCommand } from './commands/dedup.ts';
 import { watchCommand } from './commands/watch.ts';
 import { topCommand } from './commands/top.ts';
+import { workerWatchdogCommand } from './commands/worker-watchdog.ts';
 import { printBanner } from './banner.ts';
 import { VERSION } from '../shared/version.ts';
 
@@ -107,6 +108,11 @@ export async function main(args: string[]): Promise<void> {
       break;
     case 'watch':
       exit = await watchCommand(args.slice(1));
+      break;
+    case 'worker-watchdog':
+      // Internal: the captain-memo-watchdog Scheduled Task action. Probes /health
+      // and reclaims a dead/zombie worker. Not advertised in HELP (not for humans).
+      exit = await workerWatchdogCommand(args.slice(1));
       break;
     case 'help':
     case '--help':

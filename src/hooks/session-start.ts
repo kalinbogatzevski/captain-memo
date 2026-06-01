@@ -2,6 +2,7 @@ import { readStdinJson, writeStdout, workerFetch, logHookError, workerFailureMes
 import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS, DEFAULT_WORKER_PORT } from '../shared/paths.ts';
 import { VERSION } from '../shared/version.ts';
 import { ensureWorkerHealthy } from '../shared/worker-health.ts';
+import { restartWorker } from '../shared/worker-control.ts';
 import { acquireHealLock, releaseHealLock } from '../shared/worker-heal-lock.ts';
 
 interface SessionStartPayload {
@@ -120,9 +121,12 @@ export async function main(): Promise<void> {
 
   let stats = await probeStats();
 
-  // Self-heal: start a dead worker / restart a stale one (running code older than
-  // the installed VERSION), then re-probe. Routed through the OS service manager
-  // (it owns the process — nothing is orphaned when this short-lived hook exits).
+  // Self-heal: recover a dead OR ZOMBIE worker (process alive, HTTP server dead),
+  // or restart a stale one (running code older than the installed VERSION), then
+  // re-probe. Recovery force-reclaims (hard-kills the port owner) before starting,
+  // because a bare start no-ops against a zombie on Windows (IgnoreNew). Routed
+  // through the OS service manager (it owns the process — nothing is orphaned when
+  // this short-lived hook exits).
   // We block here, because SessionStart fires once per session and a live worker
   // on entry is worth the wait. Fully fail-open: any error → degraded banner
   // below, never a thrown hook. Opt out with CAPTAIN_MEMO_DISABLE_SELF_HEAL=1.
@@ -140,8 +144,14 @@ export async function main(): Promise<void> {
         probeVersion: async () => (running ? (stats.body!.version ?? null) : null),
         acquireLock: () => acquireHealLock(),
         releaseLock: () => releaseHealLock(),
-        start: () => sm.start(WORKER),
-        restart: async () => { await sm.stop(WORKER, { graceful: true, port }); await sm.start(WORKER); },
+        // Unreachable can mean DEAD (no process) OR a ZOMBIE (process alive, HTTP
+        // dead). A bare start() no-ops on a zombie (Windows IgnoreNew while the
+        // corpse holds the task "Running"), so reclaim-then-start: force-kill
+        // whatever holds the port first. No graceful — a broken worker won't
+        // answer /shutdown anyway.
+        start: () => restartWorker(sm, WORKER, { port }),
+        // Stale (alive + serving, wrong version): graceful drain, then replace.
+        restart: () => restartWorker(sm, WORKER, { port, graceful: true }),
         waitHealthy: async () => {
           const deadline = Date.now() + 8000;
           while (Date.now() < deadline) {

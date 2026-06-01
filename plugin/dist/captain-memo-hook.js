@@ -1,13 +1,17 @@
 #!/usr/bin/env bun
 // @bun
 var __defProp = Object.defineProperty;
+var __returnValue = (v) => v;
+function __exportSetter(name, newValue) {
+  this[name] = __returnValue.bind(null, newValue);
+}
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, {
       get: all[name],
       enumerable: true,
       configurable: true,
-      set: (newValue) => all[name] = () => newValue
+      set: __exportSetter.bind(all, name)
     });
 };
 var __esm = (fn, res) => () => (fn && (res = fn(fn = 0)), res);
@@ -302,6 +306,26 @@ async function runSchtasks(args) {
   const exitCode = await proc.exited;
   return { exitCode, stdout, stderr };
 }
+function buildReclaimPortCommand(port, timeoutMs = 5000) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`buildReclaimPortCommand: invalid port ${port} (expected integer 1-65535)`);
+  }
+  const deadlineMs = Math.max(0, Math.floor(timeoutMs));
+  return [
+    `$ErrorActionPreference='SilentlyContinue'`,
+    `$deadline=(Get-Date).AddMilliseconds(${deadlineMs})`,
+    `do {`,
+    `  $owners=@(Get-NetTCPConnection -LocalPort ${port} -State Listen | Select-Object -ExpandProperty OwningProcess -Unique)`,
+    `  if ($owners.Count -eq 0) { break }`,
+    `  foreach ($ownerPid in $owners) {`,
+    `    $proc=Get-Process -Id $ownerPid -ErrorAction SilentlyContinue`,
+    `    if ($proc -and $proc.ProcessName -eq 'bun') { Stop-Process -Id $ownerPid -Force }`,
+    `  }`,
+    `  Start-Sleep -Milliseconds 200`,
+    `} while ((Get-Date) -lt $deadline)`
+  ].join(`
+`);
+}
 function toTaskXmlBuffer(xml) {
   return Buffer.from("\uFEFF" + xml, "utf16le");
 }
@@ -346,6 +370,12 @@ class WindowsScheduledTaskServiceManager {
     if (r.exitCode !== 0) {
       throw new Error(`Stop-ScheduledTask ${name} failed (exit ${r.exitCode}): ${r.stderr.trim() || "no stderr"}`);
     }
+    if (opts?.force) {
+      const port = opts.port ?? DEFAULT_WORKER_PORT;
+      try {
+        await runPowerShell(buildReclaimPortCommand(port));
+      } catch {}
+    }
   }
   async status(name) {
     const q = psSingleQuote(name);
@@ -389,6 +419,16 @@ var init_service_manager = __esm(() => {
   init_systemd();
   init_windows_scheduled_task();
 });
+
+// src/shared/worker-control.ts
+var exports_worker_control = {};
+__export(exports_worker_control, {
+  restartWorker: () => restartWorker
+});
+async function restartWorker(sm, name, opts) {
+  await sm.stop(name, { graceful: opts.graceful ?? false, port: opts.port, force: true });
+  await sm.start(name);
+}
 
 // src/hooks/shared.ts
 init_paths();
@@ -527,7 +567,9 @@ async function main() {
       if (acquireHealLock2()) {
         try {
           const { getServiceManager: getServiceManager2 } = await Promise.resolve().then(() => (init_service_manager(), exports_service_manager));
-          await getServiceManager2().start("captain-memo-worker");
+          const { restartWorker: restartWorker2 } = await Promise.resolve().then(() => exports_worker_control);
+          const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
+          await restartWorker2(getServiceManager2(), "captain-memo-worker", { port });
         } finally {
           releaseHealLock2();
         }
@@ -551,7 +593,7 @@ init_paths();
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.2.14",
+  version: "0.2.15",
   description: "Local memory layer for Claude Code \u2014 Voyage-embedded, hybrid search, federated remotes",
   type: "module",
   private: true,
@@ -739,11 +781,8 @@ async function main2() {
         probeVersion: async () => running ? stats.body.version ?? null : null,
         acquireLock: () => acquireHealLock(),
         releaseLock: () => releaseHealLock(),
-        start: () => sm.start(WORKER),
-        restart: async () => {
-          await sm.stop(WORKER, { graceful: true, port });
-          await sm.start(WORKER);
-        },
+        start: () => restartWorker(sm, WORKER, { port }),
+        restart: () => restartWorker(sm, WORKER, { port, graceful: true }),
         waitHealthy: async () => {
           const deadline = Date.now() + 8000;
           while (Date.now() < deadline) {
