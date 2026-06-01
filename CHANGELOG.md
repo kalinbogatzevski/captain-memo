@@ -34,6 +34,12 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
   green on a Windows checkout where `core.symlinks=false` materializes the symlink as
   plain text.
 
+### Notes
+- **Local Dreaming** accumulates co-retrieval data only while the recall audit is on.
+  It is opt-in and default-off: set `CAPTAIN_MEMO_RECALL_AUDIT=1` in `worker.env` and
+  restart the worker. Privacy trade-off — audit lines contain prompt text and stay
+  strictly local (`<data-dir>/recall-audit.jsonl`, never transmitted).
+
 ## [0.2.13] — 2026-05-31
 
 ### Changed
