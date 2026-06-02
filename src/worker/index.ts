@@ -184,6 +184,8 @@ const SHORT_PROMPT_THRESHOLD = 10;
 const NO_OP_TOKENS = new Set(['ok', 'continue', 'yes', 'go', 'next', 'sure']);
 
 export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
+  // Worker boot time — surfaced via /stats so the dashboard can show liveness + uptime.
+  const workerStartedAtEpoch = Math.floor(Date.now() / 1000);
   const meta = new MetaStore(opts.metaDbPath);
 
   // Boot-time hint when the corpus still carries pre-v0.1.8 observation
@@ -886,6 +888,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           recall,
           dream,
           version: VERSION,
+          worker: {
+            started_at_epoch: workerStartedAtEpoch,
+            uptime_s: Math.floor(Date.now() / 1000) - workerStartedAtEpoch,
+          },
         });
       }
       if (req.method === 'GET' && url.pathname === '/observations/recent') {

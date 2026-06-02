@@ -283,7 +283,8 @@ async function runPowerShell(command) {
     try {
       const proc = Bun.spawn([shell, ...PS_PREFIX_ARGS, command], {
         stdout: "pipe",
-        stderr: "pipe"
+        stderr: "pipe",
+        windowsHide: true
       });
       const [stdout, stderr] = await Promise.all([
         new Response(proc.stdout).text(),
@@ -298,7 +299,7 @@ async function runPowerShell(command) {
   throw new Error("neither pwsh nor powershell is available on PATH");
 }
 async function runSchtasks(args) {
-  const proc = Bun.spawn(["schtasks", ...args], { stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn(["schtasks", ...args], { stdout: "pipe", stderr: "pipe", windowsHide: true });
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text()
@@ -593,7 +594,7 @@ init_paths();
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.2.16",
+  version: "0.2.17",
   description: "Local memory layer for Claude Code \u2014 Voyage-embedded, hybrid search, federated remotes",
   type: "module",
   private: true,

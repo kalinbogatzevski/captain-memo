@@ -22,6 +22,9 @@ export interface StatsResponse {
   };
   project_id: string;
   version?: string;
+  /** Worker liveness: boot epoch + seconds since boot. Optional — older worker
+   *  payloads omit it (the line is simply not shown then). */
+  worker?: { started_at_epoch: number; uptime_s: number };
   embedder: { model: string; endpoint: string };
   disk?: { bytes: number; path: string };
   efficiency?: EfficiencyReport | undefined;
@@ -370,11 +373,18 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
 /** The four-row metadata block at the top of the panel. Caller decides
  *  whether to pair them side-by-side via twoColumn. */
 function renderStatusBlock(stats: StatsResponse): string[] {
-  const lines = [
+  const lines: string[] = [];
+  // Liveness line. renderStats only runs when /stats actually answered, so the
+  // worker IS online here (when it's down, the caller shows the unreachable
+  // banner instead). Surfaces uptime so a silently-restarting worker is visible.
+  if (stats.worker) {
+    lines.push(`  ${dim('Worker'.padEnd(10))} ${green('●')} online ${dim('·')} up ${cyanBold(fmtUptime(stats.worker.uptime_s))}`);
+  }
+  lines.push(
     `  ${dim('Project'.padEnd(10))} ${stats.project_id}`,
     `  ${dim('Indexing'.padEnd(10))} ${statusDot(stats.indexing.status)} ${indexingText(stats.indexing)}`,
     `  ${dim('Embedder'.padEnd(10))} ${stats.embedder.model} ${dim('·')} ${dim(stats.embedder.endpoint)}`,
-  ];
+  );
   if (stats.disk) {
     lines.push(`  ${dim('Disk'.padEnd(10))} ${cyanBold(fmtBytes(stats.disk.bytes))}`);
   }
@@ -386,6 +396,19 @@ function fmtAgo(seconds: number): string {
   if (seconds < 3600) return `${Math.floor(seconds / 60)} min`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)} h`;
   return `${Math.floor(seconds / 86400)} d`;
+}
+
+// Compact two-unit uptime: 45s · 12m · 2h 13m · 3d 4h. Minutes matter early on
+// (a worker that just restarted reads "2m", not "0 h"), so keep the finer unit.
+export function fmtUptime(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m`;
+  return `${s}s`;
 }
 
 /** The provenance triad applied to a surfacing source. auto=gold, search=cyan,

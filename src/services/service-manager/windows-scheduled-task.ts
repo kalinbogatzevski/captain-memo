@@ -209,6 +209,9 @@ async function runPowerShell(command: string): Promise<{ exitCode: number; stdou
       const proc = Bun.spawn([shell, ...PS_PREFIX_ARGS, command], {
         stdout: 'pipe',
         stderr: 'pipe',
+        // Never flash a console window for these background status/management calls
+        // (status/start/stop/reclaim run from the worker, the watchdog, and hooks).
+        windowsHide: true,
       });
       const [stdout, stderr] = await Promise.all([
         new Response(proc.stdout).text(),
@@ -231,7 +234,7 @@ async function runPowerShell(command: string): Promise<{ exitCode: number; stdou
 // field). argv is an ARRAY (never string concat) so the temp-file path with
 // spaces survives. /F overwrites an existing task (idempotent reinstall).
 async function runSchtasks(args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  const proc = Bun.spawn(['schtasks', ...args], { stdout: 'pipe', stderr: 'pipe' });
+  const proc = Bun.spawn(['schtasks', ...args], { stdout: 'pipe', stderr: 'pipe', windowsHide: true });
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),

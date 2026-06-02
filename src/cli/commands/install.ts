@@ -997,32 +997,22 @@ async function installWindows(args: string[], opts: InstallOptions): Promise<num
   await getServiceManager().start('captain-memo-worker');
   ok('worker task registered + started (captain-memo-worker)');
 
-  // ----- watchdog Scheduled Task (autonomous zombie recovery) -----
-  // A SEPARATE short-lived task: its 5-min TimeTrigger runs `worker-watchdog`,
-  // which probes /health and — if the worker is unreachable (dead OR a ZOMBIE:
-  // process alive, HTTP server wedged) — hard-kills the port owner and restarts
-  // it. It MUST be its own task: the worker task is IgnoreNew, so while a zombie
-  // holds IT "Running" the worker task's own relaunch trigger can't fire. This
-  // task has independent instance state, so it always runs. restartOnFailure is
-  // off — a failed probe simply re-runs on the next tick.
+  // ----- drop the legacy standalone watchdog task (removed in 0.2.17) -----
+  // The separate captain-memo-watchdog task ran `worker-watchdog` every 5 min, but
+  // the Task Scheduler launches bun with an InteractiveToken, so it flashed a
+  // console window each tick — and there's no clean no-admin way to hide a task's
+  // window (S4U needs elevation; conhost --headless breaks the task lifecycle). The
+  // SessionStart/UserPromptSubmit self-heal already reclaims a dead/zombie worker at
+  // session boundaries, so the standalone task isn't worth the recurring flash.
+  // Remove it if an earlier install registered it. (`worker-watchdog` survives as a
+  // manual command for an explicit probe+reclaim.) Best-effort: a cleanup failure
+  // must not abort an otherwise-good install.
   try {
-    await getServiceManager().install({
-      name: 'captain-memo-watchdog',
-      description: 'Captain Memo worker watchdog (probe + reclaim a dead/zombie worker)',
-      exec: [bunPath, 'src/cli/index.ts', 'worker-watchdog'],
-      workingDir: INSTALL_DIR,
-      envFile: WORKER_ENV_PATH,
-      autostart: true,
-      restartOnFailure: false,
-      watchdogIntervalSec: 300,
-      logDir: LOGS_DIR,
-    });
-    ok('watchdog task registered (captain-memo-watchdog · probes every 5 min)');
-  } catch (e) {
-    // Non-fatal: the worker + hook self-heal still work without the autonomous
-    // watchdog; surface it but don't abort an otherwise-good install.
-    warn(`could not register watchdog task: ${e instanceof Error ? e.message : String(e)}`);
-  }
+    if ((await getServiceManager().status('captain-memo-watchdog')) !== 'not-installed') {
+      await getServiceManager().remove('captain-memo-watchdog');
+      ok('removed the legacy watchdog task (session self-heal covers recovery)');
+    }
+  } catch { /* best-effort — leave a stray task rather than fail the install */ }
 
   // ----- CLI shim -----
   header('Linking CLI shim');

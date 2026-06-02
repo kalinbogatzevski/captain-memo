@@ -1,12 +1,13 @@
-// captain-memo worker-watchdog — the action the captain-memo-watchdog Scheduled
-// Task runs every 5 min. Probes the worker's /health and, if it is unreachable
-// (DEAD or ZOMBIE — process alive but HTTP server wedged), force-reclaims the port
-// owner and restarts the worker. This is the only recovery path that survives a
-// zombie while no Claude session is open (see src/shared/worker-watchdog.ts).
+// captain-memo worker-watchdog — probe the worker's /health and, if it is
+// unreachable (DEAD or ZOMBIE — process alive but HTTP server wedged), force-reclaim
+// the port owner and restart the worker (see src/shared/worker-watchdog.ts).
 //
-// Internal command (not advertised in the main help) — it exists to be a task
-// action, not something users run by hand. Always exits 0: a watchdog that throws
-// would just log a Task Scheduler "last result" error and retry next tick anyway.
+// As of 0.2.17 this is a MANUAL command, not an autostarted task. The standalone
+// captain-memo-watchdog Scheduled Task was removed because the Task Scheduler
+// launches bun with an interactive token and flashed a console window every 5 min,
+// with no clean no-admin way to hide it. Autonomous recovery now rides on the
+// SessionStart/UserPromptSubmit self-heal (reclaim-then-start at session
+// boundaries); run this by hand for an explicit kick. Always exits 0; not in help.
 
 import { appendFileSync, mkdirSync } from 'fs';
 import { join } from 'path';

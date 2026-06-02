@@ -5,6 +5,29 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.2.17] — 2026-06-02
+
+### Changed
+- **Dropped the standalone `captain-memo-watchdog` Scheduled Task.** It probed the
+  worker every 5 minutes, but the Task Scheduler launches `bun` with an interactive
+  token, so it flashed a console window each tick — and there's no clean no-admin way
+  to hide a task's window (S4U needs elevation; `conhost --headless` breaks the task
+  lifecycle the reclaim relies on). Autonomous recovery of a dead/zombie worker now
+  rides on the `SessionStart` / `UserPromptSubmit` self-heal (reclaim-then-start at
+  session boundaries). `install` removes the task if an earlier version registered it;
+  `worker-watchdog` survives as a manual command for an explicit probe + reclaim.
+
+### Added
+- **Worker liveness on the stats page.** `/stats` now reports the worker's boot epoch
+  and uptime, and `captain-memo top` / `captain-memo stats` show a
+  `Worker  ● online · up 2h 13m` line — so a silently-restarting worker is visible at
+  a glance (offline still shows the prominent "WORKER UNREACHABLE — STALE" banner).
+
+### Fixed
+- **No console-window flash from background service-management calls.** The
+  `Bun.spawn` invocations of PowerShell / `schtasks` (status / start / stop / reclaim,
+  run by the worker, the hooks, and `install`) now pass `windowsHide: true`.
+
 ## [0.2.16] — 2026-06-02
 
 ### Fixed
