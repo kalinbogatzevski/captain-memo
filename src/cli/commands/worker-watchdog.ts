@@ -19,7 +19,7 @@ import { getServiceManager } from '../../services/service-manager/index.ts';
 const WORKER = 'captain-memo-worker';
 
 /** True iff the worker answers GET /health with {"healthy":true} within timeoutMs. */
-async function probeHealthy(port: number, timeoutMs = 3000): Promise<boolean> {
+async function probeHealthOnce(port: number, timeoutMs = 3000): Promise<boolean> {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeoutMs);
   try {
@@ -32,6 +32,28 @@ async function probeHealthy(port: number, timeoutMs = 3000): Promise<boolean> {
   } finally {
     clearTimeout(t);
   }
+}
+
+// A SINGLE missed /health probe must NOT trigger the destructive reclaim: a
+// healthy-but-BUSY worker (mid embed/summarize, or a one-off blip) can miss one
+// probe, whereas a true ZOMBIE stays unreachable across all of them. Confirm with
+// spaced retries and treat the worker as healthy if ANY attempt succeeds — so a
+// busy worker is left alone and only a PERSISTENT outage is reclaimed. Exported +
+// `sleep`-injectable so the retry logic is unit-testable without real waits.
+// (Field 2026-06-02: the watchdog was killing a busy worker every ~5 min — and
+// re-indexing it, popping a console window — on a single missed probe while the
+// summarizer was hammering an overloaded API.)
+export async function probeHealthyWithRetries(
+  probeOnce: () => Promise<boolean>,
+  attempts = 3,
+  gapMs = 2000,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<boolean> {
+  for (let i = 0; i < attempts; i++) {
+    if (await probeOnce()) return true;
+    if (i < attempts - 1) await sleep(gapMs);
+  }
+  return false;
 }
 
 // Log only the INTERESTING outcomes (a recovery attempt or a failure). The
@@ -50,7 +72,9 @@ export async function workerWatchdogCommand(_args: string[]): Promise<number> {
   const sm = getServiceManager();
   try {
     const outcome = await runWorkerWatchdog({
-      probeHealthy: () => probeHealthy(port),
+      // Confirm a real outage (3 spaced probes) before the destructive reclaim, so
+      // a momentarily-busy worker is never killed — only a persistent zombie is.
+      probeHealthy: () => probeHealthyWithRetries(() => probeHealthOnce(port)),
       acquireLock: () => acquireHealLock(),
       releaseLock: () => releaseHealLock(),
       // No graceful: a worker that failed /health won't answer /shutdown either.
@@ -58,7 +82,7 @@ export async function workerWatchdogCommand(_args: string[]): Promise<number> {
       waitHealthy: async () => {
         const deadline = Date.now() + 8000;
         while (Date.now() < deadline) {
-          if (await probeHealthy(port, 1500)) return true;
+          if (await probeHealthOnce(port, 1500)) return true;
           await new Promise((res) => setTimeout(res, 500));
         }
         return false;
