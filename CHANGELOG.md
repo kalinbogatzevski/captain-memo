@@ -5,6 +5,19 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.2.16] — 2026-06-02
+
+### Fixed
+- **The watchdog no longer kills a *busy* worker.** `captain-memo-watchdog`
+  reclaimed (hard-killed + restarted) the worker on a **single** missed `/health`
+  probe. A healthy-but-busy worker — e.g. while the summarizer retried an overloaded
+  API (HTTP 529) — could miss one 3-second probe and get killed and re-indexed every
+  ~5 minutes, dropping in-flight work (and, on Windows, popping a console window each
+  time). The watchdog now **confirms a real outage with spaced retries** (probes up
+  to 3× / 2 s apart) and treats the worker as healthy if *any* attempt succeeds, so
+  only a *persistent* outage — a true zombie — is reclaimed. Unit-tested
+  (`probeHealthyWithRetries`: first-ok / recover-midway / all-fail / recover-on-last).
+
 ## [0.2.15] — 2026-06-01
 
 ### Fixed

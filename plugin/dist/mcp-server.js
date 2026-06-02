@@ -12704,7 +12704,7 @@ function loadWorkerEnv() {
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.2.15",
+  version: "0.2.16",
   description: "Local memory layer for Claude Code \u2014 Voyage-embedded, hybrid search, federated remotes",
   type: "module",
   private: true,
@@ -12748,7 +12748,7 @@ var package_default = {
     "worker:dev": "CAPTAIN_MEMO_DATA_DIR=./.captain-memo.dev bun --watch src/worker/index.ts",
     "mcp:start": "bun src/mcp-server.ts",
     cli: "bun bin/captain-memo",
-    hook: "bun bin/captain-memo-hook",
+    hook: "bun bin/captain-memo-hook.ts",
     "build:plugin": "bun build src/mcp-server.ts --target bun --outfile plugin/dist/mcp-server.js && bun build bin/captain-memo-hook.ts --target bun --outfile plugin/dist/captain-memo-hook.js"
   },
   dependencies: {
