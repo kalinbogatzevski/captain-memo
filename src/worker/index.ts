@@ -697,12 +697,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           pendingEmbed.markEmbedded([badRow.id]);
           const remainingIds = liveRows.filter((_, i) => i !== err.inputIndex).map(r => r.id);
           if (remainingIds.length > 0) {
-            pendingEmbed.markRetried(remainingIds, PENDING_RETRY_TICK_MS);
+            pendingEmbed.markRetried(remainingIds);
           }
           return { retried: due.length, embedded: 0 };
         }
       }
-      pendingEmbed.markRetried(liveRows.map(r => r.id), PENDING_RETRY_TICK_MS);
+      pendingEmbed.markRetried(liveRows.map(r => r.id));
       return { retried: due.length, embedded: 0 };
     }
   }

@@ -28,7 +28,7 @@ test('PendingEmbedQueue — enqueue + listDue returns due rows', () => {
 test('PendingEmbedQueue — markRetried bumps next_retry_at into the future', () => {
   q.enqueue({ chunk_id: 'c1', source_path: '/p', sha: 's', channel: 'memory' });
   const due = q.listDue(10);
-  q.markRetried(due.map(r => r.id), 60_000); // 60s
+  q.markRetried(due.map(r => r.id)); // per-row exponential backoff → next_retry in the future
   // No rows due now
   expect(q.listDue(10)).toHaveLength(0);
 });

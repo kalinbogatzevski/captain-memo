@@ -5,6 +5,20 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.2.19] — 2026-06-02
+
+### Added
+- **The embed-retry queue now backs off exponentially too.** Failed embeds (Voyage
+  overloaded/down — timeouts, truncated responses) used to retry on a fixed 60 s tick;
+  a chunk that keeps failing now waits progressively longer **per row** (~15-30 s on the
+  first failure, then exponential with full jitter, capped at 10 min), so a Voyage outage
+  stops being hammered while a transient blip still recovers fast. Mirrors the summarizer
+  backoff from 0.2.18 (reuses `computeBackoffMs`; new `embedRetryDelayMs` helper, unit-tested).
+
+### Fixed
+- `/captain-memo:stats` now surfaces the `Worker  ● online · up …` liveness line (the CLI
+  `captain-memo stats` / `top` already did since 0.2.17).
+
 ## [0.2.18] — 2026-06-02
 
 ### Added

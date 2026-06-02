@@ -1,5 +1,16 @@
 import { Database } from 'bun:sqlite';
 import type { ChannelType } from '../shared/types.ts';
+import { computeBackoffMs } from './summarizer-backoff.ts';
+
+// Per-row exponential backoff for failed embeds. The embedder (Voyage) can be
+// flaky/down (timeouts, truncated bodies); retrying every fixed 60s hammered it
+// during an outage. A chunk that keeps failing now waits progressively longer
+// (~15-30s first, then exponential, capped at 10 min) instead. Exported + jitter-
+// injectable so the schedule is unit-testable. `retries` is the row's PRIOR retry
+// count (0 on the first failure).
+export function embedRetryDelayMs(retries: number, jitter?: () => number): number {
+  return computeBackoffMs(retries + 1, 0, { baseMs: 30_000, capMs: 600_000, ...(jitter && { jitter }) });
+}
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS pending_embed (
@@ -72,17 +83,26 @@ export class PendingEmbedQueue {
       .all(now, limit) as PendingEmbedRow[];
   }
 
-  markRetried(ids: number[], delayMs: number): void {
+  markRetried(ids: number[]): void {
     if (ids.length === 0) return;
-    const placeholders = ids.map(() => '?').join(',');
-    const next = Math.floor(Date.now() / 1000) + Math.ceil(delayMs / 1000);
-    this.db
-      .query(
-        `UPDATE pending_embed
-         SET retries = retries + 1, next_retry_at_epoch = ?
-         WHERE id IN (${placeholders})`
-      )
-      .run(next, ...ids);
+    // Per-row exponential backoff keyed off each row's own retry count, so a chunk
+    // that keeps failing (Voyage overloaded/down) backs off instead of retrying on a
+    // fixed tick. A transient blip still recovers fast (first retry ~15-30s).
+    const nowSec = Math.floor(Date.now() / 1000);
+    const tx = this.db.transaction(() => {
+      for (const id of ids) {
+        const row = this.db
+          .query('SELECT retries FROM pending_embed WHERE id = ?')
+          .get(id) as { retries: number } | undefined;
+        if (!row) continue;
+        const nextRetries = row.retries + 1;
+        const next = nowSec + Math.ceil(embedRetryDelayMs(row.retries) / 1000);
+        this.db
+          .query('UPDATE pending_embed SET retries = ?, next_retry_at_epoch = ? WHERE id = ?')
+          .run(nextRetries, next, id);
+      }
+    });
+    tx();
   }
 
   markEmbedded(ids: number[]): void {
