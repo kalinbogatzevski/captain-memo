@@ -49,6 +49,7 @@ import {
 import { writeRecallAuditLine } from './recall-audit.ts';
 import { getDreamStats } from './dream-stats.ts';
 import { Summarizer } from './summarizer.ts';
+import { classifySummarizeFailure, computeBackoffMs } from './summarizer-backoff.ts';
 import { createWorkerMetrics, recordEmbed, recordIndexResult } from './metrics.ts';
 import { computeEfficiency } from './efficiency.ts';
 import { countTokens } from '../shared/tokens.ts';
@@ -431,6 +432,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   const tickMs = opts.observationTickMs ?? 5000;
   const batchSize = opts.observationBatchSize ?? 20;
 
+  // Summarizer backoff: when the Anthropic API is overloaded/down (HTTP 529/5xx/
+  // 429/network), stop hammering it. `summarizerCooldownUntil` gates processBatch so
+  // no batch is attempted during the cooldown; `overloadStreak` drives exponential
+  // backoff and resets on the next clean summarize. Observations are durable — they
+  // wait in the queue and are NOT dead-lettered while the API is down.
+  let summarizerCooldownUntil = 0;
+  let overloadStreak = 0;
+
   function dedupeFlat(lists: string[][]): string[] {
     return [...new Set(lists.flat())];
   }
@@ -508,6 +517,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 
   async function processBatch(limit: number): Promise<{ processed: number; observations_created: number }> {
     if (!obsQueue || !obsStore || !summarize) return { processed: 0, observations_created: 0 };
+    // Summarizer cooldown: the API was overloaded/unreachable recently — skip this
+    // pass entirely (no takeBatch, no API call) until the backoff elapses. The tick
+    // keeps firing but this early-return makes each one a cheap no-op.
+    if (Date.now() < summarizerCooldownUntil) return { processed: 0, observations_created: 0 };
     const batch = obsQueue.takeBatch(limit);
     if (batch.length === 0) return { processed: 0, observations_created: 0 };
 
@@ -524,8 +537,11 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     const doneIds: number[] = [];
     const failedIds: number[] = [];
     const permanentIds: number[] = [];
+    const overloadedIds: number[] = [];
     let retryReason = '';
     let permanentReason = '';
+    let overloadReason = '';
+    let maxRetryAfterMs = 0;
 
     for (const groupRows of groups.values()) {
       const events = groupRows.map(r => r.payload);
@@ -555,25 +571,52 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         observations_created++;
         doneIds.push(...groupRows.map(r => r.id));
       } catch (err) {
-        const msg = (err as Error).message ?? String(err);
+        const e = err as Error & { status?: number; retryAfterMs?: number };
+        const msg = e.message ?? String(err);
         console.error(`[obs-batch] summarize failed: ${msg}`);
-        // Permanent failures (auth, schema, 400) shouldn't loop. Distinguish
-        // by error shape — these will never succeed on retry, so retrying
-        // burns API quota for nothing.
-        const permanent = /401|403|invalid api key|invalid x-api-key|authentication|unauthorized|400|schema|invalid request|executable not found|enoent|command not found/i.test(msg);
-        if (permanent) {
-          permanentIds.push(...groupRows.map(r => r.id));
+        const ids = groupRows.map(r => r.id);
+        // permanent  → never succeeds on retry (auth/bad-request/model) → dead-letter.
+        // overloaded → transient API outage (5xx/429/network) → requeue (no retry
+        //              increment) + back off so we stop hammering a down API.
+        // retryable  → per-item (e.g. bad model output failing our schema) → bounded
+        //              retries, then dead-letter so one bad item can't wedge the queue.
+        const kind = classifySummarizeFailure(msg, e.status);
+        if (kind === 'permanent') {
+          permanentIds.push(...ids);
           permanentReason = msg.slice(0, 200);
+        } else if (kind === 'overloaded') {
+          overloadedIds.push(...ids);
+          overloadReason = msg.slice(0, 200);
+          if (typeof e.retryAfterMs === 'number') maxRetryAfterMs = Math.max(maxRetryAfterMs, e.retryAfterMs);
         } else {
-          failedIds.push(...groupRows.map(r => r.id));
+          failedIds.push(...ids);
           retryReason = msg.slice(0, 200);
         }
       }
     }
 
     obsQueue.markDone(doneIds);
+    // Overloaded = transient outage: requeue WITHOUT a retry increment so a long
+    // outage can't dead-letter observations (the cooldown below spaces the retries).
+    if (overloadedIds.length > 0) obsQueue.requeue(overloadedIds);
     if (failedIds.length > 0) obsQueue.markFailed(failedIds, 3, retryReason);
     if (permanentIds.length > 0) obsQueue.markPermanent(permanentIds, permanentReason);
+
+    if (overloadedIds.length > 0) {
+      // The API looked overloaded/down — back off the whole obs-batch loop so we
+      // delay (not hammer) our next attempt. Escalates per consecutive cycle.
+      overloadStreak++;
+      const backoffMs = computeBackoffMs(overloadStreak, maxRetryAfterMs);
+      summarizerCooldownUntil = Date.now() + backoffMs;
+      console.error(
+        `[obs-batch] summarizer API overloaded/unreachable — backing off ${Math.round(backoffMs / 1000)}s `
+        + `(attempt ${overloadStreak}): ${overloadReason}`,
+      );
+    } else if (doneIds.length > 0) {
+      // A clean summarize means the API recovered — clear the cooldown + streak.
+      overloadStreak = 0;
+      summarizerCooldownUntil = 0;
+    }
 
     return { processed: batch.length, observations_created };
   }

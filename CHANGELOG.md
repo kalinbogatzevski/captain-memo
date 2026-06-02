@@ -5,6 +5,22 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.2.18] — 2026-06-02
+
+### Added
+- **The summarizer backs off when the Anthropic API is overloaded or down.** Bursts
+  of `HTTP 529 overloaded_error` previously made the obs-batch loop retry every 5 s,
+  hammering a struggling API — and after 3 fails it would dead-letter the
+  observations. Now an overloaded/unreachable failure (408 / 429 / 5xx / network /
+  timeout) puts the whole obs-batch loop into an **exponential-backoff cooldown**
+  (full jitter, 15 s → 10 min cap, honoring a server `Retry-After`), and the affected
+  observations are **requeued without counting a retry** — so a long outage *delays*
+  summarization instead of losing observations. A clean summarize clears the cooldown.
+  Permanent errors (auth / bad request / missing model) still dead-letter immediately;
+  genuine per-item failures (e.g. a malformed model response) still dead-letter after a
+  bounded retry. New pure, unit-tested helpers (`classifySummarizeFailure`,
+  `computeBackoffMs`).
+
 ## [0.2.17] — 2026-06-02
 
 ### Changed

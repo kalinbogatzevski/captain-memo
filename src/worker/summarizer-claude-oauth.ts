@@ -144,8 +144,19 @@ export function createClaudeOauthTransport(opts: ClaudeOauthTransportOptions = {
         const body = await res.text().catch(() => '');
         const e = new Error(
           `claude-oauth: HTTP ${res.status}: ${body.slice(0, 500)}`,
-        ) as Error & { status?: number };
+        ) as Error & { status?: number; retryAfterMs?: number };
         e.status = res.status;
+        // Honor Retry-After (delta-seconds or an HTTP-date) so the obs-batch
+        // backoff waits at least as long as an overloaded server asked.
+        const ra = res.headers.get('retry-after');
+        if (ra) {
+          const secs = Number(ra);
+          if (Number.isFinite(secs) && secs >= 0) e.retryAfterMs = secs * 1000;
+          else {
+            const when = Date.parse(ra);
+            if (Number.isFinite(when)) e.retryAfterMs = Math.max(0, when - Date.now());
+          }
+        }
         // Invalidate cache on 401 so the next call re-reads from disk
         // (in case the user just ran `claude login`).
         if (res.status === 401) cached = null;

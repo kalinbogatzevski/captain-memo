@@ -148,6 +148,20 @@ export class ObservationQueue {
       .run(errorMessage, ...ids);
   }
 
+  /**
+   * Flip rows back to 'pending' WITHOUT counting a retry — for a transient outage
+   * (summarizer API overloaded/unreachable) that must NOT dead-letter observations.
+   * The obs-batch backoff cooldown handles the spacing; markFailed's retry counter
+   * is reserved for genuine per-item failures that should eventually dead-letter.
+   */
+  requeue(ids: number[]): void {
+    if (ids.length === 0) return;
+    const placeholders = ids.map(() => '?').join(',');
+    this.db
+      .query(`UPDATE observation_queue SET status = 'pending' WHERE id IN (${placeholders})`)
+      .run(...ids);
+  }
+
   pendingCount(): number {
     return (this.db
       .query(`SELECT COUNT(*) AS n FROM observation_queue WHERE status = 'pending'`)
