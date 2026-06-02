@@ -13,13 +13,19 @@ When invoked, fetch the worker's `/stats` endpoint and present it readably.
 curl -s http://127.0.0.1:39888/stats
 ```
 
-The response includes: `total_chunks`, `by_channel`, `observations` (total/queue_pending/queue_processing), `indexing` (status/done/total/percent/elapsed_s/errors/last_error), `project_id`, `embedder` (model/endpoint), `efficiency`.
+The response includes: `total_chunks`, `by_channel`, `observations` (total/queue_pending/queue_processing), `indexing` (status/done/total/percent/elapsed_s/errors/last_error), `project_id`, `embedder` (model/endpoint), `efficiency`, and `worker` (`started_at_epoch`, `uptime_s`).
+
+A successful `/stats` response means the **backend worker is ONLINE** — lead with that
+and its uptime. Format `worker.uptime_s` compactly: `45s` / `12m` / `2h 13m` / `3d 4h`.
+If the `curl` fails / connection refused, the worker is **OFFLINE** — say so and point
+the user at `captain-memo doctor` (see "On error").
 
 ## Output format
 
 ```
 Captain Memo — corpus statistics
 ────────────────────────────────
+  Worker:         ● online · up 2h 13m
   Project:        <project_id>
   Indexing:       ready (or "indexing 47/275 (17%) ETA=3m 12s")
   Total chunks:   <total>
