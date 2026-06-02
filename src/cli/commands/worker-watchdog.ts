@@ -16,46 +16,12 @@ import { runWorkerWatchdog } from '../../shared/worker-watchdog.ts';
 import { restartWorker } from '../../shared/worker-control.ts';
 import { acquireHealLock, releaseHealLock } from '../../shared/worker-heal-lock.ts';
 import { getServiceManager } from '../../services/service-manager/index.ts';
+import { probeHealthOnce, probeHealthyWithRetries } from '../../shared/worker-health-probe.ts';
 
 const WORKER = 'captain-memo-worker';
 
-/** True iff the worker answers GET /health with {"healthy":true} within timeoutMs. */
-async function probeHealthOnce(port: number, timeoutMs = 3000): Promise<boolean> {
-  const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), timeoutMs);
-  try {
-    const r = await fetch(`http://127.0.0.1:${port}/health`, { signal: ctl.signal });
-    if (!r.ok) return false;
-    const body = (await r.json().catch(() => null)) as { healthy?: boolean } | null;
-    return body?.healthy === true;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-// A SINGLE missed /health probe must NOT trigger the destructive reclaim: a
-// healthy-but-BUSY worker (mid embed/summarize, or a one-off blip) can miss one
-// probe, whereas a true ZOMBIE stays unreachable across all of them. Confirm with
-// spaced retries and treat the worker as healthy if ANY attempt succeeds — so a
-// busy worker is left alone and only a PERSISTENT outage is reclaimed. Exported +
-// `sleep`-injectable so the retry logic is unit-testable without real waits.
-// (Field 2026-06-02: the watchdog was killing a busy worker every ~5 min — and
-// re-indexing it, popping a console window — on a single missed probe while the
-// summarizer was hammering an overloaded API.)
-export async function probeHealthyWithRetries(
-  probeOnce: () => Promise<boolean>,
-  attempts = 3,
-  gapMs = 2000,
-  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
-): Promise<boolean> {
-  for (let i = 0; i < attempts; i++) {
-    if (await probeOnce()) return true;
-    if (i < attempts - 1) await sleep(gapMs);
-  }
-  return false;
-}
+// probeHealthOnce + probeHealthyWithRetries now live in ../../shared/worker-health-probe.ts
+// (shared with the UserPromptSubmit hook's confirm-before-reclaim).
 
 // Log only the INTERESTING outcomes (a recovery attempt or a failure). The
 // healthy no-op fires every 5 minutes — logging it would flood worker.log.

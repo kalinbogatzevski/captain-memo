@@ -37,26 +37,33 @@ export async function main(): Promise<void> {
   // quiet without an extra guard.
   logWorkerFailure('UserPromptSubmit', '/inject/context', result);
 
-  // Fire-and-forget revival: if the worker was unreachable, RECLAIM-then-start via
-  // the OS supervisor. Unreachable can mean a ZOMBIE (process alive, HTTP dead), so
-  // a bare start would no-op on Windows (IgnoreNew while the corpse holds the task
-  // "Running") — restartWorker force-kills whatever still holds the port first. We
-  // await only this one-shot reclaim+start, never the /health probe; the supervisor
-  // owns the process. Latency: instant on a systemd unit; on Windows the reclaim
-  // polls the port (up to ~5s) but returns the moment the port frees, so a
-  // successful kill is sub-second and only a stuck port pays the full budget. The
-  // heal lock keeps concurrent prompts from stampeding the supervisor (and bounds
-  // the worst case to one in-flight reclaim). Never re-checks the version. Opt out
-  // with CAPTAIN_MEMO_DISABLE_SELF_HEAL=1.
+  // Fire-and-forget revival — but CONFIRM a real outage before the destructive
+  // reclaim. A failed /inject/context does NOT mean the worker is dead: that
+  // endpoint embeds the prompt to search, so a slow/flaky Voyage roundtrip makes
+  // it time out while the worker is perfectly alive (and /health answers instantly
+  // when the event loop is turning). Reclaiming on that single failure force-kills
+  // a busy worker mid-embed → it restarts → the next prompt lands during startup →
+  // reclaim again → thrash (field 2026-06-02: this cascade caused dozens of
+  // restarts off one Voyage blip). So re-probe /health a couple of times first and
+  // only reclaim if it stays unreachable — the same confirm-then-reclaim discipline
+  // the watchdog uses. Quick probes (1.5s, 2 attempts): a live worker answers the
+  // first one in ms, so the common case adds ~nothing; only a genuinely-down worker
+  // pays the full confirm. On Windows restartWorker force-kills the port owner first
+  // (IgnoreNew makes a bare start a no-op against a zombie). The heal lock keeps
+  // concurrent prompts from stampeding. Opt out with CAPTAIN_MEMO_DISABLE_SELF_HEAL=1.
   if (!result.ok && process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL !== '1') {
     try {
       const { acquireHealLock, releaseHealLock } = await import('../shared/worker-heal-lock.ts');
       if (acquireHealLock()) {
         try {
-          const { getServiceManager } = await import('../services/service-manager/index.ts');
-          const { restartWorker } = await import('../shared/worker-control.ts');
+          const { probeHealthOnce, probeHealthyWithRetries } = await import('../shared/worker-health-probe.ts');
           const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
-          await restartWorker(getServiceManager(), 'captain-memo-worker', { port });
+          const reachable = await probeHealthyWithRetries(() => probeHealthOnce(port, 1500), 2, 1000);
+          if (!reachable) {
+            const { getServiceManager } = await import('../services/service-manager/index.ts');
+            const { restartWorker } = await import('../shared/worker-control.ts');
+            await restartWorker(getServiceManager(), 'captain-memo-worker', { port });
+          }
         } finally {
           releaseHealLock();
         }

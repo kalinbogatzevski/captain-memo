@@ -4,7 +4,7 @@
 // failure across all retries does. (Field 2026-06-02: the watchdog was killing +
 // re-indexing a healthy busy worker every ~5 min, popping a console window.)
 import { test, expect } from 'bun:test';
-import { probeHealthyWithRetries } from '../../src/cli/commands/worker-watchdog.ts';
+import { probeHealthyWithRetries } from '../../src/shared/worker-health-probe.ts';
 
 // Drives probeOnce from a fixed sequence and counts calls + sleeps.
 function harness(results: boolean[]) {

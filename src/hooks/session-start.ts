@@ -153,7 +153,11 @@ export async function main(): Promise<void> {
         // Stale (alive + serving, wrong version): graceful drain, then replace.
         restart: () => restartWorker(sm, WORKER, { port, graceful: true }),
         waitHealthy: async () => {
-          const deadline = Date.now() + 8000;
+          // The wscript hidden launcher (0.2.20) pushed worker startup to ~10s (the
+          // wscript->bun hop + DB open + initial index), so an 8s budget gave up on
+          // a worker that was merely slow to boot and triggered a needless reclaim.
+          // 15s clears the real startup latency with margin. Override if needed.
+          const deadline = Date.now() + Number(process.env.CAPTAIN_MEMO_SESSION_START_WAIT_HEALTHY_MS ?? 15_000);
           while (Date.now() < deadline) {
             const r = await workerFetch<StatsResponse>('/stats', { method: 'GET', timeoutMs: 1500 });
             if (r.ok) { stats = r; return true; }

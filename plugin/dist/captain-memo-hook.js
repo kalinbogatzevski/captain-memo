@@ -76,6 +76,37 @@ var init_worker_heal_lock = __esm(() => {
   HEAL_LOCK_PATH = join3(DATA_DIR, ".worker-heal.lock");
 });
 
+// src/shared/worker-health-probe.ts
+var exports_worker_health_probe = {};
+__export(exports_worker_health_probe, {
+  probeHealthyWithRetries: () => probeHealthyWithRetries,
+  probeHealthOnce: () => probeHealthOnce
+});
+async function probeHealthOnce(port, timeoutMs = 3000) {
+  const ctl = new AbortController;
+  const t = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/health`, { signal: ctl.signal });
+    if (!r.ok)
+      return false;
+    const body = await r.json().catch(() => null);
+    return body?.healthy === true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(t);
+  }
+}
+async function probeHealthyWithRetries(probeOnce, attempts = 3, gapMs = 2000, sleep = (ms) => new Promise((r) => setTimeout(r, ms))) {
+  for (let i = 0;i < attempts; i++) {
+    if (await probeOnce())
+      return true;
+    if (i < attempts - 1)
+      await sleep(gapMs);
+  }
+  return false;
+}
+
 // src/services/service-manager/systemd.ts
 import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, rmSync, writeFileSync } from "fs";
 import { homedir as homedir3 } from "os";
@@ -567,10 +598,14 @@ async function main() {
       const { acquireHealLock: acquireHealLock2, releaseHealLock: releaseHealLock2 } = await Promise.resolve().then(() => (init_worker_heal_lock(), exports_worker_heal_lock));
       if (acquireHealLock2()) {
         try {
-          const { getServiceManager: getServiceManager2 } = await Promise.resolve().then(() => (init_service_manager(), exports_service_manager));
-          const { restartWorker: restartWorker2 } = await Promise.resolve().then(() => exports_worker_control);
+          const { probeHealthOnce: probeHealthOnce2, probeHealthyWithRetries: probeHealthyWithRetries2 } = await Promise.resolve().then(() => exports_worker_health_probe);
           const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
-          await restartWorker2(getServiceManager2(), "captain-memo-worker", { port });
+          const reachable = await probeHealthyWithRetries2(() => probeHealthOnce2(port, 1500), 2, 1000);
+          if (!reachable) {
+            const { getServiceManager: getServiceManager2 } = await Promise.resolve().then(() => (init_service_manager(), exports_service_manager));
+            const { restartWorker: restartWorker2 } = await Promise.resolve().then(() => exports_worker_control);
+            await restartWorker2(getServiceManager2(), "captain-memo-worker", { port });
+          }
         } finally {
           releaseHealLock2();
         }
@@ -594,7 +629,7 @@ init_paths();
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.2.20",
+  version: "0.2.21",
   description: "Local memory layer for Claude Code \u2014 Voyage-embedded, hybrid search, federated remotes",
   type: "module",
   private: true,
@@ -785,7 +820,7 @@ async function main2() {
         start: () => restartWorker(sm, WORKER, { port }),
         restart: () => restartWorker(sm, WORKER, { port, graceful: true }),
         waitHealthy: async () => {
-          const deadline = Date.now() + 8000;
+          const deadline = Date.now() + Number(process.env.CAPTAIN_MEMO_SESSION_START_WAIT_HEALTHY_MS ?? 15000);
           while (Date.now() < deadline) {
             const r = await workerFetch("/stats", { method: "GET", timeoutMs: 1500 });
             if (r.ok) {

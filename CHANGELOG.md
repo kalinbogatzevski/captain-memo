@@ -5,6 +5,30 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.2.21] — 2026-06-02
+
+### Fixed
+- **The self-heal no longer thrashes the worker (root cause of the restart storm).**
+  `UserPromptSubmit` reclaimed (force-killed + restarted) the worker on a **single**
+  failed `/inject/context` — but that endpoint embeds the prompt to search, so a
+  slow/flaky Voyage roundtrip makes it time out while the worker is perfectly alive.
+  One blip could kill a busy worker mid-embed → it restarts → the next prompt lands
+  during the ~10 s (VBS-launcher) startup → reclaim again → a self-sustaining cascade
+  (dozens of restarts off one Voyage blip; only **one** genuine crash all day).
+  `UserPromptSubmit` now **confirms** the outage with quick `/health` re-probes — the
+  same confirm-then-reclaim the watchdog got in 0.2.16 — and only reclaims if `/health`
+  stays unreachable. A live worker answers in ms, so the common case adds ~nothing.
+  `SessionStart`'s `waitHealthy` budget also went 8 s → 15 s (override:
+  `CAPTAIN_MEMO_SESSION_START_WAIT_HEALTHY_MS`) so the slower launcher startup isn't
+  mistaken for a dead worker. (`probeHealthOnce`/`probeHealthyWithRetries` moved to
+  `src/shared/worker-health-probe.ts`, shared by the hook and the watchdog.)
+
+### Notes
+- The rare genuine `0xC0000409` worker crash is a known Bun 1.3.14 Windows defect
+  (oven-sh/bun #30031 / #29546 / #27692 — no fixed release yet). The 0.2.18/0.2.19
+  backoffs reduce the trigger (Voyage flakiness); this fix stops one crash from
+  cascading into a restart storm. Upgrade Bun once a Windows-stability release lands.
+
 ## [0.2.20] — 2026-06-02
 
 ### Fixed
