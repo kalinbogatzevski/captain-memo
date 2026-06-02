@@ -12704,7 +12704,7 @@ function loadWorkerEnv() {
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.2.19",
+  version: "0.2.20",
   description: "Local memory layer for Claude Code \u2014 Voyage-embedded, hybrid search, federated remotes",
   type: "module",
   private: true,

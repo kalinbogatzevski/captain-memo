@@ -983,10 +983,16 @@ async function installWindows(args: string[], opts: InstallOptions): Promise<num
 
   // ----- worker Scheduled Task -----
   header('Installing worker service');
+  // Launch the (console-app) worker through wscript + a hidden VBS wrapper so the
+  // Task Scheduler doesn't pop a console window on every start. wscript has no
+  // console of its own and the wrapper WAITS on the bun child, so the task still
+  // stays "Running" for the worker's lifetime (recovery lifecycle unchanged). The
+  // reclaim kills the bun child by port; wscript then exits and the task goes Ready.
+  const hiddenLaunchVbs = join(INSTALL_DIR, 'scripts', 'hidden-launch.vbs');
   await getServiceManager().install({
     name: 'captain-memo-worker',
     description: 'Captain Memo worker',
-    exec: [bunPath, 'src/worker/index.ts'],
+    exec: ['wscript.exe', '//nologo', '//B', hiddenLaunchVbs, bunPath, 'src/worker/index.ts'],
     workingDir: INSTALL_DIR,
     envFile: WORKER_ENV_PATH,
     autostart: true,

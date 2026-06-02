@@ -5,6 +5,19 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.2.20] — 2026-06-02
+
+### Fixed
+- **The worker no longer shows a console window (Windows).** The Scheduled Task launches
+  `bun` with an interactive token, so the worker popped a console window on every start.
+  It now launches through a hidden `wscript` + `scripts/hidden-launch.vbs` wrapper — no
+  console, no admin. The wrapper WAITS on the `bun` child, so the task stays "Running" for
+  the worker's lifetime (the crash-recovery / `IgnoreNew` lifecycle and the port-based
+  reclaim are unchanged) and propagates the child's exit code. S4U needs elevation and
+  `conhost --headless` detaches (breaking the lifecycle) — both verified dead ends here;
+  the VBScript host is the only no-admin option (validated live: worker runs hidden).
+  Trade-off: a few seconds of extra startup latency (the `wscript`→`bun` hop).
+
 ## [0.2.19] — 2026-06-02
 
 ### Added
