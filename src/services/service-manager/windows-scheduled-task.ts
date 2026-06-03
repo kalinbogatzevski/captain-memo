@@ -329,6 +329,11 @@ class WindowsScheduledTaskServiceManager implements ServiceManager {
     }
   }
 
+  async restart(name: string, opts?: StopOptions): Promise<void> {
+    await this.stop(name, { ...opts, force: true });   // hard-kills the port owner / zombie
+    await this.start(name);
+  }
+
   async stop(name: string, opts?: StopOptions): Promise<void> {
     if (opts?.graceful) {
       // POST /shutdown first so the worker drains + releases SQLite locks before

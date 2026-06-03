@@ -32,6 +32,5 @@ export async function restartWorker(
   name: string,
   opts: RestartOptions,
 ): Promise<void> {
-  await sm.stop(name, { graceful: opts.graceful ?? false, port: opts.port, force: true });
-  await sm.start(name);
+  await sm.restart(name, { graceful: opts.graceful ?? false, port: opts.port, force: true });
 }

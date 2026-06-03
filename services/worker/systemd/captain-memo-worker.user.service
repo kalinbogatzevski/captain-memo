@@ -10,6 +10,7 @@ EnvironmentFile=-__ENV_FILE__
 ExecStart=__BUN__ src/worker/index.ts
 Restart=always
 RestartSec=5
+TimeoutStopSec=10
 StandardOutput=journal
 StandardError=journal
 

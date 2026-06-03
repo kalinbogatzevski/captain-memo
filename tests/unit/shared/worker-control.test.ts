@@ -15,6 +15,9 @@ function fakeSm() {
     stop: async (n: string, o?: StopOptions) => {
       calls.push(`stop:${n}:graceful=${!!o?.graceful}:force=${!!o?.force}:port=${o?.port ?? ''}`);
     },
+    restart: async (n: string, o?: StopOptions) => {
+      calls.push(`restart:${n}:graceful=${!!o?.graceful}:force=${!!o?.force}:port=${o?.port ?? ''}`);
+    },
     status: async () => 'running',
     isActive: async () => true,
     enable: async () => {},
@@ -23,12 +26,11 @@ function fakeSm() {
   return { sm, calls };
 }
 
-test('restartWorker force-stops by port, THEN starts — in that order', async () => {
+test('restartWorker delegates to sm.restart (atomic stop+start in one supervisor job)', async () => {
   const { sm, calls } = fakeSm();
   await restartWorker(sm, 'captain-memo-worker', { port: 39888 });
   expect(calls).toEqual([
-    'stop:captain-memo-worker:graceful=false:force=true:port=39888',
-    'start:captain-memo-worker',
+    'restart:captain-memo-worker:graceful=false:force=true:port=39888',
   ]);
 });
 
@@ -43,8 +45,7 @@ test('restartWorker passes graceful=true through for a healthy-but-stale worker'
   const { sm, calls } = fakeSm();
   await restartWorker(sm, 'captain-memo-worker', { port: 39888, graceful: true });
   expect(calls).toEqual([
-    'stop:captain-memo-worker:graceful=true:force=true:port=39888',
-    'start:captain-memo-worker',
+    'restart:captain-memo-worker:graceful=true:force=true:port=39888',
   ]);
 });
 

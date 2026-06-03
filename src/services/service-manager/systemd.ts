@@ -97,6 +97,18 @@ class SystemdServiceManager implements ServiceManager {
     }
   }
 
+  async restart(name: string, _opts?: StopOptions): Promise<void> {
+    // ONE systemctl job owns stop->start; if the calling hook dies (or spawnSync times out),
+    // systemd still completes BOTH phases, so the worker can never be left stopped.
+    const r = systemctl(['restart', unitName(name)]);
+    if (r.status !== 0) {
+      throw new Error(
+        `systemctl restart ${unitName(name)} failed (status ${r.status ?? '?'}): ` +
+        `${((r.stderr ?? '') as string).trim() || r.error?.message || 'no stderr'}`,
+      );
+    }
+  }
+
   async stop(name: string, opts?: StopOptions): Promise<void> {
     // StopOptions.force is intentionally a no-op here: `systemctl stop` already
     // guarantees the process is gone (SIGTERM → SIGKILL on timeout). force exists

@@ -46,6 +46,9 @@ export interface ServiceManager {
   remove(name: string): Promise<void>;
   start(name: string): Promise<void>;
   stop(name: string, opts?: StopOptions): Promise<void>;
+  /** Atomically replace the worker (stop+start as ONE supervisor job, so a caller dying
+   *  mid-way cannot strand it stopped). opts mirror StopOptions for the force/graceful path. */
+  restart(name: string, opts?: StopOptions): Promise<void>;
   status(name: string): Promise<ServiceState>;
   isActive(name: string): Promise<boolean>;
   enable(name: string): Promise<void>;
