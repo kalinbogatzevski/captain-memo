@@ -1674,6 +1674,17 @@ export async function runWorkerCli(): Promise<void> {
   mkdirSync(VECTOR_DB_DIR, { recursive: true });
   mkdirSync(dirname(META_DB_PATH), { recursive: true });
 
+  const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
+  if (process.env.CAPTAIN_MEMO_WORKER_THREADED === '1') {
+    const { startThreadedWorker } = await import('./threaded-main.ts');
+    const handle = await startThreadedWorker(port);
+    console.log(`[worker] listening on http://localhost:${handle.port} (threaded: thin HTTP main + engine thread)`);
+    const shutdown = async () => { await handle.stop(); process.exit(0); };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+    return;
+  }
+
   const opts = await buildWorkerOptionsFromEnv();
   const handle = await startWorker(opts);
   console.log(`[worker] listening on http://localhost:${handle.port}`);
