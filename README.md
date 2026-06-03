@@ -456,7 +456,7 @@ Detailed docs: [`docs/USAGE.md`](docs/USAGE.md).
 | 2 | Hooks + observation pipeline + 4-provider summarizer + 4-provider embedder | Shipped |
 | 3 — Layer A | claude-mem migration (`inspect-claude-mem`, `migrate-from-claude-mem`) | Shipped |
 | 3 — Layer B | OAuth-direct summarizer (no API key needed) · recency decay · install wizard fast-path defaults | Shipped |
-| 3 — Layers C-G | MEMORY.md transformation · federation client · optimize/purge/forget · retrieval-quality eval · doctor enhancements | Drafted in [`docs/plans/`](docs/plans/) |
+| 3 — Layers C-G | MEMORY.md transformation · optimize/purge/forget · retrieval-quality eval · doctor enhancements | Planned |
 
 172 tests pass. Typecheck clean. Bun ≥ 1.1.14, TypeScript strict.
 
@@ -466,7 +466,7 @@ Detailed docs: [`docs/USAGE.md`](docs/USAGE.md).
 
 The captain keeps the ship's log. Every voyage gets entered. When the ship sails again, the captain remembers what happened on the last one — the storms, the trade winds, the islands that turned out to have fresh water. That's what this plugin does for your AI coding sessions.
 
-The metaphor extends throughout the codebase: memory files = logbook entries, observations = voyage logs, the file watcher = lookout in the crow's nest, federation (Plan 3) = sister ships exchanging signals, claude-mem migration = transferring the old ship's log.
+The metaphor extends throughout the codebase: memory files = logbook entries, observations = voyage logs, the file watcher = lookout in the crow's nest, claude-mem migration = transferring the old ship's log.
 
 (There's a tiny in-joke in the name too. *cap**TAI**n* — the AI was always there, hiding in plain sight.)
 
@@ -482,7 +482,7 @@ Apache 2.0-licensed. Run it locally, point it at any LLM you have, and tell it n
 
 ## Contributing
 
-Issues + PRs welcome. Plan 3's 35 tasks in [`docs/plans/`](docs/plans/) are good first contributions for the migration / federation / optimization layers.
+Issues + PRs welcome.
 
 ## License
 

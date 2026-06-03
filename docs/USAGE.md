@@ -1,6 +1,6 @@
 # captain-memo Plan-1 — Manual Usage (Foundation)
 
-This is what's available after Plan 1 ships. Hooks (auto-injection) come in Plan 2; migration from claude-mem and federation come in Plan 3.
+This is what's available after Plan 1 ships. Hooks (auto-injection) come in Plan 2; migration from claude-mem comes in Plan 3.
 
 ## Prerequisites
 
@@ -79,7 +79,6 @@ CAPTAIN_MEMO_WATCH_MEMORY="/home/me/.claude/memory/*.md" bun run worker:start
 - Auto-injection on user prompts (Plan 2)
 - Session observation pipeline (Plan 2)
 - Migration from claude-mem (Plan 3)
-- Federation with remote MCPs (Plan 3)
 - Optimization / duplicate detection (Plan 3)
 - Voyage install script (Plan 3)
 
@@ -267,7 +266,6 @@ original `observation_id` / `summary_id` for traceability.
 
 ## What's NOT in Plan 2
 
-- Federation with remote MCPs (Plan 3)
 - `optimize` / `purge` / `forget` (Plan 3)
 - Retrieval-quality eval runner (Plan 3)
 - Local Voyage install script (Plan 3)

@@ -55,7 +55,7 @@ This sketch is intentionally pre-data. It will be refined once there are ≥2 we
 
 - **No multi-agent orchestration.** Anthropic's managed-agents Dreams sits in a larger lifecycle (input store → dream job → output store → human review → adopt). The local version doesn't need that ceremony; it's a single-user tool.
 - **No real-time consolidation.** Dreaming runs cold (weekly or on-demand), not in the prompt path.
-- **No cross-project federation in v1.** Per-project; cross-project clustering is a v2.
+- **No cross-project sharing in v1.** Per-project; cross-project clustering is a v2.
 
 ---
 
