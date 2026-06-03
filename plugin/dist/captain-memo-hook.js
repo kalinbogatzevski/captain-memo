@@ -1,17 +1,13 @@
 #!/usr/bin/env bun
 // @bun
 var __defProp = Object.defineProperty;
-var __returnValue = (v) => v;
-function __exportSetter(name, newValue) {
-  this[name] = __returnValue.bind(null, newValue);
-}
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, {
       get: all[name],
       enumerable: true,
       configurable: true,
-      set: __exportSetter.bind(all, name)
+      set: (newValue) => all[name] = () => newValue
     });
 };
 var __esm = (fn, res) => () => (fn && (res = fn(fn = 0)), res);
@@ -160,6 +156,12 @@ class SystemdServiceManager {
     const r = systemctl(["start", unitName(name)]);
     if (r.status !== 0) {
       throw new Error(`systemctl start ${unitName(name)} failed (status ${r.status ?? "?"}): ` + `${(r.stderr ?? "").trim() || r.error?.message || "no stderr"}`);
+    }
+  }
+  async restart(name, _opts) {
+    const r = systemctl(["restart", unitName(name)]);
+    if (r.status !== 0) {
+      throw new Error(`systemctl restart ${unitName(name)} failed (status ${r.status ?? "?"}): ` + `${(r.stderr ?? "").trim() || r.error?.message || "no stderr"}`);
     }
   }
   async stop(name, opts) {
@@ -387,6 +389,10 @@ class WindowsScheduledTaskServiceManager {
       throw new Error(`Start-ScheduledTask ${name} failed (exit ${r.exitCode}): ${r.stderr.trim() || "no stderr"}`);
     }
   }
+  async restart(name, opts) {
+    await this.stop(name, { ...opts, force: true });
+    await this.start(name);
+  }
   async stop(name, opts) {
     if (opts?.graceful) {
       const port = opts.port ?? DEFAULT_WORKER_PORT;
@@ -458,8 +464,7 @@ __export(exports_worker_control, {
   restartWorker: () => restartWorker
 });
 async function restartWorker(sm, name, opts) {
-  await sm.stop(name, { graceful: opts.graceful ?? false, port: opts.port, force: true });
-  await sm.start(name);
+  await sm.restart(name, { graceful: opts.graceful ?? false, port: opts.port, force: true });
 }
 
 // src/hooks/shared.ts
@@ -629,7 +634,7 @@ init_paths();
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.2.21",
+  version: "0.3.0",
   description: "Local memory layer for Claude Code \u2014 Voyage-embedded, hybrid search, federated remotes",
   type: "module",
   private: true,

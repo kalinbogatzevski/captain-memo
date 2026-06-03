@@ -5,6 +5,26 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.3.0] — 2026-06-03
+
+### Added
+- **Threaded worker (opt-in via `CAPTAIN_MEMO_WORKER_THREADED=1`).** The worker can now
+  run a thin HTTP/health main thread plus a dedicated **engine thread** that owns all
+  `bun:sqlite` work — search, ingest, the observation pipeline, the file watcher. Heavy
+  *synchronous* work can therefore no longer starve `GET /health`: the main thread answers
+  it **instantly from an engine heartbeat** (honest — a genuinely-stuck engine still
+  surfaces as `degraded`, with the stalled op + duration logged). This removes the failure
+  mode where a busy-but-alive worker was misjudged dead and force-restarted into a thrash
+  that caused multi-minute outages. An engine crash is **respawned in-process** (sub-second),
+  with a crash-loop cap. **Default-off**; cross-platform; the single-threaded path is
+  unchanged and remains the default.
+
+### Fixed
+- **Atomic worker restart.** Recovery now issues a single atomic `systemctl restart`
+  (one supervisor-owned job) instead of a separate stop-then-start, so a recovery
+  interrupted mid-way can no longer leave the worker stopped with nothing to revive it.
+  Added `TimeoutStopSec=10` so a stop completes promptly instead of waiting the 90 s default.
+
 ## [0.2.21] — 2026-06-02
 
 ### Fixed
