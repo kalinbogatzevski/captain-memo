@@ -881,6 +881,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       if (req.method === 'GET' && url.pathname === '/health') {
         return Response.json({ healthy: true });
       }
+      if (req.method === 'GET' && url.pathname === '/test/block' && process.env.CAPTAIN_MEMO_ENABLE_TEST_ENDPOINTS === '1') {
+        const ms = Math.min(30_000, Number(url.searchParams.get('ms') ?? 1000));
+        const until = Date.now() + ms;
+        while (Date.now() < until) { /* deliberately block the engine event loop */ }
+        return Response.json({ blocked_ms: ms });
+      }
       if (req.method === 'POST' && url.pathname === '/shutdown') {
         // Graceful-stop hook for a supervisor (the Windows Scheduled-Task manager,
         // or `upgrade`/`vacuum` which need SQLite locks released before mutating).
