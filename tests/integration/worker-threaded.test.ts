@@ -7,7 +7,7 @@ const WORKER = new URL('../../src/worker/index.ts', import.meta.url).pathname;
 const procs: Array<{ kill: () => void }> = []; const dirs: string[] = [];
 afterAll(() => { for (const p of procs) try { p.kill(); } catch {} for (const d of dirs) try { rmSync(d, { recursive: true, force: true }); } catch {} });
 
-async function freePort(): Promise<number> { const s = Bun.serve({ port: 0, fetch: () => new Response('') }); const p = s.port; s.stop(true); return p; }
+async function freePort(): Promise<number> { const s = Bun.serve({ port: 0, fetch: () => new Response('') }); const p = s.port ?? 0; s.stop(true); return p; }
 async function waitHealthy(base: string, ms = 20_000) {
   const end = Date.now() + ms;
   while (Date.now() < end) { try { if ((await fetch(`${base}/health`)).ok) return; } catch {} await Bun.sleep(150); }
@@ -45,6 +45,6 @@ test('threaded worker: /health stays fast while the engine is blocked 5s', async
 
   // And a real request works again once the engine frees up.
   await Bun.sleep(5000);
-  const s = await (await fetch(`${base}/search/all`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: 'hello', top_k: 3 }) })).json();
+  const s = await (await fetch(`${base}/search/all`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: 'hello', top_k: 3 }) })).json() as any;
   expect(Array.isArray(s.results)).toBe(true);
 }, 40_000);
