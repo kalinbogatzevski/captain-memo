@@ -104,6 +104,9 @@ export interface WorkerOptions {
   observationTickMs?: number;
   observationBatchSize?: number;
   hookBudgetTokens?: number;
+  /** Engine-thread mode: build stores + handler but do NOT bind an HTTP port.
+   *  The caller (engine.ts) wires `handler` to the thread channel instead. */
+  noServe?: boolean;
 }
 
 export interface WorkerHandle {
@@ -113,6 +116,8 @@ export interface WorkerHandle {
    *  observations. Exposed for tests and in-process introspection (e.g. to
    *  archive a row and assert the search post-filter drops it). */
   store?: ObservationsStore;
+  /** The request handler — exposed so the engine thread can serve it over the channel. */
+  handler?: (req: Request) => Promise<Response>;
 }
 
 const SearchRequestSchema = z.object({
@@ -1427,6 +1432,27 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     }
   };
 
+  const stopResources = async () => {
+    if (tickTimer) clearInterval(tickTimer);
+    if (pendingTickTimer) clearInterval(pendingTickTimer);
+    if (watcher) await watcher.close();
+    if (obsQueue) obsQueue.close();
+    if (obsStore) obsStore.close();
+    if (pendingEmbed) pendingEmbed.close();
+    vector.close();
+    meta.close();
+  };
+
+  if (opts.noServe) {
+    // Engine-thread mode: no port bound; the engine serves `handler` over the channel.
+    return {
+      port: opts.port,
+      handler,
+      ...(obsStore ? { store: obsStore } : {}),
+      stop: stopResources,
+    };
+  }
+
   const server = Bun.serve({
     port: opts.port,
     fetch: handler,
@@ -1434,60 +1460,15 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 
   return {
     port: server.port ?? opts.port,
+    handler,
     ...(obsStore ? { store: obsStore } : {}),
-    stop: async () => {
-      if (tickTimer) clearInterval(tickTimer);
-      if (pendingTickTimer) clearInterval(pendingTickTimer);
-      if (watcher) await watcher.close();
-      server.stop(true);
-      if (obsQueue) obsQueue.close();
-      if (obsStore) obsStore.close();
-      if (pendingEmbed) pendingEmbed.close();
-      vector.close();
-      meta.close();
-    },
+    stop: async () => { server.stop(true); await stopResources(); },
   };
 }
 
-// Exported so a `bin/captain-memo-worker` shim can call this explicitly.
-// Avoid gating on `import.meta.main` alone: when this file is imported
-// (rather than invoked directly), `import.meta.main` is false and the
-// startup body would silently no-op.
-export async function runWorkerCli(): Promise<void> {
-  // Seed process.env from worker.env BEFORE reading any config below. On Linux the
-  // systemd unit already injected these via EnvironmentFile (loadWorkerEnv then
-  // no-ops, since it never overwrites a set var); on Windows the Scheduled Task
-  // launches `bun` with no env injection, so this is the ONLY place secrets load.
-  loadWorkerEnv();
-
-  // Windows has no journal: a Scheduled-Task-launched worker runs detached, so its
-  // console output would vanish. Tee stdout/stderr to LOGS_DIR/worker.log so doctor
-  // and the user can diagnose. No-op on Linux (systemd journals stdout). Best-effort.
-  if (process.platform === 'win32') {
-    try {
-      const { createWriteStream, mkdirSync: mkdir } = await import('fs');
-      const { LOGS_DIR } = await import('../shared/paths.ts');
-      mkdir(LOGS_DIR, { recursive: true });
-      const logStream = createWriteStream(join(LOGS_DIR, 'worker.log'), { flags: 'a' });
-      const tee = (orig: (...a: unknown[]) => void) => (...args: unknown[]) => {
-        try { logStream.write(args.map((a) => (typeof a === 'string' ? a : String(a))).join(' ') + '\n'); } catch { /* ignore */ }
-        orig(...args);
-      };
-      console.log = tee(console.log.bind(console)) as typeof console.log;
-      console.error = tee(console.error.bind(console)) as typeof console.error;
-    } catch { /* logging is best-effort; never block startup */ }
-  }
-
-  const { mkdirSync } = await import('fs');
-  const { dirname } = await import('path');
-  const { DATA_DIR } = await import('../shared/paths.ts');
-
-  // Ensure data directories exist on first run — every store opens a SQLite
-  // file inside DATA_DIR, and bun:sqlite won't create missing parent dirs.
-  mkdirSync(DATA_DIR, { recursive: true });
-  mkdirSync(VECTOR_DB_DIR, { recursive: true });
-  mkdirSync(dirname(META_DB_PATH), { recursive: true });
-
+/** Build WorkerOptions from process.env. Shared by the inline path (runWorkerCli) and
+ *  the engine thread (engine.ts) so both boot identically. The caller adds `noServe`. */
+export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
   const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
   const projectId = process.env.CAPTAIN_MEMO_PROJECT_ID ?? 'default';
   const embedderEndpoint = process.env.CAPTAIN_MEMO_EMBEDDER_ENDPOINT ?? DEFAULT_VOYAGE_ENDPOINT;
@@ -1631,7 +1612,7 @@ export async function runWorkerCli(): Promise<void> {
     );
   }
 
-  const handle = await startWorker({
+  return {
     port,
     projectId,
     metaDbPath: META_DB_PATH,
@@ -1651,7 +1632,50 @@ export async function runWorkerCli(): Promise<void> {
     observationBatchSize,
     observationTickMs,
     ...(summarize !== undefined && { summarize }),
-  });
+  };
+}
+
+// Exported so a `bin/captain-memo-worker` shim can call this explicitly.
+// Avoid gating on `import.meta.main` alone: when this file is imported
+// (rather than invoked directly), `import.meta.main` is false and the
+// startup body would silently no-op.
+export async function runWorkerCli(): Promise<void> {
+  // Seed process.env from worker.env BEFORE reading any config below. On Linux the
+  // systemd unit already injected these via EnvironmentFile (loadWorkerEnv then
+  // no-ops, since it never overwrites a set var); on Windows the Scheduled Task
+  // launches `bun` with no env injection, so this is the ONLY place secrets load.
+  loadWorkerEnv();
+
+  // Windows has no journal: a Scheduled-Task-launched worker runs detached, so its
+  // console output would vanish. Tee stdout/stderr to LOGS_DIR/worker.log so doctor
+  // and the user can diagnose. No-op on Linux (systemd journals stdout). Best-effort.
+  if (process.platform === 'win32') {
+    try {
+      const { createWriteStream, mkdirSync: mkdir } = await import('fs');
+      const { LOGS_DIR } = await import('../shared/paths.ts');
+      mkdir(LOGS_DIR, { recursive: true });
+      const logStream = createWriteStream(join(LOGS_DIR, 'worker.log'), { flags: 'a' });
+      const tee = (orig: (...a: unknown[]) => void) => (...args: unknown[]) => {
+        try { logStream.write(args.map((a) => (typeof a === 'string' ? a : String(a))).join(' ') + '\n'); } catch { /* ignore */ }
+        orig(...args);
+      };
+      console.log = tee(console.log.bind(console)) as typeof console.log;
+      console.error = tee(console.error.bind(console)) as typeof console.error;
+    } catch { /* logging is best-effort; never block startup */ }
+  }
+
+  const { mkdirSync } = await import('fs');
+  const { dirname } = await import('path');
+  const { DATA_DIR } = await import('../shared/paths.ts');
+
+  // Ensure data directories exist on first run — every store opens a SQLite
+  // file inside DATA_DIR, and bun:sqlite won't create missing parent dirs.
+  mkdirSync(DATA_DIR, { recursive: true });
+  mkdirSync(VECTOR_DB_DIR, { recursive: true });
+  mkdirSync(dirname(META_DB_PATH), { recursive: true });
+
+  const opts = await buildWorkerOptionsFromEnv();
+  const handle = await startWorker(opts);
   console.log(`[worker] listening on http://localhost:${handle.port}`);
 
   const shutdown = async () => {
