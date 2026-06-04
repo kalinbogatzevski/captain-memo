@@ -5,11 +5,17 @@
 import { ThreadChannel } from './thread-channel.ts';
 import { deserializeRequest, serializeResponse, type WireRequest } from './request-serde.ts';
 import { buildWorkerOptionsFromEnv, startWorker } from './index.ts';
+import { loadWorkerEnv } from '../shared/worker-env.ts';
 import type { RetrievalSource } from '../shared/types.ts';
 
 declare const self: Worker;
 
 async function boot(): Promise<void> {
+  // A Bun Worker does NOT inherit the main thread's runtime-mutated process.env, and on Windows
+  // (Scheduled Task, no systemd EnvironmentFile) worker.env reaches the process ONLY via
+  // loadWorkerEnv(). Seed it here BEFORE building options — otherwise the reader falls back to
+  // defaults (voyage-4-nano@localhost, …) instead of the configured embedder.
+  loadWorkerEnv();
   const base = await buildWorkerOptionsFromEnv();
   const handle = await startWorker({
     ...base,

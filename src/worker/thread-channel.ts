@@ -27,11 +27,14 @@ export class ThreadChannel {
   /** Responder side: register the handler that turns a request into a result. */
   serve(handler: (data: unknown) => Promise<unknown>): void { this.handler = handler; }
 
-  /** Requester side: send a request, resolve with the responder's result. */
-  request(data: unknown): Promise<unknown> {
+  /** Requester side: send a request, resolve with the responder's result.
+   *  `timeoutMs` overrides the channel default for this one call — used for known-long write ops
+   *  (e.g. /reindex) that legitimately run for minutes and must not be abandoned at the 10s default. */
+  request(data: unknown, timeoutMs?: number): Promise<unknown> {
     const id = nextId();
+    const deadline = timeoutMs ?? this.timeoutMs;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('thread_rpc_timeout')); }, this.timeoutMs);
+      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('thread_rpc_timeout')); }, deadline);
       this.pending.set(id, { resolve, reject, timer });
       this.transport.post({ kind: 'req', id, data } satisfies ReqMsg);
     });

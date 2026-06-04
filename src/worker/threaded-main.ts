@@ -23,6 +23,12 @@ const ENGINE_URL = new URL('./engine.ts', import.meta.url);
 // routes off the writer's heartbeat path entirely — see route-class.ts for the read/write split.
 const READER_URL = new URL('./engine-reader.ts', import.meta.url);
 const REQUEST_DEADLINE_MS = Number(process.env.CAPTAIN_MEMO_ENGINE_REQUEST_MS ?? 10_000);
+// Known-long write ops (a full reindex re-embeds the whole corpus — minutes, not seconds) get a
+// much longer thread-RPC ceiling. With the 10s default, main 503s the CLI with `thread_rpc_timeout`
+// on a write the writer is STILL running (the timeout abandons main's wait; it does NOT cancel the
+// writer) — reporting failure on an eventual success, and a restart mid-run leaves it partial.
+const LONG_WRITE_DEADLINE_MS = Number(process.env.CAPTAIN_MEMO_REINDEX_MS ?? 30 * 60_000);
+const LONG_WRITE_PATHS = new Set(['/reindex']);
 // How long to wait for the engine's first heartbeat before declaring the threaded path dead and
 // falling back to single-threaded. Generous on purpose: a healthy engine beats well under a
 // second, so this only fires for an engine that wedges without ever crashing AND never beating.
@@ -239,10 +245,10 @@ export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
 
   // Forward a request to the writer engine. Used for writes, control-to-writer, /stats, AND the
   // cold-start / all-readers-down read fallbacks. Keeps the original `!channel` 503 guard.
-  async function forwardToWriter(wire: import('./request-serde.ts').WireRequest): Promise<Response> {
+  async function forwardToWriter(wire: import('./request-serde.ts').WireRequest, timeoutMs?: number): Promise<Response> {
     if (!channel) return Response.json({ error: 'engine_unavailable' }, { status: 503 });
     try {
-      return deserializeResponse((await channel.request(wire)) as WireResponse);
+      return deserializeResponse((await channel.request(wire, timeoutMs)) as WireResponse);
     } catch (e) {
       return Response.json({ error: (e as Error).message }, { status: 503 });
     }
@@ -296,7 +302,9 @@ export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
       }
 
       // Writes, control-to-writer, /stats, and ALL reads when the pool is disabled (N=0) → the writer.
-      return forwardToWriter(wire);
+      // Known-long writes (/reindex) get a much longer RPC deadline so the CLI waits for the real
+      // result instead of a premature thread_rpc_timeout on a write the writer is still running.
+      return forwardToWriter(wire, LONG_WRITE_PATHS.has(url.pathname) ? LONG_WRITE_DEADLINE_MS : undefined);
     },
   });
 

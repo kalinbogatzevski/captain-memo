@@ -5,10 +5,16 @@
 import { ThreadChannel } from './thread-channel.ts';
 import { deserializeRequest, serializeResponse, type WireRequest } from './request-serde.ts';
 import { buildWorkerOptionsFromEnv, startWorker } from './index.ts';
+import { loadWorkerEnv } from '../shared/worker-env.ts';
 
 declare const self: Worker;
 
 async function boot(): Promise<void> {
+  // A Bun Worker does NOT inherit the main thread's runtime-mutated process.env, and on Windows
+  // (Scheduled Task, no systemd EnvironmentFile) worker.env reaches the process ONLY via
+  // loadWorkerEnv(). Seed it here so buildWorkerOptionsFromEnv sees the real embedder / summarizer /
+  // dimension config instead of the defaults (voyage-4-nano@localhost, …).
+  loadWorkerEnv();
   const handle = await startWorker({ ...(await buildWorkerOptionsFromEnv()), noServe: true });
   const handler = handle.handler!;
   const store = handle.store;

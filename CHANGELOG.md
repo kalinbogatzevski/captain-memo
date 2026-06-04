@@ -5,6 +5,21 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.5.2] — 2026-06-05
+
+### Fixed
+- **Threaded Workers now load `worker.env`.** A Bun `Worker` does not inherit the main thread's
+  runtime-mutated `process.env`. On Linux the systemd `EnvironmentFile=` masks this (the real env is
+  inherited by every child), but on Windows (Scheduled Task, no env file) the threaded writer and
+  reader engines fell back to defaults — `voyage-4-nano@localhost`, wrong dimension — so vector search
+  silently degraded while the main thread looked correct. Each Worker now calls `loadWorkerEnv()` at
+  the top of `boot()`, before building its options.
+- **`reindex` no longer times out on large corpora.** The main→engine thread RPC used a fixed 10s
+  deadline, so a full reindex (which re-embeds the whole corpus — minutes of work) returned a
+  `503 thread_rpc_timeout` while the writer was still running, reporting failure on an eventual
+  success. Known-long writes (`/reindex`) now get a 30-minute ceiling (override via
+  `CAPTAIN_MEMO_REINDEX_MS`); all other ops keep the 10s default.
+
 ## [0.5.1] — 2026-06-04
 
 ### Added
