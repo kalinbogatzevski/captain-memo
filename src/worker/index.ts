@@ -73,6 +73,21 @@ function dirSizeBytes(dir: string): number {
   return total;
 }
 
+// Route a retrieval-tracking bump to either an injected sink (reader mode forwards
+// bumps to the writer) or the local store (normal mode). No-ops on empty ids.
+// Exported so it can be unit-tested without booting a worker.
+export function applyBump(
+  ids: number[],
+  source: import('../shared/types.ts').RetrievalSource,
+  sink: ((ids: number[], source: import('../shared/types.ts').RetrievalSource) => void) | undefined,
+  store: { bumpRetrieval: (ids: number[], source: import('../shared/types.ts').RetrievalSource) => void } | undefined,
+): void {
+  if (ids.length === 0) return;
+  if (sink) { try { sink(ids, source); } catch (e) { console.error('[retrieval-tracking] sink failed:', (e as Error).message); } return; }
+  if (!store) return;
+  try { store.bumpRetrieval(ids, source); } catch (e) { console.error('[retrieval-tracking] bump failed:', (e as Error).message); }
+}
+
 export interface SummarizerResult {
   type: ObservationType;
   title: string;
@@ -107,6 +122,12 @@ export interface WorkerOptions {
   /** Engine-thread mode: build stores + handler but do NOT bind an HTTP port.
    *  The caller (engine.ts) wires `handler` to the thread channel instead. */
   noServe?: boolean;
+  /** Read-only reader mode: suppress ALL write machinery (watcher, ingest, ticks,
+   *  backfill, queue/pending stores) and open corpus stores read-only. */
+  readOnly?: boolean;
+  /** When set, retrieval-tracking bumps are handed to this sink instead of being
+   *  written locally — readers forward them to the writer. */
+  onRetrievalBump?: (ids: number[], source: import('../shared/types.ts').RetrievalSource) => void;
 }
 
 export interface WorkerHandle {
@@ -192,7 +213,7 @@ const NO_OP_TOKENS = new Set(['ok', 'continue', 'yes', 'go', 'next', 'sure']);
 export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // Worker boot time — surfaced via /stats so the dashboard can show liveness + uptime.
   const workerStartedAtEpoch = Math.floor(Date.now() / 1000);
-  const meta = new MetaStore(opts.metaDbPath);
+  const meta = new MetaStore(opts.metaDbPath, { readonly: !!opts.readOnly });
 
   // Boot-time hint when the corpus still carries pre-v0.1.8 observation
   // chunks. The worker keeps serving search just fine — the old per-fact
@@ -216,6 +237,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   const vector = new VectorStore({
     dbPath: opts.vectorDbPath,
     dimension: opts.embeddingDimension,
+    readonly: !!opts.readOnly,
   });
 
   const collectionName = `am_${opts.projectId}`;
@@ -332,7 +354,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   };
 
   let watcher: FileWatcher | null = null;
-  if (opts.watchPaths && opts.watchPaths.length > 0 && opts.watchChannel) {
+  if (!opts.readOnly && opts.watchPaths && opts.watchPaths.length > 0 && opts.watchChannel) {
     const channel = opts.watchChannel;
     const watchPaths = opts.watchPaths;
 
@@ -387,13 +409,13 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // ─────────────────────────────────────────────────────────────────────
   // Plan-2: observation pipeline (queue → store → vector/meta).
   // ─────────────────────────────────────────────────────────────────────
-  const obsQueue = opts.observationQueueDbPath
+  const obsQueue = !opts.readOnly && opts.observationQueueDbPath
     ? new ObservationQueue(opts.observationQueueDbPath)
     : null;
   const obsStore = opts.observationsDbPath
-    ? new ObservationsStore(opts.observationsDbPath)
+    ? new ObservationsStore(opts.observationsDbPath, { readonly: !!opts.readOnly })
     : null;
-  const pendingEmbed = opts.pendingEmbedDbPath
+  const pendingEmbed = !opts.readOnly && opts.pendingEmbedDbPath
     ? new PendingEmbedQueue(opts.pendingEmbedDbPath)
     : null;
 
@@ -402,7 +424,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // tokens, NO embedder calls. Backgrounded so the HTTP server is up
   // immediately; resumable + idempotent (a later boot with nothing missing is
   // a no-op). Batched so a setStoredTokens write never races a live cursor.
-  if (obsStore) {
+  if (!opts.readOnly && obsStore) {
     const missingStored = obsStore.countMissingStoredTokens();
     if (missingStored > 0) {
       const store = obsStore;
@@ -643,7 +665,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   }
 
   let tickTimer: ReturnType<typeof setInterval> | null = null;
-  if (tickMs > 0 && obsQueue && obsStore && summarize) {
+  if (!opts.readOnly && tickMs > 0 && obsQueue && obsStore && summarize) {
     tickTimer = setInterval(() => {
       // Skip — not queue — if another invocation is in flight. setInterval
       // already calls us every tickMs; piling up missed ticks isn't useful.
@@ -713,7 +735,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   }
 
   let pendingTickTimer: ReturnType<typeof setInterval> | null = null;
-  if (pendingEmbed && !opts.skipEmbed) {
+  if (!opts.readOnly && pendingEmbed && !opts.skipEmbed) {
     pendingTickTimer = setInterval(() => {
       processPendingEmbed(PENDING_BATCH).catch(err => console.error('[pe-tick]', err));
     }, PENDING_RETRY_TICK_MS);
@@ -859,7 +881,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     items: Array<{ metadata: Record<string, unknown> }>,
     source: import('../shared/types.ts').RetrievalSource,
   ): void => {
-    if (!obsStore || items.length === 0) return;
+    if (items.length === 0) return;
     const ids: number[] = [];
     for (const item of items) {
       const oid = item.metadata?.observation_id;
@@ -867,12 +889,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         ids.push(oid);
       }
     }
-    if (ids.length === 0) return;
-    try {
-      obsStore.bumpRetrieval(ids, source);
-    } catch (err) {
-      console.error('[retrieval-tracking] bump failed:', (err as Error).message);
-    }
+    applyBump(ids, source, opts.onRetrievalBump, obsStore ?? undefined);
   };
 
   const handler = async (req: Request): Promise<Response> => {
@@ -987,8 +1004,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         if (!obs || obs.archived) {
           return Response.json({ error: 'not_found' }, { status: 404 });
         }
-        try { obsStore.bumpRetrieval([id], 'drill'); }
-        catch (err) { console.error('[retrieval-tracking] drill bump failed:', (err as Error).message); }
+        applyBump([id], 'drill', opts.onRetrievalBump, obsStore);
         return Response.json({ observation: obs });
       }
       if (req.method === 'POST' && url.pathname === '/search/all') {
@@ -1060,7 +1076,21 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       }
 
       if (req.method === 'POST' && url.pathname === '/search/observations') {
-        const parsed = ObservationSearchSchema.safeParse(await req.json());
+        const raw = await req.json();
+        // Test-only: a READ-classified endpoint that blocks the serving engine's
+        // event loop, so the reader-pool integration test can prove a search burst
+        // stalls the SINGLE engine (degrading /health) but NOT the writer once reads
+        // are offloaded to readers. Gated behind the same flag as /test/block.
+        if (
+          process.env.CAPTAIN_MEMO_ENABLE_TEST_ENDPOINTS === '1' &&
+          raw && typeof raw === 'object' && typeof (raw as { block_ms?: unknown }).block_ms === 'number'
+        ) {
+          const ms = Math.min(30_000, (raw as { block_ms: number }).block_ms);
+          const until = Date.now() + ms;
+          while (Date.now() < until) { /* deliberately block the serving engine */ }
+          return Response.json({ results: [], blocked_ms: ms });
+        }
+        const parsed = ObservationSearchSchema.safeParse(raw);
         if (!parsed.success) {
           return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
         }

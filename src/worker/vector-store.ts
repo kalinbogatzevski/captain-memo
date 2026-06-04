@@ -4,6 +4,9 @@ import * as sqliteVec from 'sqlite-vec';
 export interface VectorStoreOptions {
   dbPath: string;
   dimension: number;  // e.g., 1024 for voyage-4-nano
+  /** Open the db read-only (reader-engine mode): skip WAL pragma + schema DDL.
+   *  The file must already exist and be initialized by the writer. */
+  readonly?: boolean;
 }
 
 export interface AddVectorInput {
@@ -35,11 +38,13 @@ export class VectorStore {
   private dimension: number;
 
   constructor(opts: VectorStoreOptions) {
-    this.db = new Database(opts.dbPath);
-    sqliteVec.load(this.db);
+    this.db = new Database(opts.dbPath, opts.readonly ? { readonly: true } : undefined);
+    sqliteVec.load(this.db);   // the vec0 extension is needed to READ as well as write
     this.dimension = opts.dimension;
-    this.db.exec('PRAGMA journal_mode = WAL;');
-    this.db.exec(SCHEMA.replace('__DIM__', String(opts.dimension)));
+    if (!opts.readonly) {
+      this.db.exec('PRAGMA journal_mode = WAL;');
+      this.db.exec(SCHEMA.replace('__DIM__', String(opts.dimension)));
+    }
   }
 
   /**

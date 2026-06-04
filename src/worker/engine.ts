@@ -11,11 +11,26 @@ declare const self: Worker;
 async function boot(): Promise<void> {
   const handle = await startWorker({ ...(await buildWorkerOptionsFromEnv()), noServe: true });
   const handler = handle.handler!;
+  const store = handle.store;
   let busyOp: string | null = null;
 
   const channel = new ThreadChannel({
     post: (m) => postMessage(m),
-    onMessage: (cb) => { self.onmessage = (e: MessageEvent) => cb(e.data); },
+    onMessage: (cb) => {
+      self.onmessage = (e: MessageEvent) => {
+        const m = e.data as { kind?: string; ids?: number[]; source?: string };
+        if (m && m.kind === 'bump' && Array.isArray(m.ids) && store) {
+          // Validate the source against the known set rather than casting — a malformed value would
+          // otherwise build `SET undefined = undefined + 1` and throw (then get swallowed). The
+          // reader→main→writer relay only ever sends a valid source, so this is a belt-and-braces no-op.
+          if (m.source === 'auto' || m.source === 'search' || m.source === 'drill') {
+            try { store.bumpRetrieval(m.ids, m.source); } catch (err) { console.error('[retrieval-tracking] writer bump failed:', (err as Error).message); }
+          }
+          return;
+        }
+        cb(e.data);
+      };
+    },
   });
 
   channel.serve(async (data) => {

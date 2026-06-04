@@ -5,6 +5,20 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.4.0] — 2026-06-04
+
+### Added
+- **Reader pool — concurrent, restart-proof search.** The threaded worker now runs one **writer**
+  engine (ingest, background ticks, and the `/health` heartbeat) plus a pool of **read-only reader**
+  engines that serve searches on their own threads. Previously every search ran a synchronous
+  sqlite-vec KNN scan (~290 ms over a large corpus) on the single engine thread, so a burst of
+  recalls — one fires on every prompt — could stall the heartbeat past its 5 s freshness window and
+  get the worker restarted. Reads now run off the heartbeat path entirely: the writer stays
+  responsive under load, concurrent searches run in parallel, and the failure mode is graceful (a
+  saturated read returns 503, it never blocks the writer). Configure with
+  `CAPTAIN_MEMO_READER_POOL_SIZE` (default `2`, range `0`–`8`; `0` restores the single-engine
+  behavior). Active only in threaded mode (`CAPTAIN_MEMO_WORKER_THREADED=1`).
+
 ## [0.3.2] — 2026-06-04
 
 ### Security

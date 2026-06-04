@@ -90,11 +90,13 @@ export interface KeywordHit {
 export class MetaStore {
   private db: Database;
 
-  constructor(path: string) {
-    this.db = new Database(path);
-    this.db.exec('PRAGMA journal_mode = WAL;');
-    this.db.exec('PRAGMA foreign_keys = ON;');
-    this.db.exec(SCHEMA);
+  constructor(path: string, opts?: { readonly?: boolean }) {
+    this.db = new Database(path, opts?.readonly ? { readonly: true } : undefined);
+    if (!opts?.readonly) {
+      this.db.exec('PRAGMA journal_mode = WAL;');
+      this.db.exec('PRAGMA foreign_keys = ON;');
+      this.db.exec(SCHEMA);
+    }
   }
 
   upsertDocument(input: UpsertDocumentInput): number {

@@ -307,11 +307,13 @@ function collapseTop(
 export class ObservationsStore {
   private db: Database;
 
-  constructor(path: string) {
-    this.db = new Database(path);
-    this.db.exec('PRAGMA journal_mode = WAL;');
-    this.db.exec(SCHEMA);
-    applyMigrations(this.db, OBSERVATIONS_STORE_MIGRATIONS);
+  constructor(path: string, opts?: { readonly?: boolean }) {
+    this.db = new Database(path, opts?.readonly ? { readonly: true } : undefined);
+    if (!opts?.readonly) {
+      this.db.exec('PRAGMA journal_mode = WAL;');
+      this.db.exec(SCHEMA);
+      applyMigrations(this.db, OBSERVATIONS_STORE_MIGRATIONS);
+    }
   }
 
   insert(obs: NewObservation): number {

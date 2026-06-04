@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 bun.lockb
 dist/
 # plugin/dist holds the committed, self-contained plugin entrypoints (bundled
