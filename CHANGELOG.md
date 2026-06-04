@@ -5,6 +5,15 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.5.1] — 2026-06-04
+
+### Added
+- **Unified cross-AI install.** `captain-memo install` now auto-detects other MCP-speaking coding
+  tools on the machine (Codex, Gemini CLI, Cursor) and wires each to the same local worker — registers
+  the MCP server + installs the portable skill — so they share one corpus with zero manual setup. New
+  `captain-memo connect` command (`connect`, `connect --list`, `connect <tool>`) does it on demand;
+  `install --no-cross-ai` skips it. Best-effort: a wiring failure never fails the core install.
+
 ## [0.5.0] — 2026-06-04
 
 ### Added

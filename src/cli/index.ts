@@ -7,6 +7,7 @@ import { observationCommand } from './commands/observation.ts';
 import { configCommand } from './commands/config.ts';
 import { installHooksCommand } from './commands/install-hooks.ts';
 import { installCommand } from './commands/install.ts';
+import { connectCommand } from './commands/connect.ts';
 import { uninstallCommand } from './commands/uninstall.ts';
 import { doctorCommand } from './commands/doctor.ts';
 import { inspectClaudeMemCommand } from './commands/inspect-claude-mem.ts';
@@ -33,6 +34,7 @@ Commands:
   observation  list|flush — manage observation queue (--limit N, --session ID)
   config       show — print effective config (env + defaults, secrets masked)
   install      Interactive wizard — installs everything (embedder, worker, plugin)
+  connect      Wire other AI tools (Codex, Gemini, Cursor) to the shared worker (--list)
   uninstall    Clean removal of everything (--purge for data too)
   doctor       Health probe across embedder / worker / plugin
   install-hooks Register hooks manually (advanced — \`install\` does this for you)
@@ -84,6 +86,9 @@ export async function main(args: string[]): Promise<void> {
       break;
     case 'install':
       exit = await installCommand(args.slice(1));
+      break;
+    case 'connect':
+      exit = await connectCommand(args.slice(1));
       break;
     case 'uninstall':
       exit = await uninstallCommand(args.slice(1));

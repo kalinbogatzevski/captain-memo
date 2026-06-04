@@ -10,7 +10,7 @@
   Built by <a href="https://github.com/kalinbogatzevski">Kalin Bogatzevski</a> · <a href="LICENSE">Apache-2.0</a> · <a href="https://github.com/kalinbogatzevski/captain-memo/issues">Issues</a>
 </p>
 
-Captain Memo is a Claude Code plugin (and a self-contained local-memory layer for any AI coding agent that speaks the standard hook + MCP shapes). Every session leaves a wake; Captain Memo keeps the log so the next session sails with what was learned in the last one.
+Captain Memo is a Claude Code plugin — and a **cross-AI local-memory layer**: one local corpus shared by every MCP-speaking coding agent on your machine (Claude Code, Codex, Gemini CLI, Cursor), so what one tool learns, the others recall. Every session leaves a wake; Captain Memo keeps the log so the next session — in any of your AI tools — sails with what was learned in the last one.
 
 > **v0.2.0 — Linux + native Windows (x64).** Linux runs under `systemd --user`; Windows runs natively under a per-user Scheduled Task (no WSL, no admin) — see [Windows (native)](#windows-native) below, or use the [WSL2 fallback](#wsl2-fallback). macOS support is still pending; Mac users can run the worker manually under launchd / tmux / nohup, see [issue #1](https://github.com/kalinbogatzevski/captain-memo/issues/1).
 
@@ -33,6 +33,7 @@ So I sat down to build that "something different" for myself, and ended up with 
 ## What it is
 
 - **Local-first.** Vector store and metadata live on your machine — `sqlite-vec` + SQLite WAL. No cloud database, no per-call billing for retrieval, no network round-trips on the hot path.
+- **Cross-AI — one corpus, many tools.** Claude Code, Codex, Gemini CLI, and Cursor share the same local memory through Captain Memo's MCP server + a portable skill. `captain-memo install` (or `captain-memo connect`) auto-detects the AI tools on your machine and wires each one — no manual setup. Verified live: Codex *and* Gemini CLI recalling an observation Claude Code captured, from the same worker; Cursor is supported via its standard MCP config. See [docs/cross-ai-tools.md](docs/cross-ai-tools.md).
 - **Hybrid search.** Voyage embeddings (default) + SQLite FTS5 keyword index, fused via Reciprocal Rank Fusion with exponential recency decay on observations. Multilingual (BG/EN/etc.) — your non-English memory is searchable too.
 - **Four summarizer providers**, picked at install time:
   - `claude-oauth` *(default)* — direct Anthropic API using the OAuth token Claude Code already stored. No API key. ~700 ms/call. Just works on a Max plan.

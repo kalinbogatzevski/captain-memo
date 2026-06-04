@@ -26,6 +26,7 @@ import { WORKER_ENV_PATH, CONFIG_DIR, LOGS_DIR, DATA_DIR, DEFAULT_WORKER_PORT } 
 import { getServiceManager } from '../../services/service-manager/index.ts';
 import { grantPluginToolPermissions } from './install-hooks.ts';
 import { getEmbedderInstaller } from '../../services/embedder-installer/index.ts';
+import { connectCrossAi, printConnectReport } from '../cross-ai.ts';
 
 const REPO_ROOT = resolve(import.meta.dir, '../../..');
 const WORKER_UNIT_NAME = 'captain-memo-worker.service';
@@ -91,6 +92,9 @@ interface InstallOptions {
   watch?: string;
   // Skip adding captain-memo's MCP tools to the user's settings `permissions.allow`.
   noGrantPermissions?: boolean;
+  // Skip the post-install cross-AI wiring (auto-detect + register the MCP server
+  // with Codex/Gemini/Cursor). The core install never depends on this step.
+  noCrossAi?: boolean;
 }
 
 const SUMMARIZER_VALUES: readonly SummarizerProvider[] = ['claude-oauth', 'anthropic', 'claude-code', 'openai-compatible', 'skip'];
@@ -167,6 +171,7 @@ export function parseInstallOptions(args: string[], env: NodeJS.ProcessEnv = pro
   if (watch !== undefined) opts.watch = watch;
 
   if (args.includes('--no-grant-permissions')) opts.noGrantPermissions = true;
+  if (args.includes('--no-cross-ai')) opts.noCrossAi = true;
 
   return opts;
 }
@@ -832,6 +837,28 @@ function registerPlugin(mode: InstallMode): void {
   ok('plugin registered with Claude Code (captain-memo@captain-memo · enabled · scope: user)');
 }
 
+// Post-install: auto-detect OTHER MCP-speaking AI tools (Codex, Gemini, Cursor)
+// and wire each to the SAME worker so they share one corpus. Best-effort and
+// fully decoupled — a cross-AI wiring failure must NEVER fail the core install
+// (everything is wrapped; we only warn). Skipped entirely with --no-cross-ai.
+function wireCrossAi(opts: InstallOptions): void {
+  if (opts.noCrossAi) { info('skipped cross-AI wiring (--no-cross-ai)'); return; }
+  try {
+    const mcpCommand = ['bun', join(REPO_ROOT, 'plugin/dist/mcp-server.js')];
+    const skillSource = join(REPO_ROOT, 'skills/captain-memo/SKILL.md');
+    const results = connectCrossAi({ mcpCommand, skillSource });
+    if (results.length === 0) {
+      info('No other AI tools detected (Codex, Gemini CLI, Cursor) — only Claude Code wired.');
+    } else {
+      info('Wired other AI tools to the shared memory worker:');
+      printConnectReport(results);
+    }
+  } catch (e) {
+    warn(`cross-AI wiring skipped (${(e as Error).message}); core install is unaffected.`);
+    info('You can retry anytime: captain-memo connect');
+  }
+}
+
 function probeHealth(): void {
   const res = spawnSync('curl', ['-s', '-m', '3', 'http://127.0.0.1:39888/health'], { encoding: 'utf-8' });
   if (res.stdout.includes('"healthy":true')) ok('worker is responding on http://127.0.0.1:39888');
@@ -1056,11 +1083,15 @@ async function installWindows(args: string[], opts: InstallOptions): Promise<num
     warn(`worker not yet responding on http://localhost:${port} (initial indexing can take minutes — check ${join(LOGS_DIR, 'worker.log')})`);
   }
 
+  header('Wiring other AI tools (shared memory)');
+  wireCrossAi(opts);
+
   console.log();
   ok('Captain Memo installed.');
   console.log();
   info('What now:');
   info('  • Restart any open Claude Code sessions for plugin hooks to take effect.');
+  info('  • Other AI tools share the SAME memory — re-run wiring anytime: captain-memo connect');
   info('  • The worker runs as a per-user Scheduled Task and autostarts at logon.');
   info(`  • Logs:          ${join(LOGS_DIR, 'worker.log')}`);
   info('  • Check status:  captain-memo doctor');
@@ -1106,6 +1137,11 @@ NON-INTERACTIVE (headless / CI / non-TTY stdin):
   --watch <all-projects|none|path> Memory dirs to watch; a path/glob = custom
                                    (env CAPTAIN_MEMO_WATCH_MEMORY)
   --yes, -y                        No prompts; reuse existing config (flags/env override, defaults fill the rest)
+  --no-cross-ai                    Skip auto-wiring other AI tools (Codex/Gemini/Cursor) to the shared worker
+
+After install, other detected AI tools (Codex, Gemini CLI, Cursor) are auto-wired
+to the SAME memory worker (best-effort; never fails the install). Re-run anytime
+with \`captain-memo connect\`, or skip with --no-cross-ai.
 
 Both modes: re-running preserves existing config (flags/env override). To remove: captain-memo uninstall`);
     return 0;
@@ -1214,11 +1250,15 @@ Both modes: re-running preserves existing config (flags/env override). To remove
   header('Health probe');
   probeHealth();
 
+  header('Wiring other AI tools (shared memory)');
+  wireCrossAi(opts);
+
   console.log();
   ok('Captain Memo installed.');
   console.log();
   info('What now:');
   info('  • Restart any open Claude Code sessions for plugin hooks to take effect.');
+  info('  • Other AI tools share the SAME memory — re-run wiring anytime: captain-memo connect');
   info('  • Check status:  captain-memo doctor');
   info('  • View config:   captain-memo config show');
   info('  • Roll back:     captain-memo uninstall' + (mode === 'system' ? ' --system' : ''));
