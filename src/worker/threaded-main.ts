@@ -115,6 +115,8 @@ export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
 
   const server = Bun.serve({
     port,
+    // Loopback ONLY — the unauthenticated worker API must never be reachable off-box.
+    hostname: '127.0.0.1',
     fetch: async (req) => {
       const url = new URL(req.url);
       if (req.method === 'GET' && url.pathname === '/health') {

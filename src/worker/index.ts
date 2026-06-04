@@ -1461,6 +1461,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 
   const server = Bun.serve({
     port: opts.port,
+    // Loopback ONLY — the unauthenticated worker API must never be reachable off-box.
+    hostname: '127.0.0.1',
     fetch: handler,
   });
 
