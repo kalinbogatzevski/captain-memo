@@ -12,7 +12,7 @@
 
 Captain Memo is a Claude Code plugin — and a **cross-AI local-memory layer**: one local corpus shared by every MCP-speaking coding agent on your machine (Claude Code, Codex, Gemini CLI, Cursor), so what one tool learns, the others recall. Every session leaves a wake; Captain Memo keeps the log so the next session — in any of your AI tools — sails with what was learned in the last one.
 
-> **v0.2.0 — Linux + native Windows (x64).** Linux runs under `systemd --user`; Windows runs natively under a per-user Scheduled Task (no WSL, no admin) — see [Windows (native)](#windows-native) below, or use the [WSL2 fallback](#wsl2-fallback). macOS support is still pending; Mac users can run the worker manually under launchd / tmux / nohup, see [issue #1](https://github.com/kalinbogatzevski/captain-memo/issues/1).
+> **Platforms — Linux + native Windows (x64).** Linux runs under `systemd --user`; Windows runs natively under a per-user Scheduled Task (no WSL, no admin) — see [Windows (native)](#windows-native) below, or use the [WSL2 fallback](#wsl2-fallback). macOS support is still pending; Mac users can run the worker manually under launchd / tmux / nohup, see [issue #1](https://github.com/kalinbogatzevski/captain-memo/issues/1).
 
 ---
 
