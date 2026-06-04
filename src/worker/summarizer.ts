@@ -6,7 +6,11 @@ import { DEFAULT_SUMMARIZER_MODEL, DEFAULT_SUMMARIZER_FALLBACKS } from '../share
 const ObservationTypes = ['bugfix', 'feature', 'refactor', 'discovery', 'decision', 'change'] as const;
 
 const SummaryJsonSchema = z.object({
-  type: z.enum(ObservationTypes),
+  // Coerce an out-of-vocab type (the model occasionally invents e.g. 'review') to the
+  // neutral default 'change' rather than failing the whole object — throwing away a good
+  // observation (title/facts/concepts) over one wrong word is the wrong trade. Genuinely
+  // structural failures (missing title, etc.) still reject in summarize().
+  type: z.enum(ObservationTypes).catch('change'),
   title: z.string().min(1).max(200),
   narrative: z.string(),
   facts: z.array(z.string()),
@@ -186,6 +190,12 @@ export class Summarizer {
     const parsed = SummaryJsonSchema.safeParse(json);
     if (!parsed.success) {
       throw new Error(`Summarizer: response failed schema validation: ${parsed.error.message}`);
+    }
+    // Surface (don't silently swallow) a coerced out-of-vocab type, so the prompt can be
+    // tuned or the vocabulary extended if the model keeps inventing one.
+    const rawType = (json as { type?: unknown }).type;
+    if (typeof rawType === 'string' && rawType !== parsed.data.type) {
+      console.warn(`[summarizer] coerced unknown observation type '${rawType}' -> '${parsed.data.type}'`);
     }
     return {
       ...parsed.data,

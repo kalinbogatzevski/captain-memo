@@ -77,17 +77,35 @@ test('Summarizer — invalid JSON in response raises', async () => {
   await expect(s.summarize([ev()])).rejects.toThrow(/JSON|parse/i);
 });
 
-test('Summarizer — type field validated against ObservationType enum', async () => {
+test('Summarizer — out-of-vocab type is coerced to "change", observation salvaged', async () => {
   const transport = mock(async () => ({
     content: [{ type: 'text' as const, text: JSON.stringify({
-      type: 'INVALID_TYPE', title: 't', narrative: 'n', facts: [], concepts: [],
+      type: 'review', title: 'reviewed the bridge', narrative: 'n', facts: ['f1'], concepts: ['c1'],
     })}],
     model: 'claude-haiku-4-6',
   }));
   const s = new Summarizer({
     apiKey: 'test-key', model: 'claude-haiku-4-6', transport,
   });
-  await expect(s.summarize([ev()])).rejects.toThrow(/type|enum|invalid/i);
+  // The model invented an out-of-vocab type; coerce it rather than throwing away the
+  // whole (otherwise valid) observation.
+  const res = await s.summarize([ev()]);
+  expect(res.type).toBe('change');
+  expect(res.title).toBe('reviewed the bridge');
+  expect(res.facts).toEqual(['f1']);
+});
+
+test('Summarizer — structurally malformed response (missing title) still raises', async () => {
+  const transport = mock(async () => ({
+    content: [{ type: 'text' as const, text: JSON.stringify({
+      type: 'change', narrative: 'n', facts: [], concepts: [],   // no title
+    })}],
+    model: 'claude-haiku-4-6',
+  }));
+  const s = new Summarizer({
+    apiKey: 'test-key', model: 'claude-haiku-4-6', transport,
+  });
+  await expect(s.summarize([ev()])).rejects.toThrow(/schema|validation|title/i);
 });
 
 test('Summarizer — empty events list returns empty narrative observation', async () => {
