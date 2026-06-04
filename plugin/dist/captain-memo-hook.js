@@ -1,17 +1,13 @@
 #!/usr/bin/env bun
 // @bun
 var __defProp = Object.defineProperty;
-var __returnValue = (v) => v;
-function __exportSetter(name, newValue) {
-  this[name] = __returnValue.bind(null, newValue);
-}
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, {
       get: all[name],
       enumerable: true,
       configurable: true,
-      set: __exportSetter.bind(all, name)
+      set: (newValue) => all[name] = () => newValue
     });
 };
 var __esm = (fn, res) => () => (fn && (res = fn(fn = 0)), res);
@@ -638,7 +634,7 @@ init_paths();
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.3.1",
+  version: "0.3.2",
   description: "Local memory layer for Claude Code \u2014 Voyage-embedded, hybrid search, federated remotes",
   type: "module",
   private: true,

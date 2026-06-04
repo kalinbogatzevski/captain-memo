@@ -5,6 +5,24 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.3.2] — 2026-06-04
+
+### Security
+- **The worker now binds to `127.0.0.1` (loopback) only — never all interfaces.** The
+  worker's HTTP API (search, stats, `/shutdown`) is unauthenticated and was binding
+  `0.0.0.0` by default, so on any box with a public IP or an untrusted LAN the corpus was
+  reachable off-box and anyone could `POST /shutdown` to kill the worker. It is now bound to
+  loopback only, with no opt-out — the captain is a local memory layer and must never be
+  exposed off-box. Local clients (CLI, hooks, MCP) are unaffected; they already connect via
+  `localhost` → `127.0.0.1`.
+
+### Fixed
+- **The observation summarizer no longer discards a whole observation over one unknown
+  `type`.** When the model returned a `type` outside the allowed set (e.g. `review`), schema
+  validation threw and the entire observation — title, narrative, facts, concepts — was
+  dropped. An unknown type is now coerced to the neutral default `change` (and logged); only
+  a genuinely structural failure (missing title, etc.) still rejects.
+
 ## [0.3.1] — 2026-06-04
 
 ### Fixed
