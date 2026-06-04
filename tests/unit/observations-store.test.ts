@@ -5,6 +5,13 @@ import { tmpdir } from 'os';
 import { Database } from 'bun:sqlite';
 import { ObservationsStore } from '../../src/worker/observations-store.ts';
 import { getAppliedVersions } from '../../src/worker/migrations.ts';
+import { DEFAULT_TIDE_CONFIG, nextStability } from '../../src/worker/tide.ts';
+
+const tideBase = {
+  session_id: 's1', project_id: 'p1', prompt_number: 1, type: 'bugfix' as const,
+  title: 't', narrative: 'n', facts: [], concepts: [], files_read: [], files_modified: [],
+  created_at_epoch: 1_700_000_000, branch: null, work_tokens: null,
+};
 
 let workDir: string;
 let store: ObservationsStore;
@@ -67,6 +74,71 @@ test('ObservationsStore — migration v8 adds Tide lifecycle columns + partial i
   // v8 recorded as applied
   expect(getAppliedVersions(db).some(v => v.version === 8)).toBe(true);
   db.close();
+});
+
+test('tideRowsAmong — returns buoyancy inputs; empty input → empty map', () => {
+  const id = store.insert({ ...tideBase });
+  expect(store.tideRowsAmong([]).size).toBe(0);
+  const map = store.tideRowsAmong([id, 999999]);
+  expect(map.has(id)).toBe(true);
+  expect(map.has(999999)).toBe(false);
+  const r = map.get(id)!;
+  expect(r.created_at_epoch).toBe(1_700_000_000);
+  expect(r.last_surfaced_at).toBeNull();
+  expect(r.stability_days).toBeNull();
+  expect(r.from_drill).toBe(0);
+  expect(r.is_anchored).toBe(false);
+});
+
+test('bumpRetrieval — Tide disabled: stability stays NULL, existing bump intact', () => {
+  const id = store.insert({ ...tideBase });
+  store.bumpRetrieval([id], 'search', 1_700_000_100);
+  expect(store.tideRowsAmong([id]).get(id)!.stability_days).toBeNull();
+  const got = store.findById(id)!;
+  expect(got.from_search).toBe(1);
+  expect(got.last_surfaced_at).toBe(1_700_000_100);
+});
+
+test('bumpRetrieval — Tide enabled: a recall seeds from S0 then grows stability', () => {
+  const ts = new ObservationsStore(join(workDir, 'tide-enabled.db'), {
+    tideConfig: { ...DEFAULT_TIDE_CONFIG, enabled: true },
+  });
+  const id = ts.insert({ ...tideBase });
+  expect(ts.tideRowsAmong([id]).get(id)!.stability_days).toBeNull();
+  ts.bumpRetrieval([id], 'search', 1_700_000_100);
+  const s1 = ts.tideRowsAmong([id]).get(id)!.stability_days!;
+  expect(s1).toBeGreaterThan(DEFAULT_TIDE_CONFIG.s0.observation); // seeded from S0=7, then strengthened
+  ts.bumpRetrieval([id], 'search', 1_700_000_200);
+  const s2 = ts.tideRowsAmong([id]).get(id)!.stability_days!;
+  expect(s2).toBeGreaterThan(s1); // each recall strengthens
+  ts.close();
+});
+
+test('bumpRetrieval — Tide enabled: drill strengthens more than auto (source-weighted)', () => {
+  const ts = new ObservationsStore(join(workDir, 'tide-src.db'), {
+    tideConfig: { ...DEFAULT_TIDE_CONFIG, enabled: true },
+  });
+  const idAuto = ts.insert({ ...tideBase });
+  const idDrill = ts.insert({ ...tideBase });
+  ts.bumpRetrieval([idAuto], 'auto', 1_700_000_100);
+  ts.bumpRetrieval([idDrill], 'drill', 1_700_000_100);
+  const sAuto = ts.tideRowsAmong([idAuto]).get(idAuto)!.stability_days!;
+  const sDrill = ts.tideRowsAmong([idDrill]).get(idDrill)!.stability_days!;
+  expect(sDrill).toBeGreaterThan(sAuto);
+  ts.close();
+});
+
+test('bumpRetrieval — SQL stability update equals tide.ts nextStability (JS↔SQL parity)', () => {
+  // Guards against the SQLite integer-division trap: the SQL UPDATE must compute
+  // the SAME value as the pure-JS nextStability, to the float bit.
+  const cfg = { ...DEFAULT_TIDE_CONFIG, enabled: true };
+  const ts = new ObservationsStore(join(workDir, 'tide-parity.db'), { tideConfig: cfg });
+  const id = ts.insert({ ...tideBase });
+  ts.bumpRetrieval([id], 'search', 1_700_000_100);
+  const sql = ts.tideRowsAmong([id]).get(id)!.stability_days!;
+  const js = nextStability(null, 'search', cfg, 'observation');
+  expect(sql).toBeCloseTo(js, 9);
+  ts.close();
 });
 
 test('ObservationsStore — listForSession returns chronological order', () => {

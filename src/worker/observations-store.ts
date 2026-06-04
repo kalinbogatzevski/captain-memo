@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite';
 import type { Observation, ObservationType, RetrievalSource } from '../shared/types.ts';
 import { applyMigrations } from './migrations.ts';
 import type { Migration } from './migrations.ts';
+import type { TideConfig, TideRow } from './tide.ts';
 import { groupBySimilarity, DEFAULT_SIMILARITY_THRESHOLD } from '../shared/title-similarity.ts';
 
 const SCHEMA = `
@@ -327,9 +328,11 @@ function collapseTop(
 
 export class ObservationsStore {
   private db: Database;
+  private tideConfig: TideConfig | null;
 
-  constructor(path: string, opts?: { readonly?: boolean }) {
+  constructor(path: string, opts?: { readonly?: boolean; tideConfig?: TideConfig }) {
     this.db = new Database(path, opts?.readonly ? { readonly: true } : undefined);
+    this.tideConfig = opts?.tideConfig ?? null;
     if (!opts?.readonly) {
       this.db.exec('PRAGMA journal_mode = WAL;');
       this.db.exec(SCHEMA);
@@ -616,6 +619,37 @@ export class ObservationsStore {
   }
 
   /**
+   * Of the given ids, return a map id → the buoyancy inputs the Tide re-rank needs
+   * (created_at_epoch, last_surfaced_at, stability_days, from_drill, is_anchored).
+   * One indexed `WHERE id IN (…)` — the batched accessor the search hot path uses
+   * so it never does a per-hit findById round-trip inside the recall budget.
+   */
+  tideRowsAmong(ids: number[]): Map<number, TideRow> {
+    if (ids.length === 0) return new Map();
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = this.db
+      .query(
+        `SELECT id, created_at_epoch, last_surfaced_at, stability_days, from_drill, is_anchored
+           FROM observations WHERE id IN (${placeholders})`,
+      )
+      .all(...ids) as Array<{
+        id: number;
+        created_at_epoch: number;
+        last_surfaced_at: number | null;
+        stability_days: number | null;
+        from_drill: number;
+        is_anchored: number;
+      }>;
+    return new Map(rows.map(r => [r.id, {
+      created_at_epoch: r.created_at_epoch,
+      last_surfaced_at: r.last_surfaced_at,
+      stability_days: r.stability_days,
+      from_drill: r.from_drill,
+      is_anchored: r.is_anchored === 1,
+    }]));
+  }
+
+  /**
    * Fold `memberIds` into `survivorId`: add the members' per-source counts onto
    * the survivor, advance the survivor's last_surfaced_at to the group max,
    * archive each member (archived=1, archived_into_theme_id=survivorId), and
@@ -784,6 +818,28 @@ export class ObservationsStore {
     };
     const col = column[source];
     const placeholders = ids.map(() => '?').join(',');
+    const tide = this.tideConfig;
+    if (tide?.enabled) {
+      // Fold the Tide stability strengthening into the SAME single UPDATE. The
+      // expression mirrors tide.ts nextStability() exactly: S_new = S·(1 + gain·
+      // g(source)·fS), with S = COALESCE(stability_days, S0) and rational
+      // saturation fS = cap/(cap+S). Bump ids are always observations, so S0 =
+      // s0.observation. Arithmetic-only — no SQL math extension required.
+      const S0 = tide.s0.observation;
+      const g = tide.src[source];
+      this.db
+        .query(
+          `UPDATE observations
+              SET ${col} = ${col} + 1,
+                  last_surfaced_at = ?,
+                  last_surfaced_source = ?,
+                  stability_days = COALESCE(stability_days, ?)
+                    * (1 + ? * ? * (? * 1.0 / (? + COALESCE(stability_days, ?))))
+            WHERE id IN (${placeholders})`,
+        )
+        .run(atEpoch, source, S0, tide.stabilityGain, g, tide.stabilityCapDays, tide.stabilityCapDays, S0, ...ids);
+      return;
+    }
     this.db
       .query(
         `UPDATE observations
