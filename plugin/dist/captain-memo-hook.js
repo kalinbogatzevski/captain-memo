@@ -635,7 +635,7 @@ init_paths();
 var package_default = {
   name: "captain-memo",
   version: "0.3.2",
-  description: "Local memory layer for Claude Code \u2014 Voyage-embedded, hybrid search, federated remotes",
+  description: "Local memory layer for Claude Code \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
   license: "Apache-2.0",
