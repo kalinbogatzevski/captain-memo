@@ -55,6 +55,10 @@ export interface HybridSearcherOptions {
   rrfK?: number;
   perStrategyTopK?: number;
   getChunk?: (id: string) => Promise<RerankChunk | null>;
+  /** Optional Tide re-rank applied to the FULL post-boost candidate pool BEFORE
+   *  truncation: re-scores by a bounded buoyancy multiplier and re-sorts. Wired
+   *  only when CAPTAIN_MEMO_TIDE_ENABLED=1; absent ⇒ ranking is unchanged. */
+  tideRerank?: <T extends FusedItem>(items: T[]) => T[];
 }
 
 export class HybridSearcher {
@@ -63,6 +67,7 @@ export class HybridSearcher {
   private rrfK: number;
   private perStrategyTopK: number;
   private getChunk: HybridSearcherOptions['getChunk'];
+  private tideRerank: HybridSearcherOptions['tideRerank'];
 
   constructor(opts: HybridSearcherOptions) {
     this.vectorSearch = opts.vectorSearch;
@@ -70,6 +75,7 @@ export class HybridSearcher {
     this.rrfK = opts.rrfK ?? 60;
     this.perStrategyTopK = opts.perStrategyTopK ?? 25;
     this.getChunk = opts.getChunk;
+    this.tideRerank = opts.tideRerank;
   }
 
   async search(embedding: number[], query: string, topK: number, opts?: {
@@ -94,20 +100,24 @@ export class HybridSearcher {
 
     const fused = reciprocalRankFusion([vectorIds, keywordIds], this.rrfK);
 
+    let ranked: BoostedItem[] = fused;
     if (this.getChunk) {
       const identifierBoost = process.env.CAPTAIN_MEMO_IDENTIFIER_BOOST !== '0';
       const branchBoost = process.env.CAPTAIN_MEMO_BRANCH_BOOST !== '0';
       if (identifierBoost || branchBoost) {
-        const reranked = await applyBoosts(fused, {
+        ranked = await applyBoosts(fused, {
           query,
           currentBranch: opts?.currentBranch ?? null,
           getChunk: this.getChunk,
           identifierBoost,
           branchBoost,
         });
-        return reranked.slice(0, topK);
       }
     }
-    return fused.slice(0, topK);
+    // Tide re-rank runs on the FULL post-boost pool BEFORE truncation, so a
+    // near-dormant but exactly-relevant row a drill should rescue is never cut at
+    // the slice before Tide can see it. Absent (Tide off) ⇒ unchanged behaviour.
+    if (this.tideRerank) ranked = this.tideRerank(ranked);
+    return ranked.slice(0, topK);
   }
 }

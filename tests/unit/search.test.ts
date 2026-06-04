@@ -38,6 +38,32 @@ test('reciprocalRankFusion — fused scores normalized to 0-1 range', () => {
   expect(fused[0]!.score).toBeGreaterThanOrEqual(fused[1]!.score);
 });
 
+test('HybridSearcher — tideRerank runs on the FULL pool before truncation', async () => {
+  let seen = 0;
+  const ids = ['a', 'b', 'c', 'd', 'e'];
+  const searcher = new HybridSearcher({
+    vectorSearch: async () => ids.map((id, i) => ({ id, distance: i * 0.1 })),
+    keywordSearch: async () => [],
+    // Reverse the ranking: only possible to surface 'e' at the top if Tide sees
+    // the whole candidate pool BEFORE the slice(0, topK), not the truncated head.
+    tideRerank: (items) => { seen = items.length; return [...items].reverse(); },
+  });
+  const out = await searcher.search([0.1], 'q', 2);
+  expect(seen).toBe(5);            // saw the full pool, not the truncated 2
+  expect(out).toHaveLength(2);
+  expect(out[0]!.id).toBe('e');    // reversal won → Tide applied before the slice
+});
+
+test('HybridSearcher — without tideRerank, behaviour is unchanged (top-K by fusion)', async () => {
+  const ids = ['a', 'b', 'c', 'd', 'e'];
+  const searcher = new HybridSearcher({
+    vectorSearch: async () => ids.map((id, i) => ({ id, distance: i * 0.1 })),
+    keywordSearch: async () => [],
+  });
+  const out = await searcher.search([0.1], 'q', 2);
+  expect(out.map(o => o.id)).toEqual(['a', 'b']);  // best fusion ranks lead, untouched
+});
+
 test('HybridSearcher — fuses vector + keyword results', async () => {
   const searcher = new HybridSearcher({
     vectorSearch: async () => [
