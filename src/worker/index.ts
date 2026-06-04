@@ -13,6 +13,7 @@ import { FileWatcher } from './watcher.ts';
 import { ObservationQueue } from './observation-queue.ts';
 import { ObservationsStore } from './observations-store.ts';
 import type { RecallQuery, RecallView, RecallSort } from './observations-store.ts';
+import { loadTideConfig, computeBuoyancy, tideMultiplier } from './tide.ts';
 import { PendingEmbedQueue } from './pending-embed-queue.ts';
 import { chunkObservation } from './chunkers/observation.ts';
 import { splitForEmbed } from './chunkers/safe-split.ts';
@@ -276,6 +277,40 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     };
   };
 
+  // Tide (A7) memory-lifecycle re-rank. Inert unless CAPTAIN_MEMO_TIDE_ENABLED=1.
+  // Resolves each candidate to its observation row (observation channel only —
+  // memory/skill are anchored at ×1.0), batches the buoyancy inputs via the single
+  // tideRowsAmong query, multiplies the fused score by the bounded buoyancy factor,
+  // and re-sorts. obsStore is referenced lazily — the closure only runs at search
+  // time, long after obsStore is constructed below.
+  const tideConfig = loadTideConfig(process.env);
+  const tideRerankFn = <T extends { id: string; score: number }>(items: T[]): T[] => {
+    if (!obsStore || items.length === 0) return items;
+    const oidByItem = new Map<T, number>();
+    const oids: number[] = [];
+    for (const item of items) {
+      const lookup = meta.getChunkById(item.id);
+      if (!lookup || lookup.document.channel !== 'observation') continue; // anchored ⇒ ×1
+      const oid = (lookup.chunk.metadata as { observation_id?: unknown }).observation_id;
+      if (typeof oid !== 'number') continue;
+      oidByItem.set(item, oid);
+      oids.push(oid);
+    }
+    if (oids.length === 0) return items;
+    const rows = obsStore.tideRowsAmong(oids);
+    const now = Math.floor(Date.now() / 1000);
+    const rescored = items.map(item => {
+      const oid = oidByItem.get(item);
+      if (oid === undefined) return item;            // non-observation ⇒ unchanged (×1)
+      const row = rows.get(oid);
+      if (!row) return item;
+      const mult = tideMultiplier(computeBuoyancy(row, now, tideConfig), tideConfig);
+      return { ...item, score: item.score * mult };
+    });
+    rescored.sort((a, b) => b.score - a.score);
+    return rescored;
+  };
+
   const searcher = new HybridSearcher({
     vectorSearch: async (embedding, topK) => {
       if (opts.skipEmbed || embedding.length === 0) return [];
@@ -284,6 +319,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     },
     keywordSearch: async (query, topK) => meta.searchKeyword(query, topK),
     getChunk,
+    ...(tideConfig.enabled ? { tideRerank: tideRerankFn } : {}),
   });
 
   const effectiveMaxInputTokens = opts.embedderMaxInputTokens ?? embedderMaxTokens(opts.embedderModel);
@@ -413,7 +449,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     ? new ObservationQueue(opts.observationQueueDbPath)
     : null;
   const obsStore = opts.observationsDbPath
-    ? new ObservationsStore(opts.observationsDbPath, { readonly: !!opts.readOnly })
+    ? new ObservationsStore(opts.observationsDbPath, { readonly: !!opts.readOnly, tideConfig })
     : null;
   const pendingEmbed = !opts.readOnly && opts.pendingEmbedDbPath
     ? new PendingEmbedQueue(opts.pendingEmbedDbPath)
@@ -779,7 +815,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     const branchBoostEnabled = process.env.CAPTAIN_MEMO_BRANCH_BOOST !== '0';
     const currentBranch = branchBoostEnabled ? detectBranchSyncCached(process.cwd()) : null;
     const raw = await searcher.search(embedding, query, k, { currentBranch });
-    return applyRecencyDecay(raw);
+    // Tide (when enabled) re-ranks INSIDE searcher.search, before truncation — so
+    // skip the flat recency decay here to avoid double-applying. Disabled ⇒ today's path.
+    return tideConfig.enabled ? raw : applyRecencyDecay(raw);
   };
 
   const searchByChannel = async (
