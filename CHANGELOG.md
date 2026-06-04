@@ -5,6 +5,26 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.3.1] — 2026-06-04
+
+### Fixed
+- **Threaded worker (`CAPTAIN_MEMO_WORKER_THREADED=1`) now starts on Windows.** Its
+  integration test spawned the worker from a path built with `URL.pathname`, which on
+  Windows is `/C:/…/index.ts` — a leading slash before the drive that `bun <path>` cannot
+  resolve. The spawned worker exited with *"Module not found"* before it ever bound a port,
+  so the test timed out as "never healthy" (Windows CI only; Linux was never affected
+  because there `URL.pathname` is already a valid absolute path). The path is now built with
+  `fileURLToPath`, and the engine thread is spawned from a `URL` object (the portable form)
+  instead of a `file://` string.
+
+### Added
+- **The threaded flag is now always safe to enable.** If the engine thread cannot come up —
+  the Worker constructor throws, it crash-loops past the supervisor cap, or it never posts a
+  first heartbeat — the worker now **falls back to the single-threaded path inline** rather
+  than leaving a dead, never-listening process. Engine spawn / `error` / `fatal` events are
+  also logged now (they were previously swallowed), so a failed engine is visible in the
+  worker log. Default-off; the single-threaded path is unchanged.
+
 ## [0.3.0] — 2026-06-03
 
 ### Added

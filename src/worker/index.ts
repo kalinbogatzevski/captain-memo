@@ -1683,8 +1683,10 @@ export async function runWorkerCli(): Promise<void> {
   const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
   if (process.env.CAPTAIN_MEMO_WORKER_THREADED === '1') {
     const { startThreadedWorker } = await import('./threaded-main.ts');
+    // startThreadedWorker logs its own "listening … (threaded: …)" line on success, or a
+    // single-threaded-fallback line if the engine can't come up — so the message always
+    // reflects the path that actually bound the port.
     const handle = await startThreadedWorker(port);
-    console.log(`[worker] listening on http://localhost:${handle.port} (threaded: thin HTTP main + engine thread)`);
     const shutdown = async () => { await handle.stop(); process.exit(0); };
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);

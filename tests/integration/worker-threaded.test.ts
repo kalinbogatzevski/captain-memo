@@ -2,8 +2,13 @@ import { test, expect, afterAll } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { fileURLToPath } from 'url';
 
-const WORKER = new URL('../../src/worker/index.ts', import.meta.url).pathname;
+// fileURLToPath (not URL.pathname): on Windows `.pathname` is "/C:/…/index.ts"
+// (leading slash before the drive), which `bun <path>` cannot resolve — the
+// spawned worker dies with "Module not found" and never binds, so the test
+// times out at "never healthy". fileURLToPath yields a real "C:\…" path.
+const WORKER = fileURLToPath(new URL('../../src/worker/index.ts', import.meta.url));
 const procs: Array<{ kill: () => void }> = []; const dirs: string[] = [];
 afterAll(() => { for (const p of procs) try { p.kill(); } catch {} for (const d of dirs) try { rmSync(d, { recursive: true, force: true }); } catch {} });
 
