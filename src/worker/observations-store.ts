@@ -100,6 +100,26 @@ export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
       db.exec('ALTER TABLE observations ADD COLUMN last_surfaced_source TEXT');
     },
   },
+  {
+    // v8 — Tide memory-lifecycle scaffold (A7). Adds the per-row stability and
+    // lifecycle-state columns the Tide model needs. INERT until
+    // CAPTAIN_MEMO_TIDE_ENABLED=1: every column has a benign default
+    // (tide_state='active', is_anchored=0, stability_days=NULL ⇒ seed from the
+    // channel S0 at read time), so a migrated DB behaves exactly as before until
+    // Tide is switched on. Partial index mirrors the v6 archived trick — only the
+    // non-active minority is indexed, so the default 'active' path stays index-free.
+    //
+    // Spec: docs/tide-quartermaster.md (Track A7).
+    version: 8,
+    name: 'add_tide_lifecycle',
+    up: (db) => {
+      db.exec('ALTER TABLE observations ADD COLUMN stability_days REAL');
+      db.exec("ALTER TABLE observations ADD COLUMN tide_state TEXT NOT NULL DEFAULT 'active'");
+      db.exec('ALTER TABLE observations ADD COLUMN tide_state_changed_at INTEGER');
+      db.exec('ALTER TABLE observations ADD COLUMN is_anchored INTEGER NOT NULL DEFAULT 0');
+      db.exec("CREATE INDEX IF NOT EXISTS idx_obs_tide_state ON observations(tide_state) WHERE tide_state != 'active'");
+    },
+  },
 ];
 
 export type NewObservation = Omit<
@@ -109,6 +129,7 @@ export type NewObservation = Omit<
   | 'from_auto' | 'from_search' | 'from_drill'
   | 'last_surfaced_at' | 'last_surfaced_source'
   | 'archived' | 'archived_into_theme_id' | 'theme_member_ids'
+  | 'stability_days' | 'tide_state' | 'tide_state_changed_at' | 'is_anchored'
 >;
 
 /** Per-source breakdown for one observation in the top lists. */
@@ -369,6 +390,12 @@ export class ObservationsStore {
       theme_member_ids: typeof row.theme_member_ids === 'string'
         ? (JSON.parse(row.theme_member_ids) as number[])
         : null,
+      stability_days: typeof row.stability_days === 'number' ? row.stability_days : null,
+      tide_state: row.tide_state === 'dormant' || row.tide_state === 'archived'
+        ? row.tide_state : 'active',
+      tide_state_changed_at:
+        typeof row.tide_state_changed_at === 'number' ? row.tide_state_changed_at : null,
+      is_anchored: row.is_anchored === 1 || row.is_anchored === true,
     };
   }
 

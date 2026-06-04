@@ -137,6 +137,17 @@ export interface Observation {
   /** JSON-encoded array of member observation ids — populated only when
    *  type='theme'. NULL on every non-theme row. */
   theme_member_ids: number[] | null;
+  /** v8 Tide lifecycle (A7). DSR stability in days — resistance to forgetting;
+   *  only ever increases, only on recall. NULL ⇒ use the channel S0 default at
+   *  read time. Written only on the writer inside bumpRetrieval when Tide is on. */
+  stability_days: number | null;
+  /** v8 Tide lifecycle tier. Separate from the v6 `archived` dedup flag; stays
+   *  'active' until Phase 2 enables auto transitions (dormant/archived). */
+  tide_state: 'active' | 'dormant' | 'archived';
+  /** Epoch seconds of the last tide_state change, or null. Audit + hysteresis. */
+  tide_state_changed_at: number | null;
+  /** TRUE for a pinned/directive observation that must never ebb (anchored). */
+  is_anchored: boolean;
 }
 
 /** Default retrieval-provenance + Dreaming-scaffold fields for an observation
@@ -155,6 +166,10 @@ export const UNSURFACED_OBSERVATION_FIELDS = {
   archived: false,
   archived_into_theme_id: null,
   theme_member_ids: null,
+  stability_days: null,
+  tide_state: 'active',
+  tide_state_changed_at: null,
+  is_anchored: false,
 } satisfies Partial<Observation>;
 
 /** Provenance tag for a retrieval bump.

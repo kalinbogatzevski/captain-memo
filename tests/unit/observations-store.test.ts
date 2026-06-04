@@ -43,6 +43,32 @@ test('ObservationsStore — insert returns row id and find roundtrips', () => {
   expect(got!.concepts).toEqual(['off-by-one']);
 });
 
+test('ObservationsStore — migration v8 adds Tide lifecycle columns + partial index', () => {
+  const db = new Database(join(workDir, 'observations.db'));
+  const cols = db.query('PRAGMA table_info(observations)').all() as Array<{ name: string; dflt_value: unknown }>;
+  const byName = new Map(cols.map(c => [c.name, c]));
+
+  // New columns exist
+  expect(byName.has('stability_days')).toBe(true);
+  expect(byName.has('tide_state')).toBe(true);
+  expect(byName.has('tide_state_changed_at')).toBe(true);
+  expect(byName.has('is_anchored')).toBe(true);
+
+  // Correct defaults (PRAGMA reports the literal SQL default text)
+  expect(String(byName.get('tide_state')!.dflt_value)).toContain('active');
+  expect(Number(byName.get('is_anchored')!.dflt_value)).toBe(0);
+  // stability_days is nullable with no default (NULL ⇒ seed from channel S0 at read time)
+  expect(byName.get('stability_days')!.dflt_value).toBeNull();
+
+  // Partial index exists (mirrors the v6 archived pattern)
+  const idx = db.query("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_obs_tide_state'").all();
+  expect(idx.length).toBe(1);
+
+  // v8 recorded as applied
+  expect(getAppliedVersions(db).some(v => v.version === 8)).toBe(true);
+  db.close();
+});
+
 test('ObservationsStore — listForSession returns chronological order', () => {
   store.insert({
     session_id: 's1', project_id: 'p1', prompt_number: 2,
@@ -94,8 +120,8 @@ test('ObservationsStore — schema_versions records all migrations after constru
   const db = new Database(join(workDir, 'observations.db'), { readonly: true });
   const rows = getAppliedVersions(db);
   db.close();
-  expect(rows).toHaveLength(7);
-  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+  expect(rows).toHaveLength(8);
+  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
   expect(rows.map(r => r.name)).toEqual([
     'add_branch',
     'add_work_tokens',
@@ -104,6 +130,7 @@ test('ObservationsStore — schema_versions records all migrations after constru
     'add_retrieval_provenance',
     'add_dreaming_scaffold',
     'add_last_surfaced_source',
+    'add_tide_lifecycle',
   ]);
   store = new ObservationsStore(join(workDir, 'observations.db'));
 });
