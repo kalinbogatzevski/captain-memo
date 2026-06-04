@@ -22,7 +22,7 @@ It is local-first: the corpus lives on this machine, not in a vendor cloud.
 
 ## How to search (MCP tools)
 - **`search_all`** — start here. Unified natural-language search across project memory + skills + past
-  observations (+ federated remote peers, if linked). Pass a `query`.
+  observations. Pass a `query`.
 - **`search_observations`** — only captured session observations (what was done/learned), with
   `type` / `files` filters.
 - **`search_memory`** — curated user/project memory files.
