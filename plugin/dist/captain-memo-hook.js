@@ -634,8 +634,8 @@ init_paths();
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.4.0",
-  description: "Local memory layer for Claude Code \u2014 Voyage-embedded, hybrid search",
+  version: "0.5.0",
+  description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
   license: "Apache-2.0",

@@ -5,6 +5,18 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.5.0] — 2026-06-04
+
+### Added
+- **Cross-AI memory — one corpus, many AI tools.** The worker is agent-agnostic and ships an MCP
+  server, so any MCP-speaking coding agent can share the *same* local memory the way Claude Code does.
+  This release adds a portable **skill** (`skills/captain-memo/SKILL.md` — one file that loads in Claude
+  Code, Codex, and Gemini CLI alike) that tells the model when to recall, plus a setup guide
+  (`docs/cross-ai-tools.md`) for wiring up **Codex** (`codex mcp add`), **Gemini CLI**
+  (`gemini mcp add --trust`), and **Cursor**. Verified live: Codex *and* Gemini CLI both recalled an
+  observation Claude Code had captured, from the same worker — no duplicated store. The MCP tools are
+  recall-only (search + drill); capture stays automatic where the tool has lifecycle hooks.
+
 ## [0.4.0] — 2026-06-04
 
 ### Added
