@@ -5,6 +5,29 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.5.4] — 2026-06-05
+
+### Added
+- **Tide tiering (opt-in).** Idle, low-buoyancy observations now auto-demote through a lifecycle —
+  `active → dormant → archived` — via a bounded, heartbeat-safe background sweep. **Dormant and
+  archived rows are never deleted and never de-indexed**: they're excluded from the default
+  auto-injected context but stay fully reachable (down-ranked) in explicit `/search`, and a single
+  recall re-floats them. Strong guardrails: any observation ever drilled into (`get_full`) is
+  permanently protected from auto-ebb, plus age gates (default 90d to dormant, 180d to archived) and
+  hysteresis. Archive is the worst automatic outcome — deletion stays manual. **Off by default**
+  (`CAPTAIN_MEMO_TIDE_TIERING=1` to enable); the v0.5.3 read-time re-rank is unaffected and stays on.
+- **`captain-memo restore <id>`** — re-surface a sunk observation (distinguishes a real restore from
+  an already-active no-op from a non-existent id). **`captain-memo observation sunk [--archived|--ebbed]`**
+  lists the dormant/archived tiers. The stats panel shows tiering on/off.
+- **Tiering config (all optional):** `CAPTAIN_MEMO_TIDE_TIERING`, `_EBB_THRESHOLD` (`0.30`),
+  `_SURFACE_THRESHOLD` (`0.70`), `_ARCHIVE_THRESHOLD` (`0.05`), `_AGE_FLOOR_DAYS` (`90`),
+  `_ARCHIVE_AGE_DAYS` (`180`), `_SWEEP_BATCH` (`256`), `_SWEEP_MS` (`60000`).
+
+### Changed
+- **Friendlier CLI errors when the worker is down.** A dead-worker connection now prints an
+  actionable "worker not reachable — start with `bun run worker:start`" hint with a non-zero exit,
+  instead of a raw stack trace (applies to every command).
+
 ## [0.5.3] — 2026-06-05
 
 ### Added
