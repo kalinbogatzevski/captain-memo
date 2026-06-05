@@ -321,8 +321,8 @@ test('ObservationsStore — schema_versions records all migrations after constru
   const db = new Database(join(workDir, 'observations.db'), { readonly: true });
   const rows = getAppliedVersions(db);
   db.close();
-  expect(rows).toHaveLength(9);
-  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  expect(rows).toHaveLength(10);
+  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   expect(rows.map(r => r.name)).toEqual([
     'add_branch',
     'add_work_tokens',
@@ -333,6 +333,7 @@ test('ObservationsStore — schema_versions records all migrations after constru
     'add_last_surfaced_source',
     'add_tide_lifecycle',
     'add_merge_events',
+    'add_qm_runs',
   ]);
   store = new ObservationsStore(join(workDir, 'observations.db'));
 });
@@ -926,6 +927,142 @@ test('mergeDuplicateGroup — still folds same-project+branch members (positive 
   expect(store.findById(survivor)!.from_search).toBe(17);   // 10 + 7
   expect(store.findById(survivor)!.theme_member_ids).toEqual([member]);
   expect(store.findById(member)!.archived).toBe(true);
+});
+
+// ── v10: qm_runs audit table + bounded dedup window + anchor/protection ──
+
+test('ObservationsStore — migration v10 adds qm_runs audit table', () => {
+  const db = new Database(join(workDir, 'observations.db'));
+  const tbl = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='qm_runs'").all();
+  expect(tbl.length).toBe(1);
+
+  const cols = db.query('PRAGMA table_info(qm_runs)').all() as Array<{ name: string; dflt_value: unknown }>;
+  const byName = new Map(cols.map(c => [c.name, c]));
+  for (const c of ['id', 'job', 'started_at_epoch', 'finished_at_epoch',
+                   'rows_scanned', 'merges', 'aborted_for_ingest']) {
+    expect(byName.has(c)).toBe(true);
+  }
+  expect(Number(byName.get('rows_scanned')!.dflt_value)).toBe(0);
+  expect(Number(byName.get('merges')!.dflt_value)).toBe(0);
+  expect(Number(byName.get('aborted_for_ingest')!.dflt_value)).toBe(0);
+
+  // v10 recorded as applied
+  expect(getAppliedVersions(db).some(v => v.version === 10)).toBe(true);
+  db.close();
+});
+
+// dedupCandidateWindow scopes the candidate SELECT to a recency-bounded window:
+// a near-dup pair OUTSIDE the window must NOT group; a near-dup pair INSIDE must.
+test('dedupCandidateWindow — only considers rows inside the recent window', () => {
+  const windowLimit = 4;
+  const db = new Database(join(workDir, 'observations.db'));
+
+  // INSIDE the window: a fresh near-dup pair (most-recently surfaced).
+  const inA = seedSurfaced(store, 'update-status skill command verified and available', 'discovery', 1, 0, 0, 100);
+  const inB = seedSurfaced(store, 'update-status skill command is available', 'discovery', 1, 0, 0, 100);
+  // Push their recency to the top of the window.
+  db.query('UPDATE observations SET last_surfaced_at = ? WHERE id = ?').run(9_000, inA);
+  db.query('UPDATE observations SET last_surfaced_at = ? WHERE id = ?').run(9_001, inB);
+
+  // Filler surfaced rows that occupy window slots but don't form a dup group,
+  // newer than the OUTSIDE pair so they're inside the LIMIT before it.
+  for (let i = 0; i < windowLimit; i++) {
+    const f = seedSurfaced(store, `distinct filler observation number ${i} alpha beta`, 'feature', 1, 0, 0, 100);
+    db.query('UPDATE observations SET last_surfaced_at = ? WHERE id = ?').run(5_000 + i, f);
+  }
+
+  // OUTSIDE the window: an OLD near-dup pair (least-recently surfaced) — beyond
+  // the windowLimit, so the bounded SELECT never pulls them in.
+  const outA = seedSurfaced(store, 'quartermaster sweep ran to completion successfully', 'discovery', 1, 0, 0, 100);
+  const outB = seedSurfaced(store, 'quartermaster sweep ran to completion ok', 'discovery', 1, 0, 0, 100);
+  db.query('UPDATE observations SET last_surfaced_at = ? WHERE id = ?').run(1_000, outA);
+  db.query('UPDATE observations SET last_surfaced_at = ? WHERE id = ?').run(1_001, outB);
+  db.close();
+
+  const groups = store.dedupCandidateWindow(0.5, windowLimit);
+
+  // The INSIDE pair groups together (both are in the freshest window).
+  const inGroup = groups.find(g => [g.survivor.id, ...g.members.map(m => m.id)].includes(inA));
+  expect(inGroup).toBeDefined();
+  expect([inGroup!.survivor.id, ...inGroup!.members.map(m => m.id)].sort((x, y) => x - y))
+    .toEqual([inA, inB].sort((x, y) => x - y));
+
+  // The OUTSIDE pair never appears — neither row was pulled into the window.
+  for (const g of groups) {
+    const ids = [g.survivor.id, ...g.members.map(m => m.id)];
+    expect(ids.includes(outA)).toBe(false);
+    expect(ids.includes(outB)).toBe(false);
+  }
+});
+
+test('dedupCandidateWindow — inherits the (project, branch) scope + negation guards', () => {
+  // Cross-project near-dup pair (both fresh, inside the window) must NOT group.
+  const a = seedSurfacedScoped('shared exact title words here now', 'projA', null, 5);
+  const b = seedSurfacedScoped('shared exact title words here now', 'projB', null, 4);
+  // Negation pair in the same project — must NOT fold (shared mergeBlocked guard).
+  const neg1 = seedSurfacedScoped('Inspected users table thoroughly', 'p1', null, 5);
+  const neg2 = seedSurfacedScoped('users table missing thoroughly', 'p1', null, 3);
+
+  const groups = store.dedupCandidateWindow(0.5, 100);
+  for (const g of groups) {
+    const ids = [g.survivor.id, ...g.members.map(m => m.id)];
+    expect(ids.includes(a) && ids.includes(b)).toBe(false);      // cross-project
+    expect(ids.includes(neg1) && ids.includes(neg2)).toBe(false); // negation
+  }
+});
+
+test('markAnchored + isProtected — anchoring pins a row; drilled rows are protected', () => {
+  const plain = mkObs(store, 'plain row');
+  const anchored = mkObs(store, 'to be anchored');
+  const drilled = mkObs(store, 'drilled row');
+
+  // Unprotected at the start.
+  expect(store.isProtected(plain)).toBe(false);
+  expect(store.isProtected(anchored)).toBe(false);
+  expect(store.isProtected(drilled)).toBe(false);
+
+  // markAnchored sets is_anchored = 1 → protected.
+  store.markAnchored(anchored);
+  expect(store.findById(anchored)!.is_anchored).toBe(true);
+  expect(store.isProtected(anchored)).toBe(true);
+
+  // from_drill > 0 → protected.
+  store.bumpRetrieval([drilled], 'drill', 1_000);
+  expect(store.isProtected(drilled)).toBe(true);
+
+  // A surfaced-but-not-drilled, not-anchored row is NOT protected.
+  store.bumpRetrieval([plain], 'auto', 1_000);
+  expect(store.isProtected(plain)).toBe(false);
+
+  // Missing row → false.
+  expect(store.isProtected(999_999)).toBe(false);
+});
+
+test('recordQmRun + latestQmRuns — records audit rows, newest first', () => {
+  store.recordQmRun({
+    job: 'dedup', startedAt: 1_000, finishedAt: 1_050,
+    rowsScanned: 40, merges: 3, abortedForIngest: false,
+  });
+  store.recordQmRun({
+    job: 'dedup', startedAt: 2_000, finishedAt: null,
+    rowsScanned: 12, merges: 0, abortedForIngest: true,
+  });
+
+  const latest = store.latestQmRuns(1);
+  expect(latest).toHaveLength(1);
+  const r = latest[0]!;
+  expect(r.job).toBe('dedup');
+  expect(r.startedAt).toBe(2_000);
+  expect(r.finishedAt).toBeNull();
+  expect(r.rowsScanned).toBe(12);
+  expect(r.merges).toBe(0);
+  expect(r.abortedForIngest).toBe(true);   // stored 1 → boolean true
+
+  // Both rows present, newest (id desc) first; booleans round-trip.
+  const both = store.latestQmRuns(10);
+  expect(both.map(x => x.startedAt)).toEqual([2_000, 1_000]);
+  expect(both[1]!.finishedAt).toBe(1_050);
+  expect(both[1]!.abortedForIngest).toBe(false);
 });
 
 test('ObservationsStore — countMissingStoredTokens / listMissingStoredTokens', () => {

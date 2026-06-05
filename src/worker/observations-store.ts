@@ -150,6 +150,27 @@ export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_merge_events_survivor ON merge_events(survivor_id) WHERE undone = 0');
     },
   },
+  {
+    // v10 — Quartermaster auto-dedup audit trail. One row per scheduled job run,
+    // capturing how much it scanned, how many groups it merged, and whether it
+    // bailed early to yield to a live ingest. Pure audit/observability — nothing
+    // in the live recall path reads it. Spec: docs/tide-quartermaster.md.
+    version: 10,
+    name: 'add_qm_runs',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS qm_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          job TEXT NOT NULL,
+          started_at_epoch INTEGER NOT NULL,
+          finished_at_epoch INTEGER,
+          rows_scanned INTEGER NOT NULL DEFAULT 0,
+          merges INTEGER NOT NULL DEFAULT 0,
+          aborted_for_ingest INTEGER NOT NULL DEFAULT 0
+        )
+      `);
+    },
+  },
 ];
 
 export type NewObservation = Omit<
@@ -265,6 +286,23 @@ export interface DuplicateEntry {
 export interface DuplicateGroup {
   survivor: DuplicateEntry;
   members: DuplicateEntry[];
+}
+
+/** Audit input for one Quartermaster job run (recordQmRun). Booleans are stored
+ *  as 0/1; `finishedAt` is null while a run is in flight. */
+export interface QmRunInput {
+  job: string;
+  startedAt: number;
+  finishedAt: number | null;
+  rowsScanned: number;
+  merges: number;
+  abortedForIngest: boolean;
+}
+
+/** One persisted Quartermaster run (latestQmRuns). Mirrors QmRunInput plus the
+ *  row id; `abortedForIngest` is rehydrated back to a boolean. */
+export interface QmRun extends QmRunInput {
+  id: number;
 }
 
 /** Narrow an unknown DB cell to a RetrievalSource. */
@@ -933,12 +971,47 @@ export class ObservationsStore {
           ORDER BY (from_auto + from_search + from_drill) DESC, id ASC`,
       )
       .all() as Array<RawTopRow & { project_id: string; branch: string | null }>;
+    return this.groupSurfacedRows(rows, threshold);
+  }
+
+  /**
+   * Like findDuplicateGroups, but over a BOUNDED, recency-limited window — never
+   * a whole-corpus scan. The Quartermaster's auto-dedup job calls this so each
+   * pass touches only the `windowLimit` most-recently-active surfaced rows
+   * (COALESCE(last_surfaced_at, created_at_epoch) DESC). Same partition + group +
+   * map as findDuplicateGroups (shared groupSurfacedRows), so the (project,
+   * branch) scoping and the negation/identifier merge guard apply identically.
+   */
+  dedupCandidateWindow(titleThreshold: number, windowLimit: number): DuplicateGroup[] {
+    const rows = this.db
+      .query(
+        `SELECT id, type, title, project_id, branch, from_auto, from_search, from_drill
+           FROM observations
+          WHERE archived = 0 AND (from_auto + from_search + from_drill) > 0
+          ORDER BY COALESCE(last_surfaced_at, created_at_epoch) DESC
+          LIMIT ?`,
+      )
+      .all(windowLimit) as Array<RawTopRow & { project_id: string; branch: string | null }>;
+    return this.groupSurfacedRows(rows, titleThreshold);
+  }
+
+  /**
+   * Shared near-dup grouper for both findDuplicateGroups (full surfaced set) and
+   * dedupCandidateWindow (bounded window). Partitions by (project_id, branch) so
+   * a group never spans two projects or branches — folding across scopes corrupts
+   * the survivor's counters — then groups each partition by title similarity with
+   * the negation/identifier merge guard, keeping only multi-member groups. The
+   * survivor is each group's representative (highest-count row, since callers feed
+   * rows count-desc within a partition).
+   */
+  private groupSurfacedRows(
+    rows: Array<RawTopRow & { project_id: string; branch: string | null }>,
+    threshold: number,
+  ): DuplicateGroup[] {
     const toEntry = (r: RawTopRow): DuplicateEntry => ({
       id: r.id, type: r.type as ObservationType, title: r.title,
       total: r.from_auto + r.from_search + r.from_drill,
     });
-    // Partition by (project_id, branch) so a dup group never spans two projects
-    // or two branches — folding across scopes corrupts the survivor's counters.
     const partitions = new Map<string, typeof rows>();
     for (const r of rows) {
       const key = JSON.stringify([r.project_id, r.branch]);
@@ -953,6 +1026,58 @@ export class ObservationsStore {
       }
     }
     return out;
+  }
+
+  /** Pin a row so the Tide/Quartermaster never ebbs or folds it. */
+  markAnchored(id: number): void {
+    this.db.query('UPDATE observations SET is_anchored = 1 WHERE id = ?').run(id);
+  }
+
+  /**
+   * Whether a row is protected from auto-dedup folding: it has been drilled into
+   * (from_drill > 0) or is explicitly anchored (is_anchored = 1). A missing row
+   * is not protected (false) — the caller treats an unknown id as fold-eligible.
+   */
+  isProtected(id: number): boolean {
+    const row = this.db
+      .query('SELECT from_drill, is_anchored FROM observations WHERE id = ?')
+      .get(id) as { from_drill: number; is_anchored: number } | undefined;
+    if (!row) return false;
+    return row.from_drill > 0 || row.is_anchored === 1;
+  }
+
+  /** Append one Quartermaster run to the qm_runs audit table (booleans as 0/1). */
+  recordQmRun(run: QmRunInput): void {
+    this.db
+      .query(
+        `INSERT INTO qm_runs
+           (job, started_at_epoch, finished_at_epoch, rows_scanned, merges, aborted_for_ingest)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(run.job, run.startedAt, run.finishedAt, run.rowsScanned, run.merges,
+        run.abortedForIngest ? 1 : 0);
+  }
+
+  /** The n most-recent Quartermaster runs (id desc), rehydrated to QmRun objects. */
+  latestQmRuns(n: number): QmRun[] {
+    const rows = this.db
+      .query(
+        `SELECT id, job, started_at_epoch, finished_at_epoch, rows_scanned, merges, aborted_for_ingest
+           FROM qm_runs ORDER BY id DESC LIMIT ?`,
+      )
+      .all(n) as Array<{
+        id: number; job: string; started_at_epoch: number; finished_at_epoch: number | null;
+        rows_scanned: number; merges: number; aborted_for_ingest: number;
+      }>;
+    return rows.map(r => ({
+      id: r.id,
+      job: r.job,
+      startedAt: r.started_at_epoch,
+      finishedAt: typeof r.finished_at_epoch === 'number' ? r.finished_at_epoch : null,
+      rowsScanned: r.rows_scanned,
+      merges: r.merges,
+      abortedForIngest: r.aborted_for_ingest === 1,
+    }));
   }
 
   /** Survivor ids with un-undone ledger rows — the set `dedup --undo` reverses. */
