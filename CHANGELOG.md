@@ -5,6 +5,35 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.5.3] — 2026-06-05
+
+### Added
+- **Tide — memory-lifecycle re-ranking (on by default).** Observation search results are now
+  re-ranked by *buoyancy* — how afloat a memory is in its own right, from recall recency and a
+  slow-moving per-row *stability* that only grows when a memory is recalled. Buoyancy is applied as a
+  **bounded** post-fusion multiplier `B0 + (1−B0)·buoyancy` (floor `B0 = 0.30`), so a stale-but-relevant
+  hit is gently demoted but **never** buried under a fresh-but-irrelevant one — relevance always
+  dominates. A single recall re-floats a long-dormant memory (its stability survived the dormancy).
+  The MVP only re-ranks and strengthens; it never moves, hides, or deletes anything.
+- **Tide panel in `/stats`, `captain-memo stats`, `top`, and the TUI.** Shows whether Tide is on,
+  the relevance floor, how many observations have been strengthened (the live signal — it ticks up
+  with use), the max stability reached, and the lifecycle-tier breakdown (active / dormant / archived).
+- **Tide config (all optional, sensible defaults):** `CAPTAIN_MEMO_TIDE_ENABLED` (default on),
+  `CAPTAIN_MEMO_TIDE_RELEVANCE_FLOOR` (`0.30`), `CAPTAIN_MEMO_TIDE_S0_OBSERVATION_DAYS`/`_MEMORY_DAYS`/`_SKILL_DAYS`,
+  `CAPTAIN_MEMO_TIDE_W20`, `CAPTAIN_MEMO_TIDE_SRC_AUTO`/`_SEARCH`/`_DRILL`, `CAPTAIN_MEMO_TIDE_STAB_GAIN`,
+  `CAPTAIN_MEMO_TIDE_STAB_CAP_DAYS`. Every threshold is config-driven — none are code constants.
+
+### Changed
+- **Observation search re-rank now uses Tide instead of the older flat recency decay.** The previous
+  decay (`exp(−ln2·age/90d)`, floor 0) could fully zero a relevant-but-old hit; Tide's bounded
+  multiplier (floor 0.30) is strictly gentler on relevance and carries **zero data movement**.
+  Prefer the old behaviour? Set `CAPTAIN_MEMO_TIDE_ENABLED=0` and restart the worker.
+
+### Database
+- **Migration v8 (`add_tide_lifecycle`) — additive and safe.** Adds `stability_days`, `tide_state`,
+  `tide_state_changed_at`, `is_anchored`, and a partial index on the non-default tier. Applies
+  automatically on first start; no reindex, no re-embedding.
+
 ## [0.5.2] — 2026-06-05
 
 ### Fixed
