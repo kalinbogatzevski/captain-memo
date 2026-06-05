@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite';
 import type { Observation, ObservationType, RetrievalSource } from '../shared/types.ts';
 import { applyMigrations } from './migrations.ts';
 import type { Migration } from './migrations.ts';
-import type { TideConfig, TideRow } from './tide.ts';
+import type { TideConfig, TideRow, TideState } from './tide.ts';
 import { groupBySimilarity, DEFAULT_SIMILARITY_THRESHOLD } from '../shared/title-similarity.ts';
 
 const SCHEMA = `
@@ -691,6 +691,100 @@ export class ObservationsStore {
   }
 
   /**
+   * Of the given ids, return the subset that is *sunk* (tide_state ∈ {dormant,
+   * archived}) — the set excluded from the auto-inject default candidate set.
+   * Rides the partial index `idx_obs_tide_state` (WHERE tide_state != 'active').
+   * Distinct from `archivedAmong` (the v6 dedup `archived` flag, routed through
+   * dropArchived); sunk rows stay in /search, down-ranked, one recall from surfacing.
+   */
+  sunkAmong(ids: number[]): Set<number> {
+    if (ids.length === 0) return new Set();
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = this.db
+      .query(`SELECT id FROM observations WHERE tide_state != 'active' AND id IN (${placeholders})`)
+      .all(...ids) as Array<{ id: number }>;
+    return new Set(rows.map(r => r.id));
+  }
+
+  /** Set a row's lifecycle tier (writer-only). Stamps tide_state_changed_at for the audit trail. */
+  setTideState(id: number, state: TideState, atEpoch: number): void {
+    this.db
+      .query('UPDATE observations SET tide_state = ?, tide_state_changed_at = ? WHERE id = ?')
+      .run(state, atEpoch, id);
+  }
+
+  /**
+   * Restore a sunk row to active (the per-row reversal the CLI exposes). Three-way so
+   * the caller can tell a real restore from a harmless no-op from a typo'd id — the
+   * last distinction matters because restore is the user's manual recovery lever and a
+   * "not found" must never read as "already fine".
+   */
+  restoreObservation(id: number, atEpoch: number): 'restored' | 'already_active' | 'not_found' {
+    const row = this.db.query('SELECT tide_state FROM observations WHERE id = ?').get(id) as
+      { tide_state: string } | undefined;
+    if (!row) return 'not_found';
+    if (row.tide_state === 'active') return 'already_active';
+    this.db
+      .query("UPDATE observations SET tide_state = 'active', tide_state_changed_at = ? WHERE id = ?")
+      .run(atEpoch, id);
+    return 'restored';
+  }
+
+  /**
+   * Bounded, oldest-first candidates for one ebb-sweep slice. Pre-filters the cheap
+   * permanent gates in SQL (never drilled, not anchored, not already archived) and
+   * the minimum age, so the slice computes buoyancy for at most `limit` rows. The
+   * precise per-state age/buoyancy gates are applied in JS by tierDecision. Oldest
+   * first (by last recall, falling back to creation) so the corpus drains in order.
+   */
+  tierSweepCandidates(limit: number, olderThanEpoch: number): Array<TideRow & { id: number; tide_state: TideState }> {
+    const rows = this.db
+      .query(
+        `SELECT id, tide_state, created_at_epoch, last_surfaced_at, stability_days, from_drill, is_anchored
+           FROM observations
+          WHERE is_anchored = 0 AND from_drill = 0 AND tide_state != 'archived'
+            AND COALESCE(last_surfaced_at, created_at_epoch) < ?
+          ORDER BY COALESCE(last_surfaced_at, created_at_epoch) ASC
+          LIMIT ?`,
+      )
+      .all(olderThanEpoch, limit) as Array<{
+        id: number;
+        tide_state: TideState;
+        created_at_epoch: number;
+        last_surfaced_at: number | null;
+        stability_days: number | null;
+        from_drill: number;
+        is_anchored: number;
+      }>;
+    return rows.map(r => ({
+      id: r.id,
+      tide_state: r.tide_state === 'dormant' ? 'dormant' : 'active', // archived excluded by query
+      created_at_epoch: r.created_at_epoch,
+      last_surfaced_at: r.last_surfaced_at,
+      stability_days: r.stability_days,
+      from_drill: r.from_drill,
+      is_anchored: r.is_anchored === 1,
+    }));
+  }
+
+  /** List rows in a given lifecycle tier, most-recently-changed first — drives the
+   *  `memory --show-archived/--ebbed` CLI. */
+  listByTideState(
+    state: TideState, limit: number,
+  ): Array<{ id: number; type: string; title: string; tide_state: TideState; tide_state_changed_at: number | null; last_surfaced_at: number | null }> {
+    return this.db
+      .query(
+        `SELECT id, type, title, tide_state, tide_state_changed_at, last_surfaced_at
+           FROM observations WHERE tide_state = ?
+          ORDER BY tide_state_changed_at DESC NULLS LAST, id DESC LIMIT ?`,
+      )
+      .all(state, limit) as Array<{
+        id: number; type: string; title: string; tide_state: TideState;
+        tide_state_changed_at: number | null; last_surfaced_at: number | null;
+      }>;
+  }
+
+  /**
    * Fold `memberIds` into `survivorId`: add the members' per-source counts onto
    * the survivor, advance the survivor's last_surfaced_at to the group max,
    * archive each member (archived=1, archived_into_theme_id=survivorId), and
@@ -868,6 +962,11 @@ export class ObservationsStore {
       // s0.observation. Arithmetic-only — no SQL math extension required.
       const S0 = tide.s0.observation;
       const g = tide.src[source];
+      // Surface-on-recall: a recall resets recency (last_surfaced_at = now ⇒ buoyancy
+      // jumps to ~1), so any sunk row is re-floated to active in this same write. The
+      // CASE stamps tide_state_changed_at only on a real transition, preserving the
+      // dwell time of rows that were already active. This is the upper hysteresis rail
+      // — the only way a row moves UP; the ebb sweep only ever moves rows down.
       this.db
         .query(
           `UPDATE observations
@@ -875,10 +974,12 @@ export class ObservationsStore {
                   last_surfaced_at = ?,
                   last_surfaced_source = ?,
                   stability_days = COALESCE(stability_days, ?)
-                    * (1 + ? * ? * (? * 1.0 / (? + COALESCE(stability_days, ?))))
+                    * (1 + ? * ? * (? * 1.0 / (? + COALESCE(stability_days, ?)))),
+                  tide_state = 'active',
+                  tide_state_changed_at = CASE WHEN tide_state != 'active' THEN ? ELSE tide_state_changed_at END
             WHERE id IN (${placeholders})`,
         )
-        .run(atEpoch, source, S0, tide.stabilityGain, g, tide.stabilityCapDays, tide.stabilityCapDays, S0, ...ids);
+        .run(atEpoch, source, S0, tide.stabilityGain, g, tide.stabilityCapDays, tide.stabilityCapDays, S0, atEpoch, ...ids);
       return;
     }
     this.db

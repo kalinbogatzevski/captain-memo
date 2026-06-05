@@ -170,6 +170,77 @@ test('getTideStats — counts strengthened, tier breakdown, anchored, max stabil
   expect(s.max_stability_days).toBeCloseTo(40.0, 5);
 });
 
+// ── tier persistence (Phase 2) ─────────────────────────────────────────────
+test('sunkAmong — returns dormant + archived ids, never active; empty → empty', () => {
+  const a = store.insert({ ...tideBase });
+  const d = store.insert({ ...tideBase });
+  const ar = store.insert({ ...tideBase });
+  store.setTideState(d, 'dormant', 1);
+  store.setTideState(ar, 'archived', 1);
+  const sunk = store.sunkAmong([a, d, ar]);
+  expect(sunk.has(a)).toBe(false);
+  expect(sunk.has(d)).toBe(true);
+  expect(sunk.has(ar)).toBe(true);
+  expect(store.sunkAmong([]).size).toBe(0);
+});
+
+test('setTideState + restoreObservation: three-way (restored / already_active / not_found)', () => {
+  const id = store.insert({ ...tideBase });
+  store.setTideState(id, 'dormant', 111);
+  expect(store.sunkAmong([id]).has(id)).toBe(true);
+  expect(store.restoreObservation(id, 222)).toBe('restored');       // re-surfaced
+  expect(store.sunkAmong([id]).has(id)).toBe(false);
+  expect(store.restoreObservation(id, 333)).toBe('already_active'); // no-op
+  expect(store.restoreObservation(999_999, 444)).toBe('not_found'); // typo'd id ≠ "already fine"
+});
+
+test('listByTideState — returns rows of a tier, most-recently-changed first', () => {
+  const d1 = store.insert({ ...tideBase, title: 'd1' });
+  const d2 = store.insert({ ...tideBase, title: 'd2' });
+  store.setTideState(d1, 'dormant', 100);
+  store.setTideState(d2, 'dormant', 200);   // changed later → listed first
+  const list = store.listByTideState('dormant', 10);
+  expect(list.map(r => r.id)).toEqual([d2, d1]);
+  expect(store.listByTideState('archived', 10)).toEqual([]);
+});
+
+test('tierSweepCandidates — bounded, oldest-first, excludes drilled/anchored/archived', () => {
+  const cfg = { ...DEFAULT_TIDE_CONFIG, enabled: true };
+  const ts = new ObservationsStore(join(workDir, 'tide-cands.db'), { tideConfig: cfg });
+  const old1 = ts.insert({ ...tideBase, created_at_epoch: 1000 });
+  const old2 = ts.insert({ ...tideBase, created_at_epoch: 2000 });
+  const drilled = ts.insert({ ...tideBase, created_at_epoch: 1500 });
+  ts.bumpRetrieval([drilled], 'drill', 1600);     // from_drill > 0 → excluded
+  const archived = ts.insert({ ...tideBase, created_at_epoch: 1200 });
+  ts.setTideState(archived, 'archived', 1300);    // archived tier → excluded
+  const anchored = ts.insert({ ...tideBase, created_at_epoch: 1100 });
+  const raw = new Database(join(workDir, 'tide-cands.db'));
+  raw.run('UPDATE observations SET is_anchored = 1 WHERE id = ?', [anchored]);
+  raw.close();
+
+  const ids = ts.tierSweepCandidates(10, 5_000).map(c => c.id); // olderThan in the future → all qualify by age
+  expect(ids).toContain(old1);
+  expect(ids).toContain(old2);
+  expect(ids).not.toContain(drilled);             // from_drill
+  expect(ids).not.toContain(archived);            // archived tier
+  expect(ids).not.toContain(anchored);            // anchored
+  expect(ids.indexOf(old1)).toBeLessThan(ids.indexOf(old2)); // oldest first
+  expect(ts.tierSweepCandidates(1, 5_000).length).toBe(1);   // limit respected
+  ts.close();
+});
+
+test('bumpRetrieval — a recall surfaces a sunk row back to active (surface rail)', () => {
+  const cfg = { ...DEFAULT_TIDE_CONFIG, enabled: true };
+  const ts = new ObservationsStore(join(workDir, 'tide-surface.db'), { tideConfig: cfg });
+  const id = ts.insert({ ...tideBase });
+  ts.setTideState(id, 'dormant', 1_700_000_050);
+  expect(ts.sunkAmong([id]).has(id)).toBe(true);
+  ts.bumpRetrieval([id], 'search', 1_700_000_100);  // recall → buoyancy ~1 → surface
+  expect(ts.sunkAmong([id]).has(id)).toBe(false);
+  expect(ts.listByTideState('active', 10).map(r => r.id)).toContain(id);
+  ts.close();
+});
+
 test('ObservationsStore — listForSession returns chronological order', () => {
   store.insert({
     session_id: 's1', project_id: 'p1', prompt_number: 2,

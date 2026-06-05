@@ -14,6 +14,7 @@ import { ObservationQueue } from './observation-queue.ts';
 import { ObservationsStore } from './observations-store.ts';
 import type { RecallQuery, RecallView, RecallSort } from './observations-store.ts';
 import { loadTideConfig, computeBuoyancy, tideMultiplier } from './tide.ts';
+import { runTideSweepSlice } from './tide-sweep.ts';
 import { PendingEmbedQueue } from './pending-embed-queue.ts';
 import { chunkObservation } from './chunkers/observation.ts';
 import { splitForEmbed } from './chunkers/safe-split.ts';
@@ -197,6 +198,10 @@ const ObservationFlushSchema = z.object({
 
 const PendingEmbedRetrySchema = z.object({
   max: z.number().int().positive().max(500).default(50),
+});
+
+const RestoreSchema = z.object({
+  id: z.number().int().positive(),
 });
 
 const InjectContextSchema = z.object({
@@ -711,6 +716,37 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     }, tickMs);
   }
 
+  // Tide ebb sweep (Phase 2, opt-in). Writer-only, bounded, heartbeat-safe: each slice
+  // pulls a capped batch of idle candidates, flips eligible ones down a tier, yields
+  // between rows, and aborts the instant ingest is queued. Skips (not queues) if a
+  // prior slice is still running. Surfacing stays recall-driven in bumpRetrieval.
+  let tideSweepTimer: ReturnType<typeof setInterval> | null = null;
+  let tideSweepPromise: Promise<unknown> | null = null;
+  if (!opts.readOnly && obsStore && tideConfig.enabled && tideConfig.tieringEnabled) {
+    const sweepStore = obsStore;
+    tideSweepTimer = setInterval(() => {
+      if (tideSweepPromise) return;
+      tideSweepPromise = runTideSweepSlice({
+        candidates: (limit, olderThan) => sweepStore.tierSweepCandidates(limit, olderThan),
+        setTideState: (id, state, at) => sweepStore.setTideState(id, state, at),
+        // Ingest and the heartbeat always preempt: abort if a batch is processing or
+        // any observation is queued.
+        shouldAbort: () => processBatchPromise != null || (obsQueue?.pendingCount() ?? 0) > 0,
+        cfg: tideConfig,
+        now: () => Math.floor(Date.now() / 1000),
+        yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
+      })
+        .then(r => {
+          if (r.ebbed > 0 || r.archived > 0) {
+            console.error(`[tide-sweep] ebbed ${r.ebbed} → dormant, ${r.archived} → archived`
+              + (r.aborted ? ' (aborted for ingest)' : ''));
+          }
+        })
+        .catch(err => console.error('[tide-sweep] ERROR', err))
+        .finally(() => { tideSweepPromise = null; });
+    }, tideConfig.sweepIntervalMs);
+  }
+
   const PENDING_RETRY_TICK_MS = 60_000;
   const PENDING_BATCH = 25;
 
@@ -893,13 +929,13 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
    * metadata.observation_id are counted).
    */
   /**
-   * Drop hits whose backing observation has been archived (folded into a
-   * survivor by dedup). Applied to every surfacing path — search and the
-   * auto-injection hook — so archived duplicates stop appearing without
-   * deleting their vectors (reversible: un-archive restores instantly).
-   * Non-observation hits (no observation_id) are always kept.
+   * Shared post-filter for surfacing paths: extract observation ids, ask `lookup`
+   * which to drop, and remove them. Non-observation hits (no observation_id) are
+   * always kept. obsStore-guarded, so `lookup` only runs when the store exists.
    */
-  const dropArchived = <T extends { metadata: Record<string, unknown> }>(items: T[]): T[] => {
+  const dropByLookup = <T extends { metadata: Record<string, unknown> }>(
+    items: T[], lookup: (ids: number[]) => Set<number>,
+  ): T[] => {
     if (!obsStore || items.length === 0) return items;
     const ids: number[] = [];
     for (const item of items) {
@@ -907,13 +943,31 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       if (typeof oid === 'number' && Number.isInteger(oid) && oid > 0) ids.push(oid);
     }
     if (ids.length === 0) return items;
-    const archived = obsStore.archivedAmong(ids);
-    if (archived.size === 0) return items;
+    const drop = lookup(ids);
+    if (drop.size === 0) return items;
     return items.filter(item => {
       const oid = item.metadata?.observation_id;
-      return !(typeof oid === 'number' && archived.has(oid));
+      return !(typeof oid === 'number' && drop.has(oid));
     });
   };
+
+  /**
+   * Drop hits whose backing observation has been archived (folded into a survivor by
+   * dedup). Applied to every surfacing path — search and the auto-injection hook — so
+   * archived duplicates stop appearing without deleting their vectors (reversible).
+   * Distinct from Tide dormancy (dropSunkForAutoInject) below.
+   */
+  const dropArchived = <T extends { metadata: Record<string, unknown> }>(items: T[]): T[] =>
+    dropByLookup(items, ids => obsStore!.archivedAmong(ids));
+
+  /**
+   * Auto-inject ONLY: drop *sunk* observations (Tide dormant/archived) so the default
+   * injected context shows live memory, not ebbed rows. Unlike dropArchived this never
+   * touches /search — a sunk row stays reachable there (down-ranked by buoyancy) and
+   * one recall re-floats it. No-op unless tiering is enabled.
+   */
+  const dropSunkForAutoInject = <T extends { metadata: Record<string, unknown> }>(items: T[]): T[] =>
+    tideConfig.tieringEnabled ? dropByLookup(items, ids => obsStore!.sunkAmong(ids)) : items;
 
   const bumpRetrievalFromResults = (
     items: Array<{ metadata: Record<string, unknown> }>,
@@ -971,6 +1025,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         const tide = obsStore
           ? {
               enabled: tideConfig.enabled,
+              tiering_enabled: tideConfig.tieringEnabled,
               relevance_floor: tideConfig.relevanceFloor,
               ...obsStore.getTideStats(),
             }
@@ -1021,6 +1076,17 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           type: o.type, title: o.title, created_at_epoch: o.created_at_epoch,
         }));
         return Response.json({ items });
+      }
+
+      // Sunk-tier listing for `captain-memo memory --show-archived/--ebbed` (and the
+      // restore flow). Read-only; available on readers too.
+      if (req.method === 'GET' && url.pathname === '/observations/by-tide-state') {
+        if (!obsStore) return Response.json({ items: [] });
+        const raw = url.searchParams.get('state');
+        const state = raw === 'dormant' || raw === 'archived' ? raw : null;
+        if (!state) return Response.json({ error: 'invalid_request', detail: "state must be 'dormant' or 'archived'" }, { status: 400 });
+        const limit = Math.max(1, Math.min(500, Number(url.searchParams.get('limit') ?? 50) || 50));
+        return Response.json({ items: obsStore.listByTideState(state, limit) });
       }
 
       // Server-side table for `captain-memo top`: sort/filter/page/collapse.
@@ -1398,9 +1464,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             metadata: m,
           });
         }
-        // Drop archived observations BEFORE taking top_k, so a folded-away dup
-        // can't consume a slot that a live observation should fill.
-        const hits = dropArchived(candidates).slice(0, parsed.data.top_k);
+        // Drop archived (dedup-folded) AND sunk (Tide dormant/archived) observations
+        // BEFORE taking top_k, so neither a folded dup nor an ebbed row consumes a slot
+        // a live observation should fill. Sunk rows stay reachable via explicit /search.
+        const hits = dropSunkForAutoInject(dropArchived(candidates)).slice(0, parsed.data.top_k);
 
         // Fire-and-forget recall audit (default-off; enable via CAPTAIN_MEMO_RECALL_AUDIT=1).
         // fused already carries .boosts from applyBoosts (BoostedItem); build a
@@ -1470,6 +1537,18 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         return Response.json({ id, queued: true });
       }
 
+      // Per-row reversal: re-surface a sunk (dormant/archived) observation to active.
+      // Writer-only — readers have no obsStore and 503 automatically.
+      if (req.method === 'POST' && url.pathname === '/observation/restore') {
+        if (!obsStore) return Response.json({ error: 'observation_pipeline_disabled' }, { status: 503 });
+        const parsed = RestoreSchema.safeParse(await req.json());
+        if (!parsed.success) {
+          return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
+        }
+        const result = obsStore.restoreObservation(parsed.data.id, Math.floor(Date.now() / 1000));
+        return Response.json({ id: parsed.data.id, result, restored: result === 'restored' });
+      }
+
       if (req.method === 'POST' && url.pathname === '/observation/flush') {
         if (!obsQueue || !obsStore || !summarize) {
           return Response.json({ error: 'observation_pipeline_disabled' }, { status: 503 });
@@ -1518,6 +1597,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 
   const stopResources = async () => {
     if (tickTimer) clearInterval(tickTimer);
+    if (tideSweepTimer) clearInterval(tideSweepTimer);
     if (pendingTickTimer) clearInterval(pendingTickTimer);
     if (watcher) await watcher.close();
     if (obsQueue) obsQueue.close();

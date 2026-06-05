@@ -6,8 +6,10 @@ import {
   computeBuoyancy,
   tideMultiplier,
   nextStability,
+  tierDecision,
   type TideRow,
   type TideConfig,
+  type TideState,
 } from '../../src/worker/tide.ts';
 
 const DAY = 86_400;
@@ -110,6 +112,56 @@ test('channelS0 — per-channel initial stability', () => {
   expect(channelS0('observation', cfg)).toBe(7);
   expect(channelS0('memory', cfg)).toBe(60);
   expect(channelS0('skill', cfg)).toBe(180);
+});
+
+// ── tiering config (Phase 2) ───────────────────────────────────────────────
+test('loadTideConfig — tiering is opt-in (default off), env flips + threshold overrides', () => {
+  expect(loadTideConfig({}).tieringEnabled).toBe(false);
+  expect(loadTideConfig({ CAPTAIN_MEMO_TIDE_TIERING: '1' }).tieringEnabled).toBe(true);
+  expect(loadTideConfig({ CAPTAIN_MEMO_TIDE_EBB_THRESHOLD: '0.4' }).ebbThreshold).toBe(0.4);
+  expect(loadTideConfig({ CAPTAIN_MEMO_TIDE_AGE_FLOOR_DAYS: '30' }).ageFloorDays).toBe(30);
+  expect(loadTideConfig({ CAPTAIN_MEMO_TIDE_ARCHIVE_AGE_DAYS: '365' }).archiveAgeDays).toBe(365);
+  expect(loadTideConfig({ CAPTAIN_MEMO_TIDE_SWEEP_BATCH: 'oops' }).sweepBatch).toBe(DEFAULT_TIDE_CONFIG.sweepBatch);
+});
+
+// ── tierDecision (Phase 2 state machine) ───────────────────────────────────
+function dec(over: Partial<{ current: TideState; buoyancy: number; ageDays: number; fromDrill: number; isAnchored: boolean }> = {}) {
+  return tierDecision(
+    { current: 'active', buoyancy: 0.01, ageDays: 400, fromDrill: 0, isAnchored: false, ...over },
+    cfg,
+  );
+}
+
+test('tierDecision — anchored rows never ebb', () => {
+  expect(dec({ isAnchored: true })).toBeNull();
+});
+
+test('tierDecision — any drill makes a row permanently ebb-ineligible', () => {
+  expect(dec({ fromDrill: 1 })).toBeNull();
+});
+
+test('tierDecision — active → dormant when buoyancy below ebb AND past the age floor', () => {
+  expect(dec({ current: 'active', buoyancy: 0.2, ageDays: 100 })).toBe('dormant');
+});
+
+test('tierDecision — age gate: young rows do not ebb even at near-zero buoyancy', () => {
+  expect(dec({ current: 'active', buoyancy: 0.01, ageDays: 30 })).toBeNull();
+});
+
+test('tierDecision — buoyancy gate: afloat rows do not ebb even when old', () => {
+  expect(dec({ current: 'active', buoyancy: 0.9, ageDays: 400 })).toBeNull();
+});
+
+test('tierDecision — dormant → archived only below the archive floor AND past archive age', () => {
+  expect(dec({ current: 'dormant', buoyancy: 0.01, ageDays: 200 })).toBe('archived');
+  expect(dec({ current: 'dormant', buoyancy: 0.2, ageDays: 400 })).toBeNull();   // above archive floor
+  expect(dec({ current: 'dormant', buoyancy: 0.01, ageDays: 100 })).toBeNull();  // below archive age
+});
+
+test('tierDecision — never moves up; archived is terminal for the sweep', () => {
+  expect(dec({ current: 'archived', buoyancy: 0.01, ageDays: 999 })).toBeNull();
+  // a high-buoyancy dormant row is left for recall to surface, never lifted by the sweep
+  expect(dec({ current: 'dormant', buoyancy: 0.95, ageDays: 1 })).toBeNull();
 });
 
 test('loadTideConfig — enabled by default (v0.5.3+), explicit 0 disables, overrides', () => {

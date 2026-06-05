@@ -35,6 +35,22 @@ export interface TideConfig {
   stabilityGain: number;
   /** Saturation knob: fS = cap / (cap + S). Hot rows plateau, can't starve corpus. */
   stabilityCapDays: number;
+  /** Tiering (Phase 2) — opt-in lifecycle state transitions. Default OFF; the MVP
+   *  re-rank (`enabled`) is independent and stays on regardless. */
+  tieringEnabled: boolean;
+  /** Hysteresis band. Ebb (active→dormant) below ebbThreshold; surface
+   *  (dormant/archived→active) above surfaceThreshold — that rail is recall-driven,
+   *  applied in bumpRetrieval; archive (dormant→archived) below archiveThreshold. */
+  ebbThreshold: number;
+  surfaceThreshold: number;
+  archiveThreshold: number;
+  /** Belt-and-braces age gates (days): no ebb before ageFloorDays, no archive
+   *  before archiveAgeDays. */
+  ageFloorDays: number;
+  archiveAgeDays: number;
+  /** Sweep bounds: max rows reprocessed per slice, and ms between slices. */
+  sweepBatch: number;
+  sweepIntervalMs: number;
 }
 
 export const DEFAULT_TIDE_CONFIG: TideConfig = {
@@ -48,6 +64,14 @@ export const DEFAULT_TIDE_CONFIG: TideConfig = {
   src: { auto: 0.5, search: 1.0, drill: 1.5 },
   stabilityGain: 0.5,
   stabilityCapDays: 365,
+  tieringEnabled: false,
+  ebbThreshold: 0.30,
+  surfaceThreshold: 0.70,
+  archiveThreshold: 0.05,
+  ageFloorDays: 90,
+  archiveAgeDays: 180,
+  sweepBatch: 256,
+  sweepIntervalMs: 60_000,
 };
 
 /** Build a TideConfig from a plain env record. Unparseable values fall back to
@@ -74,7 +98,39 @@ export function loadTideConfig(env: Record<string, string | undefined>): TideCon
     },
     stabilityGain: num(env.CAPTAIN_MEMO_TIDE_STAB_GAIN, D.stabilityGain),
     stabilityCapDays: num(env.CAPTAIN_MEMO_TIDE_STAB_CAP_DAYS, D.stabilityCapDays),
+    tieringEnabled: env.CAPTAIN_MEMO_TIDE_TIERING === '1',
+    ebbThreshold: num(env.CAPTAIN_MEMO_TIDE_EBB_THRESHOLD, D.ebbThreshold),
+    surfaceThreshold: num(env.CAPTAIN_MEMO_TIDE_SURFACE_THRESHOLD, D.surfaceThreshold),
+    archiveThreshold: num(env.CAPTAIN_MEMO_TIDE_ARCHIVE_THRESHOLD, D.archiveThreshold),
+    ageFloorDays: num(env.CAPTAIN_MEMO_TIDE_AGE_FLOOR_DAYS, D.ageFloorDays),
+    archiveAgeDays: num(env.CAPTAIN_MEMO_TIDE_ARCHIVE_AGE_DAYS, D.archiveAgeDays),
+    sweepBatch: num(env.CAPTAIN_MEMO_TIDE_SWEEP_BATCH, D.sweepBatch),
+    sweepIntervalMs: num(env.CAPTAIN_MEMO_TIDE_SWEEP_MS, D.sweepIntervalMs),
   };
+}
+
+export type TideState = 'active' | 'dormant' | 'archived';
+
+/**
+ * The next lifecycle state for a candidate row, or null when nothing changes.
+ * Only ever moves DOWNWARD (active → dormant → archived) — surfacing is recall-driven
+ * (handled in bumpRetrieval, since a recall resets age and buoyancy jumps to ~1), so
+ * the sweep that calls this never lifts a row. Anchored rows and any row ever drilled
+ * (from_drill > 0) are permanently ineligible for auto-ebb — the single most important
+ * guardrail (a rare-but-critical fact that was once explicitly fetched never sinks).
+ */
+export function tierDecision(
+  row: { current: TideState; buoyancy: number; ageDays: number; fromDrill: number; isAnchored: boolean },
+  cfg: TideConfig,
+): TideState | null {
+  if (row.isAnchored || row.fromDrill > 0) return null; // permanent protection gates
+  if (row.current === 'active') {
+    return row.buoyancy < cfg.ebbThreshold && row.ageDays > cfg.ageFloorDays ? 'dormant' : null;
+  }
+  if (row.current === 'dormant') {
+    return row.buoyancy < cfg.archiveThreshold && row.ageDays > cfg.archiveAgeDays ? 'archived' : null;
+  }
+  return null; // archived is terminal for the auto-sweep (only manual restore/delete leaves it)
 }
 
 /** Initial stability (days) for a channel — used when stability_days IS NULL. */
