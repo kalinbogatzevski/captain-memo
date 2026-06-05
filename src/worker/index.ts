@@ -15,6 +15,9 @@ import { ObservationsStore } from './observations-store.ts';
 import type { RecallQuery, RecallView, RecallSort } from './observations-store.ts';
 import { loadTideConfig, computeBuoyancy, tideMultiplier } from './tide.ts';
 import { runTideSweepSlice } from './tide-sweep.ts';
+import { loadQmConfig } from './qm.ts';
+import { runQmDedupSlice } from './quartermaster.ts';
+import { centroid } from '../shared/vector-math.ts';
 import { PendingEmbedQueue } from './pending-embed-queue.ts';
 import { chunkObservation } from './chunkers/observation.ts';
 import { splitForEmbed } from './chunkers/safe-split.ts';
@@ -289,6 +292,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // and re-sorts. obsStore is referenced lazily — the closure only runs at search
   // time, long after obsStore is constructed below.
   const tideConfig = loadTideConfig(process.env);
+  const qmConfig = loadQmConfig(process.env);
   const tideRerankFn = <T extends { id: string; score: number }>(items: T[]): T[] => {
     if (!obsStore || items.length === 0) return items;
     const oidByItem = new Map<T, number>();
@@ -747,6 +751,50 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     }, tideConfig.sweepIntervalMs);
   }
 
+  // Quartermaster auto-dedup (opt-in, OFF by default). Sibling of the tide sweep:
+  // each slice pulls a bounded candidate window of near-dup observations, confirms
+  // each fold behind a cosine ≥ threshold check against the survivor's centroid
+  // vector (fail-closed when a vector is missing), folds the members, and yields
+  // between groups so the heartbeat breathes and queued ingest preempts mid-slice.
+  let qmDedupTimer: ReturnType<typeof setInterval> | null = null;
+  let qmDedupPromise: Promise<unknown> | null = null;
+  if (!opts.readOnly && obsStore && qmConfig.enabled && qmConfig.dedupEnabled) {
+    const qmStore = obsStore;
+    // Representative vector for an observation = centroid of its chunk vectors (already in sqlite-vec).
+    const repVec = (obsId: number): Float32Array | null => {
+      const doc = meta.getDocument(`observation:${opts.projectId}:${obsId}`);
+      if (!doc) return null;
+      const vecs = meta.getChunksForDocument(doc.id)
+        .map(c => vector.getEmbedding(c.chunk_id))
+        .filter((v): v is Float32Array => v != null)
+        .map(v => Array.from(v));
+      const c = centroid(vecs);
+      return c ? Float32Array.from(c) : null;
+    };
+    qmDedupTimer = setInterval(() => {
+      if (qmDedupPromise) return;
+      const startedAt = Math.floor(Date.now() / 1000);
+      qmDedupPromise = runQmDedupSlice({
+        candidates: () => qmStore.dedupCandidateWindow(qmConfig.dedupTitleThreshold, qmConfig.dedupWindow),
+        representativeVector: repVec,
+        memberIsProtected: (id) => qmStore.isProtected(id),
+        mergeGroup: (s, m, at) => qmStore.mergeDuplicateGroup(s, m, at),
+        markAnchored: (id) => qmStore.markAnchored(id),
+        shouldAbort: () => processBatchPromise != null || (obsQueue?.pendingCount() ?? 0) > 0,
+        cfg: qmConfig,
+        now: () => Math.floor(Date.now() / 1000),
+        yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
+      })
+        .then(r => {
+          qmStore.recordQmRun({ job: 'dedup', startedAt, finishedAt: Math.floor(Date.now() / 1000),
+            rowsScanned: r.scanned, merges: r.merges, abortedForIngest: r.aborted });
+          if (r.merges > 0) console.error(`[qm-dedup] folded ${r.merges} member(s)` + (r.aborted ? ' (aborted for ingest)' : ''));
+        })
+        .catch(err => console.error('[qm-dedup] ERROR', err))
+        .finally(() => { qmDedupPromise = null; });
+    }, qmConfig.dedupIntervalMs);
+  }
+
   const PENDING_RETRY_TICK_MS = 60_000;
   const PENDING_BATCH = 25;
 
@@ -1030,6 +1078,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
               ...obsStore.getTideStats(),
             }
           : undefined;
+        // Quartermaster snapshot: switch + dedup state and the cosine gate, plus
+        // the most recent persisted run (null until a slice has recorded one).
+        const qm = {
+          enabled: qmConfig.enabled,
+          dedup_enabled: qmConfig.dedupEnabled,
+          cosine_threshold: qmConfig.dedupCosineThreshold,
+          last_run: obsStore?.latestQmRuns(1)[0] ?? null,
+        };
         // Dream-stats path: cheap precursor diagnostics from the audit log.
         // Audit-log path mirrors the writer in recall-audit.ts (same env-var
         // override semantics) so a custom CAPTAIN_MEMO_DATA_DIR is honored.
@@ -1060,6 +1116,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           efficiency,
           recall,
           tide,
+          qm,
           dream,
           version: VERSION,
           worker: {
@@ -1604,6 +1661,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   const stopResources = async () => {
     if (tickTimer) clearInterval(tickTimer);
     if (tideSweepTimer) clearInterval(tideSweepTimer);
+    if (qmDedupTimer) clearInterval(qmDedupTimer);
     if (pendingTickTimer) clearInterval(pendingTickTimer);
     if (watcher) await watcher.close();
     if (obsQueue) obsQueue.close();
