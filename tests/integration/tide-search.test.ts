@@ -23,7 +23,7 @@ afterEach(async () => {
 
 async function build(tideEnabled: boolean): Promise<number> {
   if (tideEnabled) process.env.CAPTAIN_MEMO_TIDE_ENABLED = '1';
-  else delete process.env.CAPTAIN_MEMO_TIDE_ENABLED;
+  else process.env.CAPTAIN_MEMO_TIDE_ENABLED = '0'; // explicit OFF — default is now ON (v0.5.3+)
   workDir = mkdtempSync(join(tmpdir(), 'captain-memo-tide-'));
   worker = await startWorker({
     port: 0,

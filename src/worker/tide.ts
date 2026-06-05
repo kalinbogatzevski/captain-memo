@@ -18,7 +18,8 @@ import type { RetrievalSource } from '../shared/types.ts';
 export type TideChannel = 'observation' | 'memory' | 'skill';
 
 export interface TideConfig {
-  /** Master switch. When false the worker keeps today's flat recency decay. */
+  /** Master switch. Default ON (v0.5.3+); set CAPTAIN_MEMO_TIDE_ENABLED=0 to keep
+   *  today's flat recency decay instead. */
   enabled: boolean;
   /** B0 — relevance floor; the multiplier is bounded to [B0, 1] so a stale-but-
    *  relevant hit is demoted, never zeroed. */
@@ -37,7 +38,10 @@ export interface TideConfig {
 }
 
 export const DEFAULT_TIDE_CONFIG: TideConfig = {
-  enabled: false,
+  // On by default since v0.5.3 (shadow-validated). Tide replaces the older flat
+  // recency decay with a *bounded* multiplier (floor B0) — gentler on relevance,
+  // zero data movement. Revert with CAPTAIN_MEMO_TIDE_ENABLED=0.
+  enabled: true,
   relevanceFloor: 0.30,
   w20: 0.15,
   s0: { observation: 7, memory: 60, skill: 180 },
@@ -55,7 +59,7 @@ export function loadTideConfig(env: Record<string, string | undefined>): TideCon
   };
   const D = DEFAULT_TIDE_CONFIG;
   return {
-    enabled: env.CAPTAIN_MEMO_TIDE_ENABLED === '1',
+    enabled: env.CAPTAIN_MEMO_TIDE_ENABLED !== '0',
     relevanceFloor: num(env.CAPTAIN_MEMO_TIDE_RELEVANCE_FLOOR, D.relevanceFloor),
     w20: num(env.CAPTAIN_MEMO_TIDE_W20, D.w20),
     s0: {

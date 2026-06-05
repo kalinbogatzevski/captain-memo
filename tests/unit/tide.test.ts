@@ -112,9 +112,11 @@ test('channelS0 — per-channel initial stability', () => {
   expect(channelS0('skill', cfg)).toBe(180);
 });
 
-test('loadTideConfig — disabled by default, env flips + overrides', () => {
-  expect(loadTideConfig({}).enabled).toBe(false);
+test('loadTideConfig — enabled by default (v0.5.3+), explicit 0 disables, overrides', () => {
+  expect(loadTideConfig({}).enabled).toBe(true);                                  // default ON
+  expect(loadTideConfig({ CAPTAIN_MEMO_TIDE_ENABLED: '0' }).enabled).toBe(false); // explicit OFF
   expect(loadTideConfig({ CAPTAIN_MEMO_TIDE_ENABLED: '1' }).enabled).toBe(true);
+  expect(loadTideConfig({ CAPTAIN_MEMO_TIDE_ENABLED: 'anything-else' }).enabled).toBe(true);
   expect(loadTideConfig({ CAPTAIN_MEMO_TIDE_RELEVANCE_FLOOR: '0.5' }).relevanceFloor).toBe(0.5);
   expect(loadTideConfig({ CAPTAIN_MEMO_TIDE_S0_OBSERVATION_DAYS: '14' }).s0.observation).toBe(14);
   // garbage falls back to the default rather than NaN
