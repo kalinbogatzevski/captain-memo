@@ -10,8 +10,9 @@ import {
 } from './tide.ts';
 
 export interface TideSweepDeps {
-  /** Bounded, oldest-first candidates past the age floor (see ObservationsStore). */
-  candidates: (limit: number, olderThanEpoch: number) => Array<TideRow & { id: number; tide_state: TideState }>;
+  /** Bounded, oldest-first candidates for one pass, filtered to a single source tier
+   *  ('active' for the ebb pass, 'dormant' for the archive pass). See ObservationsStore. */
+  candidates: (state: 'active' | 'dormant', limit: number, olderThanEpoch: number) => Array<TideRow & { id: number; tide_state: TideState }>;
   /** Persist one downward tier flip (writer-only). */
   setTideState: (id: number, state: TideState, atEpoch: number) => void;
   /** True when ingest/embedding work is queued or running — the slice yields to it. */
@@ -43,24 +44,31 @@ export async function runTideSweepSlice(deps: TideSweepDeps): Promise<TideSweepR
   // Tiering requires the MVP re-rank (enabled) — surface-on-recall lives in the enabled
   // bumpRetrieval branch, so we must not ebb rows that recalls couldn't re-float.
   if (!cfg.enabled || !cfg.tieringEnabled) return result;
-  if (deps.shouldAbort()) { result.aborted = true; return result; }
-
   const nowEpoch = now();
-  const olderThan = nowEpoch - cfg.ageFloorDays * 86_400; // cheapest age pre-filter, in SQL
-  const candidates = deps.candidates(cfg.sweepBatch, olderThan);
 
-  for (const cand of candidates) {
-    if (deps.shouldAbort()) { result.aborted = true; break; } // re-checked every iteration
-    result.scanned++;
-    const buoyancy = computeBuoyancy(cand, nowEpoch, cfg);
-    const ageDays = Math.max(0, (nowEpoch - (cand.last_surfaced_at ?? cand.created_at_epoch)) / 86_400);
-    const next = tierDecision(
-      { current: cand.tide_state, buoyancy, ageDays, fromDrill: cand.from_drill, isAnchored: cand.is_anchored },
-      cfg,
-    );
-    if (next === 'dormant') { deps.setTideState(cand.id, next, nowEpoch); result.ebbed++; }
-    else if (next === 'archived') { deps.setTideState(cand.id, next, nowEpoch); result.archived++; }
-    await deps.yieldToLoop(); // let the heartbeat fire; abort re-checked next iteration
-  }
+  // One pass over a single source tier. Returns true if it aborted (ingest preempt).
+  const runPass = async (state: 'active' | 'dormant', olderThanEpoch: number): Promise<boolean> => {
+    if (deps.shouldAbort()) { result.aborted = true; return true; }
+    for (const cand of deps.candidates(state, cfg.sweepBatch, olderThanEpoch)) {
+      if (deps.shouldAbort()) { result.aborted = true; return true; } // re-checked every iteration
+      result.scanned++;
+      const buoyancy = computeBuoyancy(cand, nowEpoch, cfg);
+      const ageDays = Math.max(0, (nowEpoch - (cand.last_surfaced_at ?? cand.created_at_epoch)) / 86_400);
+      const next = tierDecision(
+        { current: cand.tide_state, buoyancy, ageDays, fromDrill: cand.from_drill, isAnchored: cand.is_anchored },
+        cfg,
+      );
+      if (next === 'dormant') { deps.setTideState(cand.id, next, nowEpoch); result.ebbed++; }
+      else if (next === 'archived') { deps.setTideState(cand.id, next, nowEpoch); result.archived++; }
+      await deps.yieldToLoop(); // let the heartbeat fire; abort re-checked next iteration
+    }
+    return false;
+  };
+
+  // Pass 1 — ebb active rows past the age floor. Pass 2 — archive dormant rows past the
+  // (larger) archive age. Separate scans so an ebbed row leaves the active window and
+  // the active pass keeps advancing instead of re-scanning stuck dormant rows.
+  if (await runPass('active', nowEpoch - cfg.ageFloorDays * 86_400)) return result;
+  await runPass('dormant', nowEpoch - cfg.archiveAgeDays * 86_400);
   return result;
 }

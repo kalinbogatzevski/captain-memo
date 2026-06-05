@@ -218,14 +218,18 @@ test('tierSweepCandidates — bounded, oldest-first, excludes drilled/anchored/a
   raw.run('UPDATE observations SET is_anchored = 1 WHERE id = ?', [anchored]);
   raw.close();
 
-  const ids = ts.tierSweepCandidates(10, 5_000).map(c => c.id); // olderThan in the future → all qualify by age
+  const ids = ts.tierSweepCandidates('active', 10, 5_000).map(c => c.id); // future olderThan → all qualify by age
   expect(ids).toContain(old1);
   expect(ids).toContain(old2);
   expect(ids).not.toContain(drilled);             // from_drill
-  expect(ids).not.toContain(archived);            // archived tier
+  expect(ids).not.toContain(archived);            // not 'active' (it's archived)
   expect(ids).not.toContain(anchored);            // anchored
   expect(ids.indexOf(old1)).toBeLessThan(ids.indexOf(old2)); // oldest first
-  expect(ts.tierSweepCandidates(1, 5_000).length).toBe(1);   // limit respected
+  expect(ts.tierSweepCandidates('active', 1, 5_000).length).toBe(1);   // limit respected
+  // The dormant tier is a separate scan — 'active' must not return the archived/dormant rows.
+  ts.setTideState(old2, 'dormant', 2_500);
+  expect(ts.tierSweepCandidates('active', 10, 5_000).map(c => c.id)).not.toContain(old2);
+  expect(ts.tierSweepCandidates('dormant', 10, 5_000).map(c => c.id)).toContain(old2);
   ts.close();
 });
 

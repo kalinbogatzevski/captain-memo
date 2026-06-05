@@ -727,7 +727,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     tideSweepTimer = setInterval(() => {
       if (tideSweepPromise) return;
       tideSweepPromise = runTideSweepSlice({
-        candidates: (limit, olderThan) => sweepStore.tierSweepCandidates(limit, olderThan),
+        candidates: (state, limit, olderThan) => sweepStore.tierSweepCandidates(state, limit, olderThan),
         setTideState: (id, state, at) => sweepStore.setTideState(id, state, at),
         // Ingest and the heartbeat always preempt: abort if a batch is processing or
         // any observation is queued.

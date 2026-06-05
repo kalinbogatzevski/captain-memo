@@ -19,7 +19,7 @@ function makeDeps(rows: Cand[], over: Partial<TideSweepDeps> = {}) {
   const counters = { yields: 0 };
   const cfg: TideConfig = { ...DEFAULT_TIDE_CONFIG, enabled: true, tieringEnabled: true };
   const deps: TideSweepDeps = {
-    candidates: () => rows,
+    candidates: (state) => rows.filter(r => r.tide_state === state),
     setTideState: (id, state) => { flips.push({ id, state }); },
     shouldAbort: () => false,
     cfg,
@@ -78,6 +78,23 @@ test('runTideSweepSlice — leaves afloat / drilled / anchored rows untouched', 
   expect(r.scanned).toBe(3);
   expect(r.ebbed).toBe(0);
   expect(flips).toHaveLength(0);
+});
+
+test('runTideSweepSlice — ebb pass is not wedged by already-dormant oldest rows (regression)', async () => {
+  // The bug a live shadow caught: a combined oldest-first scan re-returns dormant rows
+  // that can't archive yet, starving newer active rows. The two-pass split must let the
+  // active pass reach the active rows regardless of older un-archivable dormant rows.
+  const rows = [
+    cand({ id: 1, tide_state: 'dormant', last_surfaced_at: NOW - 10 * DAY }),  // young → won't archive
+    cand({ id: 2, tide_state: 'dormant', last_surfaced_at: NOW - 11 * DAY }),
+    cand({ id: 3, tide_state: 'active', last_surfaced_at: NOW - 400 * DAY }),   // ebbable
+    cand({ id: 4, tide_state: 'active', last_surfaced_at: NOW - 401 * DAY }),
+  ];
+  const { deps, flips } = makeDeps(rows);
+  const r = await runTideSweepSlice(deps);
+  expect(r.ebbed).toBe(2);
+  expect(r.archived).toBe(0);
+  expect(flips.map(f => f.id).sort()).toEqual([3, 4]); // both active rows ebbed, not starved
 });
 
 test('runTideSweepSlice — aborts mid-slice the moment ingest arrives (heartbeat preempt)', async () => {

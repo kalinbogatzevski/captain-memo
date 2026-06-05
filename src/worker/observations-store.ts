@@ -731,25 +731,30 @@ export class ObservationsStore {
   }
 
   /**
-   * Bounded, oldest-first candidates for one ebb-sweep slice. Pre-filters the cheap
-   * permanent gates in SQL (never drilled, not anchored, not already archived) and
-   * the minimum age, so the slice computes buoyancy for at most `limit` rows. The
-   * precise per-state age/buoyancy gates are applied in JS by tierDecision. Oldest
-   * first (by last recall, falling back to creation) so the corpus drains in order.
+   * Bounded, oldest-first candidates for one sweep pass, filtered to a single source
+   * tier. The sweep runs two passes — `'active'` rows for the ebb pass, `'dormant'`
+   * rows for the archive pass — because a *combined* scan would wedge: once the oldest
+   * rows ebb to dormant they'd permanently occupy the oldest-first LIMIT window
+   * (dormant rows that can't archive yet are re-returned forever), starving newer
+   * active rows of progress. Filtering by the exact source tier means an ebbed row
+   * leaves the active scan, so it always advances. Cheap permanent gates (never
+   * drilled, not anchored) and the minimum age are pre-filtered in SQL; the precise
+   * buoyancy/age gates are applied in JS by tierDecision.
    */
-  tierSweepCandidates(limit: number, olderThanEpoch: number): Array<TideRow & { id: number; tide_state: TideState }> {
+  tierSweepCandidates(
+    state: 'active' | 'dormant', limit: number, olderThanEpoch: number,
+  ): Array<TideRow & { id: number; tide_state: TideState }> {
     const rows = this.db
       .query(
-        `SELECT id, tide_state, created_at_epoch, last_surfaced_at, stability_days, from_drill, is_anchored
+        `SELECT id, created_at_epoch, last_surfaced_at, stability_days, from_drill, is_anchored
            FROM observations
-          WHERE is_anchored = 0 AND from_drill = 0 AND tide_state != 'archived'
+          WHERE tide_state = ? AND is_anchored = 0 AND from_drill = 0
             AND COALESCE(last_surfaced_at, created_at_epoch) < ?
           ORDER BY COALESCE(last_surfaced_at, created_at_epoch) ASC
           LIMIT ?`,
       )
-      .all(olderThanEpoch, limit) as Array<{
+      .all(state, olderThanEpoch, limit) as Array<{
         id: number;
-        tide_state: TideState;
         created_at_epoch: number;
         last_surfaced_at: number | null;
         stability_days: number | null;
@@ -758,7 +763,7 @@ export class ObservationsStore {
       }>;
     return rows.map(r => ({
       id: r.id,
-      tide_state: r.tide_state === 'dormant' ? 'dormant' : 'active', // archived excluded by query
+      tide_state: state,
       created_at_epoch: r.created_at_epoch,
       last_surfaced_at: r.last_surfaced_at,
       stability_days: r.stability_days,
