@@ -175,6 +175,21 @@ export interface RecallStats {
   recent_surfaced: RecentSurfacedEntry[];
 }
 
+/** Shape returned by getTideStats — drives the TIDE section of /stats. Meaningful
+ *  even when Tide is disabled (then `strengthened` stays 0 and everything is active). */
+export interface TideStats {
+  /** Observations whose `stability_days` has been written — i.e. recalled at least
+   *  once with Tide on (the writer's bumpRetrieval strengthening fired). */
+  strengthened: number;
+  /** Lifecycle-tier breakdown. The MVP never leaves `active`; dormant/archived
+   *  populate once Phase 2 (Tide tiering) lands. */
+  by_state: { active: number; dormant: number; archived: number };
+  /** Observations pinned with `is_anchored = 1` — they never ebb. */
+  anchored: number;
+  /** Largest `stability_days` in the corpus (days), or null if none strengthened. */
+  max_stability_days: number | null;
+}
+
 /** Which population the `top` table is showing. */
 export type RecallView = 'surfaced' | 'recalled' | 'recent';
 /** Column the `top` table is sorted by. */
@@ -431,6 +446,32 @@ export class ObservationsStore {
 
   countAll(): number {
     return (this.db.query('SELECT COUNT(*) AS n FROM observations').get() as { n: number }).n;
+  }
+
+  /**
+   * Aggregate Tide lifecycle counters for /stats. Cheap by construction: the
+   * dormant/archived tallies ride the partial index `idx_obs_tide_state`
+   * (WHERE tide_state != 'active'), and `active` is derived by subtraction so the
+   * common-case majority is never scanned. `anchored` and the max are simple
+   * full-table aggregates (fast on the observation channel; /stats is not hot).
+   */
+  getTideStats(): TideStats {
+    const n = (sql: string): number =>
+      (this.db.query(sql).get() as { n: number }).n;
+    const total = this.countAll();
+    const dormant = n("SELECT COUNT(*) AS n FROM observations WHERE tide_state = 'dormant'");
+    const archived = n("SELECT COUNT(*) AS n FROM observations WHERE tide_state = 'archived'");
+    const strengthened = n('SELECT COUNT(*) AS n FROM observations WHERE stability_days IS NOT NULL');
+    const anchored = n('SELECT COUNT(*) AS n FROM observations WHERE is_anchored = 1');
+    const maxRow = this.db
+      .query('SELECT MAX(stability_days) AS m FROM observations')
+      .get() as { m: number | null };
+    return {
+      strengthened,
+      by_state: { active: total - dormant - archived, dormant, archived },
+      anchored,
+      max_stability_days: typeof maxRow.m === 'number' ? maxRow.m : null,
+    };
   }
 
   setStoredTokens(id: number, tokens: number): void {

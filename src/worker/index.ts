@@ -966,6 +966,15 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           metrics,
         });
         const recall = obsStore ? obsStore.getRecallStats(5) : undefined;
+        // Tide lifecycle snapshot: enabled flag + relevance floor (the bounded
+        // re-rank knob) alongside the persisted lifecycle tallies.
+        const tide = obsStore
+          ? {
+              enabled: tideConfig.enabled,
+              relevance_floor: tideConfig.relevanceFloor,
+              ...obsStore.getTideStats(),
+            }
+          : undefined;
         // Dream-stats path: cheap precursor diagnostics from the audit log.
         // Audit-log path mirrors the writer in recall-audit.ts (same env-var
         // override semantics) so a custom CAPTAIN_MEMO_DATA_DIR is honored.
@@ -995,6 +1004,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           disk: { bytes: diskBytes, path: DATA_DIR },
           efficiency,
           recall,
+          tide,
           dream,
           version: VERSION,
           worker: {

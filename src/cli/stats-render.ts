@@ -38,6 +38,15 @@ export interface StatsResponse {
      *  for back-compat with pre-v0.1.16 worker payloads. */
     recent_surfaced?: RecentSurfacedEntry[];
   };
+  /** Tide lifecycle snapshot. Optional — pre-v0.5.3 worker payloads omit it. */
+  tide?: {
+    enabled: boolean;
+    relevance_floor: number;
+    strengthened: number;
+    by_state: { active: number; dormant: number; archived: number };
+    anchored: number;
+    max_stability_days: number | null;
+  };
   dream?: DreamStatsBlock;
 }
 
@@ -332,6 +341,11 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
     out.push('');
   }
 
+  if (stats.tide) {
+    out.push(...renderTideBlock(stats.tide, stats.observations.total, panelWidth));
+    out.push('');
+  }
+
   if (stats.dream) {
     out.push(sectionRule('Dream', panelWidth));
     out.push(`   ${dim('data feeding the Dreams pipeline')}`);
@@ -389,6 +403,51 @@ function renderStatusBlock(stats: StatsResponse): string[] {
     lines.push(`  ${dim('Disk'.padEnd(10))} ${cyanBold(fmtBytes(stats.disk.bytes))}`);
   }
   return lines;
+}
+
+/** Tide sub-block: the memory-lifecycle re-rank state. Meaningful even when off
+ *  (then Strengthened stays 0). `strengthened` is the live signal — every recall
+ *  that folds the stability strengthening ticks it up, so under `top`/watch it
+ *  climbs with use. Colors follow the panel discipline: green ● = on (status),
+ *  cyanBold = live counts, dim = labels/metadata. */
+function renderTideBlock(
+  tide: NonNullable<StatsResponse['tide']>, corpusTotal: number, panelWidth: number,
+): string[] {
+  const out: string[] = [];
+  out.push(sectionRule('Tide', panelWidth));
+  out.push(`   ${dim('memory lifecycle — recency × stability re-rank')}`);
+
+  if (tide.enabled) {
+    out.push(`   ${dim('Status'.padEnd(14))}${green('●')} on`
+      + `   ${dim(`relevance floor ${tide.relevance_floor.toFixed(2)} — bounded, relevance always dominates`)}`);
+  } else {
+    out.push(`   ${dim('Status'.padEnd(14))}${dim('○ off')}`
+      + `   ${dim('(flat recency decay; set CAPTAIN_MEMO_TIDE_ENABLED=1)')}`);
+  }
+
+  // Strengthened: rows whose stability_days a recall has written. Mirrors the
+  // Recall "Surfaced" row typography; max stability rides alongside when present.
+  const sPct = corpusTotal > 0 ? ((tide.strengthened / corpusTotal) * 100).toFixed(1) : '0.0';
+  let strengthened = `   ${dim('Strengthened'.padEnd(14))}${cyanBold(fmtCount(tide.strengthened))}`
+    + ` ${dim('/')} ${fmtCount(corpusTotal)}   ${dim(`(${sPct}% of corpus)`)}`;
+  if (tide.max_stability_days !== null) {
+    strengthened += `   ${dim('· max stability')} ${cyanBold(`${tide.max_stability_days.toFixed(1)} d`)}`;
+  }
+  out.push(strengthened);
+
+  // Tiers: active/dormant/archived. The MVP holds everything in active; dormant
+  // and archived populate once Phase 2 (Tide tiering) lands — shown now so the
+  // transition is visible the moment it begins.
+  const { active, dormant, archived } = tide.by_state;
+  let tiers = `   ${dim('Tiers'.padEnd(14))}`
+    + `${cyanBold(fmtCount(active))} ${dim('active')}`
+    + ` ${dim('·')} ${cyanBold(fmtCount(dormant))} ${dim('dormant')}`
+    + ` ${dim('·')} ${cyanBold(fmtCount(archived))} ${dim('archived')}`;
+  if (tide.anchored > 0) {
+    tiers += ` ${dim('·')} ${cyanBold(fmtCount(tide.anchored))} ${dim('anchored')}`;
+  }
+  out.push(tiers);
+  return out;
 }
 
 function fmtAgo(seconds: number): string {

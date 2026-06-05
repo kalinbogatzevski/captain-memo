@@ -315,6 +315,50 @@ test('renderStats — Dream section is omitted when dream field absent', () => {
   expect(text).not.toContain('Dream');
 });
 
+const TIDE_ON: NonNullable<StatsResponse['tide']> = {
+  enabled: true,
+  relevance_floor: 0.30,
+  strengthened: 1234,
+  by_state: { active: 10591, dormant: 2, archived: 0 },
+  anchored: 0,
+  max_stability_days: 142.4,
+};
+
+test('renderStats — Tide section (on) shows status, floor, strengthened, tiers, max stability', () => {
+  const stats: StatsResponse = { ...SAMPLE, tide: TIDE_ON };
+  const text = renderStats(stats).map(stripAnsi).join('\n');
+  expect(text).toContain('Tide');
+  expect(text).toContain('memory lifecycle');
+  expect(text).toContain('on');
+  expect(text).toContain('relevance floor 0.30');
+  expect(text).toContain('Strengthened');
+  expect(text).toContain('1 234');                 // grouped count
+  expect(text).toContain('max stability');
+  expect(text).toContain('142.4 d');
+  expect(text).toContain('10 591');                // active tier
+  expect(text).toContain('dormant');
+  expect(text).toContain('archived');
+});
+
+test('renderStats — Tide section (off) shows the enable hint, no floor', () => {
+  const stats: StatsResponse = {
+    ...SAMPLE,
+    tide: { ...TIDE_ON, enabled: false, strengthened: 0, max_stability_days: null },
+  };
+  const text = renderStats(stats).map(stripAnsi).join('\n');
+  expect(text).toContain('Tide');
+  expect(text).toContain('off');
+  expect(text).toContain('CAPTAIN_MEMO_TIDE_ENABLED=1');
+  expect(text).not.toContain('max stability');     // null max → omitted
+});
+
+test('renderStats — Tide section is omitted when tide field absent', () => {
+  const { tide: _u, ...noTide } = { ...SAMPLE, tide: TIDE_ON } as StatsResponse & { tide?: StatsResponse['tide'] };
+  void _u;
+  const text = renderStats(noTide as StatsResponse).map(stripAnsi).join('\n');
+  expect(text).not.toContain('Tide');
+});
+
 test('renderStats — Recall title trim guards against 200-char observation titles', () => {
   const long = 'X'.repeat(120);
   const populated: StatsResponse = {

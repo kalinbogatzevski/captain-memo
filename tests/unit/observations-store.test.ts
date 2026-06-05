@@ -141,6 +141,35 @@ test('bumpRetrieval — SQL stability update equals tide.ts nextStability (JS↔
   ts.close();
 });
 
+test('getTideStats — empty corpus: zeros and null max', () => {
+  const s = store.getTideStats();
+  expect(s.strengthened).toBe(0);
+  expect(s.by_state).toEqual({ active: 0, dormant: 0, archived: 0 });
+  expect(s.anchored).toBe(0);
+  expect(s.max_stability_days).toBeNull();
+});
+
+test('getTideStats — counts strengthened, tier breakdown, anchored, max stability', () => {
+  const a = store.insert({ ...tideBase });   // strengthened, stays active
+  const b = store.insert({ ...tideBase });   // strengthened, dormant
+  const c = store.insert({ ...tideBase });   // archived, never strengthened
+  const anc = store.insert({ ...tideBase }); // anchored, active
+  // tide_state / is_anchored / stability_days have no MVP setters (Phase 2 owns the
+  // transitions), so seed the lifecycle columns directly to exercise the aggregate.
+  const raw = new Database(join(workDir, 'observations.db'));
+  raw.run('UPDATE observations SET stability_days = 12.5 WHERE id = ?', [a]);
+  raw.run("UPDATE observations SET stability_days = 40.0, tide_state = 'dormant' WHERE id = ?", [b]);
+  raw.run("UPDATE observations SET tide_state = 'archived' WHERE id = ?", [c]);
+  raw.run('UPDATE observations SET is_anchored = 1 WHERE id = ?', [anc]);
+  raw.close();
+
+  const s = store.getTideStats();
+  expect(s.strengthened).toBe(2);                          // a + b have stability_days
+  expect(s.by_state).toEqual({ active: 2, dormant: 1, archived: 1 }); // a + anc active
+  expect(s.anchored).toBe(1);                              // anc
+  expect(s.max_stability_days).toBeCloseTo(40.0, 5);
+});
+
 test('ObservationsStore — listForSession returns chronological order', () => {
   store.insert({
     session_id: 's1', project_id: 'p1', prompt_number: 2,
