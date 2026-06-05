@@ -121,6 +121,31 @@ export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
       db.exec("CREATE INDEX IF NOT EXISTS idx_obs_tide_state ON observations(tide_state) WHERE tide_state != 'active'");
     },
   },
+  {
+    // v9 — append-only merge ledger. One row per folded member, written in the
+    // SAME tx as mergeDuplicateGroup, capturing that member's contributed counts
+    // so a second merge into a hot survivor can never clobber the first's record.
+    // unmerge reads WHERE survivor_id=? AND undone=0. theme_member_ids kept for
+    // display only. Spec: docs/tide-quartermaster.md (Risks — nested-merge clobber).
+    version: 9,
+    name: 'add_merge_events',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS merge_events (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          survivor_id   INTEGER NOT NULL,
+          member_id     INTEGER NOT NULL,
+          summed_auto   INTEGER NOT NULL DEFAULT 0,
+          summed_search INTEGER NOT NULL DEFAULT 0,
+          summed_drill  INTEGER NOT NULL DEFAULT 0,
+          merged_at     INTEGER NOT NULL,
+          job           TEXT NOT NULL DEFAULT 'dedup',
+          undone        INTEGER NOT NULL DEFAULT 0
+        )
+      `);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_merge_events_survivor ON merge_events(survivor_id) WHERE undone = 0');
+    },
+  },
 ];
 
 export type NewObservation = Omit<
@@ -793,16 +818,22 @@ export class ObservationsStore {
    * Fold `memberIds` into `survivorId`: add the members' per-source counts onto
    * the survivor, advance the survivor's last_surfaced_at to the group max,
    * archive each member (archived=1, archived_into_theme_id=survivorId), and
-   * record the merged ids on the survivor (theme_member_ids) for reversal.
+   * record one append-only `merge_events` row per folded member capturing that
+   * member's contributed counts + `atEpoch` + `job`. theme_member_ids is still
+   * written, but for display only — the ledger is the reversal source of truth.
    *
    * Reversible via unmergeDuplicateGroup. Reuses the v6 `archived_into_theme_id`
    * column to mean "folded into observation id" — the survivor need not be a
    * synthesized theme for a plain title-dedup.
    *
+   * The ledger fixes a data-loss bug: a SECOND merge into the same survivor used
+   * to overwrite the first merge's theme_member_ids, so --undo could only
+   * recover the last batch. Per-member rows in an append-only table never clobber.
+   *
    * Runs in a single transaction so a crash mid-merge can't leave counts summed
    * but members un-archived (or vice-versa).
    */
-  mergeDuplicateGroup(survivorId: number, memberIds: number[]): void {
+  mergeDuplicateGroup(survivorId: number, memberIds: number[], atEpoch: number, job = 'dedup'): void {
     const candidates = memberIds.filter(id => id !== survivorId);
     if (candidates.length === 0) return;
 
@@ -817,26 +848,38 @@ export class ObservationsStore {
       const scopePlaceholders = candidates.map(() => '?').join(',');
       const eligibleRows = this.db
         .query(
-          `SELECT id, project_id, branch FROM observations WHERE id IN (${scopePlaceholders})`,
+          `SELECT id, project_id, branch, from_auto, from_search, from_drill, last_surfaced_at
+             FROM observations WHERE id IN (${scopePlaceholders})`,
         )
-        .all(...candidates) as Array<{ id: number; project_id: string; branch: string | null }>;
-      const ids = eligibleRows
-        .filter(m => m.project_id === survivor.project_id
-          && (m.branch ?? '') === (survivor.branch ?? ''))
-        .map(m => m.id);
-      if (ids.length === 0) return;
+        .all(...candidates) as Array<{
+          id: number; project_id: string; branch: string | null;
+          from_auto: number; from_search: number; from_drill: number;
+          last_surfaced_at: number | null;
+        }>;
+      const eligible = eligibleRows.filter(m => m.project_id === survivor.project_id
+        && (m.branch ?? '') === (survivor.branch ?? ''));
+      if (eligible.length === 0) return;
+      const ids = eligible.map(m => m.id);
       const placeholders = ids.map(() => '?').join(',');
 
-      const agg = this.db
-        .query(
-          `SELECT COALESCE(SUM(from_auto), 0)   AS a,
-                  COALESCE(SUM(from_search), 0) AS s,
-                  COALESCE(SUM(from_drill), 0)  AS d,
-                  MAX(last_surfaced_at)         AS maxts
-             FROM observations
-            WHERE id IN (${placeholders})`,
-        )
-        .get(...ids) as { a: number; s: number; d: number; maxts: number | null };
+      // Aggregate from the per-member values we already hold (single scan).
+      let a = 0, s = 0, d = 0, maxts: number | null = null;
+      for (const m of eligible) {
+        a += m.from_auto; s += m.from_search; d += m.from_drill;
+        if (m.last_surfaced_at !== null) {
+          maxts = maxts === null ? m.last_surfaced_at : Math.max(maxts, m.last_surfaced_at);
+        }
+      }
+
+      // Append-only ledger: one row per folded member, with its exact counts.
+      const insertEvent = this.db.query(
+        `INSERT INTO merge_events
+           (survivor_id, member_id, summed_auto, summed_search, summed_drill, merged_at, job, undone)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+      );
+      for (const m of eligible) {
+        insertEvent.run(survivorId, m.id, m.from_auto, m.from_search, m.from_drill, atEpoch, job);
+      }
 
       this.db
         .query(
@@ -855,7 +898,7 @@ export class ObservationsStore {
                   theme_member_ids = ?
             WHERE id = ?`,
         )
-        .run(agg.a, agg.s, agg.d, agg.maxts, agg.maxts, agg.maxts, JSON.stringify(ids), survivorId);
+        .run(a, s, d, maxts, maxts, maxts, JSON.stringify(ids), survivorId);
 
       this.db
         .query(
@@ -906,46 +949,41 @@ export class ObservationsStore {
     return out;
   }
 
-  /** Ids of live rows that have folded-in members (theme_member_ids set) —
-   *  the set `dedup --undo` reverses. */
+  /** Survivor ids with un-undone ledger rows — the set `dedup --undo` reverses. */
   mergedSurvivorIds(): number[] {
     const rows = this.db
-      .query('SELECT id FROM observations WHERE theme_member_ids IS NOT NULL AND archived = 0 ORDER BY id ASC')
-      .all() as Array<{ id: number }>;
-    return rows.map(r => r.id);
+      .query('SELECT DISTINCT survivor_id FROM merge_events WHERE undone = 0 ORDER BY survivor_id ASC')
+      .all() as Array<{ survivor_id: number }>;
+    return rows.map(r => r.survivor_id);
   }
 
   /**
-   * Reverse a prior mergeDuplicateGroup for `survivorId`: subtract the members'
-   * counts back off the survivor, un-archive them, and clear the survivor's
-   * theme_member_ids. No-op if the row has no merged members. Single transaction.
+   * Reverse every un-undone merge into `survivorId` using the append-only
+   * `merge_events` ledger (the reversal source of truth): subtract each member's
+   * recorded contributed counts back off the survivor, un-archive the members,
+   * clear the survivor's display-only theme_member_ids, and mark those ledger
+   * rows undone=1. No-op if there are no open ledger rows. Single transaction.
+   *
+   * Reading the ledger (not theme_member_ids) makes nested merges into one hot
+   * survivor fully reversible — a second merge's row never overwrites the first.
    */
   unmergeDuplicateGroup(survivorId: number): void {
-    const row = this.db
-      .query('SELECT theme_member_ids FROM observations WHERE id = ?')
-      .get(survivorId) as { theme_member_ids: string | null } | undefined;
-    if (!row || !row.theme_member_ids) return;
-    let memberIds: number[];
-    try {
-      memberIds = JSON.parse(row.theme_member_ids) as number[];
-    } catch {
-      // Corrupted theme_member_ids (e.g. an interrupted prior write). Don't let
-      // one bad row crash `dedup --undo`; clear the pointer and skip.
-      this.db.query('UPDATE observations SET theme_member_ids = NULL WHERE id = ?').run(survivorId);
-      return;
-    }
-    if (!Array.isArray(memberIds) || memberIds.length === 0) return;
+    const events = this.db
+      .query(
+        `SELECT member_id, summed_auto, summed_search, summed_drill
+           FROM merge_events WHERE survivor_id = ? AND undone = 0`,
+      )
+      .all(survivorId) as Array<{
+        member_id: number; summed_auto: number; summed_search: number; summed_drill: number;
+      }>;
+    if (events.length === 0) return;
+
+    let a = 0, s = 0, d = 0;
+    for (const e of events) { a += e.summed_auto; s += e.summed_search; d += e.summed_drill; }
+    const memberIds = events.map(e => e.member_id);
     const placeholders = memberIds.map(() => '?').join(',');
 
     const tx = this.db.transaction(() => {
-      const agg = this.db
-        .query(
-          `SELECT COALESCE(SUM(from_auto), 0)   AS a,
-                  COALESCE(SUM(from_search), 0) AS s,
-                  COALESCE(SUM(from_drill), 0)  AS d
-             FROM observations WHERE id IN (${placeholders})`,
-        )
-        .get(...memberIds) as { a: number; s: number; d: number };
       this.db
         .query(
           `UPDATE observations
@@ -953,10 +991,13 @@ export class ObservationsStore {
                   theme_member_ids = NULL
             WHERE id = ?`,
         )
-        .run(agg.a, agg.s, agg.d, survivorId);
+        .run(a, s, d, survivorId);
       this.db
         .query(`UPDATE observations SET archived = 0, archived_into_theme_id = NULL WHERE id IN (${placeholders})`)
         .run(...memberIds);
+      this.db
+        .query('UPDATE merge_events SET undone = 1 WHERE survivor_id = ? AND undone = 0')
+        .run(survivorId);
     });
     tx();
   }

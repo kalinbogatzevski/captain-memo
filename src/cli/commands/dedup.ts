@@ -119,7 +119,8 @@ function runDedup(
     };
     if (apply && groups.length > 0) {
       backup(obsPath);
-      for (const g of groups) store.mergeDuplicateGroup(g.survivor.id, g.members.map(m => m.id));
+      const atEpoch = Math.floor(Date.now() / 1000);
+      for (const g of groups) store.mergeDuplicateGroup(g.survivor.id, g.members.map(m => m.id), atEpoch);
     }
     console.log(JSON.stringify(payload, null, 2));
     return 0;
@@ -149,7 +150,8 @@ function runDedup(
   }
 
   const backupPath = backup(obsPath);
-  for (const g of groups) store.mergeDuplicateGroup(g.survivor.id, g.members.map(m => m.id));
+  const atEpoch = Math.floor(Date.now() / 1000);
+  for (const g of groups) store.mergeDuplicateGroup(g.survivor.id, g.members.map(m => m.id), atEpoch);
   console.log(`${green('✓')} Merged ${corpusNote}.`);
   console.log(dim(`  Backup: ${backupPath}`));
   console.log(dim('  Reverse anytime with: captain-memo dedup --undo'));

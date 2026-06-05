@@ -76,6 +76,31 @@ test('ObservationsStore — migration v8 adds Tide lifecycle columns + partial i
   db.close();
 });
 
+test('ObservationsStore — migration v9 adds merge_events ledger table + partial index', () => {
+  const db = new Database(join(workDir, 'observations.db'));
+  const cols = db.query('PRAGMA table_info(merge_events)').all() as Array<{ name: string; dflt_value: unknown }>;
+  const byName = new Map(cols.map(c => [c.name, c]));
+
+  // Ledger columns exist
+  for (const c of ['id', 'survivor_id', 'member_id', 'summed_auto', 'summed_search',
+                   'summed_drill', 'merged_at', 'job', 'undone']) {
+    expect(byName.has(c)).toBe(true);
+  }
+
+  // Defaults (PRAGMA reports literal SQL default text)
+  expect(Number(byName.get('summed_auto')!.dflt_value)).toBe(0);
+  expect(Number(byName.get('undone')!.dflt_value)).toBe(0);
+  expect(String(byName.get('job')!.dflt_value)).toContain('dedup');
+
+  // Partial index exists (mirrors the v6/v8 archived/state pattern)
+  const idx = db.query("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_merge_events_survivor'").all();
+  expect(idx.length).toBe(1);
+
+  // v9 recorded as applied
+  expect(getAppliedVersions(db).some(v => v.version === 9)).toBe(true);
+  db.close();
+});
+
 test('tideRowsAmong — returns buoyancy inputs; empty input → empty map', () => {
   const id = store.insert({ ...tideBase });
   expect(store.tideRowsAmong([]).size).toBe(0);
@@ -296,8 +321,8 @@ test('ObservationsStore — schema_versions records all migrations after constru
   const db = new Database(join(workDir, 'observations.db'), { readonly: true });
   const rows = getAppliedVersions(db);
   db.close();
-  expect(rows).toHaveLength(8);
-  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+  expect(rows).toHaveLength(9);
+  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
   expect(rows.map(r => r.name)).toEqual([
     'add_branch',
     'add_work_tokens',
@@ -307,6 +332,7 @@ test('ObservationsStore — schema_versions records all migrations after constru
     'add_dreaming_scaffold',
     'add_last_surfaced_source',
     'add_tide_lifecycle',
+    'add_merge_events',
   ]);
   store = new ObservationsStore(join(workDir, 'observations.db'));
 });
@@ -525,7 +551,7 @@ test('ObservationsStore — getRecentlySurfaced skips never-surfaced and archive
   const victim = mkObs(store, 'to-be-archived');
   store.bumpRetrieval([a], 'auto', 1_000);
   store.bumpRetrieval([victim], 'auto', 9_000);
-  store.mergeDuplicateGroup(a, [victim]);       // victim archived into a
+  store.mergeDuplicateGroup(a, [victim], 1000); // victim archived into a
 
   const ids = store.getRecentlySurfaced(10).map(r => r.id);
   expect(ids).toContain(a);
@@ -540,7 +566,7 @@ test('ObservationsStore — mergeDuplicateGroup sums member counts into survivor
   store.bumpRetrieval([m1], 'auto', 200);        store.bumpRetrieval([m1], 'auto', 210);       store.bumpRetrieval([m1], 'auto', 220);
   store.bumpRetrieval([m2], 'search', 300);      store.bumpRetrieval([m2], 'search', 310);     store.bumpRetrieval([m2], 'drill', 320);
 
-  store.mergeDuplicateGroup(survivor, [m1, m2]);
+  store.mergeDuplicateGroup(survivor, [m1, m2], 1000);
 
   const s = store.findById(survivor)!;
   expect(s.from_auto).toBe(6);     // 3 + 3
@@ -584,7 +610,7 @@ test('ObservationsStore — getRecallStats excludes archived rows from counts an
   const victim = mkObs(store, 'victim beta distinct');
   for (let i = 0; i < 5; i++) store.bumpRetrieval([kept], 'auto');
   for (let i = 0; i < 9; i++) store.bumpRetrieval([victim], 'auto');
-  store.mergeDuplicateGroup(kept, [victim]);   // kept → 5 + 9 = 14, victim archived
+  store.mergeDuplicateGroup(kept, [victim], 1000);   // kept → 5 + 9 = 14, victim archived
 
   const stats = store.getRecallStats(5);
   expect(stats.surfaced_count).toBe(1);                       // victim excluded
@@ -594,7 +620,7 @@ test('ObservationsStore — getRecallStats excludes archived rows from counts an
 
 test('ObservationsStore — archivedAmong returns only the archived subset', () => {
   const a = mkObs(store, 'a'); const b = mkObs(store, 'b'); const c = mkObs(store, 'c');
-  store.mergeDuplicateGroup(a, [b]);   // b archived into a
+  store.mergeDuplicateGroup(a, [b], 1000);   // b archived into a
   const set = store.archivedAmong([a, b, c]);
   expect(set.has(b)).toBe(true);
   expect(set.has(a)).toBe(false);
@@ -696,14 +722,14 @@ test('queryRecall — collapse ties break deterministically by id (descending)',
 test('mergeDuplicateGroup — preserves NULL last_surfaced_at when nothing was ever surfaced', () => {
   const s = mkObs(store, 'never surfaced survivor');
   const m = mkObs(store, 'never surfaced member');
-  store.mergeDuplicateGroup(s, [m]);
+  store.mergeDuplicateGroup(s, [m], 1000);
   expect(store.findById(s)!.last_surfaced_at).toBeNull();   // not coerced to epoch 0
 });
 
 test('queryRecall — excludes archived rows', () => {
   const keep = seedSurfaced(store, 'kept', 'feature', 5, 0, 0, 100);
   const drop = seedSurfaced(store, 'dropped', 'feature', 5, 0, 0, 200);
-  store.mergeDuplicateGroup(keep, [drop]);
+  store.mergeDuplicateGroup(keep, [drop], 1000);
   const page = store.queryRecall({ view: 'surfaced', sort: 'total', limit: 50, offset: 0, collapse: false });
   expect(page.rows.map(r => r.title)).toEqual(['kept']);
   expect(page.total).toBe(1);
@@ -728,7 +754,7 @@ test('mergeDuplicateGroup + unmergeDuplicateGroup round-trips counts and archive
   const s = seedSurfaced(store, 'survivor row', 'feature', 5, 0, 0, 100);
   const m = seedSurfaced(store, 'member row', 'feature', 3, 0, 0, 110);
 
-  store.mergeDuplicateGroup(s, [m]);
+  store.mergeDuplicateGroup(s, [m], 1000);
   expect(store.findById(s)!.from_auto).toBe(8);
   expect(store.findById(m)!.archived).toBe(true);
   expect(store.findById(s)!.theme_member_ids).toEqual([m]);
@@ -744,7 +770,7 @@ test('mergedSurvivorIds — lists rows that have folded-in members (for --undo a
   const s = seedSurfaced(store, 'survivor', 'feature', 5, 0, 0, 100);
   const m = seedSurfaced(store, 'member', 'feature', 3, 0, 0, 110);
   expect(store.mergedSurvivorIds()).toEqual([]);
-  store.mergeDuplicateGroup(s, [m]);
+  store.mergeDuplicateGroup(s, [m], 1000);
   expect(store.mergedSurvivorIds()).toEqual([s]);
   store.unmergeDuplicateGroup(s);
   expect(store.mergedSurvivorIds()).toEqual([]);
@@ -754,6 +780,31 @@ test('unmergeDuplicateGroup — no-op when the row has no merged members', () =>
   const s = seedSurfaced(store, 'lonely', 'feature', 4, 0, 0, 100);
   expect(() => store.unmergeDuplicateGroup(s)).not.toThrow();
   expect(store.findById(s)!.from_auto).toBe(4);
+});
+
+// S2 regression: a SECOND merge into the same survivor must not clobber the
+// first merge's reversal record. The pre-ledger code wrote theme_member_ids on
+// the survivor; the second write overwrote the first, so --undo could only
+// recover m2 — m1 stayed archived and its counts stayed summed in forever.
+test('mergeDuplicateGroup — nested merges into one survivor are both reversible (ledger)', () => {
+  const surv = seedSurfaced(store, 'hot survivor', 'feature', 5, 0, 0, 100);
+  const m1 = seedSurfaced(store, 'first dup', 'feature', 3, 0, 0, 110);
+  const m2 = seedSurfaced(store, 'second dup', 'feature', 4, 0, 0, 120);
+
+  store.mergeDuplicateGroup(surv, [m1], 1000);   // first merge
+  store.mergeDuplicateGroup(surv, [m2], 2000);   // SECOND merge into the SAME survivor
+
+  // Survivor accumulated BOTH members' counts.
+  expect(store.findById(surv)!.from_auto).toBe(12);   // 5 + 3 + 4
+  expect(store.findById(m1)!.archived).toBe(true);
+  expect(store.findById(m2)!.archived).toBe(true);
+
+  // Undo all: both members must come back, survivor restored to its original.
+  for (const id of store.mergedSurvivorIds()) store.unmergeDuplicateGroup(id);
+
+  expect(store.findById(m1)!.archived).toBe(false);   // pre-ledger code LOST this
+  expect(store.findById(m2)!.archived).toBe(false);
+  expect(store.findById(surv)!.from_auto).toBe(5);     // back to original
 });
 
 // --- S1: dedup must be scoped by (project_id, branch) ----------------------
@@ -811,7 +862,7 @@ test('mergeDuplicateGroup — skips a member from a different project (no counte
   const survivor = seedSurfacedScoped('canonical title', 'p1', null, 10);
   const alien = seedSurfacedScoped('canonical title', 'p2', null, 7);
 
-  store.mergeDuplicateGroup(survivor, [alien]);
+  store.mergeDuplicateGroup(survivor, [alien], 1000);
 
   expect(store.findById(survivor)!.from_search).toBe(10);   // not summed with alien
   expect(store.findById(survivor)!.theme_member_ids).toBeNull();
@@ -822,7 +873,7 @@ test('mergeDuplicateGroup — skips a member on a different branch (no counter c
   const survivor = seedSurfacedScoped('canonical title', 'p1', 'main', 10);
   const alien = seedSurfacedScoped('canonical title', 'p1', 'other', 7);
 
-  store.mergeDuplicateGroup(survivor, [alien]);
+  store.mergeDuplicateGroup(survivor, [alien], 1000);
 
   expect(store.findById(survivor)!.from_search).toBe(10);
   expect(store.findById(alien)!.archived).toBe(false);
@@ -832,7 +883,7 @@ test('mergeDuplicateGroup — still folds same-project+branch members (positive 
   const survivor = seedSurfacedScoped('canonical title', 'p1', 'main', 10);
   const member = seedSurfacedScoped('dup title', 'p1', 'main', 7);
 
-  store.mergeDuplicateGroup(survivor, [member]);
+  store.mergeDuplicateGroup(survivor, [member], 1000);
 
   expect(store.findById(survivor)!.from_search).toBe(17);   // 10 + 7
   expect(store.findById(survivor)!.theme_member_ids).toEqual([member]);

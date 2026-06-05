@@ -189,7 +189,7 @@ test('/search/all drops archived observation hits (and the survivor still surfac
   const keep = await seedObservation('kiwimark alpha');
   const drop = await seedObservation('kiwimark beta');
   // Fold `drop` into `keep`: drop is now archived and must not surface.
-  worker.store!.mergeDuplicateGroup(keep, [drop]);
+  worker.store!.mergeDuplicateGroup(keep, [drop], 1000);
 
   const r = await fetch(`http://localhost:${port}/search/all`, {
     method: 'POST',
@@ -205,7 +205,7 @@ test('/search/all drops archived observation hits (and the survivor still surfac
 test('/inject/context never injects an archived observation', async () => {
   const keep = await seedObservation('plummark alpha');
   const drop = await seedObservation('plummark beta');
-  worker.store!.mergeDuplicateGroup(keep, [drop]);
+  worker.store!.mergeDuplicateGroup(keep, [drop], 1000);
 
   const r = await fetch(`http://localhost:${port}/inject/context`, {
     method: 'POST',
