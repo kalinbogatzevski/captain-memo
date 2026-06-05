@@ -803,11 +803,30 @@ export class ObservationsStore {
    * but members un-archived (or vice-versa).
    */
   mergeDuplicateGroup(survivorId: number, memberIds: number[]): void {
-    const ids = memberIds.filter(id => id !== survivorId);
-    if (ids.length === 0) return;
-    const placeholders = ids.map(() => '?').join(',');
+    const candidates = memberIds.filter(id => id !== survivorId);
+    if (candidates.length === 0) return;
 
     const tx = this.db.transaction(() => {
+      // Defense-in-depth: only fold members that share the survivor's
+      // (project_id, branch). A caller passing a cross-scope member must never
+      // corrupt the survivor's counters. NULL branch compared as ''.
+      const survivor = this.db
+        .query('SELECT project_id, branch FROM observations WHERE id = ?')
+        .get(survivorId) as { project_id: string; branch: string | null } | undefined;
+      if (!survivor) return;
+      const scopePlaceholders = candidates.map(() => '?').join(',');
+      const eligibleRows = this.db
+        .query(
+          `SELECT id, project_id, branch FROM observations WHERE id IN (${scopePlaceholders})`,
+        )
+        .all(...candidates) as Array<{ id: number; project_id: string; branch: string | null }>;
+      const ids = eligibleRows
+        .filter(m => m.project_id === survivor.project_id
+          && (m.branch ?? '') === (survivor.branch ?? ''))
+        .map(m => m.id);
+      if (ids.length === 0) return;
+      const placeholders = ids.map(() => '?').join(',');
+
       const agg = this.db
         .query(
           `SELECT COALESCE(SUM(from_auto), 0)   AS a,
@@ -859,19 +878,32 @@ export class ObservationsStore {
   findDuplicateGroups(threshold: number): DuplicateGroup[] {
     const rows = this.db
       .query(
-        `SELECT id, type, title, from_auto, from_search, from_drill
+        `SELECT id, type, title, from_auto, from_search, from_drill, project_id, branch
            FROM observations
           WHERE archived = 0 AND (from_auto + from_search + from_drill) > 0
           ORDER BY (from_auto + from_search + from_drill) DESC, id ASC`,
       )
-      .all() as RawTopRow[];
+      .all() as Array<RawTopRow & { project_id: string; branch: string | null }>;
     const toEntry = (r: RawTopRow): DuplicateEntry => ({
       id: r.id, type: r.type as ObservationType, title: r.title,
       total: r.from_auto + r.from_search + r.from_drill,
     });
-    return groupBySimilarity(rows, r => r.title, threshold)
-      .filter(g => g.length > 1)
-      .map(g => ({ survivor: toEntry(g[0]!), members: g.slice(1).map(toEntry) }));
+    // Partition by (project_id, branch) so a dup group never spans two projects
+    // or two branches — folding across scopes corrupts the survivor's counters.
+    const partitions = new Map<string, typeof rows>();
+    for (const r of rows) {
+      const key = `${r.project_id} ${r.branch ?? ''}`;
+      const bucket = partitions.get(key);
+      if (bucket) bucket.push(r);
+      else partitions.set(key, [r]);
+    }
+    const out: DuplicateGroup[] = [];
+    for (const bucket of partitions.values()) {
+      for (const g of groupBySimilarity(bucket, r => r.title, threshold)) {
+        if (g.length > 1) out.push({ survivor: toEntry(g[0]!), members: g.slice(1).map(toEntry) });
+      }
+    }
+    return out;
   }
 
   /** Ids of live rows that have folded-in members (theme_member_ids set) —

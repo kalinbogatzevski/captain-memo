@@ -756,6 +756,89 @@ test('unmergeDuplicateGroup — no-op when the row has no merged members', () =>
   expect(store.findById(s)!.from_auto).toBe(4);
 });
 
+// --- S1: dedup must be scoped by (project_id, branch) ----------------------
+// Insert a surfaced row in an explicit (project, branch) via a raw counter
+// UPDATE, because mkObs/seedSurfaced are pinned to project_id 'p1' / branch null.
+function seedSurfacedScoped(
+  title: string, project_id: string, branch: string | null, search: number,
+): number {
+  const id = store.insert({
+    session_id: 's1', project_id, prompt_number: 1, type: 'discovery',
+    title, narrative: '', facts: [], concepts: [], files_read: [], files_modified: [],
+    created_at_epoch: 100, branch, work_tokens: null,
+  });
+  const db = new Database(join(workDir, 'observations.db'));
+  db.query('UPDATE observations SET from_search = ? WHERE id = ?').run(search, id);
+  db.close();
+  return id;
+}
+
+test('findDuplicateGroups — never groups near-dupes across different projects', () => {
+  const a = seedSurfacedScoped('update-status skill command verified and available', 'projA', null, 5);
+  const b = seedSurfacedScoped('update-status skill command verified and available', 'projB', null, 4);
+
+  const groups = store.findDuplicateGroups(0.5);
+  // No group may contain ids from both projects.
+  for (const g of groups) {
+    const ids = [g.survivor.id, ...g.members.map(m => m.id)];
+    expect(ids.includes(a) && ids.includes(b)).toBe(false);
+  }
+});
+
+test('findDuplicateGroups — never groups near-dupes across different branches', () => {
+  const a = seedSurfacedScoped('shared title same words here', 'p1', 'main', 5);
+  const b = seedSurfacedScoped('shared title same words here', 'p1', 'feature-x', 4);
+
+  const groups = store.findDuplicateGroups(0.5);
+  for (const g of groups) {
+    const ids = [g.survivor.id, ...g.members.map(m => m.id)];
+    expect(ids.includes(a) && ids.includes(b)).toBe(false);
+  }
+});
+
+test('findDuplicateGroups — still groups near-dupes within the same project+branch (positive control)', () => {
+  const a = seedSurfacedScoped('update-status skill command verified and available', 'p1', null, 5);
+  const b = seedSurfacedScoped('update-status skill command is available', 'p1', null, 3);
+
+  const groups = store.findDuplicateGroups(0.5);
+  const g = groups.find(x => [x.survivor.id, ...x.members.map(m => m.id)].includes(a));
+  expect(g).toBeDefined();
+  expect(g!.survivor.id).toBe(a);                       // higher count survives
+  expect(g!.members.map(m => m.id)).toEqual([b]);
+});
+
+test('mergeDuplicateGroup — skips a member from a different project (no counter corruption)', () => {
+  const survivor = seedSurfacedScoped('canonical title', 'p1', null, 10);
+  const alien = seedSurfacedScoped('canonical title', 'p2', null, 7);
+
+  store.mergeDuplicateGroup(survivor, [alien]);
+
+  expect(store.findById(survivor)!.from_search).toBe(10);   // not summed with alien
+  expect(store.findById(survivor)!.theme_member_ids).toBeNull();
+  expect(store.findById(alien)!.archived).toBe(false);      // alien untouched
+});
+
+test('mergeDuplicateGroup — skips a member on a different branch (no counter corruption)', () => {
+  const survivor = seedSurfacedScoped('canonical title', 'p1', 'main', 10);
+  const alien = seedSurfacedScoped('canonical title', 'p1', 'other', 7);
+
+  store.mergeDuplicateGroup(survivor, [alien]);
+
+  expect(store.findById(survivor)!.from_search).toBe(10);
+  expect(store.findById(alien)!.archived).toBe(false);
+});
+
+test('mergeDuplicateGroup — still folds same-project+branch members (positive control)', () => {
+  const survivor = seedSurfacedScoped('canonical title', 'p1', 'main', 10);
+  const member = seedSurfacedScoped('dup title', 'p1', 'main', 7);
+
+  store.mergeDuplicateGroup(survivor, [member]);
+
+  expect(store.findById(survivor)!.from_search).toBe(17);   // 10 + 7
+  expect(store.findById(survivor)!.theme_member_ids).toEqual([member]);
+  expect(store.findById(member)!.archived).toBe(true);
+});
+
 test('ObservationsStore — countMissingStoredTokens / listMissingStoredTokens', () => {
   const mk = () => store.insert({
     session_id: 's1', project_id: 'p1', prompt_number: 1,
