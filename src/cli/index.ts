@@ -4,6 +4,7 @@ import { reindexCommand } from './commands/reindex.ts';
 import { vacuumCommand } from './commands/vacuum.ts';
 import { upgradeCommand } from './commands/upgrade.ts';
 import { observationCommand } from './commands/observation.ts';
+import { restoreCommand } from './commands/restore.ts';
 import { configCommand } from './commands/config.ts';
 import { installHooksCommand } from './commands/install-hooks.ts';
 import { installCommand } from './commands/install.ts';
@@ -31,7 +32,8 @@ Commands:
   reindex      Re-embed corpus content (optionally scoped to a channel)
   vacuum       Reclaim disk after deletions/reindex (SQLite VACUUM; worker must be stopped)
   upgrade      Bring the corpus up to the current chunker shape (reindex + vacuum, end-to-end)
-  observation  list|flush — manage observation queue (--limit N, --session ID)
+  observation  list|sunk|flush — manage observations (sunk: list dormant/archived; --archived)
+  restore      Re-surface a sunk (dormant/archived) observation: restore <id>
   config       show — print effective config (env + defaults, secrets masked)
   install      Interactive wizard — installs everything (embedder, worker, plugin)
   connect      Wire other AI tools (Codex, Gemini, Cursor) to the shared worker (--list)
@@ -56,9 +58,25 @@ Examples:
   captain-memo config show
 `;
 
+/** Turn an uncaught command error into an actionable message. A dead/unreachable
+ *  worker is the common case for recovery commands (restore, stats, top…) — surface
+ *  the start hint instead of a raw stack trace. Returns the process exit code. */
+function reportCliError(err: unknown): number {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/ECONNREFUSED|Unable to connect|Connection refused|fetch failed|failed to connect/i.test(msg)) {
+    console.error('captain-memo worker is not reachable.');
+    console.error('  Start it with:  bun run worker:start   (or `captain-memo install` to set it up)');
+    console.error('  Check status:   captain-memo status');
+    return 1;
+  }
+  console.error(msg);
+  return 1;
+}
+
 export async function main(args: string[]): Promise<void> {
   const cmd = args[0] ?? 'help';
   let exit = 0;
+  try {
   switch (cmd) {
     case 'status':
       exit = await statusCommand(args.slice(1));
@@ -77,6 +95,9 @@ export async function main(args: string[]): Promise<void> {
       break;
     case 'observation':
       exit = await observationCommand(args.slice(1));
+      break;
+    case 'restore':
+      exit = await restoreCommand(args.slice(1));
       break;
     case 'config':
       exit = await configCommand(args.slice(1));
@@ -129,6 +150,9 @@ export async function main(args: string[]): Promise<void> {
       console.error(`Unknown command: ${cmd}`);
       console.error(HELP);
       exit = 2;
+  }
+  } catch (err) {
+    exit = reportCliError(err);
   }
   process.exit(exit);
 }

@@ -330,7 +330,8 @@ test('renderStats — Tide section (on) shows status, floor, strengthened, tiers
   expect(text).toContain('Tide');
   expect(text).toContain('memory lifecycle');
   expect(text).toContain('on');
-  expect(text).toContain('relevance floor 0.30');
+  expect(text).toContain('floor 0.30');
+  expect(text).toContain('tiering off');           // TIDE_ON omits tiering_enabled ⇒ off
   expect(text).toContain('Strengthened');
   expect(text).toContain('1 234');                 // grouped count
   expect(text).toContain('max stability');
@@ -338,6 +339,12 @@ test('renderStats — Tide section (on) shows status, floor, strengthened, tiers
   expect(text).toContain('10 591');                // active tier
   expect(text).toContain('dormant');
   expect(text).toContain('archived');
+});
+
+test('renderStats — Tide section reflects tiering when enabled', () => {
+  const stats: StatsResponse = { ...SAMPLE, tide: { ...TIDE_ON, tiering_enabled: true } };
+  const text = renderStats(stats).map(stripAnsi).join('\n');
+  expect(text).toContain('tiering on');
 });
 
 test('renderStats — Tide section (off) shows the enable hint, no floor', () => {

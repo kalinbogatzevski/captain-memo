@@ -41,6 +41,8 @@ export interface StatsResponse {
   /** Tide lifecycle snapshot. Optional — pre-v0.5.3 worker payloads omit it. */
   tide?: {
     enabled: boolean;
+    /** Phase 2 auto-tiering. Optional — pre-v0.5.4 payloads omit it. */
+    tiering_enabled?: boolean;
     relevance_floor: number;
     strengthened: number;
     by_state: { active: number; dormant: number; archived: number };
@@ -418,8 +420,11 @@ function renderTideBlock(
   out.push(`   ${dim('memory lifecycle — recency × stability re-rank')}`);
 
   if (tide.enabled) {
+    const tiering = tide.tiering_enabled
+      ? ` ${dim('·')} ${dim('tiering')} ${green('on')}`
+      : ` ${dim('·')} ${dim('tiering off')}`;
     out.push(`   ${dim('Status'.padEnd(14))}${green('●')} on`
-      + `   ${dim(`relevance floor ${tide.relevance_floor.toFixed(2)} — bounded, relevance always dominates`)}`);
+      + `   ${dim(`floor ${tide.relevance_floor.toFixed(2)}`)}${tiering}`);
   } else {
     out.push(`   ${dim('Status'.padEnd(14))}${dim('○ off')}`
       + `   ${dim('(flat recency decay; set CAPTAIN_MEMO_TIDE_ENABLED=1)')}`);
