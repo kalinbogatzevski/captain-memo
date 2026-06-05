@@ -5,6 +5,27 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.6.0] — 2026-06-05
+
+### Added
+- **Quartermaster — automatic near-duplicate merging (opt-in, OFF by default).** A writer-only,
+  heartbeat-safe background curator that folds near-identical observations together with **no human
+  in the loop** — but only behind a deliberately strict triple lock: title-similarity **AND** cosine
+  **≥0.98** (computed in-process over vectors already in the index — zero new embeddings) **AND** the
+  negation/identifier guard. It **never auto-folds a memory you drilled into or pinned** (`is_anchored`),
+  every fold is fully reversible via the `merge_events` ledger (`captain-memo dedup --undo`, `restore <id>`),
+  and the worst outcome is a reversible archive — nothing is ever deleted. The sweep yields between groups
+  (and within large ones) and aborts the instant ingest is queued, so the worker's heartbeat is never
+  starved. Enable with `CAPTAIN_MEMO_QM_DEDUP=1`.
+- **Quartermaster observability in `/stats`.** A `qm` block reports the switch state, the cosine gate,
+  and the last run (`merges`, `rows_scanned`, `skipped_no_vector`, `aborted_for_ingest`, `errored`) from a
+  new `qm_runs` audit ledger (migration v10) — so an enabled curator is fully legible: you can see exactly
+  what it folded, what it skipped for lack of a vector, and whether a run errored.
+- **Quartermaster config (all optional):** `CAPTAIN_MEMO_QM_ENABLED` (master switch),
+  `CAPTAIN_MEMO_QM_DEDUP` (the auto-merge job, default off), `_QM_DEDUP_COSINE` (`0.98`),
+  `_QM_DEDUP_TITLE` (`0.5`), `_QM_DEDUP_WINDOW` (`500`), `_QM_DEDUP_INTERVAL_MS` (`3600000`),
+  `_QM_SLICE_MS` (`150`).
+
 ## [0.5.5] — 2026-06-05
 
 ### Fixed
