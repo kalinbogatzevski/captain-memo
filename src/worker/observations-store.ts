@@ -4,6 +4,7 @@ import { applyMigrations } from './migrations.ts';
 import type { Migration } from './migrations.ts';
 import type { TideConfig, TideRow, TideState } from './tide.ts';
 import { groupBySimilarity, DEFAULT_SIMILARITY_THRESHOLD } from '../shared/title-similarity.ts';
+import { mergeBlocked } from '../shared/merge-guard.ts';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS observations (
@@ -942,7 +943,7 @@ export class ObservationsStore {
     }
     const out: DuplicateGroup[] = [];
     for (const bucket of partitions.values()) {
-      for (const g of groupBySimilarity(bucket, r => r.title, threshold)) {
+      for (const g of groupBySimilarity(bucket, r => r.title, threshold, mergeBlocked)) {
         if (g.length > 1) out.push({ survivor: toEntry(g[0]!), members: g.slice(1).map(toEntry) });
       }
     }

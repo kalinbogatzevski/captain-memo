@@ -69,3 +69,28 @@ test('groupBySimilarity — representative is the first item of each group (call
   const groups = groupBySimilarity([T4, T1], (t) => t, 0.5);
   expect(groups[0]![0]).toBe(T4);
 });
+
+test('groupBySimilarity — optional blocked predicate prevents a join Jaccard alone would make', () => {
+  // T1..T4 group at 0.5 with no predicate; a blocker vetoing every pair keeps
+  // each title in its own group (the predicate overrides a passing Jaccard).
+  const items = [T1, T2, T3, T4];
+  const withBlock = groupBySimilarity(items, (t) => t, 0.5, () => true);
+  expect(withBlock.length).toBe(4);
+  expect(withBlock.every((g) => g.length === 1)).toBe(true);
+
+  // A selective blocker (veto only one specific candidate) splits just that one out.
+  const selective = groupBySimilarity(items, (t) => t, 0.5, (_rep, cand) => cand === T3);
+  const t3Group = selective.find((g) => g.includes(T3))!;
+  expect(t3Group).toEqual([T3]);                       // T3 forced into its own group
+  expect(selective.find((g) => g.includes(T1))!).toEqual([T1, T2, T4]);
+});
+
+test('groupBySimilarity — omitting the predicate preserves the old grouping behavior', () => {
+  // Same inputs, with vs without the 4th arg → identical groups (a blocker that
+  // never vetoes must equal no blocker at all, and both equal the legacy call).
+  const items = [T1, T2, T3, T4, T5, UNRELATED];
+  const legacy = groupBySimilarity(items, (t) => t, 0.5);
+  const neverBlock = groupBySimilarity(items, (t) => t, 0.5, () => false);
+  expect(neverBlock).toEqual(legacy);
+  expect(legacy[0]).toEqual([T1, T2, T3, T4]);          // unchanged from the legacy assertion
+});

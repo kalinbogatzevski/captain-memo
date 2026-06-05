@@ -59,11 +59,15 @@ export function jaccard(a: Set<string>, b: Set<string>): number {
  *  the order given — callers pre-sort by count (desc) so each group's first
  *  element (the representative) is the highest-count phrasing. An item joins an
  *  existing group when its Jaccard against the group's representative meets the
- *  threshold. Returns groups in representative order. */
+ *  threshold AND the optional `blocked` veto does not reject the pair (so a
+ *  semantic guard can keep opposite-meaning titles apart even when their tokens
+ *  overlap). Omitting `blocked` preserves the pure-Jaccard behavior exactly.
+ *  Returns groups in representative order. */
 export function groupBySimilarity<T>(
   items: T[],
   getTitle: (item: T) => string,
   threshold: number,
+  blocked?: (repTitle: string, candidateTitle: string) => boolean,
 ): T[][] {
   const tokens = items.map((it) => significantTokens(getTitle(it)));
   const groups: T[][] = [];
@@ -75,9 +79,11 @@ export function groupBySimilarity<T>(
     const group: T[] = [items[i]!];
     taken[i] = true;
     const repTokens = tokens[i]!;
+    const repTitle = getTitle(items[i]!);
     for (let j = i + 1; j < items.length; j++) {
       if (taken[j]) continue;
-      if (jaccard(repTokens, tokens[j]!) >= threshold) {
+      if (jaccard(repTokens, tokens[j]!) >= threshold
+        && !(blocked && blocked(repTitle, getTitle(items[j]!)))) {
         group.push(items[j]!);
         taken[j] = true;
       }

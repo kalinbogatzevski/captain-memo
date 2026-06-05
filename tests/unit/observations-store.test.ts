@@ -858,6 +858,19 @@ test('findDuplicateGroups — still groups near-dupes within the same project+br
   expect(g!.members.map(m => m.id)).toEqual([b]);
 });
 
+// --- S3: negation/identifier merge guard ------------------------------------
+// Same-project, high-Jaccard pair with OPPOSITE polarity ("missing") must never
+// fold — Jaccard alone would group them and corrupt the survivor.
+test('findDuplicateGroups — never folds an opposite-polarity (negation) pair', () => {
+  const a = seedSurfacedScoped('Inspected users table', 'p1', null, 5);
+  const b = seedSurfacedScoped('users table missing', 'p1', null, 3);
+
+  for (const g of store.findDuplicateGroups(0.5)) {
+    const ids = [g.survivor.id, ...g.members.map(m => m.id)];
+    expect(ids.includes(a) && ids.includes(b)).toBe(false);
+  }
+});
+
 test('mergeDuplicateGroup — skips a member from a different project (no counter corruption)', () => {
   const survivor = seedSurfacedScoped('canonical title', 'p1', null, 10);
   const alien = seedSurfacedScoped('canonical title', 'p2', null, 7);
