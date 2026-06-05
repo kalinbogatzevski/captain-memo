@@ -49,4 +49,27 @@ describe('mergeBlocked', () => {
   test('allows plain titles with neither negation nor identifiers', () => {
     expect(mergeBlocked('Reviewed the deployment plan', 'Review deployment plan')).toBe(false);
   });
+
+  // --- Rule 1 contraction coverage: "n't" must read as negation ---
+  // The token-splitter shatters "isn't" → ["isn","t"], so without a contraction
+  // detector these opposite-polarity pairs would silently fold. Regression for a
+  // reachable silent bad merge.
+  test('blocks isn\'t vs is (n\'t contraction is negation)', () => {
+    expect(mergeBlocked("reindex isn't resumable after crash", 'reindex is resumable after crash')).toBe(true);
+  });
+
+  test('blocks wasn\'t vs was', () => {
+    expect(mergeBlocked("the deploy wasn't successful", 'the deploy was successful')).toBe(true);
+  });
+
+  // Curly apostrophe (U+2019) variant must trip the same rule.
+  test('blocks curly-apostrophe contraction vs positive', () => {
+    expect(mergeBlocked('reindex isn’t resumable after crash', 'reindex is resumable after crash')).toBe(true);
+  });
+
+  // BOTH sides carry the SAME contraction → same polarity → rule 1 must NOT fire
+  // (a genuine dup that merely shares a contraction stays mergeable).
+  test('does not block when both sides share a contraction (same polarity)', () => {
+    expect(mergeBlocked("reindex isn't resumable", "reindex isn't resumable yet")).toBe(false);
+  });
 });

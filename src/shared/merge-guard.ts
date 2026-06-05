@@ -24,8 +24,16 @@ const NEGATION = new Set([
   'false', 'unavailable', 'cannot', 'without', 'lacks', 'lacking', 'no', 'not',
 ]);
 
+// The "n't" suffix is exclusively the negation contraction in English, so a
+// regex over the normalized (apostrophe-preserving) title is sound. The token
+// splitter shatters "isn't" → ["isn","t"], which would otherwise read as ZERO
+// negation; this fires first to catch the contraction directly. Handles both the
+// straight (U+0027) and curly (U+2019) apostrophe.
+const NT_CONTRACTION = /[a-z]+n['’]t\b/;  // isn't, couldn't, won't, can't, wasn't, doesn't, ...
+
 /** Whether the normalized title contains at least one absence/negation token. */
 function hasNegation(norm: string): boolean {
+  if (NT_CONTRACTION.test(norm)) return true;
   for (const tok of norm.split(/[^a-z0-9]+/)) {
     if (NEGATION.has(tok)) return true;
   }

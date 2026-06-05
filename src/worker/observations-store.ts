@@ -141,7 +141,10 @@ export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
           summed_drill  INTEGER NOT NULL DEFAULT 0,
           merged_at     INTEGER NOT NULL,
           job           TEXT NOT NULL DEFAULT 'dedup',
-          undone        INTEGER NOT NULL DEFAULT 0
+          undone        INTEGER NOT NULL DEFAULT 0,
+          -- Survivor's last_surfaced_at BEFORE this merge advanced it, so undo can
+          -- restore it (nullable: NULL means the survivor was never surfaced).
+          survivor_prev_surfaced_at INTEGER
         )
       `);
       db.exec('CREATE INDEX IF NOT EXISTS idx_merge_events_survivor ON merge_events(survivor_id) WHERE undone = 0');
@@ -843,8 +846,8 @@ export class ObservationsStore {
       // (project_id, branch). A caller passing a cross-scope member must never
       // corrupt the survivor's counters. NULL branch compared as ''.
       const survivor = this.db
-        .query('SELECT project_id, branch FROM observations WHERE id = ?')
-        .get(survivorId) as { project_id: string; branch: string | null } | undefined;
+        .query('SELECT project_id, branch, last_surfaced_at FROM observations WHERE id = ?')
+        .get(survivorId) as { project_id: string; branch: string | null; last_surfaced_at: number | null } | undefined;
       if (!survivor) return;
       const scopePlaceholders = candidates.map(() => '?').join(',');
       const eligibleRows = this.db
@@ -873,13 +876,15 @@ export class ObservationsStore {
       }
 
       // Append-only ledger: one row per folded member, with its exact counts.
+      // survivor_prev_surfaced_at captures the survivor's last_surfaced_at BEFORE
+      // the UPDATE below advances it, so undo can restore the pre-merge recency.
       const insertEvent = this.db.query(
         `INSERT INTO merge_events
-           (survivor_id, member_id, summed_auto, summed_search, summed_drill, merged_at, job, undone)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+           (survivor_id, member_id, summed_auto, summed_search, summed_drill, merged_at, job, undone, survivor_prev_surfaced_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
       );
       for (const m of eligible) {
-        insertEvent.run(survivorId, m.id, m.from_auto, m.from_search, m.from_drill, atEpoch, job);
+        insertEvent.run(survivorId, m.id, m.from_auto, m.from_search, m.from_drill, atEpoch, job, survivor.last_surfaced_at);
       }
 
       this.db
@@ -936,7 +941,7 @@ export class ObservationsStore {
     // or two branches — folding across scopes corrupts the survivor's counters.
     const partitions = new Map<string, typeof rows>();
     for (const r of rows) {
-      const key = `${r.project_id} ${r.branch ?? ''}`;
+      const key = JSON.stringify([r.project_id, r.branch]);
       const bucket = partitions.get(key);
       if (bucket) bucket.push(r);
       else partitions.set(key, [r]);
@@ -971,11 +976,12 @@ export class ObservationsStore {
   unmergeDuplicateGroup(survivorId: number): void {
     const events = this.db
       .query(
-        `SELECT member_id, summed_auto, summed_search, summed_drill
+        `SELECT member_id, summed_auto, summed_search, summed_drill, merged_at, survivor_prev_surfaced_at
            FROM merge_events WHERE survivor_id = ? AND undone = 0`,
       )
       .all(survivorId) as Array<{
         member_id: number; summed_auto: number; summed_search: number; summed_drill: number;
+        merged_at: number; survivor_prev_surfaced_at: number | null;
       }>;
     if (events.length === 0) return;
 
@@ -984,18 +990,30 @@ export class ObservationsStore {
     const memberIds = events.map(e => e.member_id);
     const placeholders = memberIds.map(() => '?').join(',');
 
+    // The earliest of the open merges holds the survivor's true pre-merge
+    // last_surfaced_at (later merges recorded the already-advanced value). NULL is
+    // a valid stored value (never surfaced) and must be restored as NULL.
+    const earliest = events.reduce((min, e) => (e.merged_at < min.merged_at ? e : min), events[0]!);
+    const restoreSurfacedAt = earliest.survivor_prev_surfaced_at;
+
     const tx = this.db.transaction(() => {
       this.db
         .query(
           `UPDATE observations
               SET from_auto = from_auto - ?, from_search = from_search - ?, from_drill = from_drill - ?,
-                  theme_member_ids = NULL
+                  theme_member_ids = NULL,
+                  last_surfaced_at = ?
             WHERE id = ?`,
         )
-        .run(a, s, d, survivorId);
+        .run(a, s, d, restoreSurfacedAt, survivorId);
+      // Scope the resurrection to members actually folded into THIS survivor —
+      // defends against any future caller that folds a member into two survivors.
       this.db
-        .query(`UPDATE observations SET archived = 0, archived_into_theme_id = NULL WHERE id IN (${placeholders})`)
-        .run(...memberIds);
+        .query(
+          `UPDATE observations SET archived = 0, archived_into_theme_id = NULL
+            WHERE id IN (${placeholders}) AND archived_into_theme_id = ?`,
+        )
+        .run(...memberIds, survivorId);
       this.db
         .query('UPDATE merge_events SET undone = 1 WHERE survivor_id = ? AND undone = 0')
         .run(survivorId);

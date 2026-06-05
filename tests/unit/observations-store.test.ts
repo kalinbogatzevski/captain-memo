@@ -83,7 +83,7 @@ test('ObservationsStore — migration v9 adds merge_events ledger table + partia
 
   // Ledger columns exist
   for (const c of ['id', 'survivor_id', 'member_id', 'summed_auto', 'summed_search',
-                   'summed_drill', 'merged_at', 'job', 'undone']) {
+                   'summed_drill', 'merged_at', 'job', 'undone', 'survivor_prev_surfaced_at']) {
     expect(byName.has(c)).toBe(true);
   }
 
@@ -764,6 +764,31 @@ test('mergeDuplicateGroup + unmergeDuplicateGroup round-trips counts and archive
   expect(store.findById(m)!.archived).toBe(false);        // un-archived
   expect(store.findById(m)!.archived_into_theme_id).toBeNull();
   expect(store.findById(s)!.theme_member_ids).toBeNull();
+});
+
+// Review fix: merge advances the survivor's last_surfaced_at to the group max,
+// but undo must RESTORE the survivor's pre-merge value — otherwise merge+undo
+// permanently inflates recency (which feeds Tide buoyancy).
+test('unmergeDuplicateGroup — restores the survivor last_surfaced_at to its pre-merge value', () => {
+  const s = seedSurfaced(store, 'survivor row', 'feature', 1, 0, 0, 100);   // survivor last_surfaced_at = 100
+  const m = seedSurfaced(store, 'member row', 'feature', 1, 0, 0, 999);     // member  last_surfaced_at = 999
+
+  store.mergeDuplicateGroup(s, [m], 1000);
+  expect(store.findById(s)!.last_surfaced_at).toBe(999);   // advanced to group max
+
+  store.unmergeDuplicateGroup(s);
+  expect(store.findById(s)!.last_surfaced_at).toBe(100);   // restored to pre-merge
+});
+
+test('unmergeDuplicateGroup — restores NULL last_surfaced_at when survivor was never surfaced', () => {
+  const s = mkObs(store, 'never surfaced survivor');                        // last_surfaced_at = NULL
+  const m = seedSurfaced(store, 'surfaced member', 'feature', 1, 0, 0, 777);
+  // member and survivor must share the partition (default p1 / branch null) — both do via mkObs/seedSurfaced.
+  store.mergeDuplicateGroup(s, [m], 1000);
+  expect(store.findById(s)!.last_surfaced_at).toBe(777);   // advanced from NULL to member's value
+
+  store.unmergeDuplicateGroup(s);
+  expect(store.findById(s)!.last_surfaced_at).toBeNull();  // restored to NULL, not coerced to 777 or 0
 });
 
 test('mergedSurvivorIds — lists rows that have folded-in members (for --undo all)', () => {
