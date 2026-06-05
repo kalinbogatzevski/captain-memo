@@ -992,6 +992,16 @@ export class ObservationsStore {
           LIMIT ?`,
       )
       .all(windowLimit) as Array<RawTopRow & { project_id: string; branch: string | null }>;
+    // Recency bounds the WINDOW (the LIMIT above), but count must still pick the
+    // SURVIVOR. groupSurfacedRows is rep-anchored (g[0] survives), so re-sort the
+    // windowed rows count-desc (ties by id asc, matching findDuplicateGroups)
+    // before grouping — otherwise the most-recent row, not the highest-count one,
+    // would lead each group and silently break the survivor invariant.
+    rows.sort((a, b) => {
+      const ta = a.from_auto + a.from_search + a.from_drill;
+      const tb = b.from_auto + b.from_search + b.from_drill;
+      return tb - ta || a.id - b.id;
+    });
     return this.groupSurfacedRows(rows, titleThreshold);
   }
 

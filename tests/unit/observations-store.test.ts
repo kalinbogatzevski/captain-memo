@@ -1011,6 +1011,27 @@ test('dedupCandidateWindow — inherits the (project, branch) scope + negation g
   }
 });
 
+// Recency bounds the WINDOW, but count picks the SURVIVOR. Seed a near-dup pair
+// where the LOWER-count row is MORE recent: the recency-LIMIT SELECT would put
+// the recent (low-count) row first, making it the rep/survivor — wrong. The
+// post-SELECT count-desc re-sort restores the findDuplicateGroups invariant.
+test('dedupCandidateWindow — survivor is the highest-count row, not the most-recent', () => {
+  const db = new Database(join(workDir, 'observations.db'));
+  const high = seedSurfaced(store, 'update-status skill command verified and available', 'discovery', 5, 0, 0, 100);
+  const low = seedSurfaced(store, 'update-status skill command is available', 'discovery', 1, 0, 0, 100);
+  // Make the LOWER-count row the MORE recent one (so a recency-anchored survivor
+  // would wrongly pick `low`).
+  db.query('UPDATE observations SET last_surfaced_at = ? WHERE id = ?').run(1_000, high);
+  db.query('UPDATE observations SET last_surfaced_at = ? WHERE id = ?').run(9_000, low);
+  db.close();
+
+  const groups = store.dedupCandidateWindow(0.5, 100);
+  const g = groups.find(x => [x.survivor.id, ...x.members.map(m => m.id)].includes(high));
+  expect(g).toBeDefined();
+  expect(g!.survivor.id).toBe(high);              // highest count survives, not the recent one
+  expect(g!.members.map(m => m.id)).toEqual([low]);
+});
+
 test('markAnchored + isProtected — anchoring pins a row; drilled rows are protected', () => {
   const plain = mkObs(store, 'plain row');
   const anchored = mkObs(store, 'to be anchored');
