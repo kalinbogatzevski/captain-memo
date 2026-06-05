@@ -5,6 +5,28 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.5.5] — 2026-06-05
+
+### Fixed
+- **Dedup safety hardening — `captain-memo dedup --apply` is now safe on a multi-project corpus.**
+  Four substrate fixes to the merge engine:
+  - **Project-scoped merges.** Dedup now groups and folds **only within the same project (and branch)**.
+    It can no longer merge near-identical titles across different projects — which previously summed
+    unrelated projects' recall counters into one row, corrupting both.
+  - **Meaning-aware merge guard.** Opposite-meaning titles ("users table missing" vs "Inspected users
+    table") and rows carrying different load-bearing identifiers ("timeout 30s tenant A" vs "5s tenant B")
+    are no longer folded together. Negation is detected even in contractions ("isn't" vs "is").
+  - **Append-only merge ledger.** Repeated merges into the same survivor can no longer clobber each
+    other's member list, so **`captain-memo dedup --undo` now reliably reverses every merge** — counts
+    and recency restored exactly, with no stranded, unrecoverable members.
+  - **Crash-safe `reindex --force`.** Re-embeds and swaps vectors in atomically (embed-then-swap). A
+    failed embed can no longer leave observations with **no** vector — previously the delete-then-rebuild
+    order could drop a row out of dense search on any embed error.
+
+### Added
+- **`docs/tide-quartermaster.md`** — the canonical Tide & Quartermaster memory-lifecycle design note
+  now ships in the repository.
+
 ## [0.5.4] — 2026-06-05
 
 ### Added
