@@ -1295,19 +1295,19 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
               obs: Observation;
               sourcePath: string;
               chunksWithIds: Array<{ chunk_id: string; text: string; sha: string; position: number; metadata: Record<string, unknown> }>;
+              oldChunkIds: string[];
             }
             const prepared: Prepared[] = [];
             for (const obs of batch) {
               const sourcePath = `observation:${opts.projectId}:${obs.id}`;
+              // --force: capture the existing chunk ids READ-ONLY here. We must
+              // NOT delete vectors/meta yet — embed-then-swap drops the old
+              // vectors only after the new ones commit (write loop below), so a
+              // failed embed leaves the existing index fully intact.
+              let oldChunkIds: string[] = [];
               if (parsed.data.force) {
                 const existing = meta.getDocument(sourcePath);
-                if (existing) {
-                  const oldChunks = meta.getChunksForDocument(existing.id);
-                  if (oldChunks.length > 0) {
-                    await vector.delete(collectionName, oldChunks.map(c => c.chunk_id));
-                  }
-                  meta.deleteDocument(sourcePath);
-                }
+                if (existing) oldChunkIds = meta.getChunksForDocument(existing.id).map(c => c.chunk_id);
               }
               const rawChunks = chunkObservation(obs);
               if (rawChunks.length === 0) {
@@ -1322,7 +1322,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
                 position: c.position,
                 metadata: c.metadata,
               }));
-              prepared.push({ obs, sourcePath, chunksWithIds });
+              prepared.push({ obs, sourcePath, chunksWithIds, oldChunkIds });
             }
             if (prepared.length === 0) return;
 
@@ -1371,6 +1371,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
                   collectionName,
                   p.chunksWithIds.map((c, i) => ({ id: c.chunk_id, embedding: obsEmbeddings[i]! })),
                 );
+                // Embed-then-swap: now that the fresh vectors are committed, drop
+                // the old vectors that the new chunk set no longer covers. doc id
+                // is preserved (upsertDocument updates in place by source_path,
+                // replaceChunksForDocument swaps meta chunks), so no deleteDocument.
+                const stale = p.oldChunkIds.filter(id => !p.chunksWithIds.some(c => c.chunk_id === id));
+                if (stale.length > 0) await vector.delete(collectionName, stale);
                 indexed++;
               } catch (err) {
                 console.error(`[reindex-obs] obs#${p.obs.id} write failed:`, (err as Error).message);
