@@ -84,6 +84,21 @@ export class VectorStore {
     tx();
   }
 
+  /**
+   * Read a stored embedding back out by chunk id, without re-embedding.
+   * Returns the raw stored vector, or null if the chunk id isn't present.
+   * The vec0 `embedding` column reads back as a raw little-endian float32 BLOB
+   * (a Uint8Array), so we view those bytes directly as a Float32Array.
+   */
+  getEmbedding(chunkId: string): Float32Array | null {
+    const row = this.db
+      .query(`SELECT embedding FROM vec_chunks WHERE chunk_id = ?`)
+      .get(chunkId) as { embedding: Uint8Array } | null;
+    if (!row) return null;
+    const buf = row.embedding;
+    return new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
+  }
+
   async delete(collection: string, ids: string[]): Promise<void> {
     if (ids.length === 0) return;
     const placeholders = ids.map(() => '?').join(',');

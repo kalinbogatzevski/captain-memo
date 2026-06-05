@@ -1,5 +1,6 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test';
 import { VectorStore } from '../../src/worker/vector-store.ts';
+import { cosine } from '../../src/shared/vector-math.ts';
 import { mkdtempSync, rmSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -61,6 +62,18 @@ test('VectorStore — rejects embeddings of wrong dimension', async () => {
   await expect(
     store.add('coll_a', [{ id: 'wrong', embedding: [1, 2] }]),  // 2 dims != DIM (4)
   ).rejects.toThrow(/dimension/);
+});
+
+test('VectorStore — getEmbedding round-trips a stored vector by chunk id', async () => {
+  const known = Array.from({ length: DIM }, (_, i) => Math.sin(i));
+  await store.add('observation', [{ id: 'rt-1', embedding: known }]);
+
+  const got = store.getEmbedding('rt-1');
+  expect(got).not.toBeNull();
+  expect(got!.length).toBe(DIM);
+  expect(cosine(Array.from(got!), known)).toBeGreaterThan(0.9999);
+
+  expect(store.getEmbedding('does-not-exist')).toBeNull();
 });
 
 test('VectorStore — rejects query embedding of wrong dimension', async () => {
