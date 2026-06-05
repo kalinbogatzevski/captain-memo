@@ -929,6 +929,29 @@ test('mergeDuplicateGroup — still folds same-project+branch members (positive 
   expect(store.findById(member)!.archived).toBe(true);
 });
 
+test('mergeDuplicateGroup — returns the count it actually archived (cross-scope member dropped)', () => {
+  // Fix B: a list mixing one same-scope member with one cross-scope member returns
+  // 1, not 2 — only the same-scope member is archived. The slice tallies this honest
+  // count into res.merges instead of over-reporting the proposed list length.
+  const survivor = seedSurfacedScoped('canonical title', 'p1', 'main', 10);
+  const sameScope = seedSurfacedScoped('dup title', 'p1', 'main', 7);
+  const crossScope = seedSurfacedScoped('canonical title', 'p2', 'main', 7); // different project
+
+  const archived = store.mergeDuplicateGroup(survivor, [sameScope, crossScope], 1000);
+
+  expect(archived).toBe(1);                                    // only the same-scope member
+  expect(store.findById(sameScope)!.archived).toBe(true);
+  expect(store.findById(crossScope)!.archived).toBe(false);   // untouched
+  expect(store.findById(survivor)!.from_search).toBe(17);     // 10 + 7 (not 24)
+});
+
+test('mergeDuplicateGroup — returns 0 on every early return', () => {
+  const survivor = seedSurfacedScoped('canonical title', 'p1', 'main', 10);
+  expect(store.mergeDuplicateGroup(survivor, [], 1000)).toBe(0);            // no candidates
+  expect(store.mergeDuplicateGroup(survivor, [survivor], 1000)).toBe(0);   // self only ⇒ filtered out
+  expect(store.mergeDuplicateGroup(999999, [survivor], 1000)).toBe(0);     // survivor missing
+});
+
 // ── v10: qm_runs audit table + bounded dedup window + anchor/protection ──
 
 test('ObservationsStore — migration v10 adds qm_runs audit table', () => {
@@ -939,12 +962,15 @@ test('ObservationsStore — migration v10 adds qm_runs audit table', () => {
   const cols = db.query('PRAGMA table_info(qm_runs)').all() as Array<{ name: string; dflt_value: unknown }>;
   const byName = new Map(cols.map(c => [c.name, c]));
   for (const c of ['id', 'job', 'started_at_epoch', 'finished_at_epoch',
-                   'rows_scanned', 'merges', 'aborted_for_ingest']) {
+                   'rows_scanned', 'merges', 'aborted_for_ingest',
+                   'skipped_no_vector', 'errored']) {
     expect(byName.has(c)).toBe(true);
   }
   expect(Number(byName.get('rows_scanned')!.dflt_value)).toBe(0);
   expect(Number(byName.get('merges')!.dflt_value)).toBe(0);
   expect(Number(byName.get('aborted_for_ingest')!.dflt_value)).toBe(0);
+  expect(Number(byName.get('skipped_no_vector')!.dflt_value)).toBe(0);
+  expect(Number(byName.get('errored')!.dflt_value)).toBe(0);
 
   // v10 recorded as applied
   expect(getAppliedVersions(db).some(v => v.version === 10)).toBe(true);
@@ -1062,11 +1088,11 @@ test('markAnchored + isProtected — anchoring pins a row; drilled rows are prot
 test('recordQmRun + latestQmRuns — records audit rows, newest first', () => {
   store.recordQmRun({
     job: 'dedup', startedAt: 1_000, finishedAt: 1_050,
-    rowsScanned: 40, merges: 3, abortedForIngest: false,
+    rowsScanned: 40, merges: 3, skippedNoVector: 5, abortedForIngest: false, errored: false,
   });
   store.recordQmRun({
     job: 'dedup', startedAt: 2_000, finishedAt: null,
-    rowsScanned: 12, merges: 0, abortedForIngest: true,
+    rowsScanned: 12, merges: 0, skippedNoVector: 2, abortedForIngest: true, errored: false,
   });
 
   const latest = store.latestQmRuns(1);
@@ -1077,13 +1103,30 @@ test('recordQmRun + latestQmRuns — records audit rows, newest first', () => {
   expect(r.finishedAt).toBeNull();
   expect(r.rowsScanned).toBe(12);
   expect(r.merges).toBe(0);
+  expect(r.skippedNoVector).toBe(2);
   expect(r.abortedForIngest).toBe(true);   // stored 1 → boolean true
+  expect(r.errored).toBe(false);
 
   // Both rows present, newest (id desc) first; booleans round-trip.
   const both = store.latestQmRuns(10);
   expect(both.map(x => x.startedAt)).toEqual([2_000, 1_000]);
   expect(both[1]!.finishedAt).toBe(1_050);
+  expect(both[1]!.skippedNoVector).toBe(5);
   expect(both[1]!.abortedForIngest).toBe(false);
+  expect(both[1]!.errored).toBe(false);
+});
+
+test('recordQmRun + latestQmRuns — an errored run round-trips with errored === true', () => {
+  // Fix D: a slice that THREW records a row with errored=1 so /stats.qm.last_run
+  // truthfully shows the failure instead of the last good run.
+  store.recordQmRun({
+    job: 'dedup', startedAt: 3_000, finishedAt: 3_001,
+    rowsScanned: 0, merges: 0, skippedNoVector: 0, abortedForIngest: false, errored: true,
+  });
+  const r = store.latestQmRuns(1)[0]!;
+  expect(r.errored).toBe(true);          // stored 1 → boolean true
+  expect(r.merges).toBe(0);
+  expect(r.abortedForIngest).toBe(false);
 });
 
 test('ObservationsStore — countMissingStoredTokens / listMissingStoredTokens', () => {

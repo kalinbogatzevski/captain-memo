@@ -779,7 +779,6 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         representativeVector: repVec,
         memberIsProtected: (id) => qmStore.isProtected(id),
         mergeGroup: (s, m, at) => qmStore.mergeDuplicateGroup(s, m, at),
-        markAnchored: (id) => qmStore.markAnchored(id),
         shouldAbort: () => processBatchPromise != null || (obsQueue?.pendingCount() ?? 0) > 0,
         cfg: qmConfig,
         now: () => Math.floor(Date.now() / 1000),
@@ -787,10 +786,17 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       })
         .then(r => {
           qmStore.recordQmRun({ job: 'dedup', startedAt, finishedAt: Math.floor(Date.now() / 1000),
-            rowsScanned: r.scanned, merges: r.merges, abortedForIngest: r.aborted });
+            rowsScanned: r.scanned, merges: r.merges, skippedNoVector: r.skippedNoVector,
+            abortedForIngest: r.aborted, errored: false });
           if (r.merges > 0) console.error(`[qm-dedup] folded ${r.merges} member(s)` + (r.aborted ? ' (aborted for ingest)' : ''));
         })
-        .catch(err => console.error('[qm-dedup] ERROR', err))
+        .catch(err => {
+          // A throwing slice must still leave an audit row, else /stats.qm.last_run
+          // would show the last GOOD run and hide that dedup is broken.
+          qmStore.recordQmRun({ job: 'dedup', startedAt, finishedAt: Math.floor(Date.now() / 1000),
+            rowsScanned: 0, merges: 0, skippedNoVector: 0, abortedForIngest: false, errored: true });
+          console.error('[qm-dedup] ERROR', err);
+        })
         .finally(() => { qmDedupPromise = null; });
     }, qmConfig.dedupIntervalMs);
   }

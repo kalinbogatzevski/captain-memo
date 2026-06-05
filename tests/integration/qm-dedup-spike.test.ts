@@ -12,6 +12,8 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { Database } from 'bun:sqlite';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
+import { ObservationsStore } from '../../src/worker/observations-store.ts';
+import { DEFAULT_SIMILARITY_THRESHOLD } from '../../src/shared/title-similarity.ts';
 
 let worker: WorkerHandle | null = null;
 let workDir = '';
@@ -93,6 +95,19 @@ function qmRuns(): Array<{ aborted_for_ingest: number }> {
   return rows;
 }
 
+// Largest near-dup candidate group the dedup window would yield — used to PROVE the
+// big same-scope group lands as ONE group (the worst case the heartbeat must survive),
+// not silently split into many small ones by a future title-similarity change.
+function largestCandidateGroupSize(): number {
+  const store = new ObservationsStore(join(workDir, 'obs.db'), { readonly: true });
+  try {
+    const groups = store.dedupCandidateWindow(DEFAULT_SIMILARITY_THRESHOLD, 500);
+    return groups.reduce((max, g) => Math.max(max, g.members.length + 1), 0);
+  } finally {
+    store.close();
+  }
+}
+
 test('dedup under ingest spike — heartbeat stays fresh, a slice aborts for ingest', async () => {
   const port = await build();
 
@@ -105,8 +120,33 @@ test('dedup under ingest spike — heartbeat stays fresh, a slice aborts for ing
     await enqueue(port, `topic ${g} alpha bravo charlie delta echo foxtrot golf hotel`, p++);
     await enqueue(port, `topic ${g} alpha bravo charlie delta echo foxtrot golf india`, p++);
   }
+  // PLUS one LARGE same-scope near-dup group (~100 members): a shared 9-token core
+  // with a single varying ALPHABETIC tail token (no digits — a numeric suffix would
+  // trip the identifier merge-guard and split the group), so all rows fall in one
+  // title-similarity group inside one (project,branch) partition. This is the
+  // previously-uncovered worst case — a single huge group does ~100 centroid reads,
+  // which without the intra-group heartbeat yield (Fix E) would block the event loop
+  // and starve /health. We assert the worst /health gap stays under the budget while
+  // it processes.
+  const CORE = 'bigdup shared core alpha bravo charlie delta echo foxtrot';
+  const tail = (i: number): string => {
+    // Pure-alphabetic distinct suffix per row (base-26, lowercase) — no identifiers.
+    let s = '', n = i;
+    do { s = String.fromCharCode(97 + (n % 26)) + s; n = Math.floor(n / 26) - 1; } while (n >= 0);
+    return s;
+  };
+  for (let i = 0; i < 140; i++) {
+    await enqueue(port, `${CORE} word${tail(i)}`, p++);
+  }
   await flush(port);
   bumpAllCounts();
+
+  // Sanity: the big group really is ONE large same-scope group (worst case present).
+  // The ingest batcher folds some same-prompt events, so not all 100 enqueues become
+  // distinct rows — but the surviving group is comfortably > 2·HEARTBEAT_EVERY (64),
+  // so a slice walking it MUST cross the 32- and 64-member intra-group yield
+  // checkpoints. That is exactly the previously-uncovered worst case Fix E guards.
+  expect(largestCandidateGroupSize()).toBeGreaterThanOrEqual(64);
 
   // Heartbeat probe: poll /health continuously; record the worst gap between
   // successive successful responses while the spike runs.

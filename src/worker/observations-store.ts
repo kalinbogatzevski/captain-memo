@@ -166,7 +166,9 @@ export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
           finished_at_epoch INTEGER,
           rows_scanned INTEGER NOT NULL DEFAULT 0,
           merges INTEGER NOT NULL DEFAULT 0,
-          aborted_for_ingest INTEGER NOT NULL DEFAULT 0
+          aborted_for_ingest INTEGER NOT NULL DEFAULT 0,
+          skipped_no_vector INTEGER NOT NULL DEFAULT 0,
+          errored INTEGER NOT NULL DEFAULT 0
         )
       `);
     },
@@ -289,18 +291,21 @@ export interface DuplicateGroup {
 }
 
 /** Audit input for one Quartermaster job run (recordQmRun). Booleans are stored
- *  as 0/1; `finishedAt` is null while a run is in flight. */
+ *  as 0/1; `finishedAt` is null while a run is in flight. `errored` defaults to
+ *  false on the success path and is set true only when the slice itself threw. */
 export interface QmRunInput {
   job: string;
   startedAt: number;
   finishedAt: number | null;
   rowsScanned: number;
   merges: number;
+  skippedNoVector: number;
   abortedForIngest: boolean;
+  errored: boolean;
 }
 
 /** One persisted Quartermaster run (latestQmRuns). Mirrors QmRunInput plus the
- *  row id; `abortedForIngest` is rehydrated back to a boolean. */
+ *  row id; `abortedForIngest` and `errored` are rehydrated back to booleans. */
 export interface QmRun extends QmRunInput {
   id: number;
 }
@@ -874,19 +879,24 @@ export class ObservationsStore {
    *
    * Runs in a single transaction so a crash mid-merge can't leave counts summed
    * but members un-archived (or vice-versa).
+   *
+   * Returns the number of members it ACTUALLY archived (after the cross-scope
+   * eligibility filter) — so the auto-dedup slice can tally an honest merge count
+   * instead of over-reporting members the filter silently dropped. 0 on every
+   * early return (no candidates / survivor gone / nothing eligible).
    */
-  mergeDuplicateGroup(survivorId: number, memberIds: number[], atEpoch: number, job = 'dedup'): void {
+  mergeDuplicateGroup(survivorId: number, memberIds: number[], atEpoch: number, job = 'dedup'): number {
     const candidates = memberIds.filter(id => id !== survivorId);
-    if (candidates.length === 0) return;
+    if (candidates.length === 0) return 0;
 
-    const tx = this.db.transaction(() => {
+    const tx = this.db.transaction((): number => {
       // Defense-in-depth: only fold members that share the survivor's
       // (project_id, branch). A caller passing a cross-scope member must never
       // corrupt the survivor's counters. NULL branch compared as ''.
       const survivor = this.db
         .query('SELECT project_id, branch, last_surfaced_at FROM observations WHERE id = ?')
         .get(survivorId) as { project_id: string; branch: string | null; last_surfaced_at: number | null } | undefined;
-      if (!survivor) return;
+      if (!survivor) return 0;
       const scopePlaceholders = candidates.map(() => '?').join(',');
       const eligibleRows = this.db
         .query(
@@ -900,7 +910,7 @@ export class ObservationsStore {
         }>;
       const eligible = eligibleRows.filter(m => m.project_id === survivor.project_id
         && (m.branch ?? '') === (survivor.branch ?? ''));
-      if (eligible.length === 0) return;
+      if (eligible.length === 0) return 0;
       const ids = eligible.map(m => m.id);
       const placeholders = ids.map(() => '?').join(',');
 
@@ -951,8 +961,9 @@ export class ObservationsStore {
             WHERE id IN (${placeholders})`,
         )
         .run(survivorId, ...ids);
+      return ids.length;
     });
-    tx();
+    return tx();
   }
 
   /**
@@ -1061,23 +1072,24 @@ export class ObservationsStore {
     this.db
       .query(
         `INSERT INTO qm_runs
-           (job, started_at_epoch, finished_at_epoch, rows_scanned, merges, aborted_for_ingest)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+           (job, started_at_epoch, finished_at_epoch, rows_scanned, merges, aborted_for_ingest, skipped_no_vector, errored)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(run.job, run.startedAt, run.finishedAt, run.rowsScanned, run.merges,
-        run.abortedForIngest ? 1 : 0);
+        run.abortedForIngest ? 1 : 0, run.skippedNoVector, run.errored ? 1 : 0);
   }
 
   /** The n most-recent Quartermaster runs (id desc), rehydrated to QmRun objects. */
   latestQmRuns(n: number): QmRun[] {
     const rows = this.db
       .query(
-        `SELECT id, job, started_at_epoch, finished_at_epoch, rows_scanned, merges, aborted_for_ingest
+        `SELECT id, job, started_at_epoch, finished_at_epoch, rows_scanned, merges, aborted_for_ingest, skipped_no_vector, errored
            FROM qm_runs ORDER BY id DESC LIMIT ?`,
       )
       .all(n) as Array<{
         id: number; job: string; started_at_epoch: number; finished_at_epoch: number | null;
         rows_scanned: number; merges: number; aborted_for_ingest: number;
+        skipped_no_vector: number; errored: number;
       }>;
     return rows.map(r => ({
       id: r.id,
@@ -1086,7 +1098,9 @@ export class ObservationsStore {
       finishedAt: typeof r.finished_at_epoch === 'number' ? r.finished_at_epoch : null,
       rowsScanned: r.rows_scanned,
       merges: r.merges,
+      skippedNoVector: r.skipped_no_vector,
       abortedForIngest: r.aborted_for_ingest === 1,
+      errored: r.errored === 1,
     }));
   }
 
