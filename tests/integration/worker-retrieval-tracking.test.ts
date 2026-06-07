@@ -86,7 +86,10 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await worker.stop();
-  rmSync(workDir, { recursive: true, force: true });
+  // Windows releases SQLite/WAL file handles a beat after close(); retry so the recursive
+  // delete doesn't race that release and throw EBUSY/EPERM in teardown (Linux unlinks open
+  // files freely, which is why this only ever bit windows-latest). No-op cost on Linux.
+  rmSync(workDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 });
 
 test('/search/all bumps from_search on observation hits', async () => {

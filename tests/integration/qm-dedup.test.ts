@@ -31,8 +31,12 @@ const QM_ENV = [
 
 afterEach(async () => {
   if (worker) { await worker.stop(); worker = null; }
-  if (workDir) { rmSync(workDir, { recursive: true, force: true }); workDir = ''; }
+  // Clear env BEFORE the rmSync. On Windows rmSync can briefly throw on a not-yet-released
+  // SQLite file handle; a throw here must NOT skip the env reset, or a leaked
+  // CAPTAIN_MEMO_QM_DEDUP=1 makes the next "off by default" test actually fold (archived=1).
+  // maxRetries rides out the file-release race so the delete itself stops failing.
   for (const k of QM_ENV) delete process.env[k];
+  if (workDir) { rmSync(workDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); workDir = ''; }
 });
 
 async function build(env: Record<string, string>): Promise<number> {
