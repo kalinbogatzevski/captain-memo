@@ -6,6 +6,18 @@ on:
   pull_request:
 
 jobs:
+  # Moat guard: fail if federation code ever lands on the OSS master branch. The private `federation`
+  # branch is gitlab-only and never reaches github; this is the CI belt behind the per-clone pre-push hook.
+  moat:
+    name: moat (no federation code on master)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so the master ref resolves on PR runs
+      - name: No federation code on master
+        run: bash scripts/moat-guard.sh
+
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
