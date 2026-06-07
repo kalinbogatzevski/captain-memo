@@ -1,8 +1,9 @@
 import { test, expect, afterAll } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
+import { rmWorkDir } from '../support/worker-temp.ts';
 
 // fileURLToPath (not URL.pathname): on Windows `.pathname` is "/C:/…/index.ts"
 // (leading slash before the drive), which `bun <path>` cannot resolve — the
@@ -10,7 +11,7 @@ import { fileURLToPath } from 'url';
 // times out at "never healthy". fileURLToPath yields a real "C:\…" path.
 const WORKER = fileURLToPath(new URL('../../src/worker/index.ts', import.meta.url));
 const procs: Array<{ kill: () => void }> = []; const dirs: string[] = [];
-afterAll(() => { for (const p of procs) try { p.kill(); } catch {} for (const d of dirs) try { rmSync(d, { recursive: true, force: true }); } catch {} });
+afterAll(() => { for (const p of procs) try { p.kill(); } catch {} for (const d of dirs) rmWorkDir(d); });
 
 async function freePort(): Promise<number> { const s = Bun.serve({ port: 0, fetch: () => new Response('') }); const p = s.port ?? 0; s.stop(true); return p; }
 async function waitHealthy(base: string, ms = 20_000) {

@@ -1,11 +1,12 @@
 import { test, expect, beforeAll, afterAll } from 'bun:test';
-import { mkdtempSync, rmSync, existsSync, copyFileSync } from 'fs';
+import { mkdtempSync, existsSync, copyFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { MetaStore } from '../../src/worker/meta.ts';
 import { VectorStore } from '../../src/worker/vector-store.ts';
 import { runMigration } from '../../src/migration/runner.ts';
+import { rmWorkDir } from '../support/worker-temp.ts';
 
 let workDir: string;
 let metaPath: string;
@@ -37,7 +38,7 @@ beforeAll(() => {
 afterAll(() => {
   vector.close();
   meta.close();
-  if (existsSync(workDir)) rmSync(workDir, { recursive: true, force: true });
+  if (existsSync(workDir)) rmWorkDir(workDir);
 });
 
 test('e2e — migration -> keyword search finds migrated content', async () => {

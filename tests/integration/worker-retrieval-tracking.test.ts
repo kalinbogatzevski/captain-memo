@@ -7,10 +7,11 @@
 // These tests close that gap: each endpoint goes through the real worker.
 
 import { test, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
+import { rmWorkDir } from '../support/worker-temp.ts';
 
 let port = 0;
 let worker: WorkerHandle;
@@ -86,12 +87,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await worker.stop();
-  // Best-effort temp cleanup. On Windows the worker's SQLite file can stay locked past stop()
-  // (the OS doesn't release the handle as promptly as Linux, which unlinks open files freely),
-  // so a recursive delete here can throw EBUSY/EPERM. Every assertion has already run by now and
-  // the dir lives under the OS tmpdir, so a failed delete must NOT fail the test — warn and move on.
-  try { rmSync(workDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 40 }); }
-  catch (e) { console.warn(`[test] temp cleanup skipped: ${(e as Error).message}`); }
+  rmWorkDir(workDir);
 });
 
 test('/search/all bumps from_search on observation hits', async () => {

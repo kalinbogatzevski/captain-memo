@@ -17,10 +17,11 @@
 // supplies a deterministic summary so the spawned worker can actually create an
 // observation (it has no real summarizer credentials).
 import { test, expect, afterAll } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
+import { rmWorkDir } from '../support/worker-temp.ts';
 
 // fileURLToPath (not URL.pathname): on Windows `.pathname` is "/C:/…/index.ts",
 // which `bun <path>` cannot resolve. See worker-threaded.test.ts for the why.
@@ -32,7 +33,7 @@ const servers: Array<{ stop: (closeActive?: boolean) => void }> = [];
 afterAll(() => {
   for (const p of procs) try { p.kill(); } catch {}
   for (const s of servers) try { s.stop(true); } catch {}
-  for (const d of dirs) try { rmSync(d, { recursive: true, force: true }); } catch {}
+  for (const d of dirs) rmWorkDir(d);
 });
 
 async function freePort(): Promise<number> {
