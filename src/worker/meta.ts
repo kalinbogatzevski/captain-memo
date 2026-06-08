@@ -53,6 +53,11 @@ CREATE TABLE IF NOT EXISTS migration_progress (
   PRIMARY KEY (source_kind, source_id)
 );
 CREATE INDEX IF NOT EXISTS idx_migration_kind ON migration_progress(source_kind);
+
+CREATE TABLE IF NOT EXISTS kv (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `;
 
 export interface UpsertDocumentInput {
@@ -281,6 +286,28 @@ export class MetaStore {
       if (r.kind === 'observation' || r.kind === 'summary') out[r.kind] = r.n;
     }
     return out;
+  }
+
+  getKv(key: string): string | null {
+    const row = this.db.query('SELECT value FROM kv WHERE key = ?').get(key) as { value: string } | undefined;
+    return row ? row.value : null;
+  }
+
+  setKv(key: string, value: string): void {
+    this.db.query(
+      'INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    ).run(key, value);
+  }
+
+  listKvPrefix(prefix: string): Array<{ key: string; value: string }> {
+    const esc = prefix.replace(/[\\%_]/g, (c) => '\\' + c);
+    return this.db
+      .query("SELECT key, value FROM kv WHERE key LIKE ? ESCAPE '\\' ORDER BY key")
+      .all(esc + '%') as Array<{ key: string; value: string }>;
+  }
+
+  deleteKv(key: string): void {
+    this.db.query('DELETE FROM kv WHERE key = ?').run(key);
   }
 
   close(): void {

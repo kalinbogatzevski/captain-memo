@@ -1,5 +1,5 @@
 import { join } from 'path';
-import { statSync, readdirSync } from 'fs';
+import { statSync, readdirSync, chmodSync, existsSync } from 'node:fs';
 import { detectBranchSyncCached } from './branch.ts';
 import { z } from 'zod';
 import { MetaStore } from './meta.ts';
@@ -25,6 +25,7 @@ import { EmbedderInputTooLarge } from './embedder.ts';
 import { newChunkId } from '../shared/id.ts';
 import { sha256Hex } from '../shared/sha.ts';
 import type { RawObservationEvent, ObservationType, Observation } from '../shared/types.ts';
+import type { Hit } from '../shared/types.ts';
 import {
   DATA_DIR,
   META_DB_PATH,
@@ -149,7 +150,7 @@ export interface WorkerHandle {
 const SearchRequestSchema = z.object({
   query: z.string(),
   top_k: z.number().int().positive().max(50).default(5),
-  channels: z.array(z.enum(['memory', 'skill', 'observation', 'remote'])).optional(),
+  channels: z.array(z.enum(['memory', 'skill', 'observation'])).optional(),
 });
 
 const MemorySearchSchema = z.object({
@@ -219,10 +220,27 @@ const InjectContextSchema = z.object({
 const SHORT_PROMPT_THRESHOLD = 10;
 const NO_OP_TOKENS = new Set(['ok', 'continue', 'yes', 'go', 'next', 'sure']);
 
+/** Tighten the on-disk permissions of a secret-bearing path (the meta DB now persists the E2E private
+ *  scalars; DATA_DIR contains it). Best-effort: a chmod failure (e.g. an unsupported platform, or a
+ *  non-owner running) must NEVER crash boot — we just warn. Skipped silently when the path is absent. */
+function chmodSecret(path: string, mode: number): void {
+  try {
+    if (!existsSync(path)) return;
+    chmodSync(path, mode);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn('[worker] WARN: could not chmod ' + path + ' to ' + mode.toString(8) + ' (' + msg + ') — secret may be world-readable');
+  }
+}
+
 export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // Worker boot time — surfaced via /stats so the dashboard can show liveness + uptime.
   const workerStartedAtEpoch = Math.floor(Date.now() / 1000);
   const meta = new MetaStore(opts.metaDbPath, { readonly: !!opts.readOnly });
+  // Tighten the meta DB to owner-only (0600). It lands 0644 under the default umask; the corpus is
+  // private memory, so harden it. Best-effort (never crashes boot). A read-only handle still
+  // tightens what it opened.
+  chmodSecret(opts.metaDbPath, 0o600);
 
   // Boot-time hint when the corpus still carries pre-v0.1.8 observation
   // chunks. The worker keeps serving search just fine — the old per-fact
@@ -1038,6 +1056,50 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     applyBump(ids, source, opts.onRetrievalBump, obsStore ?? undefined);
   };
 
+  // Local "search everything" → Hit[]. Backs POST /search/all. LOCAL channels only.
+  const localSearchAll = async (query: string, topK: number): Promise<Hit[]> => {
+    let embedding: number[] = [];
+    if (!opts.skipEmbed) {
+      try { const out = await embedder.embed([query], 'query'); embedding = out[0] ?? []; }
+      catch { /* keyword fallback */ }
+    }
+    const fused = await searchWithRecency(embedding, query, topK);
+    const results = fused.map(f => {
+      const lookup = meta.getChunkById(f.id);
+      if (!lookup) return null;
+      const { chunk, document } = lookup;
+      const titleMeta = chunk.metadata as Record<string, unknown>;
+      return {
+        doc_id: chunk.chunk_id,
+        source_path: document.source_path,
+        title: (titleMeta.section_title ?? titleMeta.filename_id ?? titleMeta.title ?? 'Untitled') as string,
+        snippet: chunk.text.slice(0, 600),
+        score: f.score,
+        channel: document.channel,
+        metadata: chunk.metadata,
+      };
+    }).filter((r): r is NonNullable<typeof r> => r !== null);
+    return dropArchived(results) as Hit[];
+  };
+
+  // Local full-doc lookup → `{ content, metadata }` or null. Backs POST /get_full (local id).
+  const localGetFull = (
+    docId: string,
+  ): { content: string; metadata: Record<string, unknown>; observationMeta: Record<string, unknown> } | null => {
+    const result = meta.getChunkById(docId);
+    if (!result) return null;
+    return {
+      content: result.chunk.text,
+      metadata: {
+        ...result.chunk.metadata,
+        ...result.document.metadata,
+        source_path: result.document.source_path,
+      },
+      // The chunk metadata alone (carries observation_id) — used for the retrieval `drill` bump.
+      observationMeta: result.chunk.metadata,
+    };
+  };
+
   const handler = async (req: Request): Promise<Response> => {
     try {
       const url = new URL(req.url);
@@ -1187,39 +1249,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       if (req.method === 'POST' && url.pathname === '/search/all') {
         const parsed = SearchRequestSchema.safeParse(await req.json());
         if (!parsed.success) {
-          return Response.json(
-            { error: 'invalid_request', details: parsed.error.format() },
-            { status: 400 }
-          );
+          return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
         }
         const { query, top_k } = parsed.data;
-        let embedding: number[] = [];
-        if (!opts.skipEmbed) {
-          try {
-            const out = await embedder.embed([query], 'query');
-            embedding = out[0] ?? [];
-          } catch {
-            // Fall back to keyword-only on embed failure (logged by embedder itself)
-          }
-        }
-        const fused = await searchWithRecency(embedding, query, top_k);
-        const results = fused.map(f => {
-          const lookup = meta.getChunkById(f.id);
-          if (!lookup) return null;
-          const { chunk, document } = lookup;
-          const titleMeta = chunk.metadata as Record<string, unknown>;
-          return {
-            doc_id: chunk.chunk_id,
-            source_path: document.source_path,
-            title: (titleMeta.section_title ?? titleMeta.filename_id ?? titleMeta.title ?? 'Untitled') as string,
-            snippet: chunk.text.slice(0, 600),
-            score: f.score,
-            channel: document.channel,
-            metadata: chunk.metadata,
-          };
-        }).filter((r): r is NonNullable<typeof r> => r !== null);
-
-        const visible = dropArchived(results);
+        const visible = await localSearchAll(query, top_k);
         const by_channel: Record<string, number> = {};
         for (const r of visible) by_channel[r.channel] = (by_channel[r.channel] ?? 0) + 1;
         bumpRetrievalFromResults(visible, 'search');
@@ -1284,20 +1317,16 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         if (!parsed.success) {
           return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
         }
-        const result = meta.getChunkById(parsed.data.doc_id);
+        const result = localGetFull(parsed.data.doc_id);
         if (!result) {
           return Response.json({ error: 'not_found' }, { status: 404 });
         }
         // /get_full is the strongest "this observation was useful" signal —
         // the caller asked for the whole content, not just a snippet.
-        bumpRetrievalFromResults([{ metadata: result.chunk.metadata }], 'drill');
+        bumpRetrievalFromResults([{ metadata: result.observationMeta }], 'drill');
         return Response.json({
-          content: result.chunk.text,
-          metadata: {
-            ...result.chunk.metadata,
-            ...result.document.metadata,
-            source_path: result.document.source_path,
-          },
+          content: result.content,
+          metadata: result.metadata,
         });
       }
 
@@ -1909,6 +1938,9 @@ export async function runWorkerCli(): Promise<void> {
   mkdirSync(DATA_DIR, { recursive: true });
   mkdirSync(VECTOR_DB_DIR, { recursive: true });
   mkdirSync(dirname(META_DB_PATH), { recursive: true });
+  // DATA_DIR holds the secret-bearing meta DB → owner-only traversal (0700). Best-effort; never blocks
+  // boot. (The meta DB file itself is additionally chmod'd 0600 in startWorker.)
+  chmodSecret(DATA_DIR, 0o700);
 
   const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
   if (process.env.CAPTAIN_MEMO_WORKER_THREADED === '1') {

@@ -5,12 +5,11 @@
 // dormant, and the critical contract — a dormant row stays reachable via /search but is
 // excluded from the /inject/context default set, and one recall re-surfaces it.
 import { test, expect, afterEach } from 'bun:test';
-import { mkdtempSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { Database } from 'bun:sqlite';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
-import { rmWorkDir } from '../support/worker-temp.ts';
 
 let worker: WorkerHandle | null = null;
 let workDir = '';
@@ -23,8 +22,8 @@ const TIDE_ENV = [
 
 afterEach(async () => {
   if (worker) { await worker.stop(); worker = null; }
-  for (const k of TIDE_ENV) delete process.env[k];   // reset env FIRST — a teardown fs error must never skip it
-  rmWorkDir(workDir); workDir = '';
+  if (workDir) { rmSync(workDir, { recursive: true, force: true }); workDir = ''; }
+  for (const k of TIDE_ENV) delete process.env[k];
 });
 
 async function build(env: Record<string, string>): Promise<number> {
@@ -132,9 +131,7 @@ test('ebb sweep — an idle, old observation auto-flips to dormant, then restore
   // Age floor 0 + fast sweep so an old row qualifies immediately.
   const port = await build({ CAPTAIN_MEMO_TIDE_AGE_FLOOR_DAYS: '0', CAPTAIN_MEMO_TIDE_SWEEP_MS: '40' });
   const id = await seed(port, 'sweepprobe marker', OLD);
-  // (No synchronous "starts active" assert here: rows are born active by construction, and with a
-  //  40ms sweep already running a sync check races it on a slow runner. The polled ebb below is the
-  //  real proof that the SWEEP — not birth — moved it to dormant.)
+  expect(tideStateOf(id)).toBe('active');
 
   // Poll for the sweep to ebb it (generous budget; sweep ticks every 40ms).
   let ebbed = false;

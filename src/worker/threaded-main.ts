@@ -7,7 +7,7 @@
 // the threaded path falls back to the normal in-process single-threaded worker. That keeps the
 // CAPTAIN_MEMO_WORKER_THREADED flag always safe: it never leaves a dead, never-listening process.
 import { ThreadChannel } from './thread-channel.ts';
-import { serializeRequest, deserializeResponse, type WireResponse } from './request-serde.ts';
+import { serializeRequest, deserializeResponse, type WireRequest, type WireResponse } from './request-serde.ts';
 import { healthFromHeartbeat } from './health-heartbeat.ts';
 import { onEngineCrash, type SupervisorState } from './engine-supervisor.ts';
 import { classifyRoute } from './route-class.ts';
@@ -172,7 +172,7 @@ export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
       post: (m) => w.postMessage(m),
       onMessage: (cb) => {
         w.onmessage = (e: MessageEvent) => {
-          const m = e.data as { kind?: string; ids?: number[]; source?: string; message?: string };
+          const m = e.data as { kind?: string; ids?: number[] | string[]; source?: string; message?: string };
           if (m && m.kind === 'bump') {
             // Relay the reader's retrieval bump to the single writer (the only engine that writes).
             if (Array.isArray(m.ids) && m.ids.length > 0) engine?.postMessage({ kind: 'bump', ids: m.ids, source: m.source });
@@ -243,70 +243,71 @@ export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
     }
   }
 
-  // Forward a request to the writer engine. Used for writes, control-to-writer, /stats, AND the
-  // cold-start / all-readers-down read fallbacks. Keeps the original `!channel` 503 guard.
+  // Forward an op-routed 'http' request to the WRITER engine. Used for writes, control-to-writer,
+  // /stats, AND the cold-start / all-readers-down read fallbacks. Keeps the `!channel` 503 guard.
   async function forwardToWriter(wire: import('./request-serde.ts').WireRequest, timeoutMs?: number): Promise<Response> {
     if (!channel) return Response.json({ error: 'engine_unavailable' }, { status: 503 });
     try {
-      return deserializeResponse((await channel.request(wire, timeoutMs)) as WireResponse);
+      return deserializeResponse((await channel.request('http', wire, timeoutMs)) as WireResponse);
     } catch (e) {
       return Response.json({ error: (e as Error).message }, { status: 503 });
     }
   }
 
-  const server = Bun.serve({
-    port,
-    // Loopback ONLY — the unauthenticated worker API must never be reachable off-box.
-    hostname: '127.0.0.1',
-    fetch: async (req) => {
-      const url = new URL(req.url);
-      // /health is answered LOCALLY from the WRITER heartbeat only — never proxied, never affected
-      // by a busy reader (invariant 1). This is the unchanged heartbeat verdict.
-      if (req.method === 'GET' && url.pathname === '/health') {
-        const v = healthFromHeartbeat(hb, Date.now());
-        return Response.json(
-          v.healthy ? { healthy: true } : { healthy: false, degraded: v.degraded },
-          { status: v.healthy ? 200 : 503 },
-        );
+  // Common HTTP routing — always resolves to a Response. Proxies to the writer / reader pool.
+  const route = async (req: Request): Promise<Response> => {
+    const url = new URL(req.url);
+    // /health is answered LOCALLY from the WRITER heartbeat only — never proxied, never affected by
+    // a busy reader (invariant 1). This is the unchanged heartbeat verdict.
+    if (req.method === 'GET' && url.pathname === '/health') {
+      const v = healthFromHeartbeat(hb, Date.now());
+      return Response.json(
+        v.healthy ? { healthy: true } : { healthy: false, degraded: v.degraded },
+        { status: v.healthy ? 200 : 503 },
+      );
+    }
+
+    // Serialize ONCE, then route on the classifier verdict.
+    const wire = await serializeRequest(req);
+    const cls = classifyRoute(req.method, url.pathname);
+
+    // Reads go to the pool whenever it's enabled (POOL_SIZE>0). acquireReader waits through
+    // cold-start and saturation, then returns a token, 'empty' (spill to the writer — no reader
+    // exists), or 'saturated' (503 — readers exist but all busy; we NEVER spill a saturated read
+    // onto the writer, that's the heartbeat stall this split prevents).
+    if (cls === 'read' && POOL_SIZE > 0) {
+      const token = await acquireReader();
+      if (token === 'empty') {
+        // No reader exists (cold-start before the first 'ready', or every reader permanently died):
+        // the writer is the only engine that can serve the read. Logged — a read on the writer is
+        // the heartbeat-stall risk, tolerated ONLY because there is literally no reader.
+        console.warn('[worker] no reader available — serving read on the writer (cold-start / all readers down)');
+        return forwardToWriter(wire);
       }
-
-      // Serialize ONCE, then route on the classifier verdict.
-      const wire = await serializeRequest(req);
-      const cls = classifyRoute(req.method, url.pathname);
-
-      // Reads go to the pool whenever it's enabled (POOL_SIZE>0). acquireReader waits through
-      // cold-start and saturation, then returns a token, 'empty' (spill to the writer — no reader
-      // exists), or 'saturated' (503 — readers exist but all busy; we NEVER spill a saturated read
-      // onto the writer, that's the heartbeat stall this split prevents).
-      if (cls === 'read' && POOL_SIZE > 0) {
-        const token = await acquireReader();
-        if (token === 'empty') {
-          // No reader exists (cold-start before the first 'ready', or every reader permanently died):
-          // the writer is the only engine that can serve the read. Logged — a read on the writer is
-          // the heartbeat-stall risk, tolerated ONLY because there is literally no reader.
-          console.warn('[worker] no reader available — serving read on the writer (cold-start / all readers down)');
-          return forwardToWriter(wire);
-        }
-        if (token === 'saturated') {
-          // Every reader is busy and the wait window elapsed. We do NOT spill to the writer (that
-          // would risk the heartbeat); the read degrades to 503 so the caller can retry or skip recall.
-          return Response.json({ error: 'readers_saturated' }, { status: 503 });
-        }
-        try {
-          return deserializeResponse((await readerChannels.get(token)!.request(wire)) as WireResponse);
-        } catch (e) {
-          return Response.json({ error: (e as Error).message }, { status: 503 });
-        } finally {
-          pool.release(token);
-        }
+      if (token === 'saturated') {
+        // Every reader is busy and the wait window elapsed. We do NOT spill to the writer (that
+        // would risk the heartbeat); the read degrades to 503 so the caller can retry or skip recall.
+        return Response.json({ error: 'readers_saturated' }, { status: 503 });
       }
+      try {
+        return deserializeResponse((await readerChannels.get(token)!.request('http', wire)) as WireResponse);
+      } catch (e) {
+        return Response.json({ error: (e as Error).message }, { status: 503 });
+      } finally {
+        pool.release(token);
+      }
+    }
 
-      // Writes, control-to-writer, /stats, and ALL reads when the pool is disabled (N=0) → the writer.
-      // Known-long writes (/reindex) get a much longer RPC deadline so the CLI waits for the real
-      // result instead of a premature thread_rpc_timeout on a write the writer is still running.
-      return forwardToWriter(wire, LONG_WRITE_PATHS.has(url.pathname) ? LONG_WRITE_DEADLINE_MS : undefined);
-    },
-  });
+    // Writes, control-to-writer, /stats, and ALL reads when the pool is disabled (N=0) → the writer.
+    // Known-long writes (/reindex) get a much longer RPC deadline so the CLI waits for the real
+    // result instead of a premature thread_rpc_timeout on a write the writer is still running.
+    return forwardToWriter(wire, LONG_WRITE_PATHS.has(url.pathname) ? LONG_WRITE_DEADLINE_MS : undefined);
+  };
+
+  // The worker's HTTP API (search, stats, /shutdown) is UNAUTHENTICATED, so it binds to
+  // LOOPBACK ONLY — never any external interface. No env override — this is not negotiable.
+  const host = '127.0.0.1';
+  const server = Bun.serve({ port, hostname: host, fetch: route });
 
   // Keep this exact "(threaded: …)" wording — operators (and the upgrade smoke check) grep for it.
   // Include the reader count so the boot line reflects the actual topology.

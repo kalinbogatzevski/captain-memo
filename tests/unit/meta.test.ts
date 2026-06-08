@@ -171,3 +171,30 @@ test('MetaStore — migration progress: counts', () => {
   expect(counts.observation).toBe(2);
   expect(counts.summary).toBe(1);
 });
+
+test('MetaStore — listKvPrefix returns only prefixed keys, ordered by key', () => {
+  store.setKv('inbox:capX:2', 'v2');
+  store.setKv('inbox:capX:1', 'v1');
+  store.setKv('inbox:capY:9', 'v9');
+  store.setKv('other:z', 'vz');
+  const rows = store.listKvPrefix('inbox:capX:');
+  expect(rows).toEqual([
+    { key: 'inbox:capX:1', value: 'v1' },
+    { key: 'inbox:capX:2', value: 'v2' },
+  ]);
+});
+
+test('MetaStore — listKvPrefix escapes LIKE wildcards (literal match only)', () => {
+  store.setKv('a_b:1', 'underscore');
+  store.setKv('axb:1', 'wildcard-trap');
+  const rows = store.listKvPrefix('a_b:');
+  expect(rows).toEqual([{ key: 'a_b:1', value: 'underscore' }]);
+});
+
+test('MetaStore — deleteKv removes a key and is a no-op on a missing key', () => {
+  store.setKv('inbox:capX:1', 'v1');
+  store.deleteKv('inbox:capX:1');
+  expect(store.getKv('inbox:capX:1')).toBeNull();
+  // Deleting a key that does not exist must not throw.
+  expect(() => store.deleteKv('does:not:exist')).not.toThrow();
+});

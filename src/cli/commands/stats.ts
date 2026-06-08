@@ -1,5 +1,5 @@
 import { workerGet } from '../client.ts';
-import { renderStats, type StatsResponse } from '../stats-render.ts';
+import { renderStats, type StatsResponse, type RenderOpts } from '../stats-render.ts';
 
 export async function statsCommand(args: string[] = []): Promise<number> {
   const stats = await workerGet('/stats') as StatsResponse;
@@ -16,7 +16,8 @@ export async function statsCommand(args: string[] = []): Promise<number> {
     const w = parseInt(args[widthIdx + 1]!, 10);
     if (Number.isFinite(w) && w >= 40) panelWidth = w;
   }
-  const opts = panelWidth !== undefined ? { panelWidth } : {};
+  const opts: RenderOpts = {};
+  if (panelWidth !== undefined) opts.panelWidth = panelWidth;
   for (const line of renderStats(stats, opts)) console.log(line);
   return 0;
 }

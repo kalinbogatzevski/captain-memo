@@ -4,7 +4,6 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
 import { ObservationsStore } from '../../src/worker/observations-store.ts';
-import { rmWorkDir } from '../support/worker-temp.ts';
 
 let port = 0;
 let worker: WorkerHandle;
@@ -40,7 +39,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await worker.stop();
-  rmWorkDir(workDir);
+  rmSync(workDir, { recursive: true, force: true });
 });
 
 test('GET /stats — efficiency object has the expected shape', async () => {

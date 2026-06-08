@@ -4,13 +4,13 @@ import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
 import {
   mkdtempSync,
   writeFileSync,
+  rmSync,
   mkdirSync,
   existsSync,
   unlinkSync,
 } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { rmWorkDir } from '../support/worker-temp.ts';
 
 let worker: WorkerHandle;
 let workDir: string;
@@ -56,7 +56,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await worker.stop();
   voyageServer.stop();
-  if (existsSync(workDir)) rmWorkDir(workDir);
+  if (existsSync(workDir)) rmSync(workDir, { recursive: true, force: true });
 });
 
 test('e2e — write file → indexed → searchable via /search/all', async () => {

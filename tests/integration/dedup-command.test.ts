@@ -5,12 +5,11 @@
 // real command against a temp observations.db via CAPTAIN_MEMO_DATA_DIR.
 
 import { test, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { ObservationsStore } from '../../src/worker/observations-store.ts';
 import { dedupCommand } from '../../src/cli/commands/dedup.ts';
-import { rmWorkDir } from '../support/worker-temp.ts';
 
 let workDir: string;
 let dbPath: string;
@@ -49,10 +48,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // reset env FIRST — a teardown fs error must never skip it
   if (prevEnv === undefined) delete process.env.CAPTAIN_MEMO_DATA_DIR;
   else process.env.CAPTAIN_MEMO_DATA_DIR = prevEnv;
-  rmWorkDir(workDir);
+  rmSync(workDir, { recursive: true, force: true });
 });
 
 test('dedup dry-run finds the group and mutates nothing', async () => {

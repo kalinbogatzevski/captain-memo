@@ -109,10 +109,10 @@ export function reduce(state: TopState, event: Event): TopState {
   if (key.type === 'ctrl-c') return { ...state, quit: true };
 
   switch (state.mode) {
-    case 'dashboard': return reduceDashboard(state, key);
-    case 'table':     return reduceTable(state, key);
-    case 'detail':    return reduceDetail(state, key);
-    case 'help':      return reduceHelp(state, key);
+    case 'dashboard':  return reduceDashboard(state, key);
+    case 'table':      return reduceTable(state, key);
+    case 'detail':     return reduceDetail(state, key);
+    case 'help':       return reduceHelp(state, key);
   }
 }
 

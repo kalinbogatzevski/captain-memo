@@ -1,9 +1,8 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
-import { rmWorkDir } from '../support/worker-temp.ts';
 
 let worker: WorkerHandle | null;
 let workDir: string;
@@ -16,7 +15,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   if (worker) await worker.stop();
-  rmWorkDir(workDir);
+  rmSync(workDir, { recursive: true, force: true });
 });
 
 test('POST /pending_embed/retry returns due_count + total_pending', async () => {

@@ -114,7 +114,9 @@ export async function topCommand(args: string[]): Promise<number> {
       let detail: DetailObs | undefined;
       let detailId: number | null = null;
 
-      if (state.mode === 'dashboard' || state.mode === 'help') {
+      if (state.mode === 'dashboard') {
+        stats = await workerGet('/stats') as StatsResponse;
+      } else if (state.mode === 'help') {
         stats = await workerGet('/stats') as StatsResponse;
       } else if (state.mode === 'table') {
         stats = await workerGet('/stats') as StatsResponse;

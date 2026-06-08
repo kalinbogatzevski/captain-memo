@@ -1,10 +1,9 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test';
 import { IngestPipeline } from '../../src/worker/ingest.ts';
 import { MetaStore } from '../../src/worker/meta.ts';
-import { writeFileSync, mkdtempSync, existsSync } from 'fs';
+import { writeFileSync, mkdtempSync, rmSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { rmWorkDir } from '../support/worker-temp.ts';
 
 let workDir: string;
 let dbPath: string;
@@ -47,7 +46,7 @@ beforeEach(() => {
 
 afterEach(() => {
   store.close();
-  if (existsSync(workDir)) rmWorkDir(workDir);
+  if (existsSync(workDir)) rmSync(workDir, { recursive: true, force: true });
 });
 
 test('IngestPipeline — indexes a memory file', async () => {

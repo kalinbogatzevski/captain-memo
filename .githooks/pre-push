@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# ── PRE-PUSH MOAT HOOK ──────────────────────────────────────────────────────────────────────────
+# Refuse to push federation code to github. The `federation` branch and any commit touching
+# src/worker/federation/ are gitlab-private ONLY; github gets the OSS, federation-free `master`.
+# Install: git config core.hooksPath .githooks
+set -eo pipefail
+
+remote_url="$2"
+echo "$remote_url" | grep -qi github || exit 0   # only guard pushes to github
+
+ZERO=0000000000000000000000000000000000000000
+while read -r local_ref local_sha _remote_ref remote_sha; do
+  [ "$local_sha" = "$ZERO" ] && continue                       # branch deletion
+  case "$local_ref" in
+    */federation) echo "✗ BLOCKED: refusing to push the federation branch to github ($remote_url)."; exit 1 ;;
+  esac
+  if [ "$remote_sha" = "$ZERO" ]; then range="$local_sha"; else range="$remote_sha..$local_sha"; fi
+  if git diff --name-only "$range" 2>/dev/null | grep -q '^src/worker/federation/'; then
+    echo "✗ BLOCKED: push to github ($remote_url) touches src/worker/federation/ — federation code is gitlab-private only."
+    exit 1
+  fi
+done
+exit 0

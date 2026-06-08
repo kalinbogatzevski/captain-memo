@@ -131,6 +131,43 @@ function renderObservationGroup(hits: EnvelopeHit[]): string {
   return lines.join('\n');
 }
 
+// Inbox surfacing (B1 §7): a compact summary line + ≤N bodies from the fleet,
+// rendered AHEAD of recall so a directed message isn't buried below semantic hits.
+// Inbox hits are tagged metadata.inbox=true and carry NO observation_id (bump-exempt).
+// The summary hit (metadata.inbox_summary=true) renders its title verbatim — it already
+// holds the "📨 K unread …" line; body hits render sender + short timestamp + body.
+function renderInboxGroup(hits: EnvelopeHit[]): string {
+  if (hits.length === 0) return '';
+  const lines: string[] = [];
+  for (const h of hits) {
+    if (h.metadata.inbox_summary === true) {
+      lines.push(h.title, '');
+      continue;
+    }
+    const from = String(h.metadata.from ?? 'peer');
+    const when = String(h.metadata.when ?? '');
+    lines.push(`### 📨 ${from}${when ? ` · ${when}` : ''}`);
+    lines.push(h.snippet.trim());
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+function renderRemoteGroup(hits: EnvelopeHit[]): string {
+  if (hits.length === 0) return '';
+  const lines: string[] = [`## Remote memory — from connected Captains (${hits.length} results)`, ''];
+  for (const h of hits) {
+    const peerLabel = String(h.metadata.origin_label ?? h.metadata.origin_peer ?? 'peer');
+    const originChannel = String(h.metadata.origin_channel ?? 'memory');
+    lines.push(`### ⚓ ${peerLabel} · ${originChannel} · "${h.title}" · score ${formatScore(h.score)}`);
+    lines.push(h.snippet.trim());
+    // No get_full link: a remote doc_id isn't resolvable against the LOCAL corpus
+    // in Stage 1 — the snippet is the payload. Cross-link drill is a later stage.
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
 /**
  * Pure formatter. The worker calls this with already-ranked, channel-scoped hits.
  * Token-budget enforcement happens inside this function — bodies are truncated
@@ -139,11 +176,19 @@ function renderObservationGroup(hits: EnvelopeHit[]): string {
 export function formatEnvelope(opts: FormatEnvelopeOptions): FormatEnvelopeResult {
   const { project_id, budget_tokens, hits, degradation_flags } = opts;
 
+  // Inbox hits (B1 §7) are surfaced ahead of recall and rendered separately; pull
+  // them out of channel grouping by their metadata.inbox marker so they never mix
+  // into "Local memory". They carry no observation_id → already retrieval-bump-exempt.
+  const inboxHits = hits.filter(h => h.metadata.inbox === true);
+
   // Group by channel, preserving relative score order within each.
   const byChannel: Record<ChannelType, EnvelopeHit[]> = {
     memory: [], skill: [], observation: [], remote: [],
   };
-  for (const h of hits) byChannel[h.channel].push(h);
+  for (const h of hits) {
+    if (h.metadata.inbox === true) continue;
+    byChannel[h.channel].push(h);
+  }
 
   // Open + close tag — flags only appear when present (D14).
   const flagAttrs = degradation_flags.length > 0
@@ -162,9 +207,11 @@ export function formatEnvelope(opts: FormatEnvelopeOptions): FormatEnvelopeResul
   // Body assembly. Render each group, then if total > body budget, walk
   // back from the last hit's snippet, truncating until we fit.
   let body =
-    [renderMemoryGroup(byChannel.memory),
+    [renderInboxGroup(inboxHits),
+     renderMemoryGroup(byChannel.memory),
      renderSkillGroup(byChannel.skill),
-     renderObservationGroup(byChannel.observation)]
+     renderObservationGroup(byChannel.observation),
+     renderRemoteGroup(byChannel.remote)]
       .filter(s => s.length > 0)
       .join('\n');
 

@@ -1,10 +1,9 @@
 import { test, expect, beforeAll, afterAll } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawn } from 'bun';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
-import { rmWorkDir } from '../support/worker-temp.ts';
 
 let port = 0;
 let worker: WorkerHandle;
@@ -50,7 +49,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await worker.stop();
-  rmWorkDir(workDir);
+  rmSync(workDir, { recursive: true, force: true });
 });
 
 async function runHook(script: string, payload: unknown): Promise<{ stdout: string; exitCode: number }> {

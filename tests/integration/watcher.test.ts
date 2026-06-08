@@ -1,9 +1,8 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test';
 import { FileWatcher } from '../../src/worker/watcher.ts';
-import { writeFileSync, mkdtempSync, unlinkSync } from 'fs';
+import { writeFileSync, mkdtempSync, rmSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { rmWorkDir } from '../support/worker-temp.ts';
 
 let workDir: string;
 let watcher: FileWatcher;
@@ -16,7 +15,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   if (watcher) await watcher.close();
-  rmWorkDir(workDir);
+  rmSync(workDir, { recursive: true, force: true });
 });
 
 test('FileWatcher — fires on file create', async () => {

@@ -10,13 +10,12 @@
 // threshold, leaving the control (same title family, dissimilar vector) live —
 // proving cosine, not title, decides the fold.
 import { test, expect, afterEach } from 'bun:test';
-import { mkdtempSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { Database } from 'bun:sqlite';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
 import { VectorStore } from '../../src/worker/vector-store.ts';
-import { rmWorkDir } from '../support/worker-temp.ts';
 
 let worker: WorkerHandle | null = null;
 let workDir = '';
@@ -32,10 +31,8 @@ const QM_ENV = [
 
 afterEach(async () => {
   if (worker) { await worker.stop(); worker = null; }
-  // reset env FIRST — a teardown fs error must never skip it
-  // (a leaked CAPTAIN_MEMO_QM_DEDUP=1 would make the next "off by default" test really fold).
+  if (workDir) { rmSync(workDir, { recursive: true, force: true }); workDir = ''; }
   for (const k of QM_ENV) delete process.env[k];
-  if (workDir) { rmWorkDir(workDir); workDir = ''; }
 });
 
 async function build(env: Record<string, string>): Promise<number> {

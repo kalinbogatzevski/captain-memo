@@ -65,10 +65,10 @@ const VIEW_LABEL: Record<string, string> = {
 export function buildFrame(state: TopState, data: FrameData, dims: Dims): string[] {
   const frame = (() => {
     switch (state.mode) {
-      case 'dashboard': return dashboardFrame(state, data, dims);
-      case 'table':     return tableFrame(state, data, dims);
-      case 'detail':    return detailFrame(state, data, dims);
-      case 'help':      return helpFrame(state, dims);
+      case 'dashboard':  return dashboardFrame(state, data, dims);
+      case 'table':      return tableFrame(state, data, dims);
+      case 'detail':     return detailFrame(state, data, dims);
+      case 'help':       return helpFrame(state, dims);
     }
   })();
   // A dead/zombie worker keeps the last-good stats on screen with a live clock —
@@ -165,7 +165,10 @@ function ruleLine(cols: number): string {
 
 function dashboardFrame(state: TopState, data: FrameData, dims: Dims): string[] {
   const body = data.stats
-    ? renderStats(data.stats, { panelWidth: dims.cols, headerRight: dim(liveStamp(state.refreshMs)) })
+    ? renderStats(data.stats, {
+        panelWidth: dims.cols,
+        headerRight: dim(liveStamp(state.refreshMs)),
+      })
     : [dim('  (worker unreachable)')];
   return [
     ...body,

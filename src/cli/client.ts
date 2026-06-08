@@ -18,6 +18,18 @@ export async function workerPost(path: string, body: unknown): Promise<unknown> 
   return res.json();
 }
 
+/** Like workerGet but returns null instead of throwing when the endpoint is
+ *  absent/unreachable. Lets optional panels degrade silently. */
+export async function workerGetOptional(path: string): Promise<unknown | null> {
+  try {
+    const res = await fetch(`${BASE}${path}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
 export async function workerHealthy(): Promise<boolean> {
   try {
     const result = await workerGet('/health') as { healthy: boolean };
