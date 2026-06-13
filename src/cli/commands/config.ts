@@ -5,6 +5,8 @@ import {
   DEFAULT_HOOK_BUDGET_TOKENS,
   DEFAULT_HOOK_TIMEOUT_MS, DEFAULT_OBSERVATION_BATCH_SIZE,
   DEFAULT_OBSERVATION_TICK_MS, DATA_DIR,
+  DEFAULT_REMEMBER_DIR, DEFAULT_PROMOTE_INTERVAL_MS,
+  DEFAULT_PROMOTE_MAX_PER_RUN, DEFAULT_REMEMBER_DEDUP_THRESHOLD,
 } from '../../shared/paths.ts';
 
 function mask(secret: string | undefined): string {
@@ -39,6 +41,11 @@ export async function configCommand(args: string[]): Promise<number> {
     `hook_timeout_ms       ${process.env.CAPTAIN_MEMO_HOOK_TIMEOUT_MS ?? DEFAULT_HOOK_TIMEOUT_MS}`,
     `observation_batch     ${process.env.CAPTAIN_MEMO_OBSERVATION_BATCH_SIZE ?? DEFAULT_OBSERVATION_BATCH_SIZE}`,
     `observation_tick_ms   ${process.env.CAPTAIN_MEMO_OBSERVATION_TICK_MS ?? DEFAULT_OBSERVATION_TICK_MS}`,
+    `remember_dir          ${process.env.CAPTAIN_MEMO_REMEMBER_DIR ?? DEFAULT_REMEMBER_DIR}`,
+    `promote_enable        ${process.env.CAPTAIN_MEMO_PROMOTE_ENABLE ?? '0 (off)'}`,
+    `promote_interval_ms   ${process.env.CAPTAIN_MEMO_PROMOTE_INTERVAL_MS ?? DEFAULT_PROMOTE_INTERVAL_MS}`,
+    `promote_max_per_run   ${process.env.CAPTAIN_MEMO_PROMOTE_MAX_PER_RUN ?? DEFAULT_PROMOTE_MAX_PER_RUN}`,
+    `remember_dedup_threshold ${process.env.CAPTAIN_MEMO_REMEMBER_DEDUP_THRESHOLD ?? DEFAULT_REMEMBER_DEDUP_THRESHOLD}`,
     `watch_memory          ${process.env.CAPTAIN_MEMO_WATCH_MEMORY ?? '(unset)'}`,
     `watch_skills          ${process.env.CAPTAIN_MEMO_WATCH_SKILLS ?? '(unset)'}`,
   ];
