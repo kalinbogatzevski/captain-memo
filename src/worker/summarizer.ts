@@ -207,4 +207,13 @@ export class Summarizer {
   getActiveModel(): string {
     return this.activeModel;
   }
+
+  /**
+   * Exposed so the worker can reuse the model-fallback transport directly
+   * (writeMemory drives frontmatter/merge fills via the raw transport, not
+   * via the observation-shaped summarize()).
+   */
+  getTransport(): SummarizerTransport {
+    return this.transport;
+  }
 }

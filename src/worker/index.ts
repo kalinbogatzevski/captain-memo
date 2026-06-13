@@ -54,7 +54,7 @@ import {
 } from '../shared/paths.ts';
 import { writeRecallAuditLine } from './recall-audit.ts';
 import { getDreamStats } from './dream-stats.ts';
-import { Summarizer } from './summarizer.ts';
+import { Summarizer, type SummarizerTransport } from './summarizer.ts';
 import { classifySummarizeFailure, computeBackoffMs } from './summarizer-backoff.ts';
 import { createWorkerMetrics, recordEmbed, recordIndexResult } from './metrics.ts';
 import { computeEfficiency } from './efficiency.ts';
@@ -122,6 +122,10 @@ export interface WorkerOptions {
   observationsDbPath?: string;
   pendingEmbedDbPath?: string;
   summarize?: (events: RawObservationEvent[]) => Promise<SummarizerResult>;
+  /** Raw model-fallback transport (from Summarizer.getTransport()). Surfaced so the
+   *  /remember writer can drive frontmatter/merge fills directly — distinct from the
+   *  observation-shaped `summarize` above. Absent ⇒ writeMemory uses deterministic fallback. */
+  summarizerTransport?: SummarizerTransport;
   observationTickMs?: number;
   observationBatchSize?: number;
   hookBudgetTokens?: number;
@@ -416,6 +420,13 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     started_at_epoch: 0, finished_at_epoch: 0, last_error: null,
   };
 
+  // Paths the writer engine just wrote itself (e.g. POST /remember). chokidar still
+  // fires add/change for our own write; we drop the first event per path so we don't
+  // re-run indexFile on a file we already indexed in-process. SHA-idempotent anyway,
+  // but this avoids a redundant embed+upsert. Single-shot: consumed on first hit.
+  const selfWrites = new Set<string>();
+  const registerSelfWrite = (absPath: string): void => { selfWrites.add(absPath); };
+
   let watcher: FileWatcher | null = null;
   if (!opts.readOnly && opts.watchPaths && opts.watchPaths.length > 0 && opts.watchChannel) {
     const channel = opts.watchChannel;
@@ -447,6 +458,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           debounceMs: 500,
           onEvent: async (type, path) => {
             try {
+              // Suppress the echo of our own in-process write (POST /remember).
+              if (type !== 'unlink' && selfWrites.delete(path)) return;
               if (type === 'unlink') await ingest.deleteFile(path);
               else await ingest.indexFile(path, channel);
             } catch (err) {
@@ -1805,6 +1818,7 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
     })();
 
   let summarize: ((events: import('../shared/types.ts').RawObservationEvent[]) => Promise<import('./index.ts').SummarizerResult>) | undefined;
+  let summarizerTransport: import('./summarizer.ts').SummarizerTransport | undefined;
   if (provider === 'claude-oauth') {
     const { createClaudeOauthTransport, readClaudeOauthToken } = await import('./summarizer-claude-oauth.ts');
     const probe = readClaudeOauthToken();
@@ -1822,6 +1836,7 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
         transport: createClaudeOauthTransport(),
       });
       summarize = (events) => summarizer.summarize(events);
+      summarizerTransport = summarizer.getTransport();
       const expiresIn = Math.floor((probe.expiresAt - Date.now()) / 60_000);
       console.error(
         `[worker] summarizer provider = claude-oauth ` +
@@ -1837,6 +1852,7 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
       transport: createClaudeCodeTransport(),
     });
     summarize = (events) => summarizer.summarize(events);
+    summarizerTransport = summarizer.getTransport();
     console.error(`[worker] summarizer provider = claude-code (Max/Pro plan auth via 'claude -p')`);
   } else if (provider === 'openai-compatible') {
     const endpoint = process.env[ENV_OPENAI_ENDPOINT];
@@ -1858,6 +1874,7 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
         }),
       });
       summarize = (events) => summarizer.summarize(events);
+      summarizerTransport = summarizer.getTransport();
       console.error(`[worker] summarizer provider = openai-compatible (${endpoint})${apiKey ? ' [auth]' : ' [no auth]'}`);
     }
   } else if (anthropicKey) {
@@ -1867,6 +1884,7 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
       fallbackModels: summarizerFallbacks,
     });
     summarize = (events) => summarizer.summarize(events);
+    summarizerTransport = summarizer.getTransport();
     console.error(`[worker] summarizer provider = anthropic (Anthropic API key)`);
   } else {
     console.error(
@@ -1897,6 +1915,7 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
     observationBatchSize,
     observationTickMs,
     ...(summarize !== undefined && { summarize }),
+    ...(summarizerTransport !== undefined && { summarizerTransport }),
   };
 }
 
