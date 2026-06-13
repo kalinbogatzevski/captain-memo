@@ -5,7 +5,7 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
-## [Unreleased]
+## [0.9.0] — 2026-06-13
 
 ### Added
 - **Captain Remember — a first-class curated-memory WRITE path (the Captain can now *be* the memory).**
