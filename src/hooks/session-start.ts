@@ -1,6 +1,7 @@
 import { readStdinJson, writeStdout, workerFetch, logHookError, workerFailureMessage } from './shared.ts';
-import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS, DEFAULT_WORKER_PORT } from '../shared/paths.ts';
+import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS, DEFAULT_WORKER_PORT, DATA_DIR } from '../shared/paths.ts';
 import { VERSION } from '../shared/version.ts';
+import { consumeUpgradeNotice } from '../shared/self-update.ts';
 import { ensureWorkerHealthy } from '../shared/worker-health.ts';
 import { restartWorker } from '../shared/worker-control.ts';
 import { acquireHealLock, releaseHealLock } from '../shared/worker-heal-lock.ts';
@@ -185,6 +186,14 @@ export async function main(): Promise<void> {
     }
   }
 
+  // Self-upgrade notice: if the plugin VERSION advanced since the last
+  // session (Claude Code auto-fetched a newer marketplace version, or a re-install landed),
+  // announce it once. The existing self-heal above already restarted the now-stale worker;
+  // this just surfaces it. consumeUpgradeNotice persists the new marker and returns '' when
+  // there's nothing to say. Best-effort — never throws, never touches config/worker.env.
+  const upgradeNotice = consumeUpgradeNotice(DATA_DIR, VERSION);
+  const withNotice = (banner: string): string => (upgradeNotice ? `${upgradeNotice}\n\n${banner}` : banner);
+
   if (stats.ok && stats.body) {
     // Claude Code's SessionStart hook protocol expects a JSON envelope on
     // stdout. The `systemMessage` field becomes the visible banner shown
@@ -192,7 +201,7 @@ export async function main(): Promise<void> {
     // text on stdout is silently discarded.
     writeStdout(JSON.stringify({
       continue: true,
-      systemMessage: formatBanner(stats.body),
+      systemMessage: withNotice(formatBanner(stats.body)),
     }));
   } else {
     // Worker unreachable / timed out / errored / empty body: log it AND tell the
@@ -203,7 +212,7 @@ export async function main(): Promise<void> {
     logHookError('SessionStart', new Error(workerFailureMessage('/stats', stats) ?? 'worker /stats returned no body'));
     writeStdout(JSON.stringify({
       continue: true,
-      systemMessage: formatDegradedBanner(stats.timedOut ? 'worker timed out' : 'worker not reachable'),
+      systemMessage: withNotice(formatDegradedBanner(stats.timedOut ? 'worker timed out' : 'worker not reachable')),
     }));
   }
 }
