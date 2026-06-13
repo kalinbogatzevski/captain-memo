@@ -6,19 +6,20 @@
 // decay would never touch that column. Also checks the read-time re-rank demotes
 // an equally-relevant stale observation below a fresh one.
 import { test, expect, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { Database } from 'bun:sqlite';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
+import { rmWorkDir } from '../support/worker-temp.ts';
 
 let worker: WorkerHandle | null = null;
 let workDir = '';
 
 afterEach(async () => {
   if (worker) { await worker.stop(); worker = null; }
-  if (workDir) { rmSync(workDir, { recursive: true, force: true }); workDir = ''; }
   delete process.env.CAPTAIN_MEMO_TIDE_ENABLED;
+  if (workDir) { rmWorkDir(workDir); workDir = ''; }
 });
 
 async function build(tideEnabled: boolean): Promise<number> {

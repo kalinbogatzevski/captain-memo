@@ -1,8 +1,9 @@
 import { test, expect, beforeAll, afterAll } from 'bun:test';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { rmWorkDir } from '../support/worker-temp.ts';
 
 let worker: WorkerHandle;
 let workDir: string;
@@ -39,7 +40,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await worker.stop();
-  if (existsSync(workDir)) rmSync(workDir, { recursive: true, force: true });
+  rmWorkDir(workDir);
 });
 
 test('worker — initial indexing picks up existing files', async () => {

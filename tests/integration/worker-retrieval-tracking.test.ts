@@ -7,10 +7,11 @@
 // These tests close that gap: each endpoint goes through the real worker.
 
 import { test, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
+import { rmWorkDir } from '../support/worker-temp.ts';
 
 let port = 0;
 let worker: WorkerHandle;
@@ -86,7 +87,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await worker.stop();
-  rmSync(workDir, { recursive: true, force: true });
+  rmWorkDir(workDir);
 });
 
 test('/search/all bumps from_search on observation hits', async () => {

@@ -1,9 +1,10 @@
 import { test, expect } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { Database } from 'bun:sqlite';
 import { startWorker, type WorkerHandle, type WorkerOptions } from '../../src/worker/index.ts';
+import { rmWorkDir } from '../support/worker-temp.ts';
 
 // Crash-safety contract for POST /reindex {force:true}: the force path must be
 // embed-then-swap, never delete-then-rebuild. A failed embed during a --force
@@ -114,7 +115,7 @@ test('Test A — failed --force reindex preserves the observation\'s old vectors
     const after = vectorRowCount(join(workDir, 'vec.db'), projectId);
     expect(after).toBe(before);
   } finally {
-    rmSync(workDir, { recursive: true, force: true });
+    rmWorkDir(workDir);
   }
 });
 
@@ -156,6 +157,6 @@ test('Test B — successful --force reindex preserves tide_state and stability_d
     expect(row.stability_days).toBe(42);
   } finally {
     if (worker) await worker.stop();
-    rmSync(workDir, { recursive: true, force: true });
+    rmWorkDir(workDir);
   }
 });
