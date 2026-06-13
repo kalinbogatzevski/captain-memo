@@ -5,6 +5,28 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [Unreleased]
+
+### Added
+- **Captain Remember — a first-class curated-memory WRITE path (the Captain can now *be* the memory).**
+  Captain Memo could already *read* the `memory` channel; it can now *persist* curated entries through one
+  internal `writeMemory()` primitive fed by three thin callers — a new MCP `remember` tool (beside
+  `search_memory`), a `captain-memo remember` CLI command, and an opt-in autonomous **promotion** job that
+  distils durable, high-signal observations into curated memory. Caller supplies `body` + `type` (required);
+  `name`/`description`/`slug` are optional — the summarizer fills anything missing, with a deterministic
+  fallback so a write **never** blocks on the LLM. **Dedup is update-in-place:** an overlapping entry
+  (filename/slug collision or semantic similarity) updates the existing file rather than spawning a
+  near-duplicate, and the entry is indexed **in-process** (no watcher round-trip). Writes are atomic
+  (temp-file + rename) and never silent — a failure returns a structured `{ ok: false, reason }`.
+- **Promotion is opt-in and OFF by default** (`CAPTAIN_MEMO_PROMOTE_ENABLE=1`). When on, a heartbeat-safe
+  periodic tick (sibling to the Quartermaster timer) judges recent durable observations "remember forever?",
+  writes survivors via the same `writeMemory()` path with provenance, is idempotent (never re-promotes), and
+  is bounded per run. Promotion targets `CAPTAIN_MEMO_REMEMBER_DIR` (default `~/.claude/memory/`).
+- **New config (all optional; surfaced in `captain-memo config show` + `doctor`):**
+  `CAPTAIN_MEMO_REMEMBER_DIR` (`~/.claude/memory/`), `CAPTAIN_MEMO_PROMOTE_ENABLE` (`0`),
+  `CAPTAIN_MEMO_PROMOTE_INTERVAL_MS` (`21600000` / 6h), `CAPTAIN_MEMO_PROMOTE_MAX_PER_RUN` (`5`),
+  `CAPTAIN_MEMO_REMEMBER_DEDUP_THRESHOLD` (`0.85`).
+
 ## [0.6.0] — 2026-06-05
 
 ### Added
