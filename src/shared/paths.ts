@@ -85,3 +85,22 @@ export const DEFAULT_STOP_DRAIN_BUDGET_MS = 5_000;
 export const DEFAULT_HOOK_BUDGET_TOKENS = 4_000;
 export const DEFAULT_OBSERVATION_BATCH_SIZE = 20;
 export const DEFAULT_OBSERVATION_TICK_MS = 5_000;
+
+// ─── Captain Remember — curated-memory write path + autonomous promotion ───
+// Design: docs/superpowers/specs/2026-06-13-captain-remember-design.md (§8).
+// Promotion target / CLI default when no project cwd is present.
+export const ENV_REMEMBER_DIR = 'CAPTAIN_MEMO_REMEMBER_DIR';
+// Master switch for autonomous promotion. OFF by default — only the string '1' enables.
+export const ENV_PROMOTE_ENABLE = 'CAPTAIN_MEMO_PROMOTE_ENABLE';
+// Promotion tick cadence (ms) and per-run cap.
+export const ENV_PROMOTE_INTERVAL_MS = 'CAPTAIN_MEMO_PROMOTE_INTERVAL_MS';
+export const ENV_PROMOTE_MAX_PER_RUN = 'CAPTAIN_MEMO_PROMOTE_MAX_PER_RUN';
+// Semantic update-in-place similarity cutoff for writeMemory() dedup.
+export const ENV_REMEMBER_DEDUP_THRESHOLD = 'CAPTAIN_MEMO_REMEMBER_DEDUP_THRESHOLD';
+
+// Captain Remember defaults (§8). Tunable via the ENV_* names above.
+// Promotion has no live session cwd, so it writes to this user-global dir by default.
+export const DEFAULT_REMEMBER_DIR = join(homedir(), '.claude', 'memory');
+export const DEFAULT_PROMOTE_INTERVAL_MS = 21_600_000; // 6h
+export const DEFAULT_PROMOTE_MAX_PER_RUN = 5;
+export const DEFAULT_REMEMBER_DEDUP_THRESHOLD = 0.85;
