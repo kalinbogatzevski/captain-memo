@@ -27,7 +27,7 @@ async function workerPost(path: string, body: unknown): Promise<unknown> {
   return res.json();
 }
 
-const TOOLS = [
+export const TOOLS = [
   {
     name: 'search_memory',
     description: 'Search across local memory files (curated user memory). Returns top-K results.',
@@ -40,6 +40,22 @@ const TOOLS = [
         top_k: { type: 'number', default: 5 },
       },
       required: ['query'],
+    },
+  },
+  {
+    name: 'remember',
+    description:
+      'Persist a durable, curated memory entry worth recalling in future sessions — a decision, preference, convention, or hard-won fact — NOT ephemeral scratch or transient task state. Writes a markdown entry into the current project\'s curated memory and indexes it immediately. Provide the substance in `body` and a `type` (e.g. decision, preference, feedback, reference); `name`, `description`, and `slug` are optional and auto-generated when omitted.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        body: { type: 'string' },
+        type: { type: 'string' },
+        name: { type: 'string' },
+        description: { type: 'string' },
+        slug: { type: 'string' },
+      },
+      required: ['body', 'type'],
     },
   },
   {
@@ -115,6 +131,68 @@ const TOOLS = [
   },
 ];
 
+/** Arguments the `remember` MCP tool accepts from the model (cwd is injected, not accepted). */
+export interface RememberToolArgs {
+  body: string;
+  type: string;
+  name?: string;
+  description?: string;
+  slug?: string;
+}
+
+/** Worker `POST /remember` response — mirrors WriteMemoryResult (src/worker/memory-writer.ts). */
+type RememberWorkerResult =
+  | { ok: true; path: string; action: 'created' | 'updated'; doc_id: string }
+  | { ok: false; reason: string };
+
+/** Build the `POST /remember` request body: forward the model's fields verbatim and
+ *  inject the session's project cwd (flat `cwd`, matching the worker's RememberSchema).
+ *  Absent optionals are omitted (no `undefined` keys reach the worker). */
+export function buildRememberRequest(
+  args: RememberToolArgs,
+  cwd: string,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    body: args.body,
+    type: args.type,
+    cwd,
+  };
+  if (args.name !== undefined) out.name = args.name;
+  if (args.description !== undefined) out.description = args.description;
+  if (args.slug !== undefined) out.slug = args.slug;
+  return out;
+}
+
+/** Turn a worker WriteMemoryResult into the model-facing MCP tool response.
+ *  Success → action + path text; ok:false → an MCP error carrying the reason. */
+export function formatRememberResult(
+  result: RememberWorkerResult,
+): { content: { type: 'text'; text: string }[]; isError?: true } {
+  if (!result.ok) {
+    return {
+      content: [{ type: 'text', text: `Error: ${result.reason}` }],
+      isError: true,
+    };
+  }
+  return {
+    content: [{ type: 'text', text: `Memory ${result.action}: ${result.path}` }],
+  };
+}
+
+/** Orchestrate the remember tool: inject cwd, POST /remember, format the result.
+ *  `deps` is injectable so unit tests need neither a live worker nor the real cwd. */
+export async function dispatchRemember(
+  args: RememberToolArgs,
+  deps: {
+    post: (path: string, body: unknown) => Promise<unknown>;
+    cwd: () => string;
+  },
+): Promise<{ content: { type: 'text'; text: string }[]; isError?: true }> {
+  const body = buildRememberRequest(args, deps.cwd());
+  const result = (await deps.post('/remember', body)) as RememberWorkerResult;
+  return formatRememberResult(result);
+}
+
 // Exported so a `bin/captain-memo-mcp` shim can call this explicitly.
 // Avoid gating on `import.meta.main` alone: when this file is imported
 // (rather than invoked directly), `import.meta.main` is false and the
@@ -138,6 +216,11 @@ export async function runMcpServer(): Promise<void> {
         case 'search_all':          result = await workerPost('/search/all', args); break;
         case 'get_full':            result = await workerPost('/get_full', args); break;
         case 'reindex':             result = await workerPost('/reindex', args); break;
+        case 'remember':
+          return await dispatchRemember(args as RememberToolArgs, {
+            post: workerPost,
+            cwd: () => process.cwd(),
+          });
         case 'stats': {
           const res = await fetch(`${WORKER_BASE}/stats`);
           if (!res.ok) throw new Error(`worker /stats returned ${res.status}`);
