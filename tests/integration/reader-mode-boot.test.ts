@@ -37,8 +37,9 @@ test('reader boot serves a read handler', async () => {
 });
 
 // Fix #4 — the meta DB persists the E2E private scalars, so startWorker tightens it to owner-only 0600
-// (best-effort). On POSIX the low 9 mode bits must read 0o600 after boot.
-test('meta DB file is chmod 0600 after writer boot (E2E private keys at rest)', async () => {
+// (best-effort). On POSIX the low 9 mode bits must read 0o600 after boot. Windows has no POSIX mode
+// bits (statSync reports 0o666 regardless of chmod), so this owner-only property is POSIX-only.
+test.skipIf(process.platform === 'win32')('meta DB file is chmod 0600 after writer boot (E2E private keys at rest)', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'cm-chmod-'));
   const opts = baseOpts(dir);
   const w = await startWorker(opts);

@@ -232,7 +232,7 @@ After install + a full Claude Code restart, the plugin exposes two layers to eve
 /captain-memo:doctor              # health probe inline in chat
 ```
 
-### 8 MCP tools the model calls automatically
+### 9 MCP tools the model calls automatically
 
 These fire when the model decides retrieval would help your prompt — no slash command required. List them anytime with `/mcp`:
 
@@ -240,6 +240,7 @@ These fire when the model decides retrieval would help your prompt — no slash 
 |---|---|
 | `search_all` | Hybrid search across all channels |
 | `search_memory` | Curated memory only (filter: type, project) |
+| `remember` | Persist a durable decision / preference / fact into curated memory (create or update-in-place) |
 | `search_skill` | Skill bodies only (filter: skill_id) |
 | `search_observations` | Past session observations (filter: type, files, since) |
 | `get_full` | Full content of a hit by `doc_id` |
@@ -255,6 +256,7 @@ captain-memo stats               # corpus stats by channel + indexing progress
 captain-memo top                 # interactive live stats (htop-style); press ? for help
 captain-memo dedup               # fold near-duplicate observations (dry-run by default)
 captain-memo reindex             # cheap sha-diff reindex (or --force to re-embed)
+captain-memo remember            # persist a curated memory entry (--type, --name, --slug; body via --body/--file/stdin)
 captain-memo observation list    # recent captured observations
 captain-memo observation flush   # force-drain the queue
 captain-memo config show         # effective config (secrets masked)
@@ -439,7 +441,7 @@ Schema migrations:
 | **Worker** (`:39888`) | Long-lived HTTP daemon. Owns the SQLite + sqlite-vec stores, file watcher, observation queue, summarizer + embedder wiring. |
 | **Embedder** | Pluggable: hosted Voyage API (default), local voyage-4-nano sidecar (`:8124`), or any OpenAI-compatible `/v1/embeddings` endpoint. |
 | **Summarizer** | Pluggable: Claude Max via OAuth (default, no API key), Anthropic API, `claude -p` subprocess, or any OpenAI-compatible `/v1/chat/completions`. |
-| **MCP server** (stdio) | Exposes 8 tools to Claude Code (`search_all`, `search_memory`, `search_skill`, `search_observations`, `get_full`, `reindex`, `stats`, `status`). |
+| **MCP server** (stdio) | Exposes 9 tools to Claude Code (`search_all`, `search_memory`, `remember`, `search_skill`, `search_observations`, `get_full`, `reindex`, `stats`, `status`). |
 | **Four hooks** | `SessionStart` (corpus banner), `UserPromptSubmit` (inject memory envelope, ≤1.5 s budget), `PostToolUse` (queue tool-use events), `Stop` (drain → summarize → index). |
 | **CLI** | The commands above. |
 

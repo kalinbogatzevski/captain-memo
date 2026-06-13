@@ -15,7 +15,7 @@ var __esm = (fn, res) => () => (fn && (res = fn(fn = 0)), res);
 // src/shared/paths.ts
 import { homedir } from "os";
 import { join } from "path";
-var DATA_DIR, META_DB_PATH, QUEUE_DB_PATH, OBSERVATIONS_DB_PATH, PENDING_EMBED_DB_PATH, VECTOR_DB_DIR, LOGS_DIR, ARCHIVE_DIR, CONFIG_PATH, CONFIG_DIR, WORKER_ENV_PATH, DEFAULT_WORKER_PORT = 39888, ENV_HOOK_TIMEOUT_MS = "CAPTAIN_MEMO_HOOK_TIMEOUT_MS", DEFAULT_HOOK_TIMEOUT_MS = 1500, DEFAULT_STOP_DRAIN_BUDGET_MS = 5000;
+var DATA_DIR, META_DB_PATH, QUEUE_DB_PATH, OBSERVATIONS_DB_PATH, PENDING_EMBED_DB_PATH, VECTOR_DB_DIR, LOGS_DIR, ARCHIVE_DIR, CONFIG_PATH, CONFIG_DIR, WORKER_ENV_PATH, DEFAULT_WORKER_PORT = 39888, ENV_HOOK_TIMEOUT_MS = "CAPTAIN_MEMO_HOOK_TIMEOUT_MS", DEFAULT_HOOK_TIMEOUT_MS = 1500, DEFAULT_STOP_DRAIN_BUDGET_MS = 5000, DEFAULT_REMEMBER_DIR;
 var init_paths = __esm(() => {
   DATA_DIR = process.env.CAPTAIN_MEMO_DATA_DIR ?? join(homedir(), ".captain-memo");
   META_DB_PATH = join(DATA_DIR, "meta.sqlite3");
@@ -28,6 +28,7 @@ var init_paths = __esm(() => {
   CONFIG_PATH = join(DATA_DIR, "config.json");
   CONFIG_DIR = process.env.CAPTAIN_MEMO_CONFIG_DIR ?? (process.platform === "win32" ? join(process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"), "captain-memo") : join(homedir(), ".config", "captain-memo"));
   WORKER_ENV_PATH = join(CONFIG_DIR, "worker.env");
+  DEFAULT_REMEMBER_DIR = join(homedir(), ".claude", "memory");
 });
 
 // src/shared/worker-heal-lock.ts
@@ -634,7 +635,7 @@ init_paths();
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.8.0",
+  version: "0.9.0",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,

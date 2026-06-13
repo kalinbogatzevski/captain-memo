@@ -13,7 +13,13 @@ import { OBSERVATIONS_STORE_MIGRATIONS } from '../../worker/observations-store.t
 import { OBSERVATION_QUEUE_MIGRATIONS } from '../../worker/observation-queue.ts';
 import { getServiceManager } from '../../services/service-manager/index.ts';
 import { workerEnvPaths } from '../../shared/worker-env.ts';
-import { DEFAULT_WORKER_PORT } from '../../shared/paths.ts';
+import {
+  DEFAULT_WORKER_PORT,
+  ENV_REMEMBER_DIR, DEFAULT_REMEMBER_DIR,
+  ENV_PROMOTE_ENABLE,
+  ENV_PROMOTE_MAX_PER_RUN, DEFAULT_PROMOTE_MAX_PER_RUN,
+  ENV_REMEMBER_DEDUP_THRESHOLD, DEFAULT_REMEMBER_DEDUP_THRESHOLD,
+} from '../../shared/paths.ts';
 import { isWindows } from '../../shared/platform.ts';
 
 // Lookup a single key from worker.env (CONFIG_DIR per platform, then the /etc
@@ -29,7 +35,7 @@ function readWorkerEnvVar(key: string): string | null {
 
 type Status = 'PASS' | 'WARN' | 'FAIL';
 
-interface Check {
+export interface Check {
   name: string;
   status: Status;
   detail: string;
@@ -149,6 +155,23 @@ function checkConfig(): void {
   const watch = (content.match(/CAPTAIN_MEMO_WATCH_MEMORY=(.+)/) ?? [])[1] ?? '(none)';
   record({ name: 'worker config', status: 'PASS',
            detail: `summarizer=${provider} model=${model} watch=${watch.slice(0, 60)}${watch.length > 60 ? '…' : ''}` });
+}
+
+export function checkRemember(): Check {
+  // Read-only: surfaces the curated-memory WRITE knobs (spec §8). All values come
+  // from worker.env, falling back to the contract defaults in src/shared/paths.ts.
+  const dir = readWorkerEnvVar(ENV_REMEMBER_DIR) ?? DEFAULT_REMEMBER_DIR;
+  const promote = (readWorkerEnvVar(ENV_PROMOTE_ENABLE) === '1') ? 'on' : 'off';
+  const max = readWorkerEnvVar(ENV_PROMOTE_MAX_PER_RUN) ?? String(DEFAULT_PROMOTE_MAX_PER_RUN);
+  const dedup = readWorkerEnvVar(ENV_REMEMBER_DEDUP_THRESHOLD) ?? String(DEFAULT_REMEMBER_DEDUP_THRESHOLD);
+  const shortDir = dir.replace(homedir(), '~');
+  const check: Check = {
+    name: 'remember / promote',
+    status: 'PASS',
+    detail: `dir=${shortDir} · promote=${promote} · max=${max} · dedup=${dedup}`,
+  };
+  record(check);
+  return check;
 }
 
 function checkPluginRegistration(): void {
@@ -426,6 +449,7 @@ export async function doctorCommand(_args: string[]): Promise<number> {
   await checkEmbedder();
   await checkWorker();
   checkConfig();
+  checkRemember();
   checkPluginRegistration();
   checkPluginManifest();
   checkPluginEntries();

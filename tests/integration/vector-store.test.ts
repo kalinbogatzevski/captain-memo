@@ -1,9 +1,10 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test';
 import { VectorStore } from '../../src/worker/vector-store.ts';
 import { cosine } from '../../src/shared/vector-math.ts';
-import { mkdtempSync, rmSync, existsSync } from 'fs';
+import { mkdtempSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { rmWorkDir } from '../support/worker-temp.ts';
 
 let workDir: string;
 let store: VectorStore;
@@ -16,7 +17,7 @@ beforeEach(() => {
 
 afterEach(() => {
   store.close();
-  if (existsSync(workDir)) rmSync(workDir, { recursive: true, force: true });
+  if (existsSync(workDir)) rmWorkDir(workDir);
 });
 
 test('VectorStore — ensureCollection is idempotent (no-op)', async () => {

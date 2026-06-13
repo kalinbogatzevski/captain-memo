@@ -15,6 +15,7 @@ import { inspectClaudeMemCommand } from './commands/inspect-claude-mem.ts';
 import { migrateFromClaudeMemCommand } from './commands/migrate-from-claude-mem.ts';
 import { dreamCommand } from './commands/dream.ts';
 import { dedupCommand } from './commands/dedup.ts';
+import { rememberCommand } from './commands/remember.ts';
 import { watchCommand } from './commands/watch.ts';
 import { topCommand } from './commands/top.ts';
 import { workerWatchdogCommand } from './commands/worker-watchdog.ts';
@@ -30,6 +31,7 @@ Commands:
   status       Check whether the worker is running and reachable (--json)
   stats        Print corpus statistics (chunk counts by channel) (--json)
   reindex      Re-embed corpus content (optionally scoped to a channel)
+  remember     Persist a curated memory entry (--type, body via --body/--file/stdin)
   vacuum       Reclaim disk after deletions/reindex (SQLite VACUUM; worker must be stopped)
   upgrade      Bring the corpus up to the current chunker shape (reindex + vacuum, end-to-end)
   observation  list|sunk|flush — manage observations (sunk: list dormant/archived; --archived)
@@ -53,6 +55,8 @@ Examples:
   captain-memo stats
   captain-memo reindex --channel memory
   captain-memo reindex --force
+  captain-memo remember --type decision --body "We standardized on Bun"
+  echo "long note" | captain-memo remember --type reference --name "API notes"
   captain-memo observation list --limit 50
   captain-memo observation flush --session ses_abc
   captain-memo config show
@@ -86,6 +90,9 @@ export async function main(args: string[]): Promise<void> {
       break;
     case 'reindex':
       exit = await reindexCommand(args.slice(1));
+      break;
+    case 'remember':
+      exit = await rememberCommand(args.slice(1));
       break;
     case 'vacuum':
       exit = await vacuumCommand(args.slice(1));

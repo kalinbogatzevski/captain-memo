@@ -9,6 +9,7 @@ import { loadWorkerEnv } from '../shared/worker-env.ts';
 import { VectorStore } from './vector-store.ts';
 import { HybridSearcher } from './search.ts';
 import { IngestPipeline } from './ingest.ts';
+import { writeMemory, type WriteMemoryDeps, type RememberInput } from './memory-writer.ts';
 import { FileWatcher } from './watcher.ts';
 import { ObservationQueue } from './observation-queue.ts';
 import { ObservationsStore } from './observations-store.ts';
@@ -16,6 +17,9 @@ import type { RecallQuery, RecallView, RecallSort } from './observations-store.t
 import { loadTideConfig, computeBuoyancy, tideMultiplier } from './tide.ts';
 import { runTideSweepSlice } from './tide-sweep.ts';
 import { loadQmConfig } from './qm.ts';
+import { loadPromotionConfig } from './promotion-config.ts';
+import { runPromotionSlice, type PromotionDeps } from './promotion.ts';
+import { buildPromotionJudge } from './promotion-judge.ts';
 import { runQmDedupSlice } from './quartermaster.ts';
 import { centroid } from '../shared/vector-math.ts';
 import { PendingEmbedQueue } from './pending-embed-queue.ts';
@@ -51,10 +55,14 @@ import {
   ENV_OBSERVATION_TICK_MS,
   DEFAULT_OBSERVATION_BATCH_SIZE,
   DEFAULT_OBSERVATION_TICK_MS,
+  ENV_REMEMBER_DIR,
+  DEFAULT_REMEMBER_DIR,
+  ENV_REMEMBER_DEDUP_THRESHOLD,
+  DEFAULT_REMEMBER_DEDUP_THRESHOLD,
 } from '../shared/paths.ts';
 import { writeRecallAuditLine } from './recall-audit.ts';
 import { getDreamStats } from './dream-stats.ts';
-import { Summarizer } from './summarizer.ts';
+import { Summarizer, type SummarizerTransport } from './summarizer.ts';
 import { classifySummarizeFailure, computeBackoffMs } from './summarizer-backoff.ts';
 import { createWorkerMetrics, recordEmbed, recordIndexResult } from './metrics.ts';
 import { computeEfficiency } from './efficiency.ts';
@@ -122,6 +130,10 @@ export interface WorkerOptions {
   observationsDbPath?: string;
   pendingEmbedDbPath?: string;
   summarize?: (events: RawObservationEvent[]) => Promise<SummarizerResult>;
+  /** Raw model-fallback transport (from Summarizer.getTransport()). Surfaced so the
+   *  /remember writer can drive frontmatter/merge fills directly — distinct from the
+   *  observation-shaped `summarize` above. Absent ⇒ writeMemory uses deterministic fallback. */
+  summarizerTransport?: SummarizerTransport;
   observationTickMs?: number;
   observationBatchSize?: number;
   hookBudgetTokens?: number;
@@ -206,6 +218,17 @@ const PendingEmbedRetrySchema = z.object({
 
 const RestoreSchema = z.object({
   id: z.number().int().positive(),
+});
+
+const RememberSchema = z.object({
+  body: z.string().min(1),
+  type: z.string().min(1),
+  name: z.string().optional(),
+  description: z.string().optional(),
+  slug: z.string().optional(),
+  cwd: z.string().optional(),
+  sourceObservationId: z.number().int().positive().optional(),
+  targetDirOverride: z.string().optional(),
 });
 
 const InjectContextSchema = z.object({
@@ -311,6 +334,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // time, long after obsStore is constructed below.
   const tideConfig = loadTideConfig(process.env);
   const qmConfig = loadQmConfig(process.env);
+  const promotionConfig = loadPromotionConfig(process.env);
   const tideRerankFn = <T extends { id: string; score: number }>(items: T[]): T[] => {
     if (!obsStore || items.length === 0) return items;
     const oidByItem = new Map<T, number>();
@@ -416,6 +440,30 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     started_at_epoch: 0, finished_at_epoch: 0, last_error: null,
   };
 
+  // Paths the writer engine just wrote itself (e.g. POST /remember). chokidar still
+  // fires add/change for our own write; we drop the first event per path so we don't
+  // re-run indexFile on a file we already indexed in-process. SHA-idempotent anyway,
+  // but this avoids a redundant embed+upsert. Single-shot: consumed on first hit.
+  const selfWrites = new Set<string>();
+  const registerSelfWrite = (absPath: string): void => { selfWrites.add(absPath); };
+
+  // Semantic-dedup query for the writer engine, shared by POST /remember and the
+  // promotion timer. Cosine over the memory channel, scoped to `dir` by source_path
+  // prefix; distance → similarity so the score compares against dedupThreshold.
+  const searchMemory: WriteMemoryDeps['searchMemory'] = async (queryEmbedding, dir, k) => {
+    if (opts.skipEmbed || queryEmbedding.length === 0) return [];
+    const raw = await vector.query(collectionName, queryEmbedding, Math.max(k * 5, 20));
+    const hits: Array<{ source_path: string; score: number; chunk_id: string }> = [];
+    for (const r of raw) {
+      const lookup = meta.getChunkById(r.id);
+      if (!lookup || lookup.document.channel !== 'memory') continue;
+      if (!lookup.document.source_path.startsWith(dir)) continue;
+      hits.push({ source_path: lookup.document.source_path, score: 1 - r.distance, chunk_id: r.id });
+      if (hits.length >= k) break;
+    }
+    return hits;
+  };
+
   let watcher: FileWatcher | null = null;
   if (!opts.readOnly && opts.watchPaths && opts.watchPaths.length > 0 && opts.watchChannel) {
     const channel = opts.watchChannel;
@@ -447,6 +495,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           debounceMs: 500,
           onEvent: async (type, path) => {
             try {
+              // Suppress the echo of our own in-process write (POST /remember).
+              if (type !== 'unlink' && selfWrites.delete(path)) return;
               if (type === 'unlink') await ingest.deleteFile(path);
               else await ingest.indexFile(path, channel);
             } catch (err) {
@@ -817,6 +867,51 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         })
         .finally(() => { qmDedupPromise = null; });
     }, qmConfig.dedupIntervalMs);
+  }
+
+  // Promotion (opt-in, OFF by default). Sibling of the Quartermaster auto-dedup
+  // timer: each tick pulls a bounded window of durable, high-signal, not-yet-promoted
+  // observations, runs ONE judge pass deciding curated-worthy vs ephemeral, writes
+  // survivors into curated memory via the shared writeMemory() (NO cwd ⇒ rememberDir),
+  // and marks each promoted so a re-run never re-promotes it. Skips — not queues — if
+  // a prior run is still in flight, and yields if ingest/batch work is active.
+  let promotionTimer: ReturnType<typeof setInterval> | null = null;
+  let promotionPromise: Promise<unknown> | null = null;
+  if (!opts.readOnly && obsStore && opts.summarizerTransport && promotionConfig.enabled) {
+    const promoStore = obsStore;
+    const transport = opts.summarizerTransport;
+    const rememberDir = process.env[ENV_REMEMBER_DIR] ?? DEFAULT_REMEMBER_DIR;
+    const dedupThreshold = Number(process.env[ENV_REMEMBER_DEDUP_THRESHOLD]) || DEFAULT_REMEMBER_DEDUP_THRESHOLD;
+    const judge = buildPromotionJudge(transport);
+    promotionTimer = setInterval(() => {
+      if (promotionPromise) return;                                  // skip, not queue
+      if (processBatchPromise != null || (obsQueue?.pendingCount() ?? 0) > 0) return; // ingest preempts
+      const deps: PromotionDeps = {
+        candidates: () => promoStore.promotionCandidates({ limit: promotionConfig.maxPerRun * 4, minRecall: promotionConfig.minRecall }),
+        judge,
+        writeMemory: (input) => writeMemory(input, {
+          ingest,
+          embed: (texts) => embedder.embed(texts),
+          searchMemory,
+          generate: transport,
+          registerSelfWrite,
+          rememberDir,
+          dedupThreshold,
+        }),
+        markPromoted: (id, at) => promoStore.markPromoted(id, at),
+        cfg: promotionConfig,
+        now: () => Math.floor(Date.now() / 1000),
+        log: (line) => console.error(line),
+      };
+      promotionPromise = runPromotionSlice(deps)
+        .then(r => {
+          if (r.promoted > 0 || r.errored > 0) {
+            console.error(`[promote] run: scanned ${r.scanned}, promoted ${r.promoted}, skipped ${r.skipped}, errored ${r.errored}`);
+          }
+        })
+        .catch(err => console.error('[promote] ERROR', err))
+        .finally(() => { promotionPromise = null; });
+    }, promotionConfig.intervalMs);
   }
 
   const PENDING_RETRY_TICK_MS = 60_000;
@@ -1499,6 +1594,40 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         return Response.json({ indexed, skipped, errors });
       }
 
+      if (req.method === 'POST' && url.pathname === '/remember') {
+        const parsed = RememberSchema.safeParse(await req.json());
+        if (!parsed.success) {
+          return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
+        }
+        const d = parsed.data;
+
+        const deps: WriteMemoryDeps = {
+          ingest,
+          embed: (texts) => embedder.embed(texts),
+          searchMemory,
+          registerSelfWrite,
+          rememberDir: process.env[ENV_REMEMBER_DIR] ?? DEFAULT_REMEMBER_DIR,
+          dedupThreshold: Number(process.env[ENV_REMEMBER_DEDUP_THRESHOLD] ?? DEFAULT_REMEMBER_DEDUP_THRESHOLD),
+          // Omit `generate` when no transport is configured so writeMemory takes its
+          // deterministic frontmatter fallback (name=first line, description=truncated body).
+          ...(opts.summarizerTransport !== undefined && { generate: opts.summarizerTransport }),
+        } as WriteMemoryDeps;
+
+        const input: RememberInput = {
+          body: d.body,
+          type: d.type,
+          ...(d.name !== undefined && { name: d.name }),
+          ...(d.description !== undefined && { description: d.description }),
+          ...(d.slug !== undefined && { slug: d.slug }),
+          projectContext: { ...(d.cwd !== undefined && { cwd: d.cwd }) },
+          ...(d.sourceObservationId !== undefined && { sourceObservationId: d.sourceObservationId }),
+          ...(d.targetDirOverride !== undefined && { targetDirOverride: d.targetDirOverride }),
+        };
+
+        const result = await writeMemory(input, deps);
+        return Response.json(result, { status: result.ok ? 200 : 500 });
+      }
+
       if (req.method === 'POST' && url.pathname === '/inject/context') {
         const startMs = Date.now();
         const parsed = InjectContextSchema.safeParse(await req.json());
@@ -1697,6 +1826,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     if (tickTimer) clearInterval(tickTimer);
     if (tideSweepTimer) clearInterval(tideSweepTimer);
     if (qmDedupTimer) clearInterval(qmDedupTimer);
+    if (promotionTimer) clearInterval(promotionTimer);
     if (pendingTickTimer) clearInterval(pendingTickTimer);
     if (watcher) await watcher.close();
     if (obsQueue) obsQueue.close();
@@ -1805,6 +1935,7 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
     })();
 
   let summarize: ((events: import('../shared/types.ts').RawObservationEvent[]) => Promise<import('./index.ts').SummarizerResult>) | undefined;
+  let summarizerTransport: import('./summarizer.ts').SummarizerTransport | undefined;
   if (provider === 'claude-oauth') {
     const { createClaudeOauthTransport, readClaudeOauthToken } = await import('./summarizer-claude-oauth.ts');
     const probe = readClaudeOauthToken();
@@ -1822,6 +1953,7 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
         transport: createClaudeOauthTransport(),
       });
       summarize = (events) => summarizer.summarize(events);
+      summarizerTransport = summarizer.getTransport();
       const expiresIn = Math.floor((probe.expiresAt - Date.now()) / 60_000);
       console.error(
         `[worker] summarizer provider = claude-oauth ` +
@@ -1837,6 +1969,7 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
       transport: createClaudeCodeTransport(),
     });
     summarize = (events) => summarizer.summarize(events);
+    summarizerTransport = summarizer.getTransport();
     console.error(`[worker] summarizer provider = claude-code (Max/Pro plan auth via 'claude -p')`);
   } else if (provider === 'openai-compatible') {
     const endpoint = process.env[ENV_OPENAI_ENDPOINT];
@@ -1858,6 +1991,7 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
         }),
       });
       summarize = (events) => summarizer.summarize(events);
+      summarizerTransport = summarizer.getTransport();
       console.error(`[worker] summarizer provider = openai-compatible (${endpoint})${apiKey ? ' [auth]' : ' [no auth]'}`);
     }
   } else if (anthropicKey) {
@@ -1867,6 +2001,7 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
       fallbackModels: summarizerFallbacks,
     });
     summarize = (events) => summarizer.summarize(events);
+    summarizerTransport = summarizer.getTransport();
     console.error(`[worker] summarizer provider = anthropic (Anthropic API key)`);
   } else {
     console.error(
@@ -1897,6 +2032,7 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
     observationBatchSize,
     observationTickMs,
     ...(summarize !== undefined && { summarize }),
+    ...(summarizerTransport !== undefined && { summarizerTransport }),
   };
 }
 

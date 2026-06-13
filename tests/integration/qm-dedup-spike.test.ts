@@ -7,13 +7,14 @@
 // qm_runs row carries aborted_for_ingest=1, proving a slice saw queued ingest mid-
 // run and bailed (shouldAbort: pendingCount > 0 || a batch is processing).
 import { test, expect, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { Database } from 'bun:sqlite';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
 import { ObservationsStore } from '../../src/worker/observations-store.ts';
 import { DEFAULT_SIMILARITY_THRESHOLD } from '../../src/shared/title-similarity.ts';
+import { rmWorkDir } from '../support/worker-temp.ts';
 
 let worker: WorkerHandle | null = null;
 let workDir = '';
@@ -29,8 +30,8 @@ const QM_ENV = [
 
 afterEach(async () => {
   if (worker) { await worker.stop(); worker = null; }
-  if (workDir) { rmSync(workDir, { recursive: true, force: true }); workDir = ''; }
   for (const k of QM_ENV) delete process.env[k];
+  if (workDir) { rmWorkDir(workDir); workDir = ''; }
 });
 
 async function build(): Promise<number> {
