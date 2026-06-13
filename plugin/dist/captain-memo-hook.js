@@ -635,7 +635,7 @@ init_paths();
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.9.0",
+  version: "0.10.0",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -700,6 +700,71 @@ var package_default = {
 
 // src/shared/version.ts
 var VERSION = package_default.version;
+
+// src/shared/self-update.ts
+import { mkdirSync as mkdirSync3, readFileSync as readFileSync3, writeFileSync as writeFileSync3, renameSync as renameSync2 } from "fs";
+import { join as join6 } from "path";
+var MARKER_FILENAME = ".install-version";
+function compareSemver(a, b) {
+  const parse = (v) => v.replace(/^v/i, "").split("+")[0].split("-")[0].split(".").map((n) => parseInt(n, 10) || 0);
+  const pa = parse(a);
+  const pb = parse(b);
+  for (let i = 0;i < 3; i++) {
+    const da = pa[i] ?? 0;
+    const db = pb[i] ?? 0;
+    if (da > db)
+      return 1;
+    if (da < db)
+      return -1;
+  }
+  return 0;
+}
+function decideUpdateAction(running, marker) {
+  if (marker === null)
+    return "first-run";
+  return compareSemver(running, marker) > 0 ? "upgraded" : "same-or-older";
+}
+function formatUpgradeBanner(from, to) {
+  return [
+    `\u2693 Captain Memo self-upgraded: v${from} \u2192 v${to}`,
+    "  The worker restarts automatically to pick up the new version.",
+    "  Run `captain-memo install` if you want a full refresh (hooks/MCP/services)."
+  ].join(`
+`);
+}
+function markerPath(dataDir) {
+  return join6(dataDir, MARKER_FILENAME);
+}
+function readMarker(dataDir) {
+  try {
+    const raw = readFileSync3(markerPath(dataDir), "utf-8").trim();
+    return raw.length > 0 ? raw : null;
+  } catch {
+    return null;
+  }
+}
+function writeMarker(dataDir, version) {
+  try {
+    mkdirSync3(dataDir, { recursive: true });
+    const final = markerPath(dataDir);
+    const tmp = `${final}.tmp-${process.pid}`;
+    writeFileSync3(tmp, `${version}
+`, "utf-8");
+    renameSync2(tmp, final);
+  } catch {}
+}
+function consumeUpgradeNotice(dataDir, runningVersion) {
+  try {
+    const marker = readMarker(dataDir);
+    const action = decideUpdateAction(runningVersion, marker);
+    if (action === "same-or-older")
+      return "";
+    writeMarker(dataDir, runningVersion);
+    return action === "upgraded" ? formatUpgradeBanner(marker, runningVersion) : "";
+  } catch {
+    return "";
+  }
+}
 
 // src/shared/worker-health.ts
 async function ensureWorkerHealthy(deps) {
@@ -850,16 +915,20 @@ async function main2() {
       logHookError("SessionStart", err);
     }
   }
+  const upgradeNotice = consumeUpgradeNotice(DATA_DIR, VERSION);
+  const withNotice = (banner) => upgradeNotice ? `${upgradeNotice}
+
+${banner}` : banner;
   if (stats.ok && stats.body) {
     writeStdout(JSON.stringify({
       continue: true,
-      systemMessage: formatBanner(stats.body)
+      systemMessage: withNotice(formatBanner(stats.body))
     }));
   } else {
     logHookError("SessionStart", new Error(workerFailureMessage("/stats", stats) ?? "worker /stats returned no body"));
     writeStdout(JSON.stringify({
       continue: true,
-      systemMessage: formatDegradedBanner(stats.timedOut ? "worker timed out" : "worker not reachable")
+      systemMessage: withNotice(formatDegradedBanner(stats.timedOut ? "worker timed out" : "worker not reachable"))
     }));
   }
 }
