@@ -5,6 +5,17 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.10.0] — 2026-06-13
+
+### Added
+- **Visible self-upgrade (git-free).** Install the plugin from the GitHub
+  marketplace and Claude Code auto-fetches new versions — no git needed. When a newer version
+  goes live, the existing SessionStart self-heal restarts the now-stale worker and Captain Memo
+  now shows a one-time **`⚓ Captain Memo self-upgraded: vX → vY`** banner, tracked via a
+  `DATA_DIR/.install-version` marker. Fully best-effort and settings-safe: it touches only the
+  marker + worker process — **never** `worker.env`, config, or corpus data. Opt out of the auto
+  worker-restart with `CAPTAIN_MEMO_DISABLE_SELF_HEAL=1`.
+
 ## [0.9.0] — 2026-06-13
 
 ### Added

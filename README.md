@@ -152,6 +152,8 @@ claude plugin update captain-memo@captain-memo
 
 Use the **fully-qualified id** (`captain-memo@captain-memo`). The simplest upgrade is to **re-run `captain-memo install`** — it refreshes Claude Code's plugin cache for you. (A `directory`-source marketplace is snapshotted at *add* time, so a bare `claude plugin marketplace add` is a no-op once it exists; the installer does `marketplace remove`→`add` to force a fresh copy of the current hooks + bundle.) To refresh by hand instead: `claude plugin marketplace remove captain-memo` then `claude plugin marketplace add <path>`. A GitHub marketplace re-fetches on its own.
 
+**Auto-updates.** Install the plugin from the **GitHub marketplace** (`claude plugin marketplace add kalinbogatzevski/captain-memo`) and Claude Code re-fetches new versions on its own — **no git required**. When a newer version goes live, Captain Memo's SessionStart hook self-heals the worker to it and shows a one-time **`⚓ Captain Memo self-upgraded: vX → vY`** banner. It only ever touches the plugin + worker process — **never** your `worker.env`, config, or corpus. Opt out of the auto worker-restart with `CAPTAIN_MEMO_DISABLE_SELF_HEAL=1`. (The local-clone full install is a `directory`-source snapshot Claude Code doesn't auto-refetch, so there you upgrade by re-running `captain-memo install`.)
+
 ### Windows (native)
 
 Captain Memo runs natively on **Windows x64** — no WSL required.
