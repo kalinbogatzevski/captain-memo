@@ -5,6 +5,21 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.10.1] — 2026-06-14
+
+### Fixed
+- **Windows: re-running `install` to update now actually restarts the worker.** The worker
+  Scheduled Task is `MultipleInstancesPolicy=IgnoreNew`, so the old `start()` no-op'd when a
+  worker was already running — leaving the previous process serving stale code after every
+  update. The Windows install path now `restart()`s (force-stop + port reclaim + start).
+- **Windows: `install` no longer churns `worker.env` on a no-op reinstall.** The file is now
+  rewritten (and re-ACL'd) only when its content actually changes, so an unchanged config
+  leaves the file byte- and mtime-identical — settings are never needlessly rewritten.
+- **`captain-memo config show` now reflects the real worker config.** It seeds `worker.env`
+  (via `loadWorkerEnv()`) before printing, so it shows your actual embedder endpoint/model/key
+  instead of the built-in `localhost`/`voyage-4-nano` defaults. Precedence stays
+  shell env > worker.env > default.
+
 ## [0.10.0] — 2026-06-13
 
 ### Added
