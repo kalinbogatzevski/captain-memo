@@ -200,3 +200,109 @@ test('findUpdateTarget — embedder failure skips semantic dedup, returns null',
   expect(searchMemory).not.toHaveBeenCalled();
   rmSync(dir, { recursive: true, force: true });
 });
+
+function fullDeps(over: Partial<any> = {}) {
+  return {
+    ingest: { indexFile: mock(async () => {}) },
+    embed: mock(async () => { throw new Error('no embed'); }),
+    searchMemory: mock(async () => []),
+    generate: mock(async () => { throw new Error('offline'); }),
+    registerSelfWrite: mock(() => {}),
+    rememberDir: '/unused',
+    dedupThreshold: 0.85,
+    ...over,
+  };
+}
+
+test('writeMemory — create writes file, registers self-write, indexes once', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-w-'));
+  const deps = fullDeps();
+  const res = await writeMemory(
+    { body: 'Prefer ripgrep over grep', type: 'preference', projectContext: {}, targetDirOverride: dir },
+    deps as any,
+  );
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error(res.reason);
+  expect(res.action).toBe('created');
+  expect(res.path).toBe(join(dir, 'feedback_prefer-ripgrep-over-grep.md'));
+  const written = readFileSync(res.path, 'utf-8');
+  expect(written.startsWith('---\n')).toBe(true);
+  expect(written).toContain('type: preference');
+  expect(written).toContain('Prefer ripgrep over grep');
+  expect(readdirSync(dir).every(f => f.endsWith('.md'))).toBe(true);
+  expect(deps.registerSelfWrite).toHaveBeenCalledTimes(1);
+  expect(deps.registerSelfWrite.mock.calls[0][0]).toBe(res.path);
+  expect(deps.ingest.indexFile).toHaveBeenCalledTimes(1);
+  expect(deps.ingest.indexFile.mock.calls[0]).toEqual([res.path, 'memory']);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('writeMemory — update merges via generate, overwrites same file (one file on disk)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-w-'));
+  const existing = join(dir, 'feedback_prefer-ripgrep-over-grep.md');
+  writeFileSync(existing, '---\nname: Prefer ripgrep over grep\ndescription: old\ntype: preference\n---\nOriginal note.');
+  const generate = mock(async () => ({
+    content: [{ type: 'text' as const, text: 'Original note.\n\nAlso: ripgrep respects .gitignore.' }],
+    model: 'claude-haiku-4-5',
+  }));
+  const deps = fullDeps({ generate });
+  const res = await writeMemory(
+    {
+      body: 'ripgrep respects .gitignore', type: 'preference',
+      name: 'Prefer ripgrep over grep', description: 'use rg', slug: 'prefer-ripgrep-over-grep',
+      projectContext: {}, targetDirOverride: dir,
+    },
+    deps as any,
+  );
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error(res.reason);
+  expect(res.action).toBe('updated');
+  expect(res.path).toBe(existing);
+  expect(generate).toHaveBeenCalledTimes(1);
+  const merged = readFileSync(existing, 'utf-8');
+  expect(merged).toContain('respects .gitignore');
+  expect(readdirSync(dir).filter(f => f.endsWith('.md'))).toHaveLength(1);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('writeMemory — merge generate failure falls back to appended body, still writes', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-w-'));
+  const existing = join(dir, 'reference_x.md');
+  writeFileSync(existing, '---\nname: X\ndescription: d\ntype: reference\n---\nOld body.');
+  const generate = mock(async () => { throw new Error('merge offline'); });
+  const deps = fullDeps({ generate });
+  const res = await writeMemory(
+    { body: 'new fact', type: 'reference', name: 'X', description: 'd', slug: 'x', projectContext: {}, targetDirOverride: dir },
+    deps as any,
+  );
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error(res.reason);
+  expect(res.action).toBe('updated');
+  const merged = readFileSync(existing, 'utf-8');
+  expect(merged).toContain('Old body.');
+  expect(merged).toContain('new fact');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('writeMemory — ingest.indexFile failure surfaces as { ok:false }', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-w-'));
+  const deps = fullDeps({ ingest: { indexFile: mock(async () => { throw new Error('vector down'); }) } });
+  const res = await writeMemory(
+    { body: 'note', type: 'reference', projectContext: {}, targetDirOverride: dir },
+    deps as any,
+  );
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error('expected failure');
+  expect(res.reason).toContain('vector down');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('writeMemory — missing body returns { ok:false, reason }', async () => {
+  const res = await writeMemory(
+    { body: '   ', type: 'reference', projectContext: {} },
+    fullDeps() as any,
+  );
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error('expected failure');
+  expect(res.reason).toBe('body is required');
+});

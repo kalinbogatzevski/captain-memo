@@ -1,4 +1,4 @@
-import { mkdirSync, existsSync } from 'fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'fs';
 import { homedir } from 'os';
 import { join, basename } from 'path';
 import { z } from 'zod';
@@ -142,6 +142,29 @@ export async function fillFrontmatter(input: RememberInput, generate: Summarizer
   }
 }
 
+const MERGE_SYSTEM =
+  `You update a curated memory entry. Given the EXISTING entry body and NEW
+information, return the merged body that PRESERVES the existing content and folds
+in the new information without duplication. Return ONLY the merged body text, no
+frontmatter, no commentary.`;
+
+/** Fold new info into an existing body via the LLM; on failure, append the new body. */
+async function mergeBody(existingBody: string, newBody: string, generate: SummarizerTransport): Promise<string> {
+  try {
+    const res = await generate({
+      model: '',
+      system: MERGE_SYSTEM,
+      user: `EXISTING:\n${existingBody}\n\nNEW:\n${newBody}`,
+      max_tokens: 1200,
+    });
+    const text = res.content.find(c => c.type === 'text')?.text?.trim();
+    if (text) return text;
+  } catch (err) {
+    console.warn(`[remember] merge generate failed, appending: ${(err as Error).message}`);
+  }
+  return `${existingBody.trim()}\n\n${newBody.trim()}`;
+}
+
 const SEMANTIC_K = 3;
 
 type DedupDeps = Pick<WriteMemoryDeps, 'embed' | 'searchMemory' | 'dedupThreshold'>;
@@ -196,6 +219,40 @@ export async function writeMemory(input: RememberInput, deps: WriteMemoryDeps): 
   const updateTarget = await findUpdateTarget(input.body, targetDir, filename, deps);
   const path = updateTarget ?? join(targetDir, filename);
   const action: 'created' | 'updated' = updateTarget ? 'updated' : 'created';
+
+  let body = input.body;
+  if (updateTarget) {
+    const existingRaw = readFileSync(updateTarget, 'utf-8').replace(/\r\n/g, '\n');
+    const fmEnd = existingRaw.indexOf('\n---\n');
+    const existingBody = existingRaw.startsWith('---\n') && fmEnd !== -1
+      ? existingRaw.slice(fmEnd + 5)
+      : existingRaw;
+    body = await mergeBody(existingBody, input.body, deps.generate);
+  }
+
+  const doc = renderFrontmatter(
+    { name: fm.name, description: fm.description, type: fm.type },
+    body,
+    input.sourceObservationId !== undefined ? { sourceObservationId: input.sourceObservationId } : undefined,
+  );
+
+  // Atomic write: temp file in the SAME dir, then rename — the watcher never
+  // sees a half-written file.
+  const tmpPath = `${path}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    writeFileSync(tmpPath, doc, 'utf-8');
+    renameSync(tmpPath, path);
+  } catch (err) {
+    try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* best-effort cleanup */ }
+    return { ok: false, reason: `write failed: ${(err as Error).message}` };
+  }
+
+  deps.registerSelfWrite(path);
+  try {
+    await deps.ingest.indexFile(path, 'memory');
+  } catch (err) {
+    return { ok: false, reason: `index failed: ${(err as Error).message}` };
+  }
 
   return { ok: true, path, action, doc_id: `memory:${basename(path, '.md')}` };
 }
