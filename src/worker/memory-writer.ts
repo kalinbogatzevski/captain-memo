@@ -124,7 +124,7 @@ export async function fillFrontmatter(input: RememberInput, generate: Summarizer
     const text = res.content.find(c => c.type === 'text')?.text ?? '';
     const match = /\{[\s\S]*\}/.exec(text);
     const json = JSON.parse(match ? match[0] : text);
-    const parsed = FrontmatterSchema.parse({ type: input.type, ...json, type: json.type ?? input.type });
+    const parsed = FrontmatterSchema.parse({ ...json, type: json.type ?? input.type });
     return {
       name: input.name ?? parsed.name,
       description: input.description ?? parsed.description,

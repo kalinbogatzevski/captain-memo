@@ -3,11 +3,11 @@ import { workerPost } from '../client.ts';
 
 export interface RememberArgs {
   type: string;
-  name?: string;
-  description?: string;
-  slug?: string;
-  bodyInline?: string;  // from --body
-  file?: string;        // from --file (path; contents read in readBody)
+  name?: string | undefined;
+  description?: string | undefined;
+  slug?: string | undefined;
+  bodyInline?: string | undefined;  // from --body
+  file?: string | undefined;        // from --file (path; contents read in readBody)
 }
 
 class RememberArgError extends Error {}

@@ -22,7 +22,7 @@ function obs(id: number, over: Partial<Observation> = {}): Observation {
 }
 
 interface Rec {
-  writes: Array<{ sourceObservationId?: number; type: string; cwd?: string; targetDirOverride?: string }>;
+  writes: Array<{ sourceObservationId?: number | undefined; type: string; cwd?: string | undefined; targetDirOverride?: string | undefined }>;
   promoted: number[];
   judgeCalls: number;
 }

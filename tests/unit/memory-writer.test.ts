@@ -203,11 +203,11 @@ test('findUpdateTarget — embedder failure skips semantic dedup, returns null',
 
 function fullDeps(over: Partial<any> = {}) {
   return {
-    ingest: { indexFile: mock(async () => {}) },
+    ingest: { indexFile: mock(async (_p: string, _c: string) => {}) },
     embed: mock(async () => { throw new Error('no embed'); }),
     searchMemory: mock(async () => []),
     generate: mock(async () => { throw new Error('offline'); }),
-    registerSelfWrite: mock(() => {}),
+    registerSelfWrite: mock((_p: string) => {}),
     rememberDir: '/unused',
     dedupThreshold: 0.85,
     ...over,
@@ -231,9 +231,9 @@ test('writeMemory — create writes file, registers self-write, indexes once', a
   expect(written).toContain('Prefer ripgrep over grep');
   expect(readdirSync(dir).every(f => f.endsWith('.md'))).toBe(true);
   expect(deps.registerSelfWrite).toHaveBeenCalledTimes(1);
-  expect(deps.registerSelfWrite.mock.calls[0][0]).toBe(res.path);
+  expect(deps.registerSelfWrite.mock.calls[0]![0]).toBe(res.path);
   expect(deps.ingest.indexFile).toHaveBeenCalledTimes(1);
-  expect(deps.ingest.indexFile.mock.calls[0]).toEqual([res.path, 'memory']);
+  expect(deps.ingest.indexFile.mock.calls[0]!).toEqual([res.path, 'memory']);
   rmSync(dir, { recursive: true, force: true });
 });
 

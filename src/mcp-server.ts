@@ -217,7 +217,7 @@ export async function runMcpServer(): Promise<void> {
         case 'get_full':            result = await workerPost('/get_full', args); break;
         case 'reindex':             result = await workerPost('/reindex', args); break;
         case 'remember':
-          return await dispatchRemember(args as RememberToolArgs, {
+          return await dispatchRemember(args as unknown as RememberToolArgs, {
             post: workerPost,
             cwd: () => process.cwd(),
           });

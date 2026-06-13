@@ -23,3 +23,7 @@ test('numeric override + invalid falls back to default', () => {
   expect(loadPromotionConfig({ CAPTAIN_MEMO_PROMOTE_MAX_PER_RUN: 'nonsense' }).maxPerRun).toBe(5);
   expect(loadPromotionConfig({ CAPTAIN_MEMO_PROMOTE_INTERVAL_MS: '1000' }).intervalMs).toBe(1000);
 });
+
+test('wiring gate: default config keeps the promotion timer OFF', () => {
+  expect(loadPromotionConfig(process.env).enabled || loadPromotionConfig({}).enabled).toBe(false);
+});
