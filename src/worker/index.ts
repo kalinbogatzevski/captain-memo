@@ -9,6 +9,7 @@ import { loadWorkerEnv } from '../shared/worker-env.ts';
 import { VectorStore } from './vector-store.ts';
 import { HybridSearcher } from './search.ts';
 import { IngestPipeline } from './ingest.ts';
+import { writeMemory, type WriteMemoryDeps, type RememberInput } from './memory-writer.ts';
 import { FileWatcher } from './watcher.ts';
 import { ObservationQueue } from './observation-queue.ts';
 import { ObservationsStore } from './observations-store.ts';
@@ -51,6 +52,10 @@ import {
   ENV_OBSERVATION_TICK_MS,
   DEFAULT_OBSERVATION_BATCH_SIZE,
   DEFAULT_OBSERVATION_TICK_MS,
+  ENV_REMEMBER_DIR,
+  DEFAULT_REMEMBER_DIR,
+  ENV_REMEMBER_DEDUP_THRESHOLD,
+  DEFAULT_REMEMBER_DEDUP_THRESHOLD,
 } from '../shared/paths.ts';
 import { writeRecallAuditLine } from './recall-audit.ts';
 import { getDreamStats } from './dream-stats.ts';
@@ -210,6 +215,17 @@ const PendingEmbedRetrySchema = z.object({
 
 const RestoreSchema = z.object({
   id: z.number().int().positive(),
+});
+
+const RememberSchema = z.object({
+  body: z.string().min(1),
+  type: z.string().min(1),
+  name: z.string().optional(),
+  description: z.string().optional(),
+  slug: z.string().optional(),
+  cwd: z.string().optional(),
+  sourceObservationId: z.number().int().positive().optional(),
+  targetDirOverride: z.string().optional(),
 });
 
 const InjectContextSchema = z.object({
@@ -1510,6 +1526,57 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         }
 
         return Response.json({ indexed, skipped, errors });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/remember') {
+        const parsed = RememberSchema.safeParse(await req.json());
+        if (!parsed.success) {
+          return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
+        }
+        const d = parsed.data;
+
+        // Semantic-dedup query: cosine over the memory channel, scoped to `dir` by
+        // source_path prefix (the chunker stamps document.source_path = the .md path).
+        // Distance → similarity so the score compares against dedupThreshold directly.
+        const searchMemory: WriteMemoryDeps['searchMemory'] = async (queryEmbedding, dir, k) => {
+          if (opts.skipEmbed || queryEmbedding.length === 0) return [];
+          const raw = await vector.query(collectionName, queryEmbedding, Math.max(k * 5, 20));
+          const hits: Array<{ source_path: string; score: number; chunk_id: string }> = [];
+          for (const r of raw) {
+            const lookup = meta.getChunkById(r.id);
+            if (!lookup || lookup.document.channel !== 'memory') continue;
+            if (!lookup.document.source_path.startsWith(dir)) continue;
+            hits.push({ source_path: lookup.document.source_path, score: 1 - r.distance, chunk_id: r.id });
+            if (hits.length >= k) break;
+          }
+          return hits;
+        };
+
+        const deps: WriteMemoryDeps = {
+          ingest,
+          embed: (texts) => embedder.embed(texts),
+          searchMemory,
+          registerSelfWrite,
+          rememberDir: process.env[ENV_REMEMBER_DIR] ?? DEFAULT_REMEMBER_DIR,
+          dedupThreshold: Number(process.env[ENV_REMEMBER_DEDUP_THRESHOLD] ?? DEFAULT_REMEMBER_DEDUP_THRESHOLD),
+          // Omit `generate` when no transport is configured so writeMemory takes its
+          // deterministic frontmatter fallback (name=first line, description=truncated body).
+          ...(opts.summarizerTransport !== undefined && { generate: opts.summarizerTransport }),
+        } as WriteMemoryDeps;
+
+        const input: RememberInput = {
+          body: d.body,
+          type: d.type,
+          ...(d.name !== undefined && { name: d.name }),
+          ...(d.description !== undefined && { description: d.description }),
+          ...(d.slug !== undefined && { slug: d.slug }),
+          projectContext: { ...(d.cwd !== undefined && { cwd: d.cwd }) },
+          ...(d.sourceObservationId !== undefined && { sourceObservationId: d.sourceObservationId }),
+          ...(d.targetDirOverride !== undefined && { targetDirOverride: d.targetDirOverride }),
+        };
+
+        const result = await writeMemory(input, deps);
+        return Response.json(result, { status: result.ok ? 200 : 500 });
       }
 
       if (req.method === 'POST' && url.pathname === '/inject/context') {
