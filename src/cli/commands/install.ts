@@ -1020,15 +1020,25 @@ async function installWindows(args: string[], opts: InstallOptions): Promise<num
   // Same key=value content the Linux path emits (data lives in the user's home), and the same
   // preserve-hand-edits-on-reinstall behavior so federation/Tide/QM tuning survives.
   const { body, kept } = composeWorkerEnvBody(workerEnvLines(cfg, DATA_DIR), WORKER_ENV_PATH);
-  writeFileSync(WORKER_ENV_PATH, body);
-  ok(`wrote ${WORKER_ENV_PATH}${kept > 0 ? ` (preserved ${kept} hand-added setting${kept === 1 ? '' : 's'})` : ''}`);
-  // NTFS ACL-lock: 0600 is meaningless on Windows. Strip inheritance and grant
-  // only the current user full control. Best-effort — warn but don't abort.
-  const userName = process.env.USERNAME ?? process.env.USER ?? '';
-  const icaclsArgs = [WORKER_ENV_PATH, '/inheritance:r', '/grant:r', `${userName}:F`];
-  const acl = spawnSync('icacls', icaclsArgs, { encoding: 'utf-8' });
-  if (acl.status === 0) ok('locked worker.env to current user (icacls)');
-  else warn(`could not ACL-lock worker.env (icacls exit ${acl.status ?? '?'}); secrets are readable by other local users`);
+  // Only rewrite worker.env when its content actually changes — a no-op reinstall
+  // (e.g. re-running install just to update code) must leave the file (bytes + mtime)
+  // untouched so user secrets/config are never churned. composeWorkerEnvBody already
+  // preserves hand-added keys, so an unchanged config produces byte-identical output.
+  const existingEnv = existsSync(WORKER_ENV_PATH) ? readFileSync(WORKER_ENV_PATH, 'utf-8') : null;
+  if (existingEnv === body) {
+    ok(`worker.env unchanged — left as-is${kept > 0 ? ` (${kept} hand-added setting${kept === 1 ? '' : 's'} preserved)` : ''}`);
+  } else {
+    writeFileSync(WORKER_ENV_PATH, body);
+    ok(`wrote ${WORKER_ENV_PATH}${kept > 0 ? ` (preserved ${kept} hand-added setting${kept === 1 ? '' : 's'})` : ''}`);
+    // NTFS ACL-lock: 0600 is meaningless on Windows. Strip inheritance and grant
+    // only the current user full control. Best-effort — warn but don't abort. Gated on
+    // the write so a no-op reinstall doesn't touch the file's ACLs/metadata either.
+    const userName = process.env.USERNAME ?? process.env.USER ?? '';
+    const icaclsArgs = [WORKER_ENV_PATH, '/inheritance:r', '/grant:r', `${userName}:F`];
+    const acl = spawnSync('icacls', icaclsArgs, { encoding: 'utf-8' });
+    if (acl.status === 0) ok('locked worker.env to current user (icacls)');
+    else warn(`could not ACL-lock worker.env (icacls exit ${acl.status ?? '?'}); secrets are readable by other local users`);
+  }
 
   // ----- local embedder sidecar (optional) -----
   if (cfg.embedder === 'local-sidecar') {
@@ -1075,8 +1085,13 @@ async function installWindows(args: string[], opts: InstallOptions): Promise<num
     watchdogIntervalSec: 300,
     logDir: LOGS_DIR,
   });
-  await getServiceManager().start('captain-memo-worker');
-  ok('worker task registered + started (captain-memo-worker)');
+  // restart (NOT start): the Scheduled Task is MultipleInstancesPolicy=IgnoreNew, so
+  // Start-ScheduledTask is a NO-OP when the worker is already running (the common
+  // "re-run install to update code" case) — leaving the OLD process serving stale code.
+  // restart force-stops + reclaims the port, then starts, so the new code actually takes
+  // effect. On a fresh install the stop is a harmless no-op before the start.
+  await getServiceManager().restart('captain-memo-worker', { graceful: true, port, force: true });
+  ok('worker task registered + (re)started (captain-memo-worker)');
 
   // ----- drop the legacy standalone watchdog task (removed in 0.2.17) -----
   // The separate captain-memo-watchdog task ran `worker-watchdog` every 5 min, but
