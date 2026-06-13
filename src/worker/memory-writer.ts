@@ -1,6 +1,6 @@
-import { mkdirSync } from 'fs';
+import { mkdirSync, existsSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, basename } from 'path';
 import { z } from 'zod';
 import { projectSlugFromCwd } from '../shared/paths.ts';
 import type { IngestPipeline } from './ingest.ts';
@@ -142,6 +142,42 @@ export async function fillFrontmatter(input: RememberInput, generate: Summarizer
   }
 }
 
+const SEMANTIC_K = 3;
+
+type DedupDeps = Pick<WriteMemoryDeps, 'embed' | 'searchMemory' | 'dedupThreshold'>;
+
+/**
+ * Decide the update target, or null to create. (a) filename collision first
+ * (cheap, no embedder), then (b) semantic similarity scoped to `dir`. Embedder
+ * failure degrades gracefully to "no semantic match" (spec §5).
+ */
+export async function findUpdateTarget(
+  body: string,
+  dir: string,
+  filename: string,
+  deps: DedupDeps,
+): Promise<string | null> {
+  const collision = join(dir, filename);
+  if (existsSync(collision)) return collision;
+
+  let embedding: number[];
+  try {
+    const [vec] = await deps.embed([body]);
+    if (!vec) return null;
+    embedding = vec;
+  } catch (err) {
+    console.warn(`[remember] embedder unavailable, skipping semantic dedup: ${(err as Error).message}`);
+    return null;
+  }
+
+  const hits = await deps.searchMemory(embedding, dir, SEMANTIC_K);
+  const top = hits[0];
+  if (top && top.score >= deps.dedupThreshold && top.source_path.startsWith(dir)) {
+    return top.source_path;
+  }
+  return null;
+}
+
 export async function writeMemory(input: RememberInput, deps: WriteMemoryDeps): Promise<WriteMemoryResult> {
   if (!input.body || !input.body.trim()) return { ok: false, reason: 'body is required' };
   if (!input.type || !input.type.trim()) return { ok: false, reason: 'type is required' };
@@ -155,6 +191,11 @@ export async function writeMemory(input: RememberInput, deps: WriteMemoryDeps): 
 
   const fm = await fillFrontmatter(input, deps.generate);
 
-  // dedup + write wired in the next task; placeholder result keeps this task green.
-  return { ok: true, path: join(targetDir, `${prefixForType(fm.type)}_${fm.slug}.md`), action: 'created', doc_id: `memory:${prefixForType(fm.type)}_${fm.slug}` };
+  const prefix = prefixForType(fm.type);
+  const filename = `${prefix}_${fm.slug}.md`;
+  const updateTarget = await findUpdateTarget(input.body, targetDir, filename, deps);
+  const path = updateTarget ?? join(targetDir, filename);
+  const action: 'created' | 'updated' = updateTarget ? 'updated' : 'created';
+
+  return { ok: true, path, action, doc_id: `memory:${basename(path, '.md')}` };
 }

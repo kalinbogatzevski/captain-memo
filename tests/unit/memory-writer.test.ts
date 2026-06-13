@@ -1,10 +1,10 @@
 import { test, expect } from 'bun:test';
 import {
   renderFrontmatter, deterministicFrontmatter, slugify, prefixForType,
-  resolveTargetDir, fillFrontmatter, writeMemory,
+  resolveTargetDir, fillFrontmatter, writeMemory, findUpdateTarget,
 } from '../../src/worker/memory-writer.ts';
 import { chunkMemoryFile } from '../../src/worker/chunkers/memory-file.ts';
-import { mkdtempSync, rmSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync } from 'fs';
 import { tmpdir, homedir } from 'os';
 import { join } from 'path';
 import { mock } from 'bun:test';
@@ -131,5 +131,72 @@ test('writeMemory — mkdirs the resolved target dir', async () => {
   );
   expect(res.ok).toBe(true);
   expect(existsSync(target)).toBe(true);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('findUpdateTarget — filename collision -> that file, embedder never queried', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-dd-'));
+  const existing = join(dir, 'decision_use-bun.md');
+  writeFileSync(existing, '---\nname: x\ntype: decision\n---\nold');
+  const embed = mock(async () => { throw new Error('must not embed'); });
+  const searchMemory = mock(async () => []);
+  const target = await findUpdateTarget(
+    'use bun', dir, 'decision_use-bun.md',
+    { embed: embed as any, searchMemory: searchMemory as any, dedupThreshold: 0.85 },
+  );
+  expect(target).toBe(existing);
+  expect(embed).not.toHaveBeenCalled();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('findUpdateTarget — semantic hit >= threshold in dir -> that file', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-dd-'));
+  const hitPath = join(dir, 'reference_existing.md');
+  writeFileSync(hitPath, '---\nname: y\ntype: reference\n---\nbody');
+  const embed = mock(async () => [[0.1, 0.2]]);
+  const searchMemory = mock(async () => [{ source_path: hitPath, score: 0.91, chunk_id: 'memory:reference_existing:aa' }]);
+  const target = await findUpdateTarget(
+    'similar body', dir, 'reference_new.md',
+    { embed: embed as any, searchMemory: searchMemory as any, dedupThreshold: 0.85 },
+  );
+  expect(embed).toHaveBeenCalledTimes(1);
+  expect(target).toBe(hitPath);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('findUpdateTarget — semantic hit below threshold -> null (create)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-dd-'));
+  const embed = mock(async () => [[0.1]]);
+  const searchMemory = mock(async () => [{ source_path: join(dir, 'reference_x.md'), score: 0.4, chunk_id: 'c' }]);
+  const target = await findUpdateTarget(
+    'unique', dir, 'reference_new.md',
+    { embed: embed as any, searchMemory: searchMemory as any, dedupThreshold: 0.85 },
+  );
+  expect(target).toBeNull();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('findUpdateTarget — semantic hit OUTSIDE target dir is ignored', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-dd-'));
+  const embed = mock(async () => [[0.1]]);
+  const searchMemory = mock(async () => [{ source_path: '/elsewhere/reference_x.md', score: 0.99, chunk_id: 'c' }]);
+  const target = await findUpdateTarget(
+    'x', dir, 'reference_new.md',
+    { embed: embed as any, searchMemory: searchMemory as any, dedupThreshold: 0.85 },
+  );
+  expect(target).toBeNull();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('findUpdateTarget — embedder failure skips semantic dedup, returns null', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-dd-'));
+  const embed = mock(async () => { throw new Error('embedder offline'); });
+  const searchMemory = mock(async () => []);
+  const target = await findUpdateTarget(
+    'x', dir, 'reference_new.md',
+    { embed: embed as any, searchMemory: searchMemory as any, dedupThreshold: 0.85 },
+  );
+  expect(target).toBeNull();
+  expect(searchMemory).not.toHaveBeenCalled();
   rmSync(dir, { recursive: true, force: true });
 });
