@@ -173,6 +173,21 @@ export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // v11 — promotion provenance/idempotency. `promoted_at` (epoch seconds) is
+    // stamped the moment the opt-in promotion job folds an observation into a
+    // curated memory file, so a later run can exclude it and never promote the
+    // same row twice. NULL = never promoted; the candidate query filters on it.
+    // Partial index mirrors the v6/v8 trick — only the promoted minority is
+    // indexed, so the default (promoted_at IS NULL) majority stays index-free.
+    // Spec: docs/superpowers/specs/2026-06-13-captain-remember-design.md §7.
+    version: 11,
+    name: 'add_promoted_at',
+    up: (db) => {
+      db.exec('ALTER TABLE observations ADD COLUMN promoted_at INTEGER');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_obs_promoted ON observations(promoted_at) WHERE promoted_at IS NOT NULL');
+    },
+  },
 ];
 
 export type NewObservation = Omit<
@@ -859,6 +874,38 @@ export class ObservationsStore {
         id: number; type: string; title: string; tide_state: TideState;
         tide_state_changed_at: number | null; last_surfaced_at: number | null;
       }>;
+  }
+
+  /**
+   * Bounded candidate set for the opt-in promotion job. Returns the most-recent
+   * `limit` observations restricted to DURABLE types (decision/feature/discovery
+   * — spec §7) that carry a recall signal (from_auto + from_search + from_drill ≥
+   * minRecall) and have NOT already been promoted (promoted_at IS NULL). Archived
+   * rows are excluded — a folded duplicate is represented by its survivor. The
+   * promotion slice judges these further; this only narrows the corpus cheaply.
+   */
+  promotionCandidates(opts: { limit: number; minRecall: number }): Observation[] {
+    const rows = this.db
+      .query(
+        `SELECT * FROM observations
+          WHERE promoted_at IS NULL
+            AND archived = 0
+            AND type IN ('decision', 'feature', 'discovery')
+            AND (from_auto + from_search + from_drill) >= ?
+          ORDER BY created_at_epoch DESC, id DESC
+          LIMIT ?`,
+      )
+      .all(opts.minRecall, opts.limit) as Array<Record<string, unknown>>;
+    return rows.map(r => this.hydrate(r));
+  }
+
+  /** Stamp an observation as promoted (epoch seconds) so it is never promoted
+   *  again. Idempotent: re-stamping just overwrites the timestamp; the row is
+   *  already excluded from promotionCandidates by the promoted_at IS NULL filter. */
+  markPromoted(id: number, atEpoch: number): void {
+    this.db
+      .query('UPDATE observations SET promoted_at = ? WHERE id = ?')
+      .run(atEpoch, id);
   }
 
   /**

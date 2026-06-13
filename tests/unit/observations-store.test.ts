@@ -321,8 +321,8 @@ test('ObservationsStore — schema_versions records all migrations after constru
   const db = new Database(join(workDir, 'observations.db'), { readonly: true });
   const rows = getAppliedVersions(db);
   db.close();
-  expect(rows).toHaveLength(10);
-  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  expect(rows).toHaveLength(11);
+  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
   expect(rows.map(r => r.name)).toEqual([
     'add_branch',
     'add_work_tokens',
@@ -334,6 +334,7 @@ test('ObservationsStore — schema_versions records all migrations after constru
     'add_tide_lifecycle',
     'add_merge_events',
     'add_qm_runs',
+    'add_promoted_at',
   ]);
   store = new ObservationsStore(join(workDir, 'observations.db'));
 });
@@ -975,6 +976,51 @@ test('ObservationsStore — migration v10 adds qm_runs audit table', () => {
   // v10 recorded as applied
   expect(getAppliedVersions(db).some(v => v.version === 10)).toBe(true);
   db.close();
+});
+
+test('ObservationsStore — migration v11 adds promoted_at column + partial index', () => {
+  const db = new Database(join(workDir, 'observations.db'));
+  const cols = db.query('PRAGMA table_info(observations)').all() as Array<{ name: string; dflt_value: unknown }>;
+  const byName = new Map(cols.map(c => [c.name, c]));
+
+  expect(byName.has('promoted_at')).toBe(true);
+  expect(byName.get('promoted_at')!.dflt_value).toBeNull();
+
+  const idx = db.query("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_obs_promoted'").all();
+  expect(idx.length).toBe(1);
+
+  expect(getAppliedVersions(db).some(v => v.version === 11)).toBe(true);
+  db.close();
+});
+
+test('promotionCandidates — durable types + recall-count, excludes promoted', () => {
+  const base = { session_id: 's', project_id: 'p', prompt_number: 1, narrative: 'n',
+    facts: [], concepts: [], files_read: [], files_modified: [],
+    created_at_epoch: 1_700_000_000, branch: null, work_tokens: null };
+  const durable = store.insert({ ...base, type: 'decision', title: 'durable hot' });
+  const ephemeral = store.insert({ ...base, type: 'change', title: 'ephemeral hot' });
+  const durableCold = store.insert({ ...base, type: 'feature', title: 'durable cold' });
+  const durablePromoted = store.insert({ ...base, type: 'discovery', title: 'already promoted' });
+  store.bumpRetrieval([durable], 'search', 1_700_000_100);
+  store.bumpRetrieval([durablePromoted], 'drill', 1_700_000_100);
+  store.markPromoted(durablePromoted, 1_700_000_200);
+
+  const ids = store.promotionCandidates({ limit: 50, minRecall: 1 }).map(o => o.id);
+  expect(ids).toContain(durable);
+  expect(ids).not.toContain(ephemeral);
+  expect(ids).not.toContain(durableCold);
+  expect(ids).not.toContain(durablePromoted);
+});
+
+test('markPromoted — sets promoted_at and is idempotent on re-call', () => {
+  const id = store.insert({ session_id: 's', project_id: 'p', prompt_number: 1,
+    type: 'decision', title: 't', narrative: 'n', facts: [], concepts: [],
+    files_read: [], files_modified: [], created_at_epoch: 1_700_000_000,
+    branch: null, work_tokens: null });
+  store.bumpRetrieval([id], 'search', 1_700_000_100);
+  store.markPromoted(id, 1_700_000_200);
+  store.markPromoted(id, 1_700_000_300);
+  expect(store.promotionCandidates({ limit: 50, minRecall: 1 }).map(o => o.id)).not.toContain(id);
 });
 
 // dedupCandidateWindow scopes the candidate SELECT to a recency-bounded window:
