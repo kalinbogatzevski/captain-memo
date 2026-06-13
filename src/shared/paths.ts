@@ -104,3 +104,19 @@ export const DEFAULT_REMEMBER_DIR = join(homedir(), '.claude', 'memory');
 export const DEFAULT_PROMOTE_INTERVAL_MS = 21_600_000; // 6h
 export const DEFAULT_PROMOTE_MAX_PER_RUN = 5;
 export const DEFAULT_REMEMBER_DEDUP_THRESHOLD = 0.85;
+
+/**
+ * Encode an absolute cwd into Claude Code's project-dir slug, matching the
+ * directories under ~/.claude/projects/. Every NON-alphanumeric character
+ * becomes '-', one-for-one (no trim, no dedupe of consecutive dashes); case,
+ * digits, and existing dashes are preserved. Verified against real dirs:
+ *   /home/kalin/projects/captain-memo  ->  -home-kalin-projects-captain-memo
+ *   /home/kalin/projects/erp-platform/.claude-worktrees-x
+ *                          ->  -home-kalin-projects-erp-platform--claude-worktrees-x
+ * The double dash in the second case (the `/.` run) proves per-character
+ * replacement, not run-collapse. '_' and '.' both map to '-' (e.g. the real
+ * dir -home-kalin-projects-123net-aelita came from .../123net_aelita).
+ */
+export function projectSlugFromCwd(cwd: string): string {
+  return cwd.replace(/[^A-Za-z0-9]/g, '-');
+}
