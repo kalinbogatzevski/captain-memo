@@ -1,8 +1,15 @@
 import { test, expect } from 'bun:test';
 import {
   renderFrontmatter, deterministicFrontmatter, slugify, prefixForType,
+  resolveTargetDir, fillFrontmatter, writeMemory,
 } from '../../src/worker/memory-writer.ts';
 import { chunkMemoryFile } from '../../src/worker/chunkers/memory-file.ts';
+import { mkdtempSync, rmSync, existsSync } from 'fs';
+import { tmpdir, homedir } from 'os';
+import { join } from 'path';
+import { mock } from 'bun:test';
+
+const noopIngest = { indexFile: mock(async () => {}) } as any;
 
 test('renderFrontmatter — round-trips through chunkMemoryFile', () => {
   const doc = renderFrontmatter(
@@ -45,4 +52,84 @@ test('prefixForType — maps known types, falls back to the type itself', () => 
   expect(prefixForType('decision')).toBe('decision');
   expect(prefixForType('reference')).toBe('reference');
   expect(prefixForType('wild')).toBe('wild');
+});
+
+test('resolveTargetDir — targetDirOverride wins', () => {
+  expect(resolveTargetDir(
+    { body: 'b', type: 'decision', projectContext: { cwd: '/some/where' }, targetDirOverride: '/override/dir' },
+    '/default/remember',
+  )).toBe('/override/dir');
+});
+
+test('resolveTargetDir — cwd -> ~/.claude/projects/<slug>/memory', () => {
+  expect(resolveTargetDir(
+    { body: 'b', type: 'decision', projectContext: { cwd: '/home/kalin/projects/captain-memo' } },
+    '/default/remember',
+  )).toBe(join(homedir(), '.claude', 'projects', '-home-kalin-projects-captain-memo', 'memory'));
+});
+
+test('resolveTargetDir — no cwd -> rememberDir default', () => {
+  expect(resolveTargetDir(
+    { body: 'b', type: 'decision', projectContext: {} },
+    '/default/remember',
+  )).toBe('/default/remember');
+});
+
+test('fillFrontmatter — uses caller overrides verbatim, no generate call', async () => {
+  const generate = mock(async () => { throw new Error('should not be called'); });
+  const fm = await fillFrontmatter(
+    { body: 'b', type: 'decision', name: 'N', description: 'D', slug: 's', projectContext: {} },
+    generate as any,
+  );
+  expect(fm).toEqual({ name: 'N', description: 'D', slug: 's', type: 'decision' });
+  expect(generate).not.toHaveBeenCalled();
+});
+
+test('fillFrontmatter — calls generate when a field is missing', async () => {
+  const generate = mock(async () => ({
+    content: [{ type: 'text' as const, text: JSON.stringify({
+      name: 'Gen Name', description: 'gen desc', slug: 'gen-name', type: 'decision',
+    }) }],
+    model: 'claude-haiku-4-5',
+  }));
+  const fm = await fillFrontmatter(
+    { body: 'pick bun', type: 'decision', projectContext: {} },
+    generate as any,
+  );
+  expect(generate).toHaveBeenCalledTimes(1);
+  expect(fm.name).toBe('Gen Name');
+  expect(fm.slug).toBe('gen-name');
+});
+
+test('fillFrontmatter — generate throws -> deterministic fallback', async () => {
+  const generate = mock(async () => { throw new Error('transport offline'); });
+  const fm = await fillFrontmatter(
+    { body: 'Prefer pnpm here\nmore', type: 'preference', projectContext: {} },
+    generate as any,
+  );
+  expect(generate).toHaveBeenCalledTimes(1);
+  expect(fm.name).toBe('Prefer pnpm here');
+  expect(fm.slug).toBe('prefer-pnpm-here');
+  expect(fm.type).toBe('preference');
+});
+
+test('writeMemory — mkdirs the resolved target dir', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-mw-'));
+  const target = join(dir, 'nested', 'memory');
+  const generate = mock(async () => { throw new Error('offline'); });
+  const res = await writeMemory(
+    { body: 'a note worth keeping', type: 'reference', projectContext: {}, targetDirOverride: target },
+    {
+      ingest: noopIngest,
+      embed: mock(async () => { throw new Error('embedder offline'); }) as any,
+      searchMemory: mock(async () => []) as any,
+      generate: generate as any,
+      registerSelfWrite: mock(() => {}),
+      rememberDir: dir,
+      dedupThreshold: 0.85,
+    },
+  );
+  expect(res.ok).toBe(true);
+  expect(existsSync(target)).toBe(true);
+  rmSync(dir, { recursive: true, force: true });
 });
