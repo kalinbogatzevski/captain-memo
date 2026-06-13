@@ -8,6 +8,7 @@ import {
   DEFAULT_REMEMBER_DIR, DEFAULT_PROMOTE_INTERVAL_MS,
   DEFAULT_PROMOTE_MAX_PER_RUN, DEFAULT_REMEMBER_DEDUP_THRESHOLD,
 } from '../../shared/paths.ts';
+import { loadWorkerEnv } from '../../shared/worker-env.ts';
 
 function mask(secret: string | undefined): string {
   if (!secret) return '(unset)';
@@ -21,6 +22,11 @@ export async function configCommand(args: string[]): Promise<number> {
     console.error('Usage: captain-memo config show');
     return 2;
   }
+
+  // Seed worker.env into process.env so `config show` reflects the ACTUAL worker config
+  // (e.g. a hosted-Voyage endpoint/model/key set there), not just shell env + defaults.
+  // loadWorkerEnv never overwrites an already-set var, so precedence stays shell > worker.env > default.
+  loadWorkerEnv();
 
   const lines = [
     'captain-memo effective config',
