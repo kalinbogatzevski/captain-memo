@@ -68,6 +68,7 @@ import { createWorkerMetrics, recordEmbed, recordIndexResult } from './metrics.t
 import { computeEfficiency } from './efficiency.ts';
 import { countTokens } from '../shared/tokens.ts';
 import { VERSION } from '../shared/version.ts';
+import { EDITION } from '../shared/edition.ts';
 
 // Recursive directory size in bytes. Returns 0 for missing dirs (fail-open
 // for /stats — better an under-counted disk number than a 500 response).
@@ -1282,6 +1283,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           qm,
           dream,
           version: VERSION,
+          edition: EDITION,   // 'federation' | 'oss' — surfaced for the SessionStart banner
           worker: {
             started_at_epoch: workerStartedAtEpoch,
             uptime_s: Math.floor(Date.now() / 1000) - workerStartedAtEpoch,

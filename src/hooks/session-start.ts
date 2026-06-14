@@ -27,6 +27,7 @@ interface StatsResponse {
   embedder: { model: string; endpoint: string };
   disk?: { bytes: number; path: string };
   version?: string;
+  edition?: string;   // 'federation' | 'oss' — shown as a banner suffix; absent ⇒ no suffix (older worker)
 }
 
 function fmtNum(n: number): string {
@@ -44,10 +45,12 @@ function fmtBytes(bytes: number): string {
 
 function formatBanner(stats: StatsResponse): string {
   const ver = stats.version ? ` v${stats.version}` : '';
+  // Build edition suffix — only for a worker that reports it (older workers omit it ⇒ no suffix).
+  const ed = stats.edition === 'federation' ? ' (Federation)' : stats.edition === 'oss' ? ' (OSS)' : '';
   const lines: string[] = [
     '',
     '',
-    `⚓ Captain Memo${ver}`,
+    `⚓ Captain Memo${ver}${ed}`,
     '─'.repeat(60),
   ];
 
