@@ -21,6 +21,8 @@ import {
   ENV_REMEMBER_DEDUP_THRESHOLD, DEFAULT_REMEMBER_DEDUP_THRESHOLD,
 } from '../../shared/paths.ts';
 import { isWindows } from '../../shared/platform.ts';
+import { VERSION } from '../../shared/version.ts';
+import { decideWorkerDrift, pickUpgradeTarget, parseRemoteCandidates } from '../../shared/version-drift.ts';
 
 // Lookup a single key from worker.env (CONFIG_DIR per platform, then the /etc
 // system-mode fallback on Linux — workerEnvPaths() supplies the right list).
@@ -137,6 +139,81 @@ async function checkWorker(): Promise<void> {
   }
   record({ name: 'worker service', status: 'FAIL', detail: 'not running',
            remedy: 'captain-memo install' });
+}
+
+async function checkWorkerVersion(): Promise<void> {
+  // Check A — does the RUNNING worker match the INSTALLED code? The banner reads the running
+  // worker's /stats version, so a stale worker (reinstall that didn't actually restart it) shows
+  // here as running < installed.
+  const s = await fetchJson(`http://127.0.0.1:${DEFAULT_WORKER_PORT}/stats`);
+  const raw = (s.ok && s.body && typeof (s.body as { version?: unknown }).version === 'string')
+    ? (s.body as { version: string }).version
+    : null;
+  if (raw === null) return; // worker unreachable / no version — the `worker service` check owns that
+  const v = decideWorkerDrift(raw, VERSION);
+  record({ name: 'worker version', status: v.status, detail: v.detail, ...(v.remedy ? { remedy: v.remedy } : {}) });
+}
+
+// Run a git command in repoRoot; { ok:false } on non-zero / missing binary (never throws).
+function gitOut(repoRoot: string, args: string[]): { ok: boolean; out: string } {
+  const r = spawnSync('git', ['-C', repoRoot, ...args], { encoding: 'utf-8' });
+  return { ok: r.status === 0, out: (r.stdout ?? '').trim() };
+}
+
+// Parse the `version` field out of <ref>:package.json; null when the ref/file/JSON is unreadable.
+function versionFromRef(repoRoot: string, ref: string): string | null {
+  const r = gitOut(repoRoot, ['show', `${ref}:package.json`]);
+  if (!r.ok) return null;
+  try {
+    const v = (JSON.parse(r.out) as { version?: unknown }).version;
+    return typeof v === 'string' ? v : null;
+  } catch { return null; }
+}
+
+function checkCheckout(): void {
+  // Check B — is the CLONE itself parked on a stale branch? A reinstall rebuilds from whatever
+  // this checkout points at, so a clone left on an old branch faithfully rebuilds the old version.
+  // Read-only: compares HEAD against ALREADY-FETCHED remote-tracking refs (no network).
+  const repoRoot = join(import.meta.dir, '../../..');
+  try {
+    const wt = gitOut(repoRoot, ['rev-parse', '--is-inside-work-tree']);
+    if (!wt.ok || wt.out !== 'true') {
+      record({ name: 'checkout', status: 'PASS', detail: 'not a git checkout (packaged install) — branch check skipped' });
+      return;
+    }
+    const ab = gitOut(repoRoot, ['rev-parse', '--abbrev-ref', 'HEAD']).out;  // 'HEAD' (literal) when detached
+    const branch = (ab && ab !== 'HEAD') ? ab : '(detached)';
+    const headVersion = versionFromRef(repoRoot, 'HEAD');
+    if (!headVersion) {
+      record({ name: 'checkout', status: 'WARN', detail: `on ${branch} but could not read HEAD:package.json version` });
+      return;
+    }
+    const refsOut = gitOut(repoRoot, ['for-each-ref', '--format=%(refname:short)', 'refs/remotes/']);
+    const candidates = refsOut.ok
+      ? parseRemoteCandidates(refsOut.out, ref => versionFromRef(repoRoot, ref))
+      : [];
+    const containsHead = (ref: string) =>
+      spawnSync('git', ['-C', repoRoot, 'merge-base', '--is-ancestor', 'HEAD', ref], { encoding: 'utf-8' }).status === 0;
+    const target = pickUpgradeTarget(headVersion, candidates, containsHead);
+    if (target.kind === 'current') {
+      record({ name: 'checkout', status: 'PASS', detail: `${branch} @ v${headVersion} is current among known remotes` });
+    } else if (target.kind === 'upgrade') {
+      record({
+        name: 'checkout', status: 'WARN',
+        detail: `${branch} @ v${headVersion} is behind ${target.ref} @ v${target.version}`,
+        remedy: `git checkout ${target.branch} (or git pull), then captain-memo install — a rebuild here would produce v${headVersion}`,
+      });
+    } else {
+      const list = target.candidates.map(c => `${c.ref}@v${c.version}`).join(', ');
+      record({
+        name: 'checkout', status: 'WARN',
+        detail: `newer versions exist (${list}) but none continue this checkout's history`,
+        remedy: `verify the correct line for THIS captain before switching`,
+      });
+    }
+  } catch (err) {
+    record({ name: 'checkout', status: 'WARN', detail: `branch check failed: ${err instanceof Error ? err.message : String(err)}` });
+  }
 }
 
 function checkConfig(): void {
@@ -448,6 +525,8 @@ export async function doctorCommand(_args: string[]): Promise<number> {
 
   await checkEmbedder();
   await checkWorker();
+  await checkWorkerVersion();
+  checkCheckout();
   checkConfig();
   checkRemember();
   checkPluginRegistration();
