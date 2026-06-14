@@ -5,6 +5,18 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.11.0] — 2026-06-14
+
+### Added
+- **`captain-memo doctor` now detects version drift.** Two read-only checks catch the
+  "running stale code after an update" traps:
+  - **worker version** — flags when the running worker's version is behind the installed
+    code (a reinstall that didn't actually restart the worker), with `captain-memo install`
+    as the remedy.
+  - **checkout** — flags when the local clone is parked on a stale branch (a rebuild would
+    reproduce the old version) and recommends switching to the remote branch that *contains*
+    your current history, so you're never steered onto a divergent line. Git-only, no network.
+
 ## [0.10.1] — 2026-06-14
 
 ### Fixed
