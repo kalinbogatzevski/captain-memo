@@ -5,6 +5,13 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.11.1] — 2026-06-15
+
+### Added
+- **Build edition in `/stats` + the SessionStart banner.** The worker now reports its build
+  edition (`oss` / `federation`), so the banner reads e.g. `⚓ Captain Memo v0.11.1 (OSS)` —
+  derived from the checkout (no per-branch constant), so it's accurate without manual upkeep.
+
 ## [0.11.0] — 2026-06-14
 
 ### Added

@@ -635,7 +635,7 @@ init_paths();
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.11.0",
+  version: "0.11.1",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -820,10 +820,11 @@ function fmtBytes(bytes) {
 }
 function formatBanner(stats) {
   const ver = stats.version ? ` v${stats.version}` : "";
+  const ed = stats.edition === "federation" ? " (Federation)" : stats.edition === "oss" ? " (OSS)" : "";
   const lines = [
     "",
     "",
-    `\u2693 Captain Memo${ver}`,
+    `\u2693 Captain Memo${ver}${ed}`,
     "\u2500".repeat(60)
   ];
   const byCh = Object.entries(stats.by_channel).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k}=${fmtNum(v)}`).join(", ");
