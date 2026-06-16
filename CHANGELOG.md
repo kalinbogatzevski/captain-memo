@@ -5,6 +5,14 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.11.2] — 2026-06-17
+
+### Added
+- **`captain-memo restart [--force]`** — restart the local worker (reload config / recover) as a
+  first-class command. Linux uses the supervisor restart (`systemctl --user restart`); Windows stops and
+  restarts the Scheduled Task. Default drains gracefully via `/shutdown` first; `--force` hard-stops a
+  wedged worker.
+
 ## [0.11.1] — 2026-06-15
 
 ### Added
