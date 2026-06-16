@@ -19,6 +19,7 @@ import { rememberCommand } from './commands/remember.ts';
 import { watchCommand } from './commands/watch.ts';
 import { topCommand } from './commands/top.ts';
 import { workerWatchdogCommand } from './commands/worker-watchdog.ts';
+import { restartCommand } from './commands/restart.ts';
 import { printBanner } from './banner.ts';
 import { VERSION } from '../shared/version.ts';
 
@@ -41,6 +42,7 @@ Commands:
   connect      Wire other AI tools (Codex, Gemini, Cursor) to the shared worker (--list)
   uninstall    Clean removal of everything (--purge for data too)
   doctor       Health probe across embedder / worker / plugin
+  restart      Restart the local worker (reload config / recover). --force to hard-stop
   install-hooks Register hooks manually (advanced — \`install\` does this for you)
   inspect-claude-mem  Print row counts of ~/.claude-mem/claude-mem.db (read-only).
   migrate-from-claude-mem  One-time migration of ~/.claude-mem/claude-mem.db (read-only)
@@ -84,6 +86,9 @@ export async function main(args: string[]): Promise<void> {
   switch (cmd) {
     case 'status':
       exit = await statusCommand(args.slice(1));
+      break;
+    case 'restart':
+      exit = await restartCommand(args.slice(1));
       break;
     case 'stats':
       exit = await statsCommand(args.slice(1));
