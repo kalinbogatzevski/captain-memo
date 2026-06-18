@@ -8,6 +8,7 @@ const V2: RankConfig = {
   temporalIntent: true, properNounBoost: true,
   temporalHalfLifeDays: 7, temporalTopN: 10, relevanceFloor: 0.6,
   properNounBoostWeight: 1.15,
+  supersedePenalty: 1,
 };
 const NOW = 1_000_000_000_000;
 const DAY = 86_400;

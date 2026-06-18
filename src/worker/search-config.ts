@@ -17,6 +17,7 @@ export interface RankConfig {
   temporalTopN: number;         // candidate pool the temporal re-rank reorders
   relevanceFloor: number;       // fraction of top score a hit must reach to be recency-promotable
   properNounBoostWeight: number;// rare-token boost multiplier (1 = no-op)
+  supersedePenalty: number;     // score multiplier for superseded hits (1 = inert/no demote)
 }
 
 const LEGACY: RankConfig = {
@@ -32,6 +33,7 @@ const LEGACY: RankConfig = {
   temporalTopN: 0,
   relevanceFloor: 0,
   properNounBoostWeight: 1,
+  supersedePenalty: 1,
 };
 
 export const RANK_PROFILES: Record<RankProfileName, RankConfig> = {
@@ -48,6 +50,7 @@ export const RANK_PROFILES: Record<RankProfileName, RankConfig> = {
     temporalTopN: 10,
     relevanceFloor: 0.6,
     properNounBoostWeight: 1.15,
+    supersedePenalty: 0.5,
   },
 };
 
@@ -87,5 +90,6 @@ export function resolveRankConfig(
     temporalTopN: num(env.CAPTAIN_MEMO_TEMPORAL_TOP_N, base.temporalTopN),
     relevanceFloor: num(env.CAPTAIN_MEMO_RELEVANCE_FLOOR, base.relevanceFloor),
     properNounBoostWeight: num(env.CAPTAIN_MEMO_PROPER_NOUN_BOOST_WEIGHT, base.properNounBoostWeight),
+    supersedePenalty: num(env.CAPTAIN_MEMO_SUPERSEDE_PENALTY, base.supersedePenalty),
   };
 }
