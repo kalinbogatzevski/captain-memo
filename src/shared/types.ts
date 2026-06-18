@@ -148,6 +148,8 @@ export interface Observation {
   tide_state_changed_at: number | null;
   /** TRUE for a pinned/directive observation that must never ebb (anchored). */
   is_anchored: boolean;
+  /** id of the newer observation that supersedes this one (P3); NULL = live. */
+  superseded_by: number | null;
 }
 
 /** Default retrieval-provenance + Dreaming-scaffold fields for an observation
@@ -170,6 +172,7 @@ export const UNSURFACED_OBSERVATION_FIELDS = {
   tide_state: 'active',
   tide_state_changed_at: null,
   is_anchored: false,
+  superseded_by: null,
 } satisfies Partial<Observation>;
 
 /** Provenance tag for a retrieval bump.
