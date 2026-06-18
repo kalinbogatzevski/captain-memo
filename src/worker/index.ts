@@ -61,6 +61,8 @@ import {
   DEFAULT_REMEMBER_DEDUP_THRESHOLD,
 } from '../shared/paths.ts';
 import { writeRecallAuditLine } from './recall-audit.ts';
+import { resolveRankConfig, type RankConfig } from './search-config.ts';
+import { applyTemporalRerank } from './temporal-intent.ts';
 import { getDreamStats } from './dream-stats.ts';
 import { Summarizer, type SummarizerTransport } from './summarizer.ts';
 import { classifySummarizeFailure, computeBackoffMs } from './summarizer-backoff.ts';
@@ -164,6 +166,7 @@ const SearchRequestSchema = z.object({
   query: z.string(),
   top_k: z.number().int().positive().max(50).default(5),
   channels: z.array(z.enum(['memory', 'skill', 'observation'])).optional(),
+  rank_profile: z.enum(['legacy', 'v2']).optional(),
 });
 
 const MemorySearchSchema = z.object({
@@ -171,12 +174,14 @@ const MemorySearchSchema = z.object({
   type: z.enum(['user', 'feedback', 'project', 'reference']).optional(),
   project: z.string().optional(),
   top_k: z.number().int().positive().max(50).default(5),
+  rank_profile: z.enum(['legacy', 'v2']).optional(),
 });
 
 const SkillSearchSchema = z.object({
   query: z.string(),
   skill_id: z.string().optional(),
   top_k: z.number().int().positive().max(50).default(3),
+  rank_profile: z.enum(['legacy', 'v2']).optional(),
 });
 
 const ObservationSearchSchema = z.object({
@@ -186,6 +191,7 @@ const ObservationSearchSchema = z.object({
   since: z.string().optional(),
   project: z.string().optional(),
   top_k: z.number().int().positive().max(50).default(5),
+  rank_profile: z.enum(['legacy', 'v2']).optional(),
 });
 
 const GetFullSchema = z.object({ doc_id: z.string() });
@@ -239,6 +245,7 @@ const InjectContextSchema = z.object({
   budget_tokens: z.number().int().positive().max(20_000).optional(),
   session_id: z.string().optional(),
   project_id: z.string().optional(),
+  rank_profile: z.enum(['legacy', 'v2']).optional(),
 });
 
 const SHORT_PROMPT_THRESHOLD = 10;
@@ -1015,10 +1022,19 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     decayed.sort((a, b) => b.score - a.score);
     return decayed;
   };
-  const searchWithRecency = async (embedding: number[], query: string, k: number) => {
+  const searchWithRecency = async (embedding: number[], query: string, k: number, config: RankConfig) => {
     const branchBoostEnabled = process.env.CAPTAIN_MEMO_BRANCH_BOOST !== '0';
     const currentBranch = branchBoostEnabled ? detectBranchSyncCached(process.cwd()) : null;
-    const raw = await searcher.search(embedding, query, k, { currentBranch });
+    const raw = await searcher.search(embedding, query, k, {
+      currentBranch,
+      rrfK: config.rrfK,
+      perStrategyTopK: config.perStrategyTopK,
+      fusionMode: config.fusionMode,
+      vectorWeight: config.vectorWeight,
+      keywordWeight: config.keywordWeight,
+      properNounBoost: config.properNounBoost,
+      properNounBoostWeight: config.properNounBoostWeight,
+    });
     // Tide (when enabled) re-ranks INSIDE searcher.search, before truncation — so
     // skip the flat recency decay here to avoid double-applying. Disabled ⇒ today's path.
     return tideConfig.enabled ? raw : applyRecencyDecay(raw);
@@ -1029,6 +1045,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     channel: 'memory' | 'skill' | 'observation',
     topK: number,
     filters: ChannelFilters,
+    config: RankConfig,
   ) => {
     let embedding: number[] = [];
     if (!opts.skipEmbed) {
@@ -1046,7 +1063,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     // candidate pool so small channels still get representation. TODO: push
     // channel filter down to SQL/vector layer for proper efficiency.
     const candidatePool = Math.max(topK * 20, 200);
-    const fused = await searchWithRecency(embedding, query, candidatePool);
+    const fused = await searchWithRecency(embedding, query, candidatePool, config);
     const results: Array<{
       doc_id: string;
       source_path: string;
@@ -1153,13 +1170,13 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   };
 
   // Local "search everything" → Hit[]. Backs POST /search/all. LOCAL channels only.
-  const localSearchAll = async (query: string, topK: number): Promise<Hit[]> => {
+  const localSearchAll = async (query: string, topK: number, config: RankConfig): Promise<Hit[]> => {
     let embedding: number[] = [];
     if (!opts.skipEmbed) {
       try { const out = await embedder.embed([query], 'query'); embedding = out[0] ?? []; }
       catch { /* keyword fallback */ }
     }
-    const fused = await searchWithRecency(embedding, query, topK);
+    const fused = await searchWithRecency(embedding, query, topK, config);
     const results = fused.map(f => {
       const lookup = meta.getChunkById(f.id);
       if (!lookup) return null;
@@ -1349,7 +1366,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
         }
         const { query, top_k } = parsed.data;
-        const visible = await localSearchAll(query, top_k);
+        const cfg = resolveRankConfig(parsed.data.rank_profile, process.env);
+        const visible = applyTemporalRerank(await localSearchAll(query, top_k, cfg), query, cfg, Date.now());
         const by_channel: Record<string, number> = {};
         for (const r of visible) by_channel[r.channel] = (by_channel[r.channel] ?? 0) + 1;
         bumpRetrievalFromResults(visible, 'search');
@@ -1362,7 +1380,11 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         }
         const filters: ChannelFilters = {};
         if (parsed.data.type !== undefined) filters.memory_type = parsed.data.type;
-        const results = dropArchived(await searchByChannel(parsed.data.query, 'memory', parsed.data.top_k, filters));
+        const cfg = resolveRankConfig(parsed.data.rank_profile, process.env);
+        const results = applyTemporalRerank(
+          dropArchived(await searchByChannel(parsed.data.query, 'memory', parsed.data.top_k, filters, cfg)),
+          parsed.data.query, cfg, Date.now(),
+        );
         // Memory hits are not observations and carry no observation_id, so
         // this is a defensive no-op for shape consistency — keeps every
         // /search/* endpoint following the same "always bump" contract.
@@ -1377,7 +1399,11 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         }
         const filters: ChannelFilters = {};
         if (parsed.data.skill_id !== undefined) filters.skill_id = parsed.data.skill_id;
-        const results = dropArchived(await searchByChannel(parsed.data.query, 'skill', parsed.data.top_k, filters));
+        const cfg = resolveRankConfig(parsed.data.rank_profile, process.env);
+        const results = applyTemporalRerank(
+          dropArchived(await searchByChannel(parsed.data.query, 'skill', parsed.data.top_k, filters, cfg)),
+          parsed.data.query, cfg, Date.now(),
+        );
         bumpRetrievalFromResults(results, 'search');
         return Response.json({ results });
       }
@@ -1404,7 +1430,11 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         const filters: ChannelFilters = {};
         if (parsed.data.type !== undefined) filters.obs_type = parsed.data.type;
         if (parsed.data.files !== undefined) filters.files = parsed.data.files;
-        const results = dropArchived(await searchByChannel(parsed.data.query, 'observation', parsed.data.top_k, filters));
+        const cfg = resolveRankConfig(parsed.data.rank_profile, process.env);
+        const results = applyTemporalRerank(
+          dropArchived(await searchByChannel(parsed.data.query, 'observation', parsed.data.top_k, filters, cfg)),
+          parsed.data.query, cfg, Date.now(),
+        );
         bumpRetrievalFromResults(results, 'search');
         return Response.json({ results });
       }
@@ -1640,6 +1670,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         const budget = parsed.data.budget_tokens ?? opts.hookBudgetTokens ?? 4000;
 
         const trimmed = parsed.data.prompt.trim();
+        const cfg = resolveRankConfig(parsed.data.rank_profile, process.env);
         const isShort = trimmed.length < SHORT_PROMPT_THRESHOLD;
         const isNoOp = NO_OP_TOKENS.has(trimmed.toLowerCase());
 
@@ -1674,7 +1705,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           flags.push('embedder=skipped');
         }
 
-        const fused = await searchWithRecency(embedding, trimmed, parsed.data.top_k * 3);
+        const fused = await searchWithRecency(embedding, trimmed, parsed.data.top_k * 3, cfg);
         const channelsRequested: Array<'memory' | 'skill' | 'observation'> =
           parsed.data.channels ?? ['memory', 'skill', 'observation'];
         const candidates: import('../shared/types.ts').EnvelopeHit[] = [];
@@ -1696,13 +1727,16 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // Drop archived (dedup-folded) AND sunk (Tide dormant/archived) observations
         // BEFORE taking top_k, so neither a folded dup nor an ebbed row consumes a slot
         // a live observation should fill. Sunk rows stay reachable via explicit /search.
-        const hits = dropSunkForAutoInject(dropArchived(candidates)).slice(0, parsed.data.top_k);
+        const hits = applyTemporalRerank(
+          dropSunkForAutoInject(dropArchived(candidates)).slice(0, parsed.data.top_k),
+          trimmed, cfg, Date.now(),
+        );
 
         // Fire-and-forget recall audit (default-off; enable via CAPTAIN_MEMO_RECALL_AUDIT=1).
         // fused already carries .boosts from applyBoosts (BoostedItem); build a
         // lookup so we can attach provenance to each hit without a second scan.
         {
-          type BoostedProvenance = { identifier?: number; branch?: number } | undefined;
+          type BoostedProvenance = { identifier?: number; branch?: number; rareToken?: number } | undefined;
           const fusedBoostMap = new Map<string, BoostedProvenance>(
             fused.map(f => [f.id, (f as { id: string; boosts?: BoostedProvenance }).boosts]),
           );
@@ -1712,6 +1746,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             session_id: parsed.data.session_id ?? 'unknown',
             project_id: parsed.data.project_id ?? opts.projectId,
             query: trimmed,
+            rank_profile: cfg.profile,
             ...(rawPrompt !== trimmed && { prompt: rawPrompt }),
             hits: hits.map(h => {
               const boosts = fusedBoostMap.get(h.doc_id);
