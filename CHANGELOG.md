@@ -5,6 +5,17 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.12.0] — 2026-06-18
+
+### Added
+- **Search quality — hybrid weighted fusion.** Hybrid search now blends real cosine + BM25
+  (weighted fusion), with temporal-intent detection that surfaces the newest fact for
+  "latest/current/last …" queries, plus a proper-noun boost for rare named entities. Enabled
+  by default (the new `v2` rank profile). Set `CAPTAIN_MEMO_RANK_PROFILE=legacy` to restore
+  the prior ranking.
+- **`captain-memo eval` harness** (freshness oracle + optional LLM judge) for measuring
+  ranking quality against a golden query set.
+
 ## [0.11.2] — 2026-06-17
 
 ### Added
