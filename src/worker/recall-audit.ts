@@ -29,6 +29,7 @@ export interface RecallAuditEntry {
   project_id: string;
   query: string;
   prompt?: string;       // optional — only if hook passed raw prompt
+  rank_profile: string;  // active rank profile that served these hits
   hits: RecallAuditHit[];
 }
 

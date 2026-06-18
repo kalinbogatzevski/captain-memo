@@ -16,6 +16,33 @@ export function extractIdentifierTokens(query: string): string[] {
   return cleaned.filter(t => t.length > 0 && codeShaped.test(t));
 }
 
+const STOPWORDS = new Set([
+  'the','and','for','with','what','which','this','that','from','your','about',
+  'does','how','why','when','where','into','over','than','then','they','them',
+  'version','latest','current','release', // common but low-signal here
+]);
+
+/** Plain-word tokens worth boosting: length >= 4, not a stopword, a single
+ *  \p{L}\p{N}_ token, and NOT already an identifier token (those have their own boost). */
+export function extractRareTokenCandidates(query: string, idTokens: string[]): string[] {
+  if (!query) return [];
+  const idSet = new Set(idTokens);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of query.split(/\s+/)) {
+    const t = raw.replace(/[,;:!?)\]}'"]+$/u, '');
+    if (t.length < 4) continue;
+    if (!/^[\p{L}\p{N}_]+$/u.test(t)) continue;
+    if (idSet.has(t)) continue;
+    const lower = t.toLowerCase();
+    if (STOPWORDS.has(lower)) continue;
+    if (seen.has(t)) continue;
+    seen.add(t);
+    out.push(t);
+  }
+  return out;
+}
+
 export interface RerankChunk {
   id: string;
   content: string;
@@ -28,12 +55,15 @@ export interface RerankContext {
   getChunk: (id: string) => Promise<RerankChunk | null>;
   identifierBoost: boolean;
   branchBoost: boolean;
+  rareTokenBoost: boolean;
+  rareTokenWeight: number;
 }
 
 /** Boost provenance for one hit — only the boosts that actually fired. */
 export interface BoostProvenance {
   identifier?: number; // multiplier applied (omitted if boost didn't fire)
   branch?: number;     // multiplier applied (omitted if boost didn't fire)
+  rareToken?: number;  // multiplier applied (omitted if boost didn't fire)
 }
 
 /** A FusedItem extended with optional boost-provenance metadata. */
@@ -50,7 +80,8 @@ export async function applyBoosts(
   ctx: RerankContext,
 ): Promise<BoostedItem[]> {
   const idTokens = ctx.identifierBoost ? extractIdentifierTokens(ctx.query) : [];
-  if (idTokens.length === 0 && !(ctx.branchBoost && ctx.currentBranch)) {
+  const rareTokens = ctx.rareTokenBoost ? extractRareTokenCandidates(ctx.query, idTokens) : [];
+  if (idTokens.length === 0 && rareTokens.length === 0 && !(ctx.branchBoost && ctx.currentBranch)) {
     return fused;
   }
   const enriched = await Promise.all(
@@ -69,6 +100,13 @@ export async function applyBoosts(
         );
         score *= multiplier;
         boosts.identifier = multiplier;
+      }
+    }
+    if (rareTokens.length > 0) {
+      const matched = rareTokens.some(t => chunk.content.includes(t));
+      if (matched) {
+        score *= ctx.rareTokenWeight;
+        boosts.rareToken = ctx.rareTokenWeight;
       }
     }
     if (ctx.branchBoost && ctx.currentBranch && chunk.branch === ctx.currentBranch) {

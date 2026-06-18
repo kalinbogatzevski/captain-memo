@@ -20,6 +20,7 @@ import { watchCommand } from './commands/watch.ts';
 import { topCommand } from './commands/top.ts';
 import { workerWatchdogCommand } from './commands/worker-watchdog.ts';
 import { restartCommand } from './commands/restart.ts';
+import { evalCommand } from './commands/eval.ts';
 import { printBanner } from './banner.ts';
 import { VERSION } from '../shared/version.ts';
 
@@ -48,6 +49,7 @@ Commands:
   migrate-from-claude-mem  One-time migration of ~/.claude-mem/claude-mem.db (read-only)
   dream        Preview Local Dreaming clusters (read-only; --dry-run only in v1)
   dedup        Fold near-duplicate observations together (dry-run by default; --apply, --undo)
+  eval         Run the search-quality eval harness (seed | run --profile=legacy,v2)
   top          Interactive live stats (htop-style: sort, filter, drill); press ? in-app
   watch        Deprecated alias for \`top\`
   help         Show this message
@@ -140,6 +142,9 @@ export async function main(args: string[]): Promise<void> {
       break;
     case 'dedup':
       exit = await dedupCommand(args.slice(1));
+      break;
+    case 'eval':
+      exit = await evalCommand(args.slice(1));
       break;
     case 'top':
       exit = await topCommand(args.slice(1));

@@ -12,8 +12,8 @@ describe('HybridSearcher with branch boost', () => {
       { id: 'chunk-feature', distance: 0.1 },
     ];
     const keywordSearch = async () => [
-      { chunk_id: 'chunk-main' },
-      { chunk_id: 'chunk-feature' },
+      { chunk_id: 'chunk-main', rank: -5 },
+      { chunk_id: 'chunk-feature', rank: -3 },
     ];
     const getChunk = async (id: string) => chunks[id]
       ? { id, content: chunks[id].text, branch: chunks[id].branch }
@@ -44,8 +44,8 @@ describe('HybridSearcher with identifier boost', () => {
       { id: 'chunk-billing-literal', distance: 0.3 },
     ];
     const keywordSearch = async () => [
-      { chunk_id: 'chunk-billing-vague' },
-      { chunk_id: 'chunk-billing-literal' },
+      { chunk_id: 'chunk-billing-vague', rank: -5 },
+      { chunk_id: 'chunk-billing-literal', rank: -3 },
     ];
     const getChunk = async (id: string) => chunks[id]
       ? { id, content: chunks[id].text, branch: chunks[id].branch }
@@ -90,8 +90,8 @@ describe('HybridSearcher boost env-var disable gate', () => {
       { id: 'chunk-billing-literal', distance: 0.3 },
     ];
     const keywordSearch = async () => [
-      { chunk_id: 'chunk-billing-vague' },
-      { chunk_id: 'chunk-billing-literal' },
+      { chunk_id: 'chunk-billing-vague', rank: -5 },
+      { chunk_id: 'chunk-billing-literal', rank: -3 },
     ];
     const getChunk = async (id: string) => chunks[id]
       ? { id, content: chunks[id].text, branch: chunks[id].branch }
