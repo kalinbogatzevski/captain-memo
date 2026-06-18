@@ -23,6 +23,7 @@ const SAMPLE_ENTRY = {
   session_id: 'sess-abc',
   project_id: 'my-project',
   query: 'how does contract_bills.fee work',
+  rank_profile: 'legacy',
   hits: [
     {
       doc_id: 'chunk-1',
