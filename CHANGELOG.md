@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.13.0] — 2026-06-18
+
+### Added
+- **Supersede stale facts (conservative first slice).** Version-aware supersede detection — when a newer version of the same fact appears (e.g. "talq v0.51.12" vs "v0.6.0"), the older observation is linked as superseded and **demoted (not hidden)** at search time. Detection is **OFF by default** (`CAPTAIN_MEMO_QM_SUPERSEDE=1` to enable); fully reversible. New `captain-memo supersede list|undo` CLI to inspect and reverse links. No behavior change out of the box.
+
 ## [0.12.0] — 2026-06-18
 
 ### Added
