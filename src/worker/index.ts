@@ -21,6 +21,7 @@ import { loadPromotionConfig } from './promotion-config.ts';
 import { runPromotionSlice, type PromotionDeps } from './promotion.ts';
 import { buildPromotionJudge } from './promotion-judge.ts';
 import { runQmDedupSlice } from './quartermaster.ts';
+import { runQmSupersedeSlice, applySupersedeDemotion } from './supersede.ts';
 import { centroid } from '../shared/vector-math.ts';
 import { PendingEmbedQueue } from './pending-embed-queue.ts';
 import { chunkObservation } from './chunkers/observation.ts';
@@ -827,6 +828,19 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     }, tideConfig.sweepIntervalMs);
   }
 
+  // Shared representative-vector accessor: centroid of an observation's chunk vectors.
+  // Used by both QM auto-dedup and the P3 supersede sweep.
+  const repVec = (obsId: number): Float32Array | null => {
+    const doc = meta.getDocument(`observation:${opts.projectId}:${obsId}`);
+    if (!doc) return null;
+    const vecs = meta.getChunksForDocument(doc.id)
+      .map(c => vector.getEmbedding(c.chunk_id))
+      .filter((v): v is Float32Array => v != null)
+      .map(v => Array.from(v));
+    const c = centroid(vecs);
+    return c ? Float32Array.from(c) : null;
+  };
+
   // Quartermaster auto-dedup (opt-in, OFF by default). Sibling of the tide sweep:
   // each slice pulls a bounded candidate window of near-dup observations, confirms
   // each fold behind a cosine ≥ threshold check against the survivor's centroid
@@ -836,17 +850,6 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   let qmDedupPromise: Promise<unknown> | null = null;
   if (!opts.readOnly && obsStore && qmConfig.enabled && qmConfig.dedupEnabled) {
     const qmStore = obsStore;
-    // Representative vector for an observation = centroid of its chunk vectors (already in sqlite-vec).
-    const repVec = (obsId: number): Float32Array | null => {
-      const doc = meta.getDocument(`observation:${opts.projectId}:${obsId}`);
-      if (!doc) return null;
-      const vecs = meta.getChunksForDocument(doc.id)
-        .map(c => vector.getEmbedding(c.chunk_id))
-        .filter((v): v is Float32Array => v != null)
-        .map(v => Array.from(v));
-      const c = centroid(vecs);
-      return c ? Float32Array.from(c) : null;
-    };
     qmDedupTimer = setInterval(() => {
       if (qmDedupPromise) return;
       const startedAt = Math.floor(Date.now() / 1000);
@@ -874,6 +877,43 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           console.error('[qm-dedup] ERROR', err);
         })
         .finally(() => { qmDedupPromise = null; });
+    }, qmConfig.dedupIntervalMs);
+  }
+
+  // Quartermaster supersede sweep (P3, opt-in, OFF by default). Sibling of the dedup
+  // timer: each slice pulls a bounded window of older→newest version pairs (entityKey-
+  // exact, (project,branch)-scoped), confirms each by cosine ≥ threshold against the
+  // newer's centroid, skips protected rows, and links the older as superseded — never
+  // hiding it (search demotes). Reuses repVec and the same abort/heartbeat discipline.
+  let qmSupersedeTimer: ReturnType<typeof setInterval> | null = null;
+  let qmSupersedePromise: Promise<unknown> | null = null;
+  if (!opts.readOnly && obsStore && qmConfig.enabled && qmConfig.supersedeEnabled) {
+    const qmStore = obsStore;
+    qmSupersedeTimer = setInterval(() => {
+      if (qmSupersedePromise) return;
+      const startedAt = Math.floor(Date.now() / 1000);
+      qmSupersedePromise = runQmSupersedeSlice({
+        candidates: () => qmStore.supersedeCandidateWindow(qmConfig.dedupWindow),
+        representativeVector: repVec,
+        isProtected: (id) => qmStore.isProtected(id),
+        linkSupersede: (older, newer, m) => qmStore.linkSupersede(older, newer, m),
+        shouldAbort: () => processBatchPromise != null || (obsQueue?.pendingCount() ?? 0) > 0,
+        cfg: qmConfig,
+        now: () => Math.floor(Date.now() / 1000),
+        yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
+      })
+        .then(r => {
+          qmStore.recordQmRun({ job: 'supersede', startedAt, finishedAt: Math.floor(Date.now() / 1000),
+            rowsScanned: r.scanned, merges: r.linked, skippedNoVector: r.skippedNoVector,
+            abortedForIngest: r.aborted, errored: false });
+          if (r.linked > 0) console.error(`[qm-supersede] linked ${r.linked} stale fact(s)` + (r.aborted ? ' (aborted for ingest)' : ''));
+        })
+        .catch(err => {
+          qmStore.recordQmRun({ job: 'supersede', startedAt, finishedAt: Math.floor(Date.now() / 1000),
+            rowsScanned: 0, merges: 0, skippedNoVector: 0, abortedForIngest: false, errored: true });
+          console.error('[qm-supersede] ERROR', err);
+        })
+        .finally(() => { qmSupersedePromise = null; });
     }, qmConfig.dedupIntervalMs);
   }
 
@@ -1146,6 +1186,26 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     dropByLookup(items, ids => obsStore!.archivedAmong(ids));
 
   /**
+   * Demote (never drop) hits whose backing observation has been superseded by a newer
+   * version (P3). Multiplies their score by `penalty` (<1) and re-sorts. No-op when the
+   * penalty is ≥ 1 (legacy/disabled) or nothing in view is superseded. Applied only to
+   * observation-bearing surfaces; memory/skill hits carry no observation_id so it is inert
+   * there by construction (not wired). Distinct from dropArchived (which hides folded dupes).
+   */
+  const demoteSuperseded = <T extends { score: number; metadata: Record<string, unknown> }>(
+    items: T[], penalty: number,
+  ): T[] => {
+    if (!obsStore || penalty >= 1 || items.length === 0) return items;
+    const ids: number[] = [];
+    for (const item of items) {
+      const oid = item.metadata?.observation_id;
+      if (typeof oid === 'number' && Number.isInteger(oid) && oid > 0) ids.push(oid);
+    }
+    if (ids.length === 0) return items;
+    return applySupersedeDemotion(items, obsStore.supersededAmong(ids), penalty);
+  };
+
+  /**
    * Auto-inject ONLY: drop *sunk* observations (Tide dormant/archived) so the default
    * injected context shows live memory, not ebbed rows. Unlike dropArchived this never
    * touches /search — a sunk row stays reachable there (down-ranked by buoyancy) and
@@ -1192,7 +1252,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         metadata: chunk.metadata,
       };
     }).filter((r): r is NonNullable<typeof r> => r !== null);
-    return dropArchived(results) as Hit[];
+    return demoteSuperseded(dropArchived(results), config.supersedePenalty) as Hit[];
   };
 
   // Local full-doc lookup → `{ content, metadata }` or null. Backs POST /get_full (local id).
@@ -1267,6 +1327,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           cosine_threshold: qmConfig.dedupCosineThreshold,
           last_run: obsStore?.latestQmRuns(1)[0] ?? null,
         };
+        const supersede = { links: obsStore ? obsStore.supersedeLinkCount() : 0 };
         // Dream-stats path: cheap precursor diagnostics from the audit log.
         // Audit-log path mirrors the writer in recall-audit.ts (same env-var
         // override semantics) so a custom CAPTAIN_MEMO_DATA_DIR is honored.
@@ -1298,6 +1359,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           recall,
           tide,
           qm,
+          supersede,
           dream,
           version: VERSION,
           edition: EDITION,   // 'federation' | 'oss' — surfaced for the SessionStart banner
@@ -1432,7 +1494,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         if (parsed.data.files !== undefined) filters.files = parsed.data.files;
         const cfg = resolveRankConfig(parsed.data.rank_profile, process.env);
         const results = applyTemporalRerank(
-          dropArchived(await searchByChannel(parsed.data.query, 'observation', parsed.data.top_k, filters, cfg)),
+          demoteSuperseded(
+            dropArchived(await searchByChannel(parsed.data.query, 'observation', parsed.data.top_k, filters, cfg)),
+            cfg.supersedePenalty,
+          ),
           parsed.data.query, cfg, Date.now(),
         );
         bumpRetrievalFromResults(results, 'search');
@@ -1728,7 +1793,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // BEFORE taking top_k, so neither a folded dup nor an ebbed row consumes a slot
         // a live observation should fill. Sunk rows stay reachable via explicit /search.
         const hits = applyTemporalRerank(
-          dropSunkForAutoInject(dropArchived(candidates)).slice(0, parsed.data.top_k),
+          dropSunkForAutoInject(demoteSuperseded(dropArchived(candidates), cfg.supersedePenalty)).slice(0, parsed.data.top_k),
           trimmed, cfg, Date.now(),
         );
 
@@ -1863,6 +1928,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     if (tickTimer) clearInterval(tickTimer);
     if (tideSweepTimer) clearInterval(tideSweepTimer);
     if (qmDedupTimer) clearInterval(qmDedupTimer);
+    if (qmSupersedeTimer) clearInterval(qmSupersedeTimer);
     if (promotionTimer) clearInterval(promotionTimer);
     if (pendingTickTimer) clearInterval(pendingTickTimer);
     if (watcher) await watcher.close();
