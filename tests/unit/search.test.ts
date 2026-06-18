@@ -72,8 +72,8 @@ test('HybridSearcher — fuses vector + keyword results', async () => {
       { id: 'c', distance: 0.3 },
     ],
     keywordSearch: async () => [
-      { chunk_id: 'b' },
-      { chunk_id: 'a' },
+      { chunk_id: 'b', rank: -5 },
+      { chunk_id: 'a', rank: -3 },
     ],
     rrfK: 60,
   });

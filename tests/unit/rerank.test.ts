@@ -62,6 +62,8 @@ describe('applyBoosts — identifier match', () => {
       getChunk,
       identifierBoost: true,
       branchBoost: true,
+      rareTokenBoost: false,
+      rareTokenWeight: 1.15,
     });
     expect(reranked.map(r => r.id)).toEqual(['b', 'a', 'c']);
     expect(reranked.find(r => r.id === 'a')!.score).toBeCloseTo(0.65, 2);
@@ -79,6 +81,8 @@ describe('applyBoosts — identifier match', () => {
       getChunk,
       identifierBoost: true,
       branchBoost: true,
+      rareTokenBoost: false,
+      rareTokenWeight: 1.15,
     });
     // a's score: 0.50 × 1.3 = 0.65, beating b's 0.55 — rank flips.
     expect(reranked[0]!.id).toBe('a');
@@ -93,6 +97,8 @@ describe('applyBoosts — identifier match', () => {
       getChunk,
       identifierBoost: true,
       branchBoost: true,
+      rareTokenBoost: false,
+      rareTokenWeight: 1.15,
     });
     expect(reranked[0]!.score).toBeCloseTo(1.0, 2);
   });
@@ -105,6 +111,8 @@ describe('applyBoosts — identifier match', () => {
       getChunk,
       identifierBoost: false,
       branchBoost: true,
+      rareTokenBoost: false,
+      rareTokenWeight: 1.15,
     });
     expect(reranked[0]!.score).toBeCloseTo(0.5, 2);
   });
@@ -128,6 +136,8 @@ describe('applyBoosts — boost provenance metadata', () => {
       getChunk,
       identifierBoost: true,
       branchBoost: false,
+      rareTokenBoost: false,
+      rareTokenWeight: 1.15,
     });
     const a = reranked.find(r => r.id === 'a')!;
     expect(a.boosts?.identifier).toBeCloseTo(1.3, 5);
@@ -145,6 +155,8 @@ describe('applyBoosts — boost provenance metadata', () => {
       getChunk,
       identifierBoost: false,
       branchBoost: true,
+      rareTokenBoost: false,
+      rareTokenWeight: 1.15,
     });
     const a = reranked.find(r => r.id === 'a')!;
     expect(a.boosts?.branch).toBeCloseTo(1.1, 5);
@@ -162,6 +174,8 @@ describe('applyBoosts — boost provenance metadata', () => {
       getChunk,
       identifierBoost: true,
       branchBoost: true,
+      rareTokenBoost: false,
+      rareTokenWeight: 1.15,
     });
     const a = reranked[0]!;
     expect(a.boosts?.identifier).toBeCloseTo(1.3, 5);
@@ -176,6 +190,8 @@ describe('applyBoosts — boost provenance metadata', () => {
       getChunk,
       identifierBoost: true,
       branchBoost: true,
+      rareTokenBoost: false,
+      rareTokenWeight: 1.15,
     });
     // 'c' has no identifier match and branch is null
     const c = reranked[0]!;
@@ -190,6 +206,8 @@ describe('applyBoosts — boost provenance metadata', () => {
       getChunk,
       identifierBoost: true,
       branchBoost: true,
+      rareTokenBoost: false,
+      rareTokenWeight: 1.15,
     });
     expect(reranked[0]!.boosts).toBeUndefined();
   });
