@@ -5,6 +5,7 @@ import type { Migration } from './migrations.ts';
 import type { TideConfig, TideRow, TideState } from './tide.ts';
 import { groupBySimilarity, DEFAULT_SIMILARITY_THRESHOLD } from '../shared/title-similarity.ts';
 import { mergeBlocked } from '../shared/merge-guard.ts';
+import { parseVersion, compareVersion } from './version-parse.ts';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS observations (
@@ -188,6 +189,27 @@ export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_obs_promoted ON observations(promoted_at) WHERE promoted_at IS NOT NULL');
     },
   },
+  {
+    version: 12,
+    name: 'add_superseded_by',
+    up: (db) => {
+      db.exec('ALTER TABLE observations ADD COLUMN superseded_by INTEGER');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_obs_superseded ON observations(superseded_by) WHERE superseded_by IS NOT NULL');
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS supersede_events (
+          id               INTEGER PRIMARY KEY AUTOINCREMENT,
+          older_id         INTEGER NOT NULL,
+          newer_id         INTEGER NOT NULL,
+          entity_key       TEXT NOT NULL,
+          older_version    TEXT NOT NULL,
+          newer_version    TEXT NOT NULL,
+          created_at_epoch  INTEGER NOT NULL,
+          undone           INTEGER NOT NULL DEFAULT 0
+        )
+      `);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_supersede_events_older ON supersede_events(older_id) WHERE undone = 0');
+    },
+  },
 ];
 
 export type NewObservation = Omit<
@@ -198,6 +220,7 @@ export type NewObservation = Omit<
   | 'last_surfaced_at' | 'last_surfaced_source'
   | 'archived' | 'archived_into_theme_id' | 'theme_member_ids'
   | 'stability_days' | 'tide_state' | 'tide_state_changed_at' | 'is_anchored'
+  | 'superseded_by'
 >;
 
 /** Per-source breakdown for one observation in the top lists. */
@@ -303,6 +326,13 @@ export interface DuplicateEntry {
 export interface DuplicateGroup {
   survivor: DuplicateEntry;
   members: DuplicateEntry[];
+}
+
+/** One older→newest version pair emitted by supersedeCandidateWindow. */
+export interface SupersedeCandidate {
+  older: { id: number; version: string };
+  newer: { id: number; version: string };
+  entityKey: string;
 }
 
 /** Audit input for one Quartermaster job run (recordQmRun). Booleans are stored
@@ -501,6 +531,7 @@ export class ObservationsStore {
       tide_state_changed_at:
         typeof row.tide_state_changed_at === 'number' ? row.tide_state_changed_at : null,
       is_anchored: row.is_anchored === 1 || row.is_anchored === true,
+      superseded_by: typeof row.superseded_by === 'number' ? row.superseded_by : null,
     };
   }
 
@@ -742,6 +773,81 @@ export class ObservationsStore {
     const placeholders = ids.map(() => '?').join(',');
     const rows = this.db
       .query(`SELECT id FROM observations WHERE archived = 1 AND id IN (${placeholders})`)
+      .all(...ids) as Array<{ id: number }>;
+    return new Set(rows.map(r => r.id));
+  }
+
+  /**
+   * Link an older observation as superseded by a newer one (P3). Mirrors the
+   * merge_events ledger: flips superseded_by and appends a reversible event, in one
+   * transaction. Idempotent — if the older row is already superseded (or gone), it is
+   * a no-op, so re-running the sweep never double-links or double-records.
+   */
+  linkSupersede(
+    olderId: number,
+    newerId: number,
+    meta: { entityKey: string; olderVersion: string; newerVersion: string; atEpoch: number },
+  ): void {
+    const tx = this.db.transaction(() => {
+      const row = this.db
+        .query('SELECT superseded_by FROM observations WHERE id = ?')
+        .get(olderId) as { superseded_by: number | null } | undefined;
+      if (!row) return;                          // older row gone
+      if (row.superseded_by !== null) return;    // already superseded ⇒ idempotent no-op
+      this.db.query('UPDATE observations SET superseded_by = ? WHERE id = ?').run(newerId, olderId);
+      this.db
+        .query(
+          `INSERT INTO supersede_events
+             (older_id, newer_id, entity_key, older_version, newer_version, created_at_epoch, undone)
+           VALUES (?, ?, ?, ?, ?, ?, 0)`,
+        )
+        .run(olderId, newerId, meta.entityKey, meta.olderVersion, meta.newerVersion, meta.atEpoch);
+    });
+    tx();
+  }
+
+  /** Reverse a supersession: clear superseded_by and mark its open ledger rows undone. */
+  unlinkSupersede(olderId: number): void {
+    const tx = this.db.transaction(() => {
+      this.db.query('UPDATE observations SET superseded_by = NULL WHERE id = ?').run(olderId);
+      this.db.query('UPDATE supersede_events SET undone = 1 WHERE older_id = ? AND undone = 0').run(olderId);
+    });
+    tx();
+  }
+
+  /** Count of currently-superseded observations (open links). */
+  supersedeLinkCount(): number {
+    const row = this.db
+      .query('SELECT COUNT(*) AS n FROM observations WHERE superseded_by IS NOT NULL')
+      .get() as { n: number };
+    return row.n;
+  }
+
+  /** Open supersede links, newest first — for /stats and the undo CLI's `list`. */
+  listSupersedeEvents(limit = 100): Array<{
+    older_id: number; newer_id: number; entity_key: string;
+    older_version: string; newer_version: string; created_at_epoch: number;
+  }> {
+    return this.db
+      .query(
+        `SELECT older_id, newer_id, entity_key, older_version, newer_version, created_at_epoch
+           FROM supersede_events
+          WHERE undone = 0
+          ORDER BY created_at_epoch DESC
+          LIMIT ?`,
+      )
+      .all(limit) as Array<{
+        older_id: number; newer_id: number; entity_key: string;
+        older_version: string; newer_version: string; created_at_epoch: number;
+      }>;
+  }
+
+  /** Which of `ids` are currently superseded (superseded_by IS NOT NULL). Mirrors archivedAmong. */
+  supersededAmong(ids: number[]): Set<number> {
+    if (ids.length === 0) return new Set();
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = this.db
+      .query(`SELECT id FROM observations WHERE superseded_by IS NOT NULL AND id IN (${placeholders})`)
       .all(...ids) as Array<{ id: number }>;
     return new Set(rows.map(r => r.id));
   }
@@ -1032,6 +1138,22 @@ export class ObservationsStore {
     return this.groupSurfacedRows(rows, threshold);
   }
 
+  /** Bounded, recency-ordered window of surfaced rows — the shared source for both the
+   *  dedup and supersede candidate windows (same SELECT; different downstream grouping). */
+  private surfacedWindowRows(
+    windowLimit: number,
+  ): Array<RawTopRow & { project_id: string; branch: string | null }> {
+    return this.db
+      .query(
+        `SELECT id, type, title, project_id, branch, from_auto, from_search, from_drill
+           FROM observations
+          WHERE archived = 0 AND (from_auto + from_search + from_drill) > 0
+          ORDER BY COALESCE(last_surfaced_at, created_at_epoch) DESC
+          LIMIT ?`,
+      )
+      .all(windowLimit) as Array<RawTopRow & { project_id: string; branch: string | null }>;
+  }
+
   /**
    * Like findDuplicateGroups, but over a BOUNDED, recency-limited window — never
    * a whole-corpus scan. The Quartermaster's auto-dedup job calls this so each
@@ -1041,15 +1163,7 @@ export class ObservationsStore {
    * branch) scoping and the negation/identifier merge guard apply identically.
    */
   dedupCandidateWindow(titleThreshold: number, windowLimit: number): DuplicateGroup[] {
-    const rows = this.db
-      .query(
-        `SELECT id, type, title, project_id, branch, from_auto, from_search, from_drill
-           FROM observations
-          WHERE archived = 0 AND (from_auto + from_search + from_drill) > 0
-          ORDER BY COALESCE(last_surfaced_at, created_at_epoch) DESC
-          LIMIT ?`,
-      )
-      .all(windowLimit) as Array<RawTopRow & { project_id: string; branch: string | null }>;
+    const rows = this.surfacedWindowRows(windowLimit);
     // Recency bounds the WINDOW (the LIMIT above), but count must still pick the
     // SURVIVOR. groupSurfacedRows is rep-anchored (g[0] survives), so re-sort the
     // windowed rows count-desc (ties by id asc, matching findDuplicateGroups)
@@ -1061,6 +1175,56 @@ export class ObservationsStore {
       return tb - ta || a.id - b.id;
     });
     return this.groupSurfacedRows(rows, titleThreshold);
+  }
+
+  /**
+   * Bounded window of supersede candidates: within each (project_id, branch) partition,
+   * group surfaced rows by parsed entityKey, and for every entity with ≥2 differing
+   * clean-semver versions, emit one pair per strictly-older row → the single newest
+   * version (newest-wins; ties broken by lowest id for a deterministic head). This is
+   * entityKey-exact, independent of the dedup grouper — these are exactly the
+   * version-mismatched pairs the merge guard keeps OUT of dedup. The cosine confirm
+   * (in runQmSupersedeSlice) is what guards against same-entityKey-but-different facts.
+   */
+  supersedeCandidateWindow(windowLimit: number): SupersedeCandidate[] {
+    const rows = this.surfacedWindowRows(windowLimit);
+    const partitions = new Map<string, typeof rows>();
+    for (const r of rows) {
+      const key = JSON.stringify([r.project_id, r.branch]);
+      const bucket = partitions.get(key);
+      if (bucket) bucket.push(r);
+      else partitions.set(key, [r]);
+    }
+    const out: SupersedeCandidate[] = [];
+    for (const bucket of partitions.values()) {
+      const byEntity = new Map<string, Array<{ id: number; version: import('./version-parse.ts').SemVer }>>();
+      for (const r of bucket) {
+        const pv = parseVersion(r.title);
+        if (!pv) continue;
+        const arr = byEntity.get(pv.entityKey);
+        if (arr) arr.push({ id: r.id, version: pv.version });
+        else byEntity.set(pv.entityKey, [{ id: r.id, version: pv.version }]);
+      }
+      for (const [entityKey, items] of byEntity) {
+        if (items.length < 2) continue;
+        let head = items[0]!;
+        for (const it of items) {
+          const c = compareVersion(it.version, head.version);
+          if (c > 0 || (c === 0 && it.id < head.id)) head = it;
+        }
+        for (const it of items) {
+          if (it.id === head.id) continue;
+          if (compareVersion(it.version, head.version) < 0) {
+            out.push({
+              older: { id: it.id, version: it.version.raw },
+              newer: { id: head.id, version: head.version.raw },
+              entityKey,
+            });
+          }
+        }
+      }
+    }
+    return out;
   }
 
   /**

@@ -321,8 +321,8 @@ test('ObservationsStore — schema_versions records all migrations after constru
   const db = new Database(join(workDir, 'observations.db'), { readonly: true });
   const rows = getAppliedVersions(db);
   db.close();
-  expect(rows).toHaveLength(11);
-  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  expect(rows).toHaveLength(12);
+  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
   expect(rows.map(r => r.name)).toEqual([
     'add_branch',
     'add_work_tokens',
@@ -335,6 +335,7 @@ test('ObservationsStore — schema_versions records all migrations after constru
     'add_merge_events',
     'add_qm_runs',
     'add_promoted_at',
+    'add_superseded_by',
   ]);
   store = new ObservationsStore(join(workDir, 'observations.db'));
 });
@@ -1191,4 +1192,95 @@ test('ObservationsStore — countMissingStoredTokens / listMissingStoredTokens',
   expect(missing.map(o => o.id)).toEqual([b, b + 1]);
 
   expect(store.listMissingStoredTokens(1)).toHaveLength(1);   // respects limit
+});
+
+// ── P3: supersede schema + reversible ledger ──
+
+test('P3 — migration v12 adds superseded_by column + supersede_events table', () => {
+  const db = new Database(join(workDir, 'observations.db'));
+  expect(getAppliedVersions(db).some(v => v.version === 12)).toBe(true);
+  const cols = db.query('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
+  expect(cols.some(c => c.name === 'superseded_by')).toBe(true);
+  const tbls = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='supersede_events'").all();
+  expect(tbls).toHaveLength(1);
+  db.close();
+});
+
+test('P3 — linkSupersede sets superseded_by, supersededAmong reports it, unlink reverses', () => {
+  const older = store.insert({ ...tideBase, title: 'talq v0.6.0' });
+  const newer = store.insert({ ...tideBase, title: 'talq v0.51.12' });
+  store.linkSupersede(older, newer, { entityKey: 'talq', olderVersion: 'v0.6.0', newerVersion: 'v0.51.12', atEpoch: 1_700_000_100 });
+  expect(store.supersededAmong([older, newer])).toEqual(new Set([older]));
+  expect(store.findById(older)!.superseded_by).toBe(newer);
+  expect(store.findById(newer)!.superseded_by).toBeNull();
+
+  store.unlinkSupersede(older);
+  expect(store.supersededAmong([older, newer])).toEqual(new Set());
+  expect(store.findById(older)!.superseded_by).toBeNull();
+});
+
+test('P3 — linkSupersede is idempotent (second link is a no-op, one ledger row)', () => {
+  const older = store.insert({ ...tideBase, title: 'app v1.0.0' });
+  const newer = store.insert({ ...tideBase, title: 'app v2.0.0' });
+  store.linkSupersede(older, newer, { entityKey: 'app', olderVersion: 'v1.0.0', newerVersion: 'v2.0.0', atEpoch: 1 });
+  store.linkSupersede(older, newer, { entityKey: 'app', olderVersion: 'v1.0.0', newerVersion: 'v2.0.0', atEpoch: 2 });
+  const db = new Database(join(workDir, 'observations.db'), { readonly: true });
+  const n = db.query('SELECT COUNT(*) AS n FROM supersede_events WHERE older_id = ? AND undone = 0').get(older) as { n: number };
+  expect(n.n).toBe(1);
+  db.close();
+});
+
+test('P3 — supersededAmong empty input returns empty set', () => {
+  expect(store.supersededAmong([])).toEqual(new Set());
+});
+
+test('P3 — supersedeCandidateWindow emits older→newest pairs per (project,branch) entity', () => {
+  const a = store.insert({ ...tideBase, project_id: 'p1', branch: 'main', title: 'talq v0.6.0' });
+  const b = store.insert({ ...tideBase, project_id: 'p1', branch: 'main', title: 'talq v0.10.0' });
+  const c = store.insert({ ...tideBase, project_id: 'p1', branch: 'main', title: 'talq v0.51.12' });
+  // different project → never paired with the p1 talq rows
+  const d = store.insert({ ...tideBase, project_id: 'p2', branch: 'main', title: 'talq v9.9.9' });
+  // surfaced so the window includes them (from_auto+from_search+from_drill > 0)
+  const w = new Database(join(workDir, 'observations.db'));
+  w.run('UPDATE observations SET from_search = 1');
+  w.close();
+
+  const cands = store.supersedeCandidateWindow(500);
+  // a,b superseded by c (the newest p1 version); d isolated in p2
+  const olderIds = cands.map(x => x.older.id).sort((x, y) => x - y);
+  expect(olderIds).toEqual([a, b]);
+  for (const x of cands) {
+    expect(x.newer.id).toBe(c);
+    expect(x.entityKey).toBe('talq');
+  }
+});
+
+test('P3 — supersedeCandidateWindow ignores unparseable / single-version / equal-version sets', () => {
+  store.insert({ ...tideBase, title: 'no version A' });
+  store.insert({ ...tideBase, title: 'no version B' });
+  store.insert({ ...tideBase, title: 'solo v1.0.0' });
+  store.insert({ ...tideBase, title: 'dup v2.0.0' });
+  store.insert({ ...tideBase, title: 'dup v2.0.0' });
+  const w = new Database(join(workDir, 'observations.db'));
+  w.run('UPDATE observations SET from_search = 1');
+  w.close();
+  expect(store.supersedeCandidateWindow(500)).toEqual([]);
+});
+
+test('P3 — supersedeLinkCount + listSupersedeEvents reflect open links', () => {
+  const o1 = store.insert({ ...tideBase, title: 'a v1.0.0' });
+  const n1 = store.insert({ ...tideBase, title: 'a v2.0.0' });
+  const o2 = store.insert({ ...tideBase, title: 'b v1.0.0' });
+  const n2 = store.insert({ ...tideBase, title: 'b v3.0.0' });
+  store.linkSupersede(o1, n1, { entityKey: 'a', olderVersion: 'v1.0.0', newerVersion: 'v2.0.0', atEpoch: 10 });
+  store.linkSupersede(o2, n2, { entityKey: 'b', olderVersion: 'v1.0.0', newerVersion: 'v3.0.0', atEpoch: 20 });
+  expect(store.supersedeLinkCount()).toBe(2);
+
+  const events = store.listSupersedeEvents(10);
+  expect(events).toHaveLength(2);
+  expect(events[0]).toMatchObject({ older_id: o2, newer_id: n2, entity_key: 'b' }); // newest first
+
+  store.unlinkSupersede(o1);
+  expect(store.supersedeLinkCount()).toBe(1);
+  expect(store.listSupersedeEvents(10)).toHaveLength(1);
 });

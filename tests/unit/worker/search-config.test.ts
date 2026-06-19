@@ -40,3 +40,9 @@ test('env overrides apply', () => {
   expect(c.temporalIntent).toBe(true);
   expect(c.relevanceFloor).toBeCloseTo(0.5, 6);
 });
+
+test('P-OSS supersede — supersedePenalty: legacy inert (1), v2 demotes (0.5), env override', () => {
+  expect(resolveRankConfig('legacy', {}).supersedePenalty).toBe(1);
+  expect(resolveRankConfig('v2', {}).supersedePenalty).toBe(0.5);
+  expect(resolveRankConfig('v2', { CAPTAIN_MEMO_SUPERSEDE_PENALTY: '0.3' }).supersedePenalty).toBe(0.3);
+});

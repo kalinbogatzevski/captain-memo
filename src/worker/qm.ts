@@ -15,6 +15,9 @@ export interface QmConfig {
   /** Auto-merge of near-duplicate rows. Default OFF — a destructive consolidation,
    *  so opt-in only via CAPTAIN_MEMO_QM_DEDUP=1. */
   dedupEnabled: boolean;
+  /** Auto-supersede of stale version-facts (P3). Default OFF — opt-in only via
+   *  CAPTAIN_MEMO_QM_SUPERSEDE=1. */
+  supersedeEnabled: boolean;
   /** Per-slice budget (ms): how long one housekeeping chunk may run. */
   sliceMs: number;
   /** ms between dedup sweeps. */
@@ -31,6 +34,7 @@ export interface QmConfig {
 export const DEFAULT_QM_CONFIG: QmConfig = {
   enabled: true,
   dedupEnabled: false,
+  supersedeEnabled: false,
   sliceMs: 150,
   dedupIntervalMs: 3_600_000,
   dedupTitleThreshold: DEFAULT_SIMILARITY_THRESHOLD,
@@ -50,6 +54,7 @@ export function loadQmConfig(env: Record<string, string | undefined>): QmConfig 
   return {
     enabled: env.CAPTAIN_MEMO_QM_ENABLED !== '0',
     dedupEnabled: env.CAPTAIN_MEMO_QM_DEDUP === '1',
+    supersedeEnabled: env.CAPTAIN_MEMO_QM_SUPERSEDE === '1',
     sliceMs: num(env.CAPTAIN_MEMO_QM_SLICE_MS, D.sliceMs),
     dedupIntervalMs: num(env.CAPTAIN_MEMO_QM_DEDUP_INTERVAL_MS, D.dedupIntervalMs),
     dedupTitleThreshold: num(env.CAPTAIN_MEMO_QM_DEDUP_TITLE, D.dedupTitleThreshold),

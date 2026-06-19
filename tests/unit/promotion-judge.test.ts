@@ -14,6 +14,7 @@ function obs(id: number): Observation {
     last_surfaced_at: null, last_surfaced_source: null,
     archived: false, archived_into_theme_id: null, theme_member_ids: null,
     stability_days: null, tide_state: 'active', tide_state_changed_at: null, is_anchored: false,
+    superseded_by: null,
   } as Observation;
 }
 
