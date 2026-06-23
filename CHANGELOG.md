@@ -5,6 +5,17 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.13.1] — 2026-06-23
+
+### Added
+- **More tools share the one corpus via `connect`.** New installers register the captain-memo MCP server in:
+  **opencode** (merge `~/.config/opencode/opencode.json` — MCP + OpenRouter/local providers + a permissive agent;
+  the OpenRouter key is written by `{env:OPENROUTER_API_KEY}` reference, never a literal), **Mistral Vibe**
+  (append a managed `[[mcp_servers]]` block to `~/.vibe/config.toml`), **VS Code** Copilot agent mode (merge
+  `~/.config/Code/User/mcp.json`), and **JetBrains** AI Assistant (assisted-manual — MCP is UI-only, so it writes
+  a paste-ready snippet and points at Settings | Tools | AI Assistant | MCP).
+- `captain-memo connect opencode --local-provider <ollama|vllm|lmstudio>` selects the local runtime to configure.
+
 ## [0.13.0] — 2026-06-18
 
 ### Added
