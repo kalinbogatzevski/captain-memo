@@ -5,6 +5,7 @@ import { vacuumCommand } from './commands/vacuum.ts';
 import { upgradeCommand } from './commands/upgrade.ts';
 import { observationCommand } from './commands/observation.ts';
 import { restoreCommand } from './commands/restore.ts';
+import { backupCommand } from './commands/backup.ts';
 import { configCommand } from './commands/config.ts';
 import { installHooksCommand } from './commands/install-hooks.ts';
 import { installCommand } from './commands/install.ts';
@@ -39,6 +40,7 @@ Commands:
   upgrade      Bring the corpus up to the current chunker shape (reindex + vacuum, end-to-end)
   observation  list|sunk|flush — manage observations (sunk: list dormant/archived; --archived)
   restore      Re-surface a sunk (dormant/archived) observation: restore <id>
+  backup       create | restore | info — portable memory archive (move/restore a captain's memories)
   config       show — print effective config (env + defaults, secrets masked)
   install      Interactive wizard — installs everything (embedder, worker, plugin)
   connect      Wire other AI tools (Codex, Gemini, Cursor) to the shared worker (--list)
@@ -66,6 +68,8 @@ Examples:
   captain-memo observation list --limit 50
   captain-memo observation flush --session ses_abc
   captain-memo config show
+  captain-memo backup create --out ~/cm-backup.tar.gz
+  captain-memo backup restore ~/cm-backup.tar.gz --force
 `;
 
 /** Turn an uncaught command error into an actionable message. A dead/unreachable
@@ -114,6 +118,9 @@ export async function main(args: string[]): Promise<void> {
       break;
     case 'restore':
       exit = await restoreCommand(args.slice(1));
+      break;
+    case 'backup':
+      exit = await backupCommand(args.slice(1));
       break;
     case 'config':
       exit = await configCommand(args.slice(1));
