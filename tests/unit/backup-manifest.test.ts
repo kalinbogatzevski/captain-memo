@@ -47,6 +47,13 @@ test('validateManifest rejects an unsupported format version', () => {
 test('validateManifest rejects a missing embedder model/dimension', () => {
   const m = buildManifest(sample()) as BackupManifest;
   expect(() => validateManifest({ ...m, embedder: { model: 'x' } })).toThrow();
+  expect(() => validateManifest({ ...m, embedder: { dimension: 1 } })).toThrow();
+  expect(() => validateManifest({ ...m, embedder: 42 })).toThrow();
+});
+
+test('validateManifest rejects missing or non-numeric counts fields', () => {
+  const m = buildManifest(sample()) as BackupManifest;
+  expect(() => validateManifest({ ...m, counts: {} })).toThrow(/counts.*must be a number/);
 });
 
 test('vectorsCompatible requires same model and dimension', () => {

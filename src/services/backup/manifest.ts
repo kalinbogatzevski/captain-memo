@@ -46,12 +46,18 @@ export function validateManifest(raw: unknown): BackupManifest {
       `unsupported backup format version ${String(m.format_version)} (this build reads ${MANIFEST_FORMAT_VERSION})`,
     );
   }
-  const emb = m.embedder as Record<string, unknown> | undefined;
-  if (!emb || typeof emb.model !== 'string' || typeof emb.dimension !== 'number') {
+  const emb = m.embedder;
+  if (typeof emb !== 'object' || emb === null
+      || typeof (emb as Record<string, unknown>).model !== 'string'
+      || typeof (emb as Record<string, unknown>).dimension !== 'number') {
     throw new Error('manifest.embedder must carry { model: string, dimension: number }');
   }
   if (!Array.isArray(m.files)) throw new Error('manifest.files must be an array');
   if (typeof m.counts !== 'object' || m.counts === null) throw new Error('manifest.counts missing');
+  const counts = m.counts as Record<string, unknown>;
+  for (const k of ['documents', 'chunks', 'observations', 'vectors'] as const) {
+    if (typeof counts[k] !== 'number') throw new Error(`manifest.counts.${k} must be a number`);
+  }
   return m as unknown as BackupManifest;
 }
 
