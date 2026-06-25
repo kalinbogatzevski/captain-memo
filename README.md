@@ -218,6 +218,21 @@ captain-memo uninstall           # clean removal (--purge for data too)
 captain-memo uninstall --system  # for the system-mode install
 ```
 
+### Backup & restore
+
+Move a captain's memories to a new machine, or recover them after a loss:
+
+```bash
+captain-memo backup create --out ~/cm-backup.tar.gz   # hot snapshot; worker stays up
+captain-memo backup info ~/cm-backup.tar.gz           # inspect without restoring
+captain-memo backup restore ~/cm-backup.tar.gz --force # replace the local corpus
+```
+
+The archive contains your memory DBs, config, **and `worker.env` (API keys)** — it is
+written `chmod 600`; store it securely. On restore, vectors are reused when the target
+embedder matches the backup, and otherwise rebuilt from source automatically.
+Merging two corpora (`import`) is planned separately.
+
 ---
 
 ## Inside Claude Code
