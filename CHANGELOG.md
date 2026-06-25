@@ -5,6 +5,27 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.14.0] — 2026-06-25
+
+### Added
+- **Memory backup & restore — move a captain's memories to a new install, or recover them.** New
+  `captain-memo backup create|restore|info` produces one portable `.tar.gz` of the durable corpus
+  (`meta.sqlite3`, `observations.db`, `vector-db/embeddings.db`), config, and the `worker.env` secrets,
+  with a checksummed `manifest.json`.
+  - `create` takes a **live hot snapshot** via SQLite `VACUUM INTO` — the worker keeps running, no
+    downtime — then writes the archive atomically (`.partial` → rename) and `chmod 600`. The archive
+    contains API keys, so a loud warning says so. `--no-vectors` makes a smaller, re-embed-on-restore
+    archive; the embedder-identity probe is time-bounded so a wedged worker can't stall a backup.
+  - `restore` is **validate-before-touch**: it verifies the manifest and every file checksum before
+    stopping the worker or moving a byte. It moves the existing corpus **and** config/secrets aside to a
+    recoverable `.pre-restore-*` dir, then replaces in place (refuses a non-empty target without
+    `--force`). Vectors are reused when the target embedder matches the backup and otherwise rebuilt
+    from source via reindex.
+  - `info` prints a backup's manifest (counts, embedder, version, whether it carries secrets/vectors)
+    without restoring; untrusted manifest fields are sanitized before display.
+- File selection is an explicit allowlist, so the feature is edition-agnostic (carries no federation
+  coupling) and ships on both editions.
+
 ## [0.13.1] — 2026-06-23
 
 ### Added

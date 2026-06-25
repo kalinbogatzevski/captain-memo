@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "captain-memo",
-      "version": "0.13.1",
+      "version": "0.14.0",
       "source": "./plugin",
       "description": "Local memory layer that auto-injects context into every Claude Code prompt. Watches your memory files, captures session observations, persists across reboots, indefinite retention. Replaces claude-mem."
     }
