@@ -1,5 +1,5 @@
 // src/services/backup/restore.ts
-import { existsSync, mkdtempSync, mkdirSync, renameSync, rmSync, copyFileSync } from 'fs';
+import { existsSync, mkdtempSync, mkdirSync, renameSync, rmSync, copyFileSync, statSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -58,7 +58,11 @@ export async function restoreBackup(archivePath: string, opts: RestoreOptions = 
       if ((await fileSha256(abs)) !== f.sha256) throw new RestoreError(`checksum mismatch: ${f.path}`);
     }
 
-    if (targetIsNonEmpty(dataDir) && !opts.force) {
+    // Capture target state BEFORE stopping the worker or moving any file.
+    const wasNonEmpty = targetIsNonEmpty(dataDir);
+    const currentEmbedder = await targetEmbedder(dataDir);
+
+    if (wasNonEmpty && !opts.force) {
       throw new RestoreError(
         'Target already has memories. Re-run with --force to replace them ' +
         '(the existing corpus is moved aside to a recoverable .pre-restore-* dir).',
@@ -74,7 +78,7 @@ export async function restoreBackup(archivePath: string, opts: RestoreOptions = 
 
     // Move current durable files aside (recoverable rollback).
     let preRestoreDir: string | null = null;
-    if (targetIsNonEmpty(dataDir)) {
+    if (wasNonEmpty) {
       preRestoreDir = join(dataDir, `.pre-restore-${backupStamp()}`);
       mkdirSync(preRestoreDir, { recursive: true });
       for (const n of DURABLE_NAMES) moveIfExists(join(dataDir, n), join(preRestoreDir, n));
@@ -96,7 +100,7 @@ export async function restoreBackup(archivePath: string, opts: RestoreOptions = 
     // Vector decision: keep restored vectors only if the target embeds identically.
     let vectorsRebuilt = false;
     const compatible = hasVec && manifest.includes_vectors
-      && vectorsCompatible(manifest.embedder, await targetEmbedder(dataDir));
+      && vectorsCompatible(manifest.embedder, currentEmbedder);
     mkdirSync(join(dataDir, 'vector-db'), { recursive: true });
     if (compatible && !opts.reindex) {
       moveIfExists(restoredVec, join(dataDir, 'vector-db', 'embeddings.db'));
@@ -141,18 +145,15 @@ function moveIfExists(from: string, to: string): void {
 }
 
 function copyAndRemove(from: string, to: string): void {
-  const { statSync, readdirSync } = require('fs') as typeof import('fs');
-  const stat = statSync(from);
-  if (stat.isDirectory()) {
+  if (statSync(from).isDirectory()) {
     mkdirSync(to, { recursive: true });
     for (const entry of readdirSync(from)) {
       copyAndRemove(join(from, entry), join(to, entry));
     }
-    rmSync(from, { recursive: true, force: true });
   } else {
     copyFileSync(from, to);
-    rmSync(from, { force: true });
   }
+  rmSync(from, { recursive: true, force: true });
 }
 
 function rmIfExists(p: string): void { if (existsSync(p)) { try { rmSync(p, { recursive: true, force: true }); } catch { /* best-effort */ } } }

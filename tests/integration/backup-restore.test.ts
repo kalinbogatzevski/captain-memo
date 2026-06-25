@@ -1,6 +1,6 @@
 // tests/integration/backup-restore.test.ts
 import { test, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { Database } from 'bun:sqlite';
@@ -89,4 +89,5 @@ test('a corrupted archive aborts with zero changes to the target', async () => {
   const meta = new Database(join(dataDir, 'meta.sqlite3'), { readonly: true });
   expect((meta.query('SELECT count(*) AS n FROM chunks').get() as { n: number }).n).toBe(7);
   meta.close();
+  expect(readdirSync(dataDir).some((n) => n.startsWith('.pre-restore'))).toBe(false);
 }, 20000);
