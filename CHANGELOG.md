@@ -23,8 +23,8 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
     from source via reindex.
   - `info` prints a backup's manifest (counts, embedder, version, whether it carries secrets/vectors)
     without restoring; untrusted manifest fields are sanitized before display.
-- File selection is an explicit allowlist, so the feature is edition-agnostic (carries no federation
-  coupling) and ships on both editions.
+- File selection is an explicit allowlist — only the durable corpus, config, and secrets are captured;
+  transient and host-specific files are excluded by construction.
 
 ## [0.13.1] — 2026-06-23
 
