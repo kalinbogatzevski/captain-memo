@@ -91,3 +91,26 @@ test('a corrupted archive aborts with zero changes to the target', async () => {
   meta.close();
   expect(readdirSync(dataDir).some((n) => n.startsWith('.pre-restore'))).toBe(false);
 }, 20000);
+
+test('restore preserves the target existing config.json + worker.env into .pre-restore', async () => {
+  useDataDir('src4');
+  writeFileSync(join(configDir, 'worker.env'), 'ANTHROPIC_API_KEY=NEW-FROM-BACKUP\n');
+  seedCorpus(dataDir, 2, 0);
+  const out = join(outDir, 'e.tar.gz');
+  await createBackup({ outPath: out, includeVectors: false });
+
+  useDataDir('dst4');
+  seedCorpus(dataDir, 9, 0);
+  writeFileSync(join(configDir, 'worker.env'), 'ANTHROPIC_API_KEY=OLD-ON-TARGET\n');
+  writeFileSync(join(dataDir, 'config.json'), '{"old":true}');
+
+  const res = await restoreBackup(out, { force: true, startWorker: false });
+  // restored secrets are now in place
+  expect(await Bun.file(join(configDir, 'worker.env')).text()).toContain('NEW-FROM-BACKUP');
+  // the target's ORIGINAL secrets + config are preserved recoverably
+  expect(res.preRestoreDir).not.toBeNull();
+  expect(existsSync(join(res.preRestoreDir!, 'worker.env'))).toBe(true);
+  expect(await Bun.file(join(res.preRestoreDir!, 'worker.env')).text()).toContain('OLD-ON-TARGET');
+  expect(existsSync(join(res.preRestoreDir!, 'config.json'))).toBe(true);
+  expect(res.workerEnvDest).toBe(join(configDir, 'worker.env'));
+}, 20000);

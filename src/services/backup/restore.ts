@@ -19,7 +19,9 @@ export interface RestoreOptions { force?: boolean; reindex?: boolean; startWorke
 export interface RestoreResult {
   restored: BackupManifest;
   vectorsRebuilt: boolean;
+  reindexStarted: boolean;
   preRestoreDir: string | null;
+  workerEnvDest: string | null;
   counts: { chunks: number; observations: number };
 }
 
@@ -93,12 +95,31 @@ export async function restoreBackup(archivePath: string, opts: RestoreOptions = 
     const restoredVec = join(tmp, 'data', 'vector-db', 'embeddings.db');
     const hasVec = existsSync(restoredVec);
 
+    // Preserve the target's existing config + secrets recoverably before we overwrite
+    // them — same "always recoverable" guarantee the durable DBs get. These are the
+    // exact files the two copyFileSync calls below clobber.
+    const oldConfig = join(dataDir, 'config.json');
+    const oldWorkerEnv = join(configDir, 'worker.env');
+    if (existsSync(oldConfig) || existsSync(oldWorkerEnv)) {
+      if (!preRestoreDir) {
+        preRestoreDir = join(dataDir, `.pre-restore-${backupStamp()}`);
+        mkdirSync(preRestoreDir, { recursive: true });
+      }
+      moveIfExists(oldConfig, join(preRestoreDir, 'config.json'));
+      moveIfExists(oldWorkerEnv, join(preRestoreDir, 'worker.env'));
+    }
+
     // Apply config + secrets.
     if (existsSync(join(tmp, 'config', 'config.json'))) copyFileSync(join(tmp, 'config', 'config.json'), join(dataDir, 'config.json'));
-    if (existsSync(join(tmp, 'config', 'worker.env'))) copyFileSync(join(tmp, 'config', 'worker.env'), join(configDir, 'worker.env'));
+    let workerEnvDest: string | null = null;
+    if (existsSync(join(tmp, 'config', 'worker.env'))) {
+      copyFileSync(join(tmp, 'config', 'worker.env'), join(configDir, 'worker.env'));
+      workerEnvDest = join(configDir, 'worker.env');
+    }
 
     // Vector decision: keep restored vectors only if the target embeds identically.
     let vectorsRebuilt = false;
+    let reindexStarted = false;
     const compatible = hasVec && manifest.includes_vectors
       && vectorsCompatible(manifest.embedder, currentEmbedder);
     mkdirSync(join(dataDir, 'vector-db'), { recursive: true });
@@ -114,14 +135,17 @@ export async function restoreBackup(archivePath: string, opts: RestoreOptions = 
     if (startWorker) {
       await sm.start(WORKER_SERVICE);
       if (vectorsRebuilt) {
-        try { await workerPost('/reindex', { channel: 'all', force: true }); } catch { /* surfaced by caller */ }
+        try { await workerPost('/reindex', { channel: 'all', force: true }); reindexStarted = true; }
+        catch { reindexStarted = false; }
       }
     }
 
     return {
       restored: manifest,
       vectorsRebuilt,
+      reindexStarted,
       preRestoreDir,
+      workerEnvDest,
       counts: {
         chunks: countRows(join(dataDir, 'meta.sqlite3'), 'SELECT count(*) AS n FROM chunks'),
         observations: countRows(join(dataDir, 'observations.db'), 'SELECT count(*) AS n FROM observations'),

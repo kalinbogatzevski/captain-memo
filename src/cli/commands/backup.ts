@@ -57,9 +57,17 @@ async function backupRestore(args: string[]): Promise<number> {
   try {
     const res = await restoreBackup(file, { force, reindex });
     console.log(`✓ restored: ${res.counts.chunks} chunks · ${res.counts.observations} observations`);
-    if (res.vectorsRebuilt) console.log('  vectors rebuilt from source (embedder differed or --reindex) — reindex running');
-    else console.log('  vectors restored as-is (embedder matched)');
-    if (res.preRestoreDir) console.log(`  previous corpus kept at: ${res.preRestoreDir}`);
+    if (res.vectorsRebuilt) {
+      if (res.reindexStarted) console.log('  vectors rebuilt from source (embedder differed or --reindex) — reindex started');
+      else console.log('  vectors need rebuilding — run `captain-memo reindex --force` (they also rebuild lazily on next search)');
+    } else {
+      console.log('  vectors restored as-is (embedder matched)');
+    }
+    if (res.preRestoreDir) console.log(`  previous corpus + config kept at: ${res.preRestoreDir}`);
+    if (res.workerEnvDest) {
+      console.log(`  secrets restored to: ${res.workerEnvDest}`);
+      console.log('  (system-mode installs that load worker.env from /etc may need it copied there manually)');
+    }
     console.log('  note: federation/peer identity is not transferred — re-establish it on this host if needed.');
     return 0;
   } catch (err) {
