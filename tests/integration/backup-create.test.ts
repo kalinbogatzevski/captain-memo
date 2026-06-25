@@ -78,3 +78,12 @@ test('createBackup leaves no .partial file behind on success', async () => {
   await createBackup({ outPath: out, includeVectors: false });
   expect(existsSync(out + '.partial')).toBe(false);
 });
+
+test('createBackup clears a pre-existing stale .partial and still produces a clean archive', async () => {
+  const out = join(outDir, 'd.tar.gz');
+  writeFileSync(out + '.partial', 'stale garbage from an interrupted run');
+  const res = await createBackup({ outPath: out, includeVectors: false });
+  expect(existsSync(out)).toBe(true);
+  expect(existsSync(out + '.partial')).toBe(false);
+  expect(res.manifest.counts.chunks).toBe(2);
+});

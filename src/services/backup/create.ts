@@ -47,7 +47,7 @@ async function resolveEmbedder(vecDbPath: string, includeVectors: boolean): Prom
   const endpoint = stats?.embedder?.endpoint
     ?? process.env.CAPTAIN_MEMO_EMBEDDER_ENDPOINT ?? DEFAULT_VOYAGE_ENDPOINT;
   const dimFromVecs = (includeVectors && existsSync(vecDbPath)) ? readVecDimension(vecDbPath) : null;
-  const dimension = dimFromVecs ?? Number(process.env.CAPTAIN_MEMO_EMBEDDING_DIM ?? 2048);
+  const dimension = dimFromVecs ?? (Number(process.env.CAPTAIN_MEMO_EMBEDDING_DIM) || 2048);
   return { provider: process.env.CAPTAIN_MEMO_EMBEDDER_PROVIDER, model, dimension, endpoint };
 }
 
@@ -68,6 +68,7 @@ export async function createBackup(opts: CreateBackupOptions = {}): Promise<Crea
     };
 
     // 1. hot-snapshot the durable DBs (allowlist).
+    let vectorsIncluded = false;
     for (const t of durableTargets(dataDir)) {
       if (t.isVector && !includeVectors) continue;
       if (!existsSync(t.srcPath)) continue;
@@ -75,6 +76,7 @@ export async function createBackup(opts: CreateBackupOptions = {}): Promise<Crea
       mkdirSync(join(dest, '..'), { recursive: true });
       hotSnapshot(t.srcPath, dest, { loadVec: t.isVector });
       await addFile(t.archivePath, dest);
+      if (t.isVector) vectorsIncluded = true;
     }
 
     // 2. config.json (if present) + the effective worker.env (secrets).
@@ -102,13 +104,13 @@ export async function createBackup(opts: CreateBackupOptions = {}): Promise<Crea
         model: process.env.CAPTAIN_MEMO_SUMMARIZER_MODEL,
       },
       includes_secrets: secretsIncluded,
-      includes_vectors: includeVectors && existsSync(vecDbPath),
+      includes_vectors: vectorsIncluded,
       files,
       counts: {
         documents: countRows(join(dataDir, 'meta.sqlite3'), 'SELECT count(*) AS n FROM documents'),
         chunks: countRows(join(dataDir, 'meta.sqlite3'), 'SELECT count(*) AS n FROM chunks'),
         observations: countRows(join(dataDir, 'observations.db'), 'SELECT count(*) AS n FROM observations'),
-        vectors: (includeVectors && existsSync(vecDbPath)) ? readVecCount(vecDbPath) : 0,
+        vectors: vectorsIncluded ? readVecCount(vecDbPath) : 0,
       },
     });
     await Bun.write(join(staging, 'manifest.json'), JSON.stringify(manifest, null, 2));
