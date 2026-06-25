@@ -40,7 +40,7 @@ export function effectiveWorkerEnv(): string | null {
 function isoNow(): string { return new Date().toISOString(); }
 
 async function resolveEmbedder(vecDbPath: string, includeVectors: boolean): Promise<EmbedderIdentity> {
-  const stats = (await workerGetOptional('/stats')) as
+  const stats = (await workerGetOptional('/stats', 800)) as
     { embedder?: { model?: string; endpoint?: string } } | null;
   const model = stats?.embedder?.model
     ?? process.env.CAPTAIN_MEMO_EMBEDDER_MODEL ?? 'voyageai/voyage-4-nano';

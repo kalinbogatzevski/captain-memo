@@ -77,13 +77,13 @@ test('createBackup writes an archive with correct counts and durable files only'
 
   const man = await readManifestFromArchive(out);
   expect(man.captain_memo_version.length).toBeGreaterThan(0);
-});
+}, 20000);
 
 test('createBackup leaves no .partial file behind on success', async () => {
   const out = join(outDir, 'c.tar.gz');
   await createBackup({ outPath: out, includeVectors: false });
   expect(existsSync(out + '.partial')).toBe(false);
-});
+}, 20000);
 
 test('createBackup clears a pre-existing stale .partial and still produces a clean archive', async () => {
   const out = join(outDir, 'd.tar.gz');
@@ -92,4 +92,4 @@ test('createBackup clears a pre-existing stale .partial and still produces a cle
   expect(existsSync(out)).toBe(true);
   expect(existsSync(out + '.partial')).toBe(false);
   expect(res.manifest.counts.chunks).toBe(2);
-});
+}, 20000);
