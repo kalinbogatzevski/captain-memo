@@ -813,7 +813,7 @@ import { createBackup } from '../../src/services/backup/create.ts';
 import { restoreBackup, RestoreError } from '../../src/services/backup/restore.ts';
 
 let root: string, dataDir: string, configDir: string, outDir: string;
-let prevData: string | undefined, prevConfig: string | undefined;
+let prevData: string | undefined, prevConfig: string | undefined, prevPort: string | undefined;
 
 function seedCorpus(dir: string, chunks: number, obs: number) {
   mkdirSync(dir, { recursive: true });
@@ -833,12 +833,17 @@ function seedCorpus(dir: string, chunks: number, obs: number) {
 beforeEach(() => {
   prevData = process.env.CAPTAIN_MEMO_DATA_DIR;
   prevConfig = process.env.CAPTAIN_MEMO_CONFIG_DIR;
+  prevPort = process.env.CAPTAIN_MEMO_WORKER_PORT;
+  // Dead worker port → restore's best-effort GET /stats fails fast to the env
+  // fallback; keeps the test hermetic and off whatever live worker is running.
+  process.env.CAPTAIN_MEMO_WORKER_PORT = '1';
   root = mkdtempSync(join(tmpdir(), 'cm-restore-'));
   outDir = join(root, 'out'); mkdirSync(outDir, { recursive: true });
 });
 afterEach(() => {
   if (prevData === undefined) delete process.env.CAPTAIN_MEMO_DATA_DIR; else process.env.CAPTAIN_MEMO_DATA_DIR = prevData;
   if (prevConfig === undefined) delete process.env.CAPTAIN_MEMO_CONFIG_DIR; else process.env.CAPTAIN_MEMO_CONFIG_DIR = prevConfig;
+  if (prevPort === undefined) delete process.env.CAPTAIN_MEMO_WORKER_PORT; else process.env.CAPTAIN_MEMO_WORKER_PORT = prevPort;
 });
 
 function useDataDir(name: string) {
@@ -861,7 +866,7 @@ test('round-trip: backup a corpus, restore into an empty install, counts survive
   expect(res.counts.observations).toBe(4);
   expect(existsSync(join(dataDir, 'meta.sqlite3'))).toBe(true);
   expect(existsSync(join(configDir, 'worker.env'))).toBe(true);
-});
+}, 20000);
 
 test('refuses a non-empty target without force, then a pre-restore copy is kept with force', async () => {
   useDataDir('src2');
@@ -877,7 +882,7 @@ test('refuses a non-empty target without force, then a pre-restore copy is kept 
   expect(res.counts.chunks).toBe(3);          // replaced
   expect(res.preRestoreDir).not.toBeNull();
   expect(existsSync(join(res.preRestoreDir!, 'meta.sqlite3'))).toBe(true); // old corpus recoverable
-});
+}, 20000);
 
 test('a corrupted archive aborts with zero changes to the target', async () => {
   useDataDir('dst3');
@@ -889,7 +894,7 @@ test('a corrupted archive aborts with zero changes to the target', async () => {
   const meta = new Database(join(dataDir, 'meta.sqlite3'), { readonly: true });
   expect((meta.query('SELECT count(*) AS n FROM chunks').get() as { n: number }).n).toBe(7);
   meta.close();
-});
+}, 20000);
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -935,12 +940,12 @@ function targetIsNonEmpty(dataDir: string): boolean {
 
 /** The target install's CURRENT embedder identity (for the vector decision). */
 async function targetEmbedder(dataDir: string): Promise<EmbedderIdentity> {
-  const stats = (await workerGetOptional('/stats')) as { embedder?: { model?: string } } | null;
+  const stats = (await workerGetOptional('/stats', 800)) as { embedder?: { model?: string } } | null;
   const model = stats?.embedder?.model
     ?? process.env.CAPTAIN_MEMO_EMBEDDER_MODEL ?? 'voyageai/voyage-4-nano';
   const vecDb = join(dataDir, 'vector-db', 'embeddings.db');
   const dimension = (existsSync(vecDb) ? readVecDimension(vecDb) : null)
-    ?? Number(process.env.CAPTAIN_MEMO_EMBEDDING_DIM ?? 2048);
+    ?? (Number(process.env.CAPTAIN_MEMO_EMBEDDING_DIM) || 2048);
   return { model, dimension };
 }
 
@@ -1078,7 +1083,7 @@ import { Database } from 'bun:sqlite';
 import { backupCommand } from '../../src/cli/commands/backup.ts';
 
 let root: string, outDir: string;
-let prevData: string | undefined, prevConfig: string | undefined;
+let prevData: string | undefined, prevConfig: string | undefined, prevPort: string | undefined;
 
 async function capture(fn: () => Promise<number>): Promise<{ out: string; code: number }> {
   const origLog = console.log, origErr = console.error;
@@ -1104,6 +1109,8 @@ function seed(dir: string) {
 
 beforeEach(() => {
   prevData = process.env.CAPTAIN_MEMO_DATA_DIR; prevConfig = process.env.CAPTAIN_MEMO_CONFIG_DIR;
+  prevPort = process.env.CAPTAIN_MEMO_WORKER_PORT;
+  process.env.CAPTAIN_MEMO_WORKER_PORT = '1'; // dead port → /stats probe fails fast to env fallback
   root = mkdtempSync(join(tmpdir(), 'cm-cmd-'));
   outDir = join(root, 'out'); mkdirSync(outDir, { recursive: true });
   process.env.CAPTAIN_MEMO_DATA_DIR = join(root, 'data');
@@ -1114,6 +1121,7 @@ beforeEach(() => {
 afterEach(() => {
   if (prevData === undefined) delete process.env.CAPTAIN_MEMO_DATA_DIR; else process.env.CAPTAIN_MEMO_DATA_DIR = prevData;
   if (prevConfig === undefined) delete process.env.CAPTAIN_MEMO_CONFIG_DIR; else process.env.CAPTAIN_MEMO_CONFIG_DIR = prevConfig;
+  if (prevPort === undefined) delete process.env.CAPTAIN_MEMO_WORKER_PORT; else process.env.CAPTAIN_MEMO_WORKER_PORT = prevPort;
 });
 
 test('unknown subcommand prints usage and exits 2', async () => {
@@ -1132,7 +1140,7 @@ test('create then info round-trips through the CLI', async () => {
   const i = await capture(() => backupCommand(['info', out]));
   expect(i.code).toBe(0);
   expect(i.out).toMatch(/chunks/);
-});
+}, 20000);
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
