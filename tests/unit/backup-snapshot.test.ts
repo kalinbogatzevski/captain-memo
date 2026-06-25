@@ -4,8 +4,9 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { Database } from 'bun:sqlite';
+import * as sqliteVec from 'sqlite-vec';
 import {
-  durableTargets, hotSnapshot, readVecCount, countRows, backupStamp,
+  durableTargets, hotSnapshot, readVecCount, readVecDimension, countRows, backupStamp,
   createArchive, extractArchive, readManifestFromArchive,
 } from '../../src/services/backup/snapshot.ts';
 
@@ -81,4 +82,27 @@ test('readManifestFromArchive extracts just the manifest', async () => {
   await createArchive(staging, out);
   const got = await readManifestFromArchive(out);
   expect(got.embedder.model).toBe('m');
+});
+
+test('hotSnapshot with loadVec snapshots a vec0 virtual-table db; vec readers work on the copy', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-vecsnap-'));
+  const src = join(dir, 'embeddings.db');
+  const db = new Database(src);
+  sqliteVec.load(db);
+  db.exec('PRAGMA journal_mode = WAL;');
+  db.exec('CREATE VIRTUAL TABLE vec_chunks USING vec0(chunk_id TEXT PRIMARY KEY, embedding FLOAT[3]);');
+  // sqlite-vec accepts a JSON-array string for the embedding value.
+  db.query('INSERT INTO vec_chunks(chunk_id, embedding) VALUES (?, ?)').run('a', '[0.1,0.2,0.3]');
+  db.close();
+  expect(readVecDimension(src)).toBe(3);
+  expect(readVecCount(src)).toBe(1);
+  const dest = join(dir, 'snap.db');
+  hotSnapshot(src, dest, { loadVec: true });   // must NOT fail with "no such module: vec0"
+  expect(readVecDimension(dest)).toBe(3);
+  expect(readVecCount(dest)).toBe(1);
+});
+
+test('vec readers return null/0 for a missing embeddings db', () => {
+  expect(readVecDimension('/no/such/embeddings.db')).toBeNull();
+  expect(readVecCount('/no/such/embeddings.db')).toBe(0);
 });

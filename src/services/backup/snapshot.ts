@@ -38,6 +38,7 @@ export function hotSnapshot(srcPath: string, destPath: string, opts: { loadVec?:
 /** Authoritative embedding dimension = what the stored vectors actually are,
  *  parsed from the vec_chunks declaration `embedding FLOAT[N]`. null if absent. */
 export function readVecDimension(embeddingsDbPath: string): number | null {
+  if (!existsSync(embeddingsDbPath)) return null;
   const db = new Database(embeddingsDbPath, { readonly: true });
   try {
     sqliteVec.load(db);
@@ -53,6 +54,7 @@ export function readVecDimension(embeddingsDbPath: string): number | null {
 }
 
 export function readVecCount(embeddingsDbPath: string): number {
+  if (!existsSync(embeddingsDbPath)) return 0;
   const db = new Database(embeddingsDbPath, { readonly: true });
   try {
     sqliteVec.load(db);
@@ -77,11 +79,8 @@ export function backupStamp(): string {
 
 async function runTar(args: string[]): Promise<void> {
   const proc = Bun.spawn(['tar', ...args], { stdout: 'pipe', stderr: 'pipe' });
-  const code = await proc.exited;
-  if (code !== 0) {
-    const err = await new Response(proc.stderr).text();
-    throw new Error(`tar ${args.join(' ')} failed (exit ${code}): ${err.trim()}`);
-  }
+  const [code, err] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
+  if (code !== 0) throw new Error(`tar ${args.join(' ')} failed (exit ${code}): ${err.trim()}`);
 }
 
 /** gzip-tar the staging dir's CONTENTS (relative members) into outPath. */
@@ -93,17 +92,21 @@ export async function extractArchive(archivePath: string, destDir: string): Prom
   await runTar(['-xzf', archivePath, '-C', destDir]);
 }
 
+async function tarMember(archivePath: string, member: string): Promise<string> {
+  const proc = Bun.spawn(['tar', '-xzOf', archivePath, member], { stdout: 'pipe', stderr: 'pipe' });
+  const [out, , code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return code === 0 ? out : '';
+}
+
 /** Stream just manifest.json out of the archive to stdout and validate it. */
 export async function readManifestFromArchive(archivePath: string): Promise<BackupManifest> {
-  const proc = Bun.spawn(['tar', '-xzOf', archivePath, './manifest.json'], { stdout: 'pipe', stderr: 'pipe' });
-  const text = await new Response(proc.stdout).text();
-  const code = await proc.exited;
-  if (code !== 0 || !text.trim()) {
-    // Some tars store the member without the leading "./" — retry that spelling.
-    const p2 = Bun.spawn(['tar', '-xzOf', archivePath, 'manifest.json'], { stdout: 'pipe', stderr: 'pipe' });
-    const t2 = await new Response(p2.stdout).text();
-    if ((await p2.exited) !== 0 || !t2.trim()) throw new Error('archive has no readable manifest.json');
-    return validateManifest(JSON.parse(t2));
-  }
+  // tar stores members as ./manifest.json (via -C dir .); some tars omit the ./
+  const text = (await tarMember(archivePath, './manifest.json')).trim()
+    || (await tarMember(archivePath, 'manifest.json')).trim();
+  if (!text) throw new Error('archive has no readable manifest.json');
   return validateManifest(JSON.parse(text));
 }
