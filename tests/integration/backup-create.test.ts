@@ -8,7 +8,7 @@ import { createBackup } from '../../src/services/backup/create.ts';
 import { readManifestFromArchive, extractArchive } from '../../src/services/backup/snapshot.ts';
 
 let dataDir: string, configDir: string, outDir: string;
-let prevData: string | undefined, prevConfig: string | undefined;
+let prevData: string | undefined, prevConfig: string | undefined, prevPort: string | undefined;
 
 function seedCorpus(dir: string) {
   mkdirSync(dir, { recursive: true });
@@ -36,6 +36,11 @@ function seedCorpus(dir: string) {
 beforeEach(() => {
   prevData = process.env.CAPTAIN_MEMO_DATA_DIR;
   prevConfig = process.env.CAPTAIN_MEMO_CONFIG_DIR;
+  prevPort = process.env.CAPTAIN_MEMO_WORKER_PORT;
+  // Pin a dead worker port so createBackup's best-effort GET /stats fails fast
+  // and deterministically takes the offline/env fallback — keeps this test
+  // hermetic and fast instead of reaching whatever live worker is on the box.
+  process.env.CAPTAIN_MEMO_WORKER_PORT = '1';
   const root = mkdtempSync(join(tmpdir(), 'cm-backup-'));
   dataDir = join(root, 'data'); configDir = join(root, 'config'); outDir = join(root, 'out');
   mkdirSync(configDir, { recursive: true }); mkdirSync(outDir, { recursive: true });
@@ -47,6 +52,7 @@ beforeEach(() => {
 afterEach(() => {
   if (prevData === undefined) delete process.env.CAPTAIN_MEMO_DATA_DIR; else process.env.CAPTAIN_MEMO_DATA_DIR = prevData;
   if (prevConfig === undefined) delete process.env.CAPTAIN_MEMO_CONFIG_DIR; else process.env.CAPTAIN_MEMO_CONFIG_DIR = prevConfig;
+  if (prevPort === undefined) delete process.env.CAPTAIN_MEMO_WORKER_PORT; else process.env.CAPTAIN_MEMO_WORKER_PORT = prevPort;
 });
 
 test('createBackup writes an archive with correct counts and durable files only', async () => {
