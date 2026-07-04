@@ -5,6 +5,10 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+This repo also has an internal `federation` branch (GitLab-only, never public) with its OWN
+independent version counter — its release tags use a `fed-v` prefix (`fed-v0.19.0`, etc.) specifically
+so they never collide with this line's plain `vX.Y.Z` GitHub tags in a shared local clone.
+
 ## [0.15.0] — 2026-07-04
 
 ### Added
