@@ -5,6 +5,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import { customAlphabet } from 'nanoid';
 import { DEFAULT_WORKER_PORT } from './shared/paths.ts';
 import { loadWorkerEnv } from './shared/worker-env.ts';
 import { VERSION } from './shared/version.ts';
@@ -14,6 +15,11 @@ import { VERSION } from './shared/version.ts';
 loadWorkerEnv();
 
 const WORKER_BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
+
+// Fallback session id for work_set/work_active/work_clear when the caller omits session_id —
+// one per MCP server process, so a tool call without an explicit id still has a stable identity.
+const _sid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 10);
+const PROCESS_SESSION_ID = `mcp-${_sid()}`;
 
 async function workerPost(path: string, body: unknown): Promise<unknown> {
   const res = await fetch(`${WORKER_BASE}${path}`, {
@@ -129,6 +135,43 @@ export const TOOLS = [
     description: 'Health check: are voyage and chroma reachable?',
     inputSchema: { type: 'object', properties: {} },
   },
+  {
+    name: 'work_set',
+    description:
+      'Coordination board: publish or refresh a transient claim that YOU are working on something right now, then immediately get back any OTHER active sessions whose files overlap yours. Call this before diving into a codebase area, and re-call periodically (it is a heartbeat that keeps the lease alive). Other AI sessions on this machine (Claude, Codex, Gemini, Cursor all share one captain) see your claim at once. Pass `agent` so the claim reads "codex on this captain", and `files` as the globs you will touch ("billing/**", "src/auth/login.ts"). Claims are advisory leases, not locks — they auto-expire (default 30 min) so a crashed session never blocks an area. Returns { session_id, overlaps[] }; if overlaps is non-empty, another session is in the same files — coordinate before editing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        what: { type: 'string', description: 'Short description, e.g. "refactoring the billing module".' },
+        files: { type: 'array', items: { type: 'string' }, description: 'Globs you will touch, e.g. ["billing/**"].' },
+        agent: { type: 'string', description: 'Your AI label: claude | codex | gemini | cursor.' },
+        ttl_s: { type: 'number', description: 'Lease seconds (default 1800, clamped 60..28800).' },
+        session_id: { type: 'string', description: 'Stable id for your session; omit to use this MCP process default.' },
+      },
+      required: ['what'],
+    },
+  },
+  {
+    name: 'work_active',
+    description:
+      'Coordination board: list the live work claims on this captain and, if you pass your session_id, which of them overlap your own claimed files. Call this to see who else is working where before you start.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: { type: 'string', description: 'Your session id, to compute overlaps_with_mine; omit to use this MCP process default.' },
+      },
+    },
+  },
+  {
+    name: 'work_clear',
+    description: 'Coordination board: drop your work claim when the task is done (releases the lease immediately instead of waiting for it to expire).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: { type: 'string', description: 'Session id to clear; omit to clear this MCP process default.' },
+      },
+    },
+  },
 ];
 
 /** Arguments the `remember` MCP tool accepts from the model (cwd is injected, not accepted). */
@@ -230,6 +273,24 @@ export async function runMcpServer(): Promise<void> {
         case 'status': {
           const res = await fetch(`${WORKER_BASE}/health`);
           result = res.ok ? await res.json() : { healthy: false };
+          break;
+        }
+        case 'work_set': {
+          const a = (args ?? {}) as { session_id?: string };
+          result = await workerPost('/worknote/set', { ...a, session_id: a.session_id || PROCESS_SESSION_ID });
+          break;
+        }
+        case 'work_active': {
+          const a = (args ?? {}) as { session_id?: string };
+          const q = new URLSearchParams({ session_id: a.session_id || PROCESS_SESSION_ID });
+          const res = await fetch(`${WORKER_BASE}/worknote/active?${q.toString()}`);
+          if (!res.ok) throw new Error(`worker /worknote/active returned ${res.status}`);
+          result = await res.json();
+          break;
+        }
+        case 'work_clear': {
+          const a = (args ?? {}) as { session_id?: string };
+          result = await workerPost('/worknote/clear', { session_id: a.session_id || PROCESS_SESSION_ID });
           break;
         }
         default: throw new Error(`unknown tool: ${name}`);

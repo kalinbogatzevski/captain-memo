@@ -22,6 +22,17 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/captain-memo-hook.js\" PreToolUse"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "hooks": [

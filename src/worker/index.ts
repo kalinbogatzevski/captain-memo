@@ -22,6 +22,8 @@ import { runPromotionSlice, type PromotionDeps } from './promotion.ts';
 import { buildPromotionJudge } from './promotion-judge.ts';
 import { runQmDedupSlice } from './quartermaster.ts';
 import { runQmSupersedeSlice, applySupersedeDemotion } from './supersede.ts';
+import { setWorkNote, listLocalActive, clearWorkNote, overlapsAgainst, type SetWorkNoteInput } from './work-notes.ts';
+import { warmWorknoteVecs, semanticOverlapPass, hasIntent, SEMANTIC_ENABLED } from './worknote-semantic.ts';
 import { centroid } from '../shared/vector-math.ts';
 import { PendingEmbedQueue } from './pending-embed-queue.ts';
 import { chunkObservation } from './chunkers/observation.ts';
@@ -1294,6 +1296,65 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         setTimeout(() => process.exit(0), 100);
         return Response.json({ stopping: true });
       }
+      // ── Work-coordination board ──────────────────────────────────────────
+      // A session publishes a transient "I'm working on X, touching these files" LEASE; concurrent agents on
+      // the SAME captain (cross-AI — they all share THIS worker) see it immediately. Notes are kv-backed leases,
+      // lazily reaped on read, so a crashed session never leaves a ghost claim.
+      if (req.method === 'POST' && url.pathname === '/worknote/set') {
+        const body = (await req.json().catch(() => null)) as Partial<SetWorkNoteInput> | null;
+        if (!body || typeof body.session_id !== 'string' || body.session_id.trim() === '') {
+          return Response.json({ error: 'invalid_request', details: 'session_id required' }, { status: 400 });
+        }
+        const now = Date.now();
+        const setBody = body as SetWorkNoteInput;
+        // Enrich a hook-driven generic claim ("editing 3 files") with the session's latest observation TITLE (its
+        // human meaning) so the board reads well AND so the semantic pass has real intent to compare. Opt-in only
+        // (the PreToolUse hook sets the hint) — an explicit MCP `work_set` `what` is never overwritten. Fail-open.
+        const enrichReq = setBody.enrich_from_observations === true;
+        let enriched = false;
+        if (enrichReq && obsStore) {
+          try {
+            const latest = obsStore.latestForSession(String(body.session_id));
+            if (latest?.title) { setBody.what = latest.title; enriched = true; }
+          } catch { /* keep the caller's what */ }
+        }
+        // The claim carries real declared intent iff it was enriched, OR the caller gave an explicit `what` without
+        // asking for enrichment (the MCP work_set path). A hook claim that wasn't enriched (no observation yet) is
+        // still the generic placeholder — NOT meaningful, so it stays out of the semantic pass (no false ~1.0 match).
+        setBody.meaningful = enriched || !enrichReq;
+        const note = setWorkNote(meta, setBody, now);
+        const others = listLocalActive(meta, now);
+        const overlaps = overlapsAgainst(note.files, others, note.session_id);
+        // Semantic pass (best-effort, never awaits the embedder): compare meaning vectors already cached, and warm
+        // the cache for next time. Catches agents on the SAME intent in DIFFERENT files, which file overlap misses.
+        // Only meaningful claims (hasIntent) take part — generic placeholders carry no intent and would false-match.
+        if (SEMANTIC_ENABLED && hasIntent(note)) {
+          const peers = others.filter((o) => o.session_id !== note.session_id && hasIntent(o));
+          warmWorknoteVecs([note.what, ...peers.map((o) => o.what)], (t) => embedder.embed(t));
+          const fileSessions = new Set(overlaps.map((o) => o.session_id));
+          overlaps.push(...semanticOverlapPass(note, peers, fileSessions));
+        }
+        return Response.json({ session_id: note.session_id, ttl_s: note.ttl_s, overlaps });
+      }
+      if (req.method === 'GET' && url.pathname === '/worknote/active') {
+        const now = Date.now();
+        const claims = listLocalActive(meta, now);
+        const mine = url.searchParams.get('session_id') ?? '';
+        const mineNote = mine ? claims.find((c) => c.session_id === mine) : undefined;
+        const overlaps_with_mine = mineNote
+          ? overlapsAgainst(mineNote.files, claims, mine)
+          : [];
+        return Response.json({ claims, overlaps_with_mine });
+      }
+      if (req.method === 'POST' && url.pathname === '/worknote/clear') {
+        const body = (await req.json().catch(() => null)) as { session_id?: unknown } | null;
+        if (!body || typeof body.session_id !== 'string' || body.session_id.trim() === '') {
+          return Response.json({ error: 'invalid_request', details: 'session_id required' }, { status: 400 });
+        }
+        clearWorkNote(meta, body.session_id);
+        return Response.json({ ok: true });
+      }
+
       if (req.method === 'GET' && url.pathname === '/stats') {
         const { total_chunks, by_channel } = meta.stats();
         const obsTotal = obsStore ? obsStore.countAll() : 0;

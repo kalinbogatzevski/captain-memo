@@ -47,6 +47,7 @@ So I sat down to build that "something different" for myself, and ended up with 
   - `skip` — keyword-only retrieval (FTS5 only, no vectors)
 - **Auto-injected context.** A `<memory-context>` envelope is added to every user prompt by the `UserPromptSubmit` hook. The model sees relevant memory, skills, and prior session observations before it answers.
 - **Session observations.** Every tool use is captured fire-and-forget; on `Stop`, batched events are summarized into structured observations (type / title / facts / concepts) and indexed into the same hybrid search. Future sessions can recall them.
+- **Work-coordination board.** Before every Edit/Write/MultiEdit/NotebookEdit, a `PreToolUse` hook publishes a transient "I'm touching these files" claim to a shared board. Any other AI tool on the same machine editing overlapping files is flagged instantly — by file path, and by *meaning* (a semantic pass catches two agents working on the same thing in different files, which a plain glob match misses). Advisory only, never blocks an edit; claims are leases that auto-expire, so a crashed session never leaves a phantom claim behind.
 - **Indefinite retention.** No 30-day cleanups. A project takes years; your memory should too.
 
 ---
@@ -249,7 +250,7 @@ After install + a full Claude Code restart, the plugin exposes two layers to eve
 /captain-memo:doctor              # health probe inline in chat
 ```
 
-### 9 MCP tools the model calls automatically
+### 12 MCP tools the model calls automatically
 
 These fire when the model decides retrieval would help your prompt — no slash command required. List them anytime with `/mcp`:
 
@@ -264,6 +265,9 @@ These fire when the model decides retrieval would help your prompt — no slash 
 | `reindex` | Trigger re-embed |
 | `stats` | Corpus stats |
 | `status` | Worker health |
+| `work_set` | Coordination board: publish/refresh "I'm working on X, touching these files"; returns any overlapping claims |
+| `work_active` | Coordination board: list live claims, and which overlap yours |
+| `work_clear` | Coordination board: drop your claim early (task done) |
 
 ## CLI commands (any terminal)
 

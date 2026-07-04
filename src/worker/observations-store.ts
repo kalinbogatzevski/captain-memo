@@ -548,6 +548,15 @@ export class ObservationsStore {
     return rows.map(r => this.hydrate(r));
   }
 
+  /** The most recent observation for a session (its current "voyage" summary), or null. Used to enrich a work
+   *  claim's meaning text so the board reads "Wire SP1 gateway into portal-api", not "editing 3 files". */
+  latestForSession(sessionId: string): Observation | null {
+    const row = this.db
+      .query('SELECT * FROM observations WHERE session_id = ? ORDER BY created_at_epoch DESC, id DESC LIMIT 1')
+      .get(sessionId) as Record<string, unknown> | undefined;
+    return row ? this.hydrate(row) : null;
+  }
+
   listRecent(limit: number): Observation[] {
     const rows = this.db
       .query('SELECT * FROM observations ORDER BY created_at_epoch DESC, id DESC LIMIT ?')

@@ -635,7 +635,7 @@ init_paths();
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.14.0",
+  version: "0.15.0",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -935,6 +935,60 @@ ${banner}` : banner;
 }
 if (false) {}
 
+// src/hooks/pre-tool-use.ts
+var HOOK_TIMEOUT_MS = Number(process.env.CAPTAIN_MEMO_PRE_TOOL_USE_TIMEOUT_MS ?? 1500);
+var MAX_FILES = 25;
+async function main3() {
+  let payload = {};
+  try {
+    payload = await readStdinJson();
+  } catch (err) {
+    logHookError("PreToolUse", err);
+    return;
+  }
+  const sid = payload.session_id;
+  const ip = payload.tool_input ?? {};
+  const fp = typeof ip.file_path === "string" ? ip.file_path : typeof ip.notebook_path === "string" ? ip.notebook_path : undefined;
+  if (!sid || !fp)
+    return;
+  const project = resolveProjectId(payload.cwd);
+  let files = [fp];
+  const cur = await workerFetch(`/worknote/active?session_id=${encodeURIComponent(sid)}`, { method: "GET", timeoutMs: HOOK_TIMEOUT_MS });
+  if (cur.ok && cur.body?.claims) {
+    const mine = cur.body.claims.find((c) => c.session_id === sid);
+    if (mine?.files?.length) {
+      files = [...new Set([...mine.files, fp])];
+      if (files.length > MAX_FILES)
+        files = files.slice(-MAX_FILES);
+    }
+  }
+  const set = await workerFetch("/worknote/set", {
+    method: "POST",
+    body: { session_id: sid, agent: "claude", what: `editing ${files.length} file(s) in ${project}`, files, enrich_from_observations: true },
+    timeoutMs: HOOK_TIMEOUT_MS
+  });
+  logWorkerFailure("PreToolUse", "/worknote/set", set);
+  if (!set.ok || !set.body)
+    return;
+  const overlaps = set.body.overlaps ?? [];
+  if (overlaps.length === 0)
+    return;
+  const fileHits = overlaps.filter((o) => o.kind !== "semantic");
+  const semHits = overlaps.filter((o) => o.kind === "semantic");
+  const parts = [];
+  if (fileHits.length > 0) {
+    const who = fileHits.map((o) => `${(o.session_id ?? "").slice(0, 12)} (${o.agent ?? "?"}) on ${(o.overlapping ?? o.files ?? []).join(", ")}`).join(" ; ");
+    parts.push(`editing the same files: ${who}`);
+  }
+  if (semHits.length > 0) {
+    const who = semHits.map((o) => `${(o.session_id ?? "").slice(0, 12)} (${o.agent ?? "?"}) on "${(o.what ?? "").slice(0, 80)}"${typeof o.similarity === "number" ? ` (~${o.similarity.toFixed(2)})` : ""}`).join(" ; ");
+    parts.push(`working on the same thing by meaning: ${who}`);
+  }
+  const warning = `WORK-BOARD OVERLAP: another captain is ${parts.join("; and is ")}. Check the captain-memo work board (work_active) and coordinate, or pick a different area, before continuing.`;
+  writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: warning } }));
+}
+if (false) {}
+
 // src/worker/branch.ts
 import { spawnSync as spawnSync2 } from "child_process";
 import { existsSync as existsSync3 } from "fs";
@@ -954,7 +1008,7 @@ function detectBranchSync(cwd) {
 var branchCache = new Map;
 
 // src/hooks/post-tool-use.ts
-var HOOK_TIMEOUT_MS = Number(process.env.CAPTAIN_MEMO_POST_TOOL_USE_TIMEOUT_MS ?? 1000);
+var HOOK_TIMEOUT_MS2 = Number(process.env.CAPTAIN_MEMO_POST_TOOL_USE_TIMEOUT_MS ?? 1000);
 function extractFiles(input, response) {
   const read = [];
   const modified = [];
@@ -970,7 +1024,7 @@ function extractFiles(input, response) {
     modified.push(ip.notebook_path);
   return { read, modified };
 }
-async function main3() {
+async function main4() {
   let payload = {};
   try {
     payload = await readStdinJson();
@@ -996,7 +1050,7 @@ async function main3() {
   const res = await workerFetch("/observation/enqueue", {
     method: "POST",
     body: event,
-    timeoutMs: HOOK_TIMEOUT_MS
+    timeoutMs: HOOK_TIMEOUT_MS2
   });
   logWorkerFailure("PostToolUse", "/observation/enqueue", res);
 }
@@ -1004,7 +1058,7 @@ if (false) {}
 
 // src/hooks/stop.ts
 init_paths();
-async function main4() {
+async function main5() {
   let payload = {};
   try {
     payload = await readStdinJson();
@@ -1024,8 +1078,8 @@ async function main4() {
 if (false) {}
 
 // src/hooks/pre-compact.ts
-var HOOK_TIMEOUT_MS2 = Number(process.env.CAPTAIN_MEMO_PRE_COMPACT_TIMEOUT_MS ?? 5000);
-async function main5() {
+var HOOK_TIMEOUT_MS3 = Number(process.env.CAPTAIN_MEMO_PRE_COMPACT_TIMEOUT_MS ?? 5000);
+async function main6() {
   let payload = {};
   try {
     payload = await readStdinJson();
@@ -1049,7 +1103,7 @@ async function main5() {
   const res = await workerFetch("/observation/enqueue", {
     method: "POST",
     body: event,
-    timeoutMs: HOOK_TIMEOUT_MS2
+    timeoutMs: HOOK_TIMEOUT_MS3
   });
   logWorkerFailure("PreCompact", "/observation/enqueue", res);
 }
@@ -1059,11 +1113,12 @@ if (false) {}
 var EVENTS = {
   UserPromptSubmit: main,
   SessionStart: main2,
-  PostToolUse: main3,
-  Stop: main4,
-  PreCompact: main5
+  PreToolUse: main3,
+  PostToolUse: main4,
+  Stop: main5,
+  PreCompact: main6
 };
-async function main6() {
+async function main7() {
   const event = process.argv[2] ?? process.env.CLAUDE_HOOK_EVENT_NAME ?? process.env.CAPTAIN_MEMO_HOOK_EVENT;
   if (!event || !(event in EVENTS)) {
     process.exit(0);
@@ -1080,7 +1135,7 @@ if (false) {}
 
 // bin/captain-memo-hook.ts
 try {
-  await main6();
+  await main7();
 } catch (err) {
   logHookError(process.argv[2] ?? "unknown", err);
   process.exit(0);

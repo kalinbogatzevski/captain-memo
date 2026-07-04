@@ -12631,6 +12631,69 @@ class StdioServerTransport {
   }
 }
 
+// node_modules/nanoid/index.js
+import { webcrypto as crypto } from "crypto";
+var POOL_SIZE_MULTIPLIER = 128;
+var pool;
+var poolOffset;
+function fillPool(bytes) {
+  if (bytes < 0 || bytes > 1024)
+    throw new RangeError("Wrong ID size");
+  if (!pool || pool.length < bytes) {
+    pool = Buffer.allocUnsafe(bytes * POOL_SIZE_MULTIPLIER);
+    crypto.getRandomValues(pool);
+    poolOffset = 0;
+  } else if (poolOffset + bytes > pool.length) {
+    crypto.getRandomValues(pool);
+    poolOffset = 0;
+  }
+  poolOffset += bytes;
+}
+function random(bytes) {
+  fillPool(bytes |= 0);
+  return pool.subarray(poolOffset - bytes, poolOffset);
+}
+function customRandom(alphabet, defaultSize, getRandom) {
+  let safeByteCutoff = 256 - 256 % alphabet.length;
+  if (safeByteCutoff === 256) {
+    let mask = alphabet.length - 1;
+    return (size = defaultSize) => {
+      if (!size)
+        return "";
+      let id = "";
+      while (true) {
+        let bytes = getRandom(size);
+        let i = size;
+        while (i--) {
+          id += alphabet[bytes[i] & mask];
+          if (id.length >= size)
+            return id;
+        }
+      }
+    };
+  }
+  let step = Math.ceil(1.6 * 256 * defaultSize / safeByteCutoff);
+  return (size = defaultSize) => {
+    if (!size)
+      return "";
+    let id = "";
+    while (true) {
+      let bytes = getRandom(step);
+      let i = step;
+      while (i--) {
+        if (bytes[i] < safeByteCutoff) {
+          id += alphabet[bytes[i] % alphabet.length];
+          if (id.length >= size)
+            return id;
+        }
+      }
+    }
+  };
+}
+function customAlphabet(alphabet, size = 21) {
+  return customRandom(alphabet, size, random);
+}
+
 // src/shared/paths.ts
 import { homedir } from "os";
 import { join } from "path";
@@ -12687,7 +12750,7 @@ function loadWorkerEnv() {
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.14.0",
+  version: "0.15.0",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -12756,6 +12819,8 @@ var VERSION = package_default.version;
 // src/mcp-server.ts
 loadWorkerEnv();
 var WORKER_BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
+var _sid = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 10);
+var PROCESS_SESSION_ID = `mcp-${_sid()}`;
 async function workerPost(path, body) {
   const res = await fetch(`${WORKER_BASE}${path}`, {
     method: "POST",
@@ -12867,6 +12932,41 @@ var TOOLS = [
     name: "status",
     description: "Health check: are voyage and chroma reachable?",
     inputSchema: { type: "object", properties: {} }
+  },
+  {
+    name: "work_set",
+    description: 'Coordination board: publish or refresh a transient claim that YOU are working on something right now, then immediately get back any OTHER active sessions whose files overlap yours. Call this before diving into a codebase area, and re-call periodically (it is a heartbeat that keeps the lease alive). Other AI sessions on this machine (Claude, Codex, Gemini, Cursor all share one captain) see your claim at once. Pass `agent` so the claim reads "codex on this captain", and `files` as the globs you will touch ("billing/**", "src/auth/login.ts"). Claims are advisory leases, not locks \u2014 they auto-expire (default 30 min) so a crashed session never blocks an area. Returns { session_id, overlaps[] }; if overlaps is non-empty, another session is in the same files \u2014 coordinate before editing.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        what: { type: "string", description: 'Short description, e.g. "refactoring the billing module".' },
+        files: { type: "array", items: { type: "string" }, description: 'Globs you will touch, e.g. ["billing/**"].' },
+        agent: { type: "string", description: "Your AI label: claude | codex | gemini | cursor." },
+        ttl_s: { type: "number", description: "Lease seconds (default 1800, clamped 60..28800)." },
+        session_id: { type: "string", description: "Stable id for your session; omit to use this MCP process default." }
+      },
+      required: ["what"]
+    }
+  },
+  {
+    name: "work_active",
+    description: "Coordination board: list the live work claims on this captain and, if you pass your session_id, which of them overlap your own claimed files. Call this to see who else is working where before you start.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Your session id, to compute overlaps_with_mine; omit to use this MCP process default." }
+      }
+    }
+  },
+  {
+    name: "work_clear",
+    description: "Coordination board: drop your work claim when the task is done (releases the lease immediately instead of waiting for it to expire).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Session id to clear; omit to clear this MCP process default." }
+      }
+    }
   }
 ];
 function buildRememberRequest(args, cwd) {
@@ -12940,6 +13040,25 @@ async function runMcpServer() {
         case "status": {
           const res = await fetch(`${WORKER_BASE}/health`);
           result = res.ok ? await res.json() : { healthy: false };
+          break;
+        }
+        case "work_set": {
+          const a = args ?? {};
+          result = await workerPost("/worknote/set", { ...a, session_id: a.session_id || PROCESS_SESSION_ID });
+          break;
+        }
+        case "work_active": {
+          const a = args ?? {};
+          const q = new URLSearchParams({ session_id: a.session_id || PROCESS_SESSION_ID });
+          const res = await fetch(`${WORKER_BASE}/worknote/active?${q.toString()}`);
+          if (!res.ok)
+            throw new Error(`worker /worknote/active returned ${res.status}`);
+          result = await res.json();
+          break;
+        }
+        case "work_clear": {
+          const a = args ?? {};
+          result = await workerPost("/worknote/clear", { session_id: a.session_id || PROCESS_SESSION_ID });
           break;
         }
         default:

@@ -14,6 +14,7 @@
 import { logHookError } from './shared.ts';
 import { main as userPromptSubmit } from './user-prompt-submit.ts';
 import { main as sessionStart } from './session-start.ts';
+import { main as preToolUse } from './pre-tool-use.ts';
 import { main as postToolUse } from './post-tool-use.ts';
 import { main as stop } from './stop.ts';
 import { main as preCompact } from './pre-compact.ts';
@@ -21,6 +22,7 @@ import { main as preCompact } from './pre-compact.ts';
 const EVENTS: Record<string, () => Promise<void>> = {
   UserPromptSubmit: userPromptSubmit,
   SessionStart:     sessionStart,
+  PreToolUse:       preToolUse,
   PostToolUse:      postToolUse,
   Stop:             stop,
   PreCompact:       preCompact,

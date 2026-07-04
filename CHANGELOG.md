@@ -5,6 +5,22 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.15.0] — 2026-07-04
+
+### Added
+- **Work-coordination board — file-overlap and semantic-overlap warnings between agents on the same machine.**
+  A new `PreToolUse` hook publishes a transient claim ("agent X, session Y is touching these files") before
+  every Edit/Write/MultiEdit/NotebookEdit; any other AI tool sharing this captain (Claude Code, Codex, Gemini
+  CLI, Cursor) editing overlapping files is flagged at once.
+  - Two independent overlap passes: **file** (glob/path intersection, conservative — over-warns rather than
+    misses a collision) and **semantic** (embeds each claim's declared intent and flags two agents working on
+    the same thing in *different* files, which the file pass can't see). The semantic pass never blocks on the
+    embedder — it compares only already-cached vectors and warms the cache in the background, so a brand-new
+    claim's semantic overlap surfaces a beat later, not on the very first edit.
+  - Claims are advisory leases (default 30 min), not locks — reaped lazily on read, so a crashed session never
+    leaves a phantom claim blocking an area.
+  - New MCP tools: `work_set`, `work_active`, `work_clear` (see README).
+
 ## [0.14.0] — 2026-06-25
 
 ### Added
