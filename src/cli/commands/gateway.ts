@@ -14,8 +14,6 @@
 import { pairNewDevice, loadGatewayConfig, revokeDevice } from '../../shared/gateway-tokens.ts';
 import { DEFAULT_WORKER_PORT } from '../../shared/paths.ts';
 
-const DEFAULT_GATEWAY_PORT = DEFAULT_WORKER_PORT + 1;
-
 function flag(args: string[], name: string): string | undefined {
   const i = args.indexOf(`--${name}`);
   return i >= 0 ? args[i + 1] : undefined;
@@ -44,9 +42,14 @@ export async function gatewayCommand(args: string[]): Promise<number> {
       return 2;
     }
     const { device, token } = pairNewDevice(label);
+    // Mirror the worker's own formula (src/worker/index.ts) so the printed port always
+    // matches the port it actually binds — even when CAPTAIN_MEMO_WORKER_PORT is customized.
+    const workerPort = process.env.CAPTAIN_MEMO_WORKER_PORT
+      ? Number(process.env.CAPTAIN_MEMO_WORKER_PORT)
+      : DEFAULT_WORKER_PORT;
     const port = process.env.CAPTAIN_MEMO_GATEWAY_PORT
       ? Number(process.env.CAPTAIN_MEMO_GATEWAY_PORT)
-      : DEFAULT_GATEWAY_PORT;
+      : workerPort + 1;
     console.log(`Paired device "${label}" (${device.id}).`);
     console.log(`\nConnector URL: http://<your-host-or-reverse-proxy>:${port}`);
     console.log(`Token (shown once, save it now): ${token}`);

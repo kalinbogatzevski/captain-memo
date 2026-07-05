@@ -246,6 +246,9 @@ captain-memo gateway revoke <device-id>       # remove a device; its token stops
 captain-memo restart                          # apply the change
 ```
 
+Revoking a device blocks any new connection immediately; an already-connected session keeps
+working until it closes or you restart the worker.
+
 The worker itself serves an authenticated HTTP-MCP listener (localhost-only) once a device is
 paired — nothing runs unless you pair something. Reach it from outside your machine via your own
 reverse proxy (nginx, Caddy, a tunnel) with TLS; captain-memo never binds a public interface or
