@@ -234,6 +234,25 @@ written `chmod 600`; store it securely. On restore, vectors are reused when the 
 embedder matches the backup, and otherwise rebuilt from source automatically.
 Merging two corpora (`import`) is planned separately.
 
+### Local device pairing
+
+Pair a second device (phone, tablet, another machine) to this captain's memory — no hub, no
+external relay, entirely self-hosted:
+
+```bash
+captain-memo gateway pair --label "phone"     # prints a one-time token + connector URL
+captain-memo gateway list                     # show paired devices
+captain-memo gateway revoke <device-id>       # remove a device; its token stops working at once
+captain-memo restart                          # apply the change
+```
+
+The worker itself serves an authenticated HTTP-MCP listener (localhost-only) once a device is
+paired — nothing runs unless you pair something. Reach it from outside your machine via your own
+reverse proxy (nginx, Caddy, a tunnel) with TLS; captain-memo never binds a public interface or
+manages certificates itself. Every paired device gets the same tool access a local session has —
+there's no separate identity or trust model to configure, just this one corpus, one more
+authenticated way in.
+
 ---
 
 ## Inside Claude Code

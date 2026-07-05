@@ -9,6 +9,11 @@ This repo also has an internal `federation` branch (GitLab-only, never public) w
 independent version counter — its release tags use a `fed-v` prefix (`fed-v0.19.0`, etc.) specifically
 so they never collide with this line's plain `vX.Y.Z` GitHub tags in a shared local clone.
 
+## [0.17.0] — Unreleased
+
+### Added
+- **Local device pairing — pair a second device (phone, another machine) to this captain's memory, no hub required.** `captain-memo gateway pair|list|revoke` mints/lists/removes bearer tokens; the worker serves an authenticated HTTP-MCP listener (localhost-only, started only when a device is paired) that the operator reaches via their own reverse proxy + TLS. Full tool access per paired device in this release — no separate identity, no peer/federation concept, no new process to manage.
+
 ## [0.16.0] — 2026-07-05
 
 ### Added
