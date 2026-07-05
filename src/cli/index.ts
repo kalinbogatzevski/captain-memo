@@ -22,6 +22,7 @@ import { watchCommand } from './commands/watch.ts';
 import { topCommand } from './commands/top.ts';
 import { workerWatchdogCommand } from './commands/worker-watchdog.ts';
 import { restartCommand } from './commands/restart.ts';
+import { gatewayCommand } from './commands/gateway.ts';
 import { evalCommand } from './commands/eval.ts';
 import { printBanner } from './banner.ts';
 import { VERSION } from '../shared/version.ts';
@@ -41,6 +42,7 @@ Commands:
   observation  list|sunk|flush — manage observations (sunk: list dormant/archived; --archived)
   restore      Re-surface a sunk (dormant/archived) observation: restore <id>
   backup       create | restore | info — portable memory archive (move/restore a captain's memories)
+  gateway      pair | list | revoke — pair a second device (phone, another machine) to this corpus
   config       show — print effective config (env + defaults, secrets masked)
   install      Interactive wizard — installs everything (embedder, worker, plugin)
   connect      Wire other AI tools (Codex, Gemini, Cursor, opencode, Vibe, VS Code, JetBrains) to the shared worker (--list)
@@ -121,6 +123,9 @@ export async function main(args: string[]): Promise<void> {
       break;
     case 'backup':
       exit = await backupCommand(args.slice(1));
+      break;
+    case 'gateway':
+      exit = await gatewayCommand(args.slice(1));
       break;
     case 'config':
       exit = await configCommand(args.slice(1));
