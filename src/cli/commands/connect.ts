@@ -1,10 +1,10 @@
 // captain-memo connect — detect installed MCP-speaking AI coding tools (Codex,
-// Gemini CLI, Cursor) and wire each to the SAME captain-memo worker so they all
-// share one local memory corpus.
+// Gemini CLI, Cursor, opencode, Mistral Vibe, VS Code, JetBrains) and wire each
+// to the SAME captain-memo worker so they all share one local memory corpus.
 //
 //   captain-memo connect            detect + wire every installed tool, print a report
 //   captain-memo connect --list     just show which tools are detected (no changes)
-//   captain-memo connect <tool>     wire only that tool (codex | gemini | cursor)
+//   captain-memo connect <tool>     wire only that tool (see ADAPTERS in cross-ai.ts)
 //
 // The actual per-tool logic lives in src/cli/cross-ai.ts (testable adapter layer).
 // Claude Code is wired by the plugin install (`captain-memo install`), not here —

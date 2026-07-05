@@ -43,7 +43,7 @@ Commands:
   backup       create | restore | info — portable memory archive (move/restore a captain's memories)
   config       show — print effective config (env + defaults, secrets masked)
   install      Interactive wizard — installs everything (embedder, worker, plugin)
-  connect      Wire other AI tools (Codex, Gemini, Cursor) to the shared worker (--list)
+  connect      Wire other AI tools (Codex, Gemini, Cursor, opencode, Vibe, VS Code, JetBrains) to the shared worker (--list)
   uninstall    Clean removal of everything (--purge for data too)
   doctor       Health probe across embedder / worker / plugin
   restart      Restart the local worker (reload config / recover). --force to hard-stop
