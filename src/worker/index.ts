@@ -6,6 +6,11 @@ import { MetaStore } from './meta.ts';
 import { Embedder } from './embedder.ts';
 import { embedderMaxTokens } from '../shared/embedder-limits.ts';
 import { loadWorkerEnv } from '../shared/worker-env.ts';
+import { loadGatewayConfig, verifyToken } from '../shared/gateway-tokens.ts';
+import { dispatchTool, TOOLS } from '../mcp-server.ts';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { VectorStore } from './vector-store.ts';
 import { HybridSearcher } from './search.ts';
 import { IngestPipeline } from './ingest.ts';
@@ -2010,6 +2015,52 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     meta.close();
   };
 
+  // Optional local device-pairing gateway (GitHub #6) — an authenticated HTTP-MCP listener,
+  // started only when at least one device is paired. Localhost-only; the operator's own
+  // reverse proxy is responsible for public exposure + TLS. See
+  // docs/superpowers/specs/2026-07-05-local-device-pairing-design.md.
+  let gatewayServer: ReturnType<typeof Bun.serve> | undefined;
+  if (!opts.noServe) {
+    const gatewayCfg = loadGatewayConfig();
+    if (gatewayCfg.devices.length > 0) {
+      const gatewayPort = process.env.CAPTAIN_MEMO_GATEWAY_PORT
+        ? Number(process.env.CAPTAIN_MEMO_GATEWAY_PORT)
+        : opts.port + 1;
+      try {
+        gatewayServer = Bun.serve({
+          port: gatewayPort,
+          hostname: '127.0.0.1',
+          async fetch(req) {
+            const auth = req.headers.get('authorization') ?? '';
+            const token = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '';
+            const device = verifyToken(token, loadGatewayConfig());
+            if (!device) return Response.json({ error: 'unauthorized' }, { status: 401 });
+
+            const server = new Server({ name: 'captain-memo-gateway', version: VERSION }, { capabilities: { tools: {} } });
+            server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+            server.setRequestHandler(CallToolRequestSchema, async (request) => {
+              return dispatchTool(request.params.name, request.params.arguments, {
+                workerBase: `http://127.0.0.1:${opts.port}`,
+                sessionId: `gw-${device.id}`,
+                cwd: () => '/',
+              });
+            });
+            const transport = new WebStandardStreamableHTTPServerTransport({
+              sessionIdGenerator: () => crypto.randomUUID(),
+              enableJsonResponse: true,
+            });
+            await server.connect(transport);
+            return transport.handleRequest(req);
+          },
+        });
+        console.log(`[gateway] listening on 127.0.0.1:${gatewayServer.port} (${gatewayCfg.devices.length} device(s) paired)`);
+      } catch (err) {
+        console.warn(`[gateway] failed to start (port ${gatewayPort} in use?) — continuing without it:`, err);
+        gatewayServer = undefined;
+      }
+    }
+  }
+
   if (opts.noServe) {
     // Engine-thread mode: no port bound; the engine serves `handler` over the channel.
     return {
@@ -2031,7 +2082,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     port: server.port ?? opts.port,
     handler,
     ...(obsStore ? { store: obsStore } : {}),
-    stop: async () => { server.stop(true); await stopResources(); },
+    stop: async () => { gatewayServer?.stop(true); server.stop(true); await stopResources(); },
   };
 }
 
