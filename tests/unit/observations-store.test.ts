@@ -322,8 +322,8 @@ test('ObservationsStore — schema_versions records all migrations after constru
   const db = new Database(join(workDir, 'observations.db'), { readonly: true });
   const rows = getAppliedVersions(db);
   db.close();
-  expect(rows).toHaveLength(12);
-  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  expect(rows).toHaveLength(13);
+  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
   expect(rows.map(r => r.name)).toEqual([
     'add_branch',
     'add_work_tokens',
@@ -337,6 +337,7 @@ test('ObservationsStore — schema_versions records all migrations after constru
     'add_qm_runs',
     'add_promoted_at',
     'add_superseded_by',
+    'add_origin_agent',
   ]);
   store = new ObservationsStore(join(workDir, 'observations.db'));
 });
@@ -1284,4 +1285,67 @@ test('P3 — supersedeLinkCount + listSupersedeEvents reflect open links', () =>
   store.unlinkSupersede(o1);
   expect(store.supersedeLinkCount()).toBe(1);
   expect(store.listSupersedeEvents(10)).toHaveLength(1);
+});
+
+// ── C1: origin_agent vendor provenance (migration v13 + capture + back-compat) ──
+
+test('ObservationsStore — migration v13 adds origin_agent column (nullable, no default)', () => {
+  const db = new Database(join(workDir, 'observations.db'));
+  const cols = db.query('PRAGMA table_info(observations)').all() as Array<{ name: string; dflt_value: unknown; notnull: number }>;
+  const byName = new Map(cols.map(c => [c.name, c]));
+
+  expect(byName.has('origin_agent')).toBe(true);
+  expect(byName.get('origin_agent')!.dflt_value).toBeNull();
+  expect(byName.get('origin_agent')!.notnull).toBe(0);
+  expect(getAppliedVersions(db).some(v => v.version === 13)).toBe(true);
+  db.close();
+});
+
+test('ObservationsStore — insert persists origin_agent and it roundtrips', () => {
+  const id = store.insert({ ...tideBase, origin_agent: 'codex' });
+  expect(store.findById(id)!.origin_agent).toBe('codex');
+});
+
+test('ObservationsStore — origin_agent defaults to null when omitted (back-compat)', () => {
+  const id = store.insert({ ...tideBase });
+  expect(store.findById(id)!.origin_agent).toBeNull();
+});
+
+test('ObservationsStore — pre-v13 rows (origin_agent column absent) hydrate as null', () => {
+  const dbPath = join(workDir, 'legacy.db');
+  const raw = new Database(dbPath);
+  raw.exec(`CREATE TABLE observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL, project_id TEXT NOT NULL, prompt_number INTEGER NOT NULL,
+    type TEXT NOT NULL, title TEXT NOT NULL, narrative TEXT NOT NULL DEFAULT '',
+    facts TEXT NOT NULL DEFAULT '[]', concepts TEXT NOT NULL DEFAULT '[]',
+    files_read TEXT NOT NULL DEFAULT '[]', files_modified TEXT NOT NULL DEFAULT '[]',
+    created_at_epoch INTEGER NOT NULL);`);
+  raw.run(
+    `INSERT INTO observations (session_id, project_id, prompt_number, type, title, created_at_epoch)
+     VALUES ('s','p',1,'change','legacy row',100)`,
+  );
+  raw.close();
+
+  const migrated = new ObservationsStore(dbPath);
+  const got = migrated.listRecent(1)[0]!;
+  expect(got.origin_agent).toBeNull();
+  const id = migrated.insert({ ...tideBase, origin_agent: 'claude-code' });
+  expect(migrated.findById(id)!.origin_agent).toBe('claude-code');
+  migrated.close();
+});
+
+test('ObservationsStore — migration v13 is idempotent on a DB that already has the column', () => {
+  const dbPath = join(workDir, 'observations.db');
+  store.close();
+  const reopened = new ObservationsStore(dbPath);
+  const id = reopened.insert({ ...tideBase, origin_agent: 'gemini' });
+  expect(reopened.findById(id)!.origin_agent).toBe('gemini');
+  reopened.close();
+
+  const db = new Database(dbPath, { readonly: true });
+  const v13 = getAppliedVersions(db).filter(v => v.version === 13);
+  expect(v13).toHaveLength(1);
+  db.close();
+  store = new ObservationsStore(dbPath);   // restore for afterEach
 });

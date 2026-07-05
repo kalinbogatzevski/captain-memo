@@ -6,6 +6,8 @@ import type { TideConfig, TideRow, TideState } from './tide.ts';
 import { groupBySimilarity, DEFAULT_SIMILARITY_THRESHOLD } from '../shared/title-similarity.ts';
 import { mergeBlocked } from '../shared/merge-guard.ts';
 import { parseVersion, compareVersion } from './version-parse.ts';
+import { asOriginAgent } from '../shared/origin-agent.ts';
+import type { OriginAgent } from '../shared/origin-agent.ts';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS observations (
@@ -210,6 +212,18 @@ export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_supersede_events_older ON supersede_events(older_id) WHERE undone = 0');
     },
   },
+  {
+    // v13 — C1 vendor provenance: tag each observation with the AI agent that
+    // authored it, mirroring how federation tags origin_peer at the captain
+    // layer. Nullable with NO default: pre-v13 rows stay NULL (rendered
+    // 'unknown' to consumers), and a hook that sends no agent signal also
+    // stores NULL. Purely additive — the live recall path never filters on
+    // it; it's carried into chunk/document metadata so search / get_full can
+    // surface who wrote a memory.
+    version: 13,
+    name: 'add_origin_agent',
+    up: (db) => db.exec('ALTER TABLE observations ADD COLUMN origin_agent TEXT'),
+  },
 ];
 
 export type NewObservation = Omit<
@@ -220,8 +234,8 @@ export type NewObservation = Omit<
   | 'last_surfaced_at' | 'last_surfaced_source'
   | 'archived' | 'archived_into_theme_id' | 'theme_member_ids'
   | 'stability_days' | 'tide_state' | 'tide_state_changed_at' | 'is_anchored'
-  | 'superseded_by'
->;
+  | 'superseded_by' | 'origin_agent'
+> & { origin_agent?: OriginAgent | null };
 
 /** Per-source breakdown for one observation in the top lists. */
 export interface RecallTopEntry {
@@ -477,8 +491,8 @@ export class ObservationsStore {
       .query(
         `INSERT INTO observations
           (session_id, project_id, prompt_number, type, title, narrative,
-           facts, concepts, files_read, files_modified, created_at_epoch, branch, work_tokens)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           facts, concepts, files_read, files_modified, created_at_epoch, branch, work_tokens, origin_agent)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         obs.session_id, obs.project_id, obs.prompt_number, obs.type, obs.title,
@@ -490,6 +504,7 @@ export class ObservationsStore {
         obs.created_at_epoch,
         obs.branch ?? null,
         obs.work_tokens ?? null,
+        obs.origin_agent ?? null,
       );
     return Number(result.lastInsertRowid);
   }
@@ -509,7 +524,9 @@ export class ObservationsStore {
       files_modified: JSON.parse(String(row.files_modified)),
       created_at_epoch: Number(row.created_at_epoch),
       branch: typeof row.branch === 'string' ? row.branch : null,
-      origin_agent: null,
+      // Pre-v13 rows (no column) and rows captured with no agent signal read back
+      // NULL; an unrecognized stored value also narrows to null (never throws).
+      origin_agent: asOriginAgent(row.origin_agent),
       work_tokens: typeof row.work_tokens === 'number' ? row.work_tokens : null,
       stored_tokens: typeof row.stored_tokens === 'number' ? row.stored_tokens : null,
       retrieval_count: typeof row.retrieval_count === 'number' ? row.retrieval_count : 0,
