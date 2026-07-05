@@ -12750,7 +12750,7 @@ function loadWorkerEnv() {
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.16.0",
+  version: "0.17.0",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -12821,8 +12821,8 @@ loadWorkerEnv();
 var WORKER_BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
 var _sid = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 10);
 var PROCESS_SESSION_ID = `mcp-${_sid()}`;
-async function workerPost(path, body) {
-  const res = await fetch(`${WORKER_BASE}${path}`, {
+async function workerPost(base, path, body) {
+  const res = await fetch(`${base}${path}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body)
@@ -12999,81 +12999,87 @@ async function dispatchRemember(args, deps) {
   const result = await deps.post("/remember", body);
   return formatRememberResult(result);
 }
+function defaultDispatchDeps() {
+  return { workerBase: WORKER_BASE, sessionId: PROCESS_SESSION_ID, cwd: () => process.cwd() };
+}
+async function dispatchTool(name, args, deps = defaultDispatchDeps()) {
+  const { workerBase, sessionId, cwd } = deps;
+  let result;
+  try {
+    switch (name) {
+      case "search_memory":
+        result = await workerPost(workerBase, "/search/memory", args);
+        break;
+      case "search_skill":
+        result = await workerPost(workerBase, "/search/skill", args);
+        break;
+      case "search_observations":
+        result = await workerPost(workerBase, "/search/observations", args);
+        break;
+      case "search_all":
+        result = await workerPost(workerBase, "/search/all", args);
+        break;
+      case "get_full":
+        result = await workerPost(workerBase, "/get_full", args);
+        break;
+      case "reindex":
+        result = await workerPost(workerBase, "/reindex", args);
+        break;
+      case "remember":
+        return await dispatchRemember(args, {
+          post: (path, body) => workerPost(workerBase, path, body),
+          cwd
+        });
+      case "stats": {
+        const res = await fetch(`${workerBase}/stats`);
+        if (!res.ok)
+          throw new Error(`worker /stats returned ${res.status}`);
+        result = await res.json();
+        break;
+      }
+      case "status": {
+        const res = await fetch(`${workerBase}/health`);
+        result = res.ok ? await res.json() : { healthy: false };
+        break;
+      }
+      case "work_set": {
+        const a = args ?? {};
+        result = await workerPost(workerBase, "/worknote/set", { ...a, session_id: a.session_id || sessionId });
+        break;
+      }
+      case "work_active": {
+        const a = args ?? {};
+        const q = new URLSearchParams({ session_id: a.session_id || sessionId });
+        const res = await fetch(`${workerBase}/worknote/active?${q.toString()}`);
+        if (!res.ok)
+          throw new Error(`worker /worknote/active returned ${res.status}`);
+        result = await res.json();
+        break;
+      }
+      case "work_clear": {
+        const a = args ?? {};
+        result = await workerPost(workerBase, "/worknote/clear", { session_id: a.session_id || sessionId });
+        break;
+      }
+      default:
+        throw new Error(`unknown tool: ${name}`);
+    }
+  } catch (err) {
+    const e = err;
+    return {
+      content: [{ type: "text", text: `Error: ${e.message}` }],
+      isError: true
+    };
+  }
+  return {
+    content: [{ type: "text", text: JSON.stringify(result, null, 2) }]
+  };
+}
 async function runMcpServer() {
   const server = new Server({ name: "captain-memo", version: VERSION }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
-    let result;
-    try {
-      switch (name) {
-        case "search_memory":
-          result = await workerPost("/search/memory", args);
-          break;
-        case "search_skill":
-          result = await workerPost("/search/skill", args);
-          break;
-        case "search_observations":
-          result = await workerPost("/search/observations", args);
-          break;
-        case "search_all":
-          result = await workerPost("/search/all", args);
-          break;
-        case "get_full":
-          result = await workerPost("/get_full", args);
-          break;
-        case "reindex":
-          result = await workerPost("/reindex", args);
-          break;
-        case "remember":
-          return await dispatchRemember(args, {
-            post: workerPost,
-            cwd: () => process.cwd()
-          });
-        case "stats": {
-          const res = await fetch(`${WORKER_BASE}/stats`);
-          if (!res.ok)
-            throw new Error(`worker /stats returned ${res.status}`);
-          result = await res.json();
-          break;
-        }
-        case "status": {
-          const res = await fetch(`${WORKER_BASE}/health`);
-          result = res.ok ? await res.json() : { healthy: false };
-          break;
-        }
-        case "work_set": {
-          const a = args ?? {};
-          result = await workerPost("/worknote/set", { ...a, session_id: a.session_id || PROCESS_SESSION_ID });
-          break;
-        }
-        case "work_active": {
-          const a = args ?? {};
-          const q = new URLSearchParams({ session_id: a.session_id || PROCESS_SESSION_ID });
-          const res = await fetch(`${WORKER_BASE}/worknote/active?${q.toString()}`);
-          if (!res.ok)
-            throw new Error(`worker /worknote/active returned ${res.status}`);
-          result = await res.json();
-          break;
-        }
-        case "work_clear": {
-          const a = args ?? {};
-          result = await workerPost("/worknote/clear", { session_id: a.session_id || PROCESS_SESSION_ID });
-          break;
-        }
-        default:
-          throw new Error(`unknown tool: ${name}`);
-      }
-    } catch (err) {
-      const e = err;
-      return {
-        content: [{ type: "text", text: `Error: ${e.message}` }],
-        isError: true
-      };
-    }
-    return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }]
-    };
+    return dispatchTool(request.params.name, request.params.arguments);
   });
   const transport = new StdioServerTransport;
   await server.connect(transport);
@@ -13088,6 +13094,7 @@ if (import.meta.main) {
 export {
   runMcpServer,
   formatRememberResult,
+  dispatchTool,
   dispatchRemember,
   buildRememberRequest,
   TOOLS
