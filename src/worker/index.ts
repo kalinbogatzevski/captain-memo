@@ -141,6 +141,8 @@ export interface WorkerOptions {
   observationQueueDbPath?: string;
   observationsDbPath?: string;
   pendingEmbedDbPath?: string;
+  /** Override for the gateway.json path — defaults to env/home-derived. Test isolation point. */
+  gatewayConfigPath?: string;
   summarize?: (events: RawObservationEvent[]) => Promise<SummarizerResult>;
   /** Raw model-fallback transport (from Summarizer.getTransport()). Surfaced so the
    *  /remember writer can drive frontmatter/merge fills directly — distinct from the
@@ -2041,7 +2043,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // See docs/superpowers/specs/2026-07-05-local-device-pairing-design.md.
   let gatewayServer: ReturnType<typeof Bun.serve> | undefined;
   const gatewaySessions = new Map<string, { server: Server; transport: WebStandardStreamableHTTPServerTransport }>();
-  const gatewayCfg = loadGatewayConfig();
+  const gatewayCfg = loadGatewayConfig(opts.gatewayConfigPath);
   if (gatewayCfg.devices.length > 0) {
     const gatewayPort = process.env.CAPTAIN_MEMO_GATEWAY_PORT
       ? Number(process.env.CAPTAIN_MEMO_GATEWAY_PORT)
@@ -2060,7 +2062,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 
           const auth = req.headers.get('authorization') ?? '';
           const token = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '';
-          const device = verifyToken(token, loadGatewayConfig());
+          const device = verifyToken(token, loadGatewayConfig(opts.gatewayConfigPath));
           if (!device) return Response.json({ error: 'unauthorized' }, { status: 401 });
 
           const mcpServer = new Server({ name: 'captain-memo-gateway', version: VERSION }, { capabilities: { tools: {} } });
