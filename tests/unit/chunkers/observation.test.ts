@@ -60,6 +60,16 @@ test('chunkObservation — metadata propagates type, files, project, observation
   expect(chunk!.metadata.files_modified).toEqual(['core/modules/admin/forms/render.php']);
 });
 
+test('chunkObservation — origin_agent vendor provenance is surfaced in chunk metadata', () => {
+  const [chunk] = chunkObservation({ ...observation, origin_agent: 'codex' });
+  expect(chunk!.metadata.origin_agent).toBe('codex');
+});
+
+test('chunkObservation — origin_agent null renders as unknown in metadata (back-compat)', () => {
+  const [chunk] = chunkObservation({ ...observation, origin_agent: null });
+  expect(chunk!.metadata.origin_agent).toBe('unknown');
+});
+
 test('chunkObservation — observation with only a narrative still produces one chunk', () => {
   const narrativeOnly = { ...observation, facts: [], title: '' };
   const chunks = chunkObservation(narrativeOnly);

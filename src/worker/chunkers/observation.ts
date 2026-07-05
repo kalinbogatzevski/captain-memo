@@ -1,4 +1,5 @@
 import type { ChunkInput, Observation } from '../../shared/types.ts';
+import { UNKNOWN_ORIGIN_AGENT } from '../../shared/origin-agent.ts';
 
 export interface SessionSummary {
   id: number;
@@ -28,6 +29,9 @@ export function chunkObservation(obs: Observation): ChunkInput[] {
     created_at_epoch: obs.created_at_epoch,
     prompt_number: obs.prompt_number,
     work_tokens: obs.work_tokens ?? null,
+    // Vendor provenance — null (no signal recorded) surfaces as 'unknown' so a
+    // consumer always sees a concrete agent tag. Mirrors origin_peer surfacing.
+    origin_agent: obs.origin_agent ?? UNKNOWN_ORIGIN_AGENT,
   };
 
   // Single chunk per observation: title + narrative + facts bundled together.
