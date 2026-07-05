@@ -635,7 +635,7 @@ init_paths();
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.15.0",
+  version: "0.16.0",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -1007,6 +1007,34 @@ function detectBranchSync(cwd) {
 }
 var branchCache = new Map;
 
+// src/shared/origin-agent.ts
+var ORIGIN_AGENTS = [
+  "claude-code",
+  "codex",
+  "cursor",
+  "gemini",
+  "opencode",
+  "vibe",
+  "vscode",
+  "jetbrains",
+  "unknown"
+];
+var UNKNOWN_ORIGIN_AGENT = "unknown";
+function asOriginAgent(v) {
+  return typeof v === "string" && ORIGIN_AGENTS.includes(v) ? v : null;
+}
+function detectOriginAgent(env = process.env) {
+  const e = env ?? {};
+  const explicit = asOriginAgent((e.AI_AGENT ?? "").trim().toLowerCase());
+  if (explicit)
+    return explicit;
+  if ((e.CLAUDECODE ?? "").length > 0)
+    return "claude-code";
+  if ((e.CLAUDE_CODE_ENTRYPOINT ?? "").length > 0)
+    return "claude-code";
+  return UNKNOWN_ORIGIN_AGENT;
+}
+
 // src/hooks/post-tool-use.ts
 var HOOK_TIMEOUT_MS2 = Number(process.env.CAPTAIN_MEMO_POST_TOOL_USE_TIMEOUT_MS ?? 1000);
 function extractFiles(input, response) {
@@ -1045,7 +1073,8 @@ async function main4() {
     files_read: read,
     files_modified: modified,
     ts_epoch: Math.floor(Date.now() / 1000),
-    branch: detectBranchSync(process.cwd())
+    branch: detectBranchSync(process.cwd()),
+    origin_agent: detectOriginAgent()
   };
   const res = await workerFetch("/observation/enqueue", {
     method: "POST",
@@ -1098,6 +1127,7 @@ async function main6() {
     files_modified: [],
     ts_epoch: Math.floor(Date.now() / 1000),
     branch: detectBranchSync(process.cwd()),
+    origin_agent: detectOriginAgent(),
     source: "pre-compact"
   };
   const res = await workerFetch("/observation/enqueue", {

@@ -9,6 +9,26 @@ This repo also has an internal `federation` branch (GitLab-only, never public) w
 independent version counter — its release tags use a `fed-v` prefix (`fed-v0.19.0`, etc.) specifically
 so they never collide with this line's plain `vX.Y.Z` GitHub tags in a shared local clone.
 
+## [0.16.0] — 2026-07-05
+
+### Added
+- **Vendor provenance — tag every captured observation with which AI tool wrote it.** A new closed
+  9-member tag (`claude-code`, `codex`, `cursor`, `gemini`, `opencode`, `vibe`, `vscode`, `jetbrains`,
+  `unknown`) is stamped on capture and surfaced as `metadata.origin_agent` on every search and
+  `get_full` hit. Detection is environment-signal based (an explicit `AI_AGENT` override, or
+  `CLAUDECODE`/`CLAUDE_CODE_ENTRYPOINT` for Claude Code) and never fails a capture — an absent or
+  unrecognized signal always degrades to `unknown`.
+  - Additive SQLite migration (nullable column, no default) — old rows read back as `unknown`, zero
+    downtime, zero behavior change for anything that doesn't reference the new field.
+  - Foundational: today only Claude Code's hooks actively write observations (the other 7 tools are
+    read-only recall via MCP), so this mostly tags existing captures — it's the plumbing a future
+    per-vendor capture path needs to already have somewhere to land.
+
+### Fixed
+- Cross-AI tool matrix documentation (README, `docs/cross-ai-tools.md`, two CLI help strings) was
+  still listing only the original 3 tools (Codex, Gemini, Cursor) even though `opencode`, Mistral
+  Vibe, VS Code, and JetBrains adapters already worked — now all 7 are documented consistently.
+
 ## [0.15.0] — 2026-07-04
 
 ### Added

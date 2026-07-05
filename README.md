@@ -381,6 +381,10 @@ sqlite3 ~/.captain-memo/observations.db \
 
 The signal feeds future importance / decay scoring and "Dreaming" clustering — clusters of observations you actually keep drilling into, not just clusters that happen to share vocabulary.
 
+### Vendor provenance (v0.16.0+)
+
+Every captured observation is tagged with which AI tool wrote it — `claude-code`, `codex`, `cursor`, `gemini`, `opencode`, `vibe`, `vscode`, `jetbrains`, or `unknown` for older/unattributed rows — surfaced in `metadata.origin_agent` on every search and `get_full` hit. Today only Claude Code's hooks actively capture (the other tools are read-only recall, see [Cross-AI](#what-it-is)), so this is foundational: the tag is already there, ready for when another vendor's capture path lands, and it never blocks a capture — an unrecognized or missing signal always degrades to `unknown`, never an error.
+
 ## Migrating from claude-mem
 
 If you've been using [`claude-mem`](https://github.com/thedotmack/claude-mem) and want to bring your existing observations and session summaries into Captain Memo, the migration is one command. Your claude-mem install stays intact — Captain Memo only **reads** from `~/.claude-mem/claude-mem.db`, never modifies it.
