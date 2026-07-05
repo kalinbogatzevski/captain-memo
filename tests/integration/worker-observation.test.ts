@@ -127,6 +127,11 @@ test('capture writes origin_agent end-to-end (enqueue → flush → store)', asy
   expect(stored[0]!.origin_agent).toBe('codex');
 });
 
+// Note: this is a smoke test for the omitted-field path, not a regression guard
+// for the `head.origin_agent ?? null` fallback — `head.origin_agent` is
+// `undefined` here regardless of whether that fallback logic is correct, so a
+// broken fallback wouldn't fail this test. See the "unrecognized origin_agent"
+// test below for real coverage of the never-400s/degrades-gracefully behavior.
 test('capture defaults origin_agent to null when the event omits it (back-compat)', async () => {
   await fetch(`http://localhost:${port}/observation/enqueue`, {
     method: 'POST',
@@ -144,6 +149,29 @@ test('capture defaults origin_agent to null when the event omits it (back-compat
   });
 
   const stored = worker.store!.listForSession('s-noagent');
+  expect(stored).toHaveLength(1);
+  expect(stored[0]!.origin_agent).toBeNull();
+});
+
+test('capture tolerates an unrecognized origin_agent value (never 400s, degrades gracefully)', async () => {
+  const res = await fetch(`http://localhost:${port}/observation/enqueue`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      session_id: 's-garbage', project_id: 'p1', prompt_number: 1,
+      tool_name: 'Edit', tool_input_summary: 'edit foo.ts', tool_result_summary: 'ok',
+      files_read: [], files_modified: ['foo.ts'], ts_epoch: 1_700_000_003,
+      origin_agent: 'not-a-real-vendor',
+    }),
+  });
+  expect(res.status).toBe(200);
+  await fetch(`http://localhost:${port}/observation/flush`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ session_id: 's-garbage' }),
+  });
+
+  const stored = worker.store!.listForSession('s-garbage');
   expect(stored).toHaveLength(1);
   expect(stored[0]!.origin_agent).toBeNull();
 });

@@ -216,8 +216,11 @@ const ObservationEnqueueSchema = z.object({
   ts_epoch: z.number().int(),
   branch: z.string().nullable().optional(),
   // Vendor provenance: which AI agent captured this event. Optional + closed
-  // enum; an absent or non-conforming value is treated as 'unknown' downstream.
-  origin_agent: z.enum([...ORIGIN_AGENTS]).optional(),
+  // enum; `.catch(undefined)` means an absent OR non-conforming value (wrong
+  // type, unrecognized string, null, etc.) both resolve to undefined here, so
+  // the field is simply omitted from the enqueued payload rather than 400ing
+  // the whole request. Downstream (the chunker) renders that as 'unknown'.
+  origin_agent: z.enum([...ORIGIN_AGENTS]).optional().catch(undefined),
   source: z.string().optional(),
 });
 
