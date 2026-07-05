@@ -104,3 +104,74 @@ test('POST /observation/enqueue — invalid body → 400', async () => {
   });
   expect(res.status).toBe(400);
 });
+
+test('capture writes origin_agent end-to-end (enqueue → flush → store)', async () => {
+  await fetch(`http://localhost:${port}/observation/enqueue`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      session_id: 's-agent', project_id: 'p1', prompt_number: 1,
+      tool_name: 'Edit', tool_input_summary: 'edit foo.ts', tool_result_summary: 'ok',
+      files_read: [], files_modified: ['foo.ts'], ts_epoch: 1_700_000_000,
+      origin_agent: 'codex',
+    }),
+  });
+  await fetch(`http://localhost:${port}/observation/flush`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ session_id: 's-agent' }),
+  });
+
+  const stored = worker.store!.listForSession('s-agent');
+  expect(stored).toHaveLength(1);
+  expect(stored[0]!.origin_agent).toBe('codex');
+});
+
+test('capture defaults origin_agent to null when the event omits it (back-compat)', async () => {
+  await fetch(`http://localhost:${port}/observation/enqueue`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      session_id: 's-noagent', project_id: 'p1', prompt_number: 1,
+      tool_name: 'Read', tool_input_summary: 'read foo.ts', tool_result_summary: 'ok',
+      files_read: ['foo.ts'], files_modified: [], ts_epoch: 1_700_000_001,
+    }),
+  });
+  await fetch(`http://localhost:${port}/observation/flush`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ session_id: 's-noagent' }),
+  });
+
+  const stored = worker.store!.listForSession('s-noagent');
+  expect(stored).toHaveLength(1);
+  expect(stored[0]!.origin_agent).toBeNull();
+});
+
+test('search surfaces origin_agent in observation hit metadata', async () => {
+  await fetch(`http://localhost:${port}/observation/enqueue`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      session_id: 's-search', project_id: 'p1', prompt_number: 1,
+      tool_name: 'Edit', tool_input_summary: 'zorblax widget refactor', tool_result_summary: 'ok',
+      files_read: [], files_modified: ['zorblax.ts'], ts_epoch: 1_700_000_002,
+      origin_agent: 'gemini',
+    }),
+  });
+  await fetch(`http://localhost:${port}/observation/flush`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ session_id: 's-search' }),
+  });
+
+  const res = await fetch(`http://localhost:${port}/search/observations`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ query: 'zorblax widget', top_k: 5 }),
+  });
+  expect(res.status).toBe(200);
+  const body = await res.json() as { results: Array<{ metadata: Record<string, unknown> }> };
+  expect(body.results.length).toBeGreaterThan(0);
+  expect(body.results[0]!.metadata.origin_agent).toBe('gemini');
+});

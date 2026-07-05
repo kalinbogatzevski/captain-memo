@@ -31,6 +31,7 @@ import { splitForEmbed } from './chunkers/safe-split.ts';
 import { EmbedderInputTooLarge } from './embedder.ts';
 import { newChunkId } from '../shared/id.ts';
 import { sha256Hex } from '../shared/sha.ts';
+import { ORIGIN_AGENTS, UNKNOWN_ORIGIN_AGENT } from '../shared/origin-agent.ts';
 import type { RawObservationEvent, ObservationType, Observation } from '../shared/types.ts';
 import type { Hit } from '../shared/types.ts';
 import {
@@ -214,6 +215,9 @@ const ObservationEnqueueSchema = z.object({
   files_modified: z.array(z.string()).default([]),
   ts_epoch: z.number().int(),
   branch: z.string().nullable().optional(),
+  // Vendor provenance: which AI agent captured this event. Optional + closed
+  // enum; an absent or non-conforming value is treated as 'unknown' downstream.
+  origin_agent: z.enum([...ORIGIN_AGENTS]).optional(),
   source: z.string().optional(),
 });
 
@@ -655,6 +659,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         title: obs.title,
         created_at_epoch: obs.created_at_epoch,
         branch: obs.branch ?? null,
+        origin_agent: obs.origin_agent ?? UNKNOWN_ORIGIN_AGENT,
       },
     });
     meta.replaceChunksForDocument(documentId, chunksWithIds);
@@ -715,7 +720,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           files_modified: dedupeFlat(events.map(e => e.files_modified)),
           created_at_epoch: head.ts_epoch,
           branch: head.branch ?? null,
-          origin_agent: null,
+          origin_agent: head.origin_agent ?? null,
           work_tokens: workTokens,
         });
         const inserted = obsStore.findById(id);
@@ -1919,10 +1924,11 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         if (!parsed.success) {
           return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
         }
-        const { branch, source, ...rest } = parsed.data;
+        const { branch, source, origin_agent, ...rest } = parsed.data;
         const id = obsQueue.enqueue({
           ...rest,
           branch: branch ?? null,
+          ...(origin_agent !== undefined && { origin_agent }),
           ...(source !== undefined && { source }),
         });
         return Response.json({ id, queued: true });
