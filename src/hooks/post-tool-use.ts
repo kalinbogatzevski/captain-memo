@@ -1,6 +1,7 @@
 import { readStdinJson, workerFetch, summarize, resolveProjectId, logHookError, logWorkerFailure } from './shared.ts';
 import type { RawObservationEvent } from '../shared/types.ts';
 import { detectBranchSync } from '../worker/branch.ts';
+import { detectOriginAgent } from '../shared/origin-agent.ts';
 
 interface PostToolUsePayload {
   session_id?: string;
@@ -49,6 +50,7 @@ export async function main(): Promise<void> {
     files_modified: modified,
     ts_epoch: Math.floor(Date.now() / 1000),
     branch: detectBranchSync(process.cwd()),
+    origin_agent: detectOriginAgent(),
   };
 
   const res = await workerFetch('/observation/enqueue', {
