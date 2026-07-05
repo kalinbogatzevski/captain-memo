@@ -772,9 +772,11 @@ const ObservationEnqueueSchema = z.object({
   files_modified: z.array(z.string()).default([]),
   ts_epoch: z.number().int(),
   branch: z.string().nullable().optional(),
-  // Vendor provenance: which AI agent captured this event. Optional + closed
-  // enum; an absent or non-conforming value is treated as 'unknown' downstream.
-  origin_agent: z.enum([...ORIGIN_AGENTS]).optional(),
+  // Vendor provenance: which AI agent captured this event. Absent or non-
+  // conforming (.catch) → undefined at the schema layer → omitted downstream,
+  // rendered 'unknown'. Plain .optional() alone would 400 on a garbage value
+  // (only absence is tolerated) — .catch(undefined) is what makes it graceful.
+  origin_agent: z.enum([...ORIGIN_AGENTS]).optional().catch(undefined),
   source: z.string().optional(),
 });
 ```
