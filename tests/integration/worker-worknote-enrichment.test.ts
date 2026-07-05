@@ -22,7 +22,7 @@ beforeAll(async () => {
   seed.insert({
     session_id: 'ES', project_id: 'p1', prompt_number: 1, type: 'feature',
     title: TITLE, narrative: 'n', facts: [], concepts: [], files_read: [], files_modified: [],
-    created_at_epoch: 1_700_000_000, branch: null, work_tokens: null,
+    created_at_epoch: 1_700_000_000, branch: null, origin_agent: null, work_tokens: null,
   });
   seed.close();
   worker = await startWorker({

@@ -92,6 +92,8 @@ export function transformObservation(
     files_modified: filesModified,
     created_at_epoch: mtime,
     branch: null,
+    // Migrated claude-mem rows predate vendor provenance → no agent recorded.
+    origin_agent: null,
     work_tokens: row.discovery_tokens ? Number(row.discovery_tokens) : null,
     stored_tokens: null,
     // Migrated rows start unsurfaced/unarchived — shared defaults keep this in

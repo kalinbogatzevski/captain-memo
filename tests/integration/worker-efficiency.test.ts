@@ -76,7 +76,7 @@ test('worker startup backfills stored_tokens for pre-existing observations', asy
       narrative: 'a narrative long enough to chunk into real tokens',
       facts: ['fact one', 'fact two'], concepts: ['c'],
       files_read: [], files_modified: [], created_at_epoch: 1_700_000_000 + i,
-      branch: null, work_tokens: 5000,
+      branch: null, origin_agent: null, work_tokens: 5000,
     });
   }
   seed.close();

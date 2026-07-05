@@ -509,6 +509,7 @@ export class ObservationsStore {
       files_modified: JSON.parse(String(row.files_modified)),
       created_at_epoch: Number(row.created_at_epoch),
       branch: typeof row.branch === 'string' ? row.branch : null,
+      origin_agent: null,
       work_tokens: typeof row.work_tokens === 'number' ? row.work_tokens : null,
       stored_tokens: typeof row.stored_tokens === 'number' ? row.stored_tokens : null,
       retrieval_count: typeof row.retrieval_count === 'number' ? row.retrieval_count : 0,

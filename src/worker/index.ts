@@ -715,6 +715,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           files_modified: dedupeFlat(events.map(e => e.files_modified)),
           created_at_epoch: head.ts_epoch,
           branch: head.branch ?? null,
+          origin_agent: null,
           work_tokens: workTokens,
         });
         const inserted = obsStore.findById(id);

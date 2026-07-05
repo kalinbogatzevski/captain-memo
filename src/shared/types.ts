@@ -1,3 +1,5 @@
+import type { OriginAgent } from './origin-agent.ts';
+
 export type ChannelType = 'memory' | 'skill' | 'observation' | 'remote';
 
 export type MemoryType = 'user' | 'feedback' | 'project' | 'reference';
@@ -80,6 +82,10 @@ export interface RawObservationEvent {
   branch?: string | null;
   /** Origin of the observation: "post-tool-use" (default), "pre-compact", etc. */
   source?: string;
+  /** Originating AI agent (claude-code | codex | cursor | gemini | opencode |
+   *  vibe | vscode | jetbrains | unknown), detected at capture time from env
+   *  signals. Optional + best-effort: absent on pre-C1 hooks. */
+  origin_agent?: OriginAgent;
 }
 
 /**
@@ -102,6 +108,11 @@ export interface Observation {
   created_at_epoch: number;
   /** Git branch active when the observation was captured, or null. */
   branch: string | null;
+  /** Originating AI agent that authored this observation, or null for rows
+   *  captured before C1 (vendor provenance) or by a hook that sent no signal.
+   *  Surfaced as 'unknown' in result metadata when null. Mirrors federation's
+   *  origin_peer, but at the agent layer. */
+  origin_agent: OriginAgent | null;
   /** Total tokens the summarizer spent producing this observation (input + output).
    *  Null for pre-v0.1.6 captures and migrated observations without a token record. */
   work_tokens: number | null;

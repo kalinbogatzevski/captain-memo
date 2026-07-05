@@ -19,6 +19,7 @@ const observation = {
   created_at_epoch: 1714838400,
   prompt_number: 12,
   branch: null,
+  origin_agent: null,
   work_tokens: null,
   stored_tokens: null,
   ...UNSURFACED_OBSERVATION_FIELDS,

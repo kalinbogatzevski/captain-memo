@@ -20,7 +20,7 @@ function seed(store: ObservationsStore, title: string, auto: number) {
   const id = store.insert({
     session_id: 's', project_id: 'p', prompt_number: 1,
     type: 'discovery', title, narrative: '', facts: [], concepts: [],
-    files_read: [], files_modified: [], created_at_epoch: 100, branch: null, work_tokens: null,
+    files_read: [], files_modified: [], created_at_epoch: 100, branch: null, origin_agent: null, work_tokens: null,
   });
   for (let i = 0; i < auto; i++) store.bumpRetrieval([id], 'auto');
   return id;

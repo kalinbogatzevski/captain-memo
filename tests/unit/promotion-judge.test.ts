@@ -8,7 +8,7 @@ function obs(id: number): Observation {
     id, session_id: 's', project_id: 'default', prompt_number: 1,
     type: 'decision', title: `title ${id}`, narrative: `narrative ${id}`,
     facts: [`fact ${id}`], concepts: ['c'], files_read: [], files_modified: [],
-    created_at_epoch: 1_700_000_000, branch: null, work_tokens: null, stored_tokens: null,
+    created_at_epoch: 1_700_000_000, branch: null, origin_agent: null, work_tokens: null, stored_tokens: null,
     retrieval_count: 0, last_retrieved_at: null,
     from_auto: 0, from_search: 1, from_drill: 0,
     last_surfaced_at: null, last_surfaced_source: null,

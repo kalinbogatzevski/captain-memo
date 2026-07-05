@@ -10,7 +10,7 @@ import { DEFAULT_TIDE_CONFIG, nextStability } from '../../src/worker/tide.ts';
 const tideBase = {
   session_id: 's1', project_id: 'p1', prompt_number: 1, type: 'bugfix' as const,
   title: 't', narrative: 'n', facts: [], concepts: [], files_read: [], files_modified: [],
-  created_at_epoch: 1_700_000_000, branch: null, work_tokens: null,
+  created_at_epoch: 1_700_000_000, branch: null, origin_agent: null, work_tokens: null,
 };
 
 let workDir: string;
@@ -40,6 +40,7 @@ test('ObservationsStore — insert returns row id and find roundtrips', () => {
     files_modified: ['a.ts'],
     created_at_epoch: 1_700_000_000,
     branch: null,
+    origin_agent: null,
     work_tokens: null,
   });
   expect(id).toBeGreaterThan(0);
@@ -274,12 +275,12 @@ test('ObservationsStore — listForSession returns chronological order', () => {
   store.insert({
     session_id: 's1', project_id: 'p1', prompt_number: 2,
     type: 'feature', title: 'b', narrative: '', facts: [], concepts: [],
-    files_read: [], files_modified: [], created_at_epoch: 200, branch: null, work_tokens: null,
+    files_read: [], files_modified: [], created_at_epoch: 200, branch: null, origin_agent: null, work_tokens: null,
   });
   store.insert({
     session_id: 's1', project_id: 'p1', prompt_number: 1,
     type: 'feature', title: 'a', narrative: '', facts: [], concepts: [],
-    files_read: [], files_modified: [], created_at_epoch: 100, branch: null, work_tokens: null,
+    files_read: [], files_modified: [], created_at_epoch: 100, branch: null, origin_agent: null, work_tokens: null,
   });
   const list = store.listForSession('s1');
   expect(list.map(o => o.title)).toEqual(['a', 'b']);
@@ -290,7 +291,7 @@ test('ObservationsStore — work_tokens roundtrips (numeric and null)', () => {
     session_id: 's1', project_id: 'p1', prompt_number: 1,
     type: 'discovery', title: 'with tokens', narrative: '', facts: [], concepts: [],
     files_read: [], files_modified: [], created_at_epoch: 1_700_000_000,
-    branch: null, work_tokens: 2_400,
+    branch: null, origin_agent: null, work_tokens: 2_400,
   });
   const gotWith = store.findById(idWith);
   expect(gotWith!.work_tokens).toBe(2_400);
@@ -299,7 +300,7 @@ test('ObservationsStore — work_tokens roundtrips (numeric and null)', () => {
     session_id: 's1', project_id: 'p1', prompt_number: 2,
     type: 'discovery', title: 'no tokens', narrative: '', facts: [], concepts: [],
     files_read: [], files_modified: [], created_at_epoch: 1_700_000_001,
-    branch: null, work_tokens: null,
+    branch: null, origin_agent: null, work_tokens: null,
   });
   const gotNull = store.findById(idNull);
   expect(gotNull!.work_tokens).toBeNull();
@@ -310,7 +311,7 @@ test('ObservationsStore — listRecent respects limit', () => {
     store.insert({
       session_id: 's', project_id: 'p', prompt_number: i,
       type: 'change', title: `t${i}`, narrative: '', facts: [], concepts: [],
-      files_read: [], files_modified: [], created_at_epoch: 100 + i, branch: null, work_tokens: null,
+      files_read: [], files_modified: [], created_at_epoch: 100 + i, branch: null, origin_agent: null, work_tokens: null,
     });
   }
   expect(store.listRecent(3)).toHaveLength(3);
@@ -345,7 +346,7 @@ test('ObservationsStore — v6 Dreaming columns default sensibly on fresh insert
     session_id: 's1', project_id: 'p1', prompt_number: 1,
     type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
     files_read: [], files_modified: [], created_at_epoch: 100,
-    branch: null, work_tokens: null,
+    branch: null, origin_agent: null, work_tokens: null,
   });
   const got = store.findById(id);
   expect(got!.archived).toBe(false);
@@ -358,7 +359,7 @@ test('ObservationsStore — stored_tokens defaults to null on insert', () => {
     session_id: 's1', project_id: 'p1', prompt_number: 1,
     type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
     files_read: [], files_modified: [], created_at_epoch: 100,
-    branch: null, work_tokens: null,
+    branch: null, origin_agent: null, work_tokens: null,
   });
   expect(store.findById(id)!.stored_tokens).toBeNull();
 });
@@ -368,7 +369,7 @@ test('ObservationsStore — setStoredTokens roundtrips', () => {
     session_id: 's1', project_id: 'p1', prompt_number: 1,
     type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
     files_read: [], files_modified: [], created_at_epoch: 100,
-    branch: null, work_tokens: null,
+    branch: null, origin_agent: null, work_tokens: null,
   });
   store.setStoredTokens(id, 137);
   expect(store.findById(id)!.stored_tokens).toBe(137);
@@ -379,7 +380,7 @@ test('ObservationsStore — sumPairedTokens sums only rows with BOTH tokens', ()
     session_id: 's1', project_id: 'p1', prompt_number: 1,
     type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
     files_read: [], files_modified: [], created_at_epoch: 100,
-    branch: null, work_tokens: work,
+    branch: null, origin_agent: null, work_tokens: work,
   });
   const a = mk(100);   // will get stored_tokens → paired
   const b = mk(200);   // will get stored_tokens → paired
@@ -401,7 +402,7 @@ test('ObservationsStore — provenance counters default to 0 and last_surfaced_a
     session_id: 's1', project_id: 'p1', prompt_number: 1,
     type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
     files_read: [], files_modified: [], created_at_epoch: 100,
-    branch: null, work_tokens: null,
+    branch: null, origin_agent: null, work_tokens: null,
   });
   const got = store.findById(id);
   expect(got!.from_auto).toBe(0);
@@ -415,7 +416,7 @@ test('ObservationsStore — bumpRetrieval routes each source to its own column',
     session_id: 's1', project_id: 'p1', prompt_number: 1,
     type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
     files_read: [], files_modified: [], created_at_epoch: 100,
-    branch: null, work_tokens: null,
+    branch: null, origin_agent: null, work_tokens: null,
   });
   const before = Math.floor(Date.now() / 1000);
   store.bumpRetrieval([id], 'auto');
@@ -434,7 +435,7 @@ test('ObservationsStore — bumpRetrieval handles multiple ids in one call', () 
     session_id: 's1', project_id: 'p1', prompt_number: 1,
     type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
     files_read: [], files_modified: [], created_at_epoch: 100,
-    branch: null, work_tokens: null,
+    branch: null, origin_agent: null, work_tokens: null,
   });
   const a = mk(); const b = mk(); const c = mk();
   store.bumpRetrieval([a, c], 'search');
@@ -448,7 +449,7 @@ test('ObservationsStore — bumpRetrieval([], source) is a no-op', () => {
     session_id: 's1', project_id: 'p1', prompt_number: 1,
     type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
     files_read: [], files_modified: [], created_at_epoch: 100,
-    branch: null, work_tokens: null,
+    branch: null, origin_agent: null, work_tokens: null,
   });
   store.bumpRetrieval([], 'auto');
   const got = store.findById(id);
@@ -461,7 +462,7 @@ test('ObservationsStore — getRecallStats: top_surfaced ranks by total bumps, t
     session_id: 's1', project_id: 'p1', prompt_number: 1,
     type: 'discovery', title, narrative: '', facts: [], concepts: [],
     files_read: [], files_modified: [], created_at_epoch: 100,
-    branch: null, work_tokens: null,
+    branch: null, origin_agent: null, work_tokens: null,
   });
   const a = mk('auto-heavy');     // lots of auto, no drill
   const b = mk('drill-heavy');    // few auto, many drill
@@ -497,7 +498,7 @@ test('ObservationsStore — getRecallStats handles empty / never-retrieved corpu
     session_id: 's1', project_id: 'p1', prompt_number: 1,
     type: 'discovery', title: 't', narrative: '', facts: [], concepts: [],
     files_read: [], files_modified: [], created_at_epoch: 100,
-    branch: null, work_tokens: null,
+    branch: null, origin_agent: null, work_tokens: null,
   });
   const stats = store.getRecallStats(5);
   expect(stats.surfaced_count).toBe(0);
@@ -514,7 +515,7 @@ const mkObs = (store: ObservationsStore, title: string, type = 'discovery') =>
     session_id: 's1', project_id: 'p1', prompt_number: 1,
     type: type as any, title, narrative: '', facts: [], concepts: [],
     files_read: [], files_modified: [], created_at_epoch: 100,
-    branch: null, work_tokens: null,
+    branch: null, origin_agent: null, work_tokens: null,
   });
 
 test('ObservationsStore — last_surfaced_source defaults null and bumpRetrieval stamps it', () => {
@@ -844,7 +845,7 @@ function seedSurfacedScoped(
   const id = store.insert({
     session_id: 's1', project_id, prompt_number: 1, type: 'discovery',
     title, narrative: '', facts: [], concepts: [], files_read: [], files_modified: [],
-    created_at_epoch: 100, branch, work_tokens: null,
+    created_at_epoch: 100, branch, origin_agent: null, work_tokens: null,
   });
   const db = new Database(join(workDir, 'observations.db'));
   db.query('UPDATE observations SET from_search = ? WHERE id = ?').run(search, id);
@@ -997,7 +998,7 @@ test('ObservationsStore — migration v11 adds promoted_at column + partial inde
 test('promotionCandidates — durable types + recall-count, excludes promoted', () => {
   const base = { session_id: 's', project_id: 'p', prompt_number: 1, narrative: 'n',
     facts: [], concepts: [], files_read: [], files_modified: [],
-    created_at_epoch: 1_700_000_000, branch: null, work_tokens: null };
+    created_at_epoch: 1_700_000_000, branch: null, origin_agent: null, work_tokens: null };
   const durable = store.insert({ ...base, type: 'decision', title: 'durable hot' });
   const ephemeral = store.insert({ ...base, type: 'change', title: 'ephemeral hot' });
   const durableCold = store.insert({ ...base, type: 'feature', title: 'durable cold' });
@@ -1017,7 +1018,7 @@ test('markPromoted — sets promoted_at and is idempotent on re-call', () => {
   const id = store.insert({ session_id: 's', project_id: 'p', prompt_number: 1,
     type: 'decision', title: 't', narrative: 'n', facts: [], concepts: [],
     files_read: [], files_modified: [], created_at_epoch: 1_700_000_000,
-    branch: null, work_tokens: null });
+    branch: null, origin_agent: null, work_tokens: null });
   store.bumpRetrieval([id], 'search', 1_700_000_100);
   store.markPromoted(id, 1_700_000_200);
   store.markPromoted(id, 1_700_000_300);
@@ -1181,7 +1182,7 @@ test('ObservationsStore — countMissingStoredTokens / listMissingStoredTokens',
     session_id: 's1', project_id: 'p1', prompt_number: 1,
     type: 'feature', title: 't', narrative: '', facts: [], concepts: [],
     files_read: [], files_modified: [], created_at_epoch: 100,
-    branch: null, work_tokens: null,
+    branch: null, origin_agent: null, work_tokens: null,
   });
   const a = mk(); const b = mk(); mk();   // 3 rows, all stored_tokens NULL
   store.setStoredTokens(a, 5);            // a no longer missing
