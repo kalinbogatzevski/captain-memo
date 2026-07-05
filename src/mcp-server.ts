@@ -21,8 +21,8 @@ const WORKER_BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? 
 const _sid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 10);
 const PROCESS_SESSION_ID = `mcp-${_sid()}`;
 
-async function workerPost(path: string, body: unknown): Promise<unknown> {
-  const res = await fetch(`${WORKER_BASE}${path}`, {
+async function workerPost(base: string, path: string, body: unknown): Promise<unknown> {
+  const res = await fetch(`${base}${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
@@ -236,6 +236,79 @@ export async function dispatchRemember(
   return formatRememberResult(result);
 }
 
+/** Default deps for dispatchTool: preserves today's exact stdio behavior
+ *  (env-derived WORKER_BASE, the process-level session id, real cwd). */
+function defaultDispatchDeps(): { workerBase: string; sessionId: string; cwd: () => string } {
+  return { workerBase: WORKER_BASE, sessionId: PROCESS_SESSION_ID, cwd: () => process.cwd() };
+}
+
+/** Route one MCP tool call to the worker. Shared by the stdio transport (runMcpServer,
+ *  which omits `deps` to get today's env-derived worker base) and the gateway's HTTP-MCP
+ *  listener (which passes its own actual bound port + a per-connection session id) —
+ *  see docs/superpowers/specs/2026-07-05-local-device-pairing-design.md §3. */
+export async function dispatchTool(
+  name: string,
+  args: unknown,
+  deps: { workerBase: string; sessionId: string; cwd: () => string } = defaultDispatchDeps(),
+): Promise<{ content: { type: 'text'; text: string }[]; isError?: true }> {
+  const { workerBase, sessionId, cwd } = deps;
+  let result: unknown;
+  try {
+    switch (name) {
+      case 'search_memory':       result = await workerPost(workerBase, '/search/memory', args); break;
+      case 'search_skill':        result = await workerPost(workerBase, '/search/skill', args); break;
+      case 'search_observations': result = await workerPost(workerBase, '/search/observations', args); break;
+      case 'search_all':          result = await workerPost(workerBase, '/search/all', args); break;
+      case 'get_full':            result = await workerPost(workerBase, '/get_full', args); break;
+      case 'reindex':             result = await workerPost(workerBase, '/reindex', args); break;
+      case 'remember':
+        return await dispatchRemember(args as unknown as RememberToolArgs, {
+          post: (path, body) => workerPost(workerBase, path, body),
+          cwd,
+        });
+      case 'stats': {
+        const res = await fetch(`${workerBase}/stats`);
+        if (!res.ok) throw new Error(`worker /stats returned ${res.status}`);
+        result = await res.json();
+        break;
+      }
+      case 'status': {
+        const res = await fetch(`${workerBase}/health`);
+        result = res.ok ? await res.json() : { healthy: false };
+        break;
+      }
+      case 'work_set': {
+        const a = (args ?? {}) as { session_id?: string };
+        result = await workerPost(workerBase, '/worknote/set', { ...a, session_id: a.session_id || sessionId });
+        break;
+      }
+      case 'work_active': {
+        const a = (args ?? {}) as { session_id?: string };
+        const q = new URLSearchParams({ session_id: a.session_id || sessionId });
+        const res = await fetch(`${workerBase}/worknote/active?${q.toString()}`);
+        if (!res.ok) throw new Error(`worker /worknote/active returned ${res.status}`);
+        result = await res.json();
+        break;
+      }
+      case 'work_clear': {
+        const a = (args ?? {}) as { session_id?: string };
+        result = await workerPost(workerBase, '/worknote/clear', { session_id: a.session_id || sessionId });
+        break;
+      }
+      default: throw new Error(`unknown tool: ${name}`);
+    }
+  } catch (err) {
+    const e = err as Error;
+    return {
+      content: [{ type: 'text', text: `Error: ${e.message}` }],
+      isError: true,
+    };
+  }
+  return {
+    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+  };
+}
+
 // Exported so a `bin/captain-memo-mcp` shim can call this explicitly.
 // Avoid gating on `import.meta.main` alone: when this file is imported
 // (rather than invoked directly), `import.meta.main` is false and the
@@ -249,62 +322,7 @@ export async function runMcpServer(): Promise<void> {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
-    let result: unknown;
-    try {
-      switch (name) {
-        case 'search_memory':       result = await workerPost('/search/memory', args); break;
-        case 'search_skill':        result = await workerPost('/search/skill', args); break;
-        case 'search_observations': result = await workerPost('/search/observations', args); break;
-        case 'search_all':          result = await workerPost('/search/all', args); break;
-        case 'get_full':            result = await workerPost('/get_full', args); break;
-        case 'reindex':             result = await workerPost('/reindex', args); break;
-        case 'remember':
-          return await dispatchRemember(args as unknown as RememberToolArgs, {
-            post: workerPost,
-            cwd: () => process.cwd(),
-          });
-        case 'stats': {
-          const res = await fetch(`${WORKER_BASE}/stats`);
-          if (!res.ok) throw new Error(`worker /stats returned ${res.status}`);
-          result = await res.json();
-          break;
-        }
-        case 'status': {
-          const res = await fetch(`${WORKER_BASE}/health`);
-          result = res.ok ? await res.json() : { healthy: false };
-          break;
-        }
-        case 'work_set': {
-          const a = (args ?? {}) as { session_id?: string };
-          result = await workerPost('/worknote/set', { ...a, session_id: a.session_id || PROCESS_SESSION_ID });
-          break;
-        }
-        case 'work_active': {
-          const a = (args ?? {}) as { session_id?: string };
-          const q = new URLSearchParams({ session_id: a.session_id || PROCESS_SESSION_ID });
-          const res = await fetch(`${WORKER_BASE}/worknote/active?${q.toString()}`);
-          if (!res.ok) throw new Error(`worker /worknote/active returned ${res.status}`);
-          result = await res.json();
-          break;
-        }
-        case 'work_clear': {
-          const a = (args ?? {}) as { session_id?: string };
-          result = await workerPost('/worknote/clear', { session_id: a.session_id || PROCESS_SESSION_ID });
-          break;
-        }
-        default: throw new Error(`unknown tool: ${name}`);
-      }
-    } catch (err) {
-      const e = err as Error;
-      return {
-        content: [{ type: 'text', text: `Error: ${e.message}` }],
-        isError: true,
-      };
-    }
-    return {
-      content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-    };
+    return dispatchTool(request.params.name, request.params.arguments);
   });
 
   const transport = new StdioServerTransport();
