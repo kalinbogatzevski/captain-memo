@@ -2015,52 +2015,6 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     meta.close();
   };
 
-  // Optional local device-pairing gateway (GitHub #6) — an authenticated HTTP-MCP listener,
-  // started only when at least one device is paired. Localhost-only; the operator's own
-  // reverse proxy is responsible for public exposure + TLS. See
-  // docs/superpowers/specs/2026-07-05-local-device-pairing-design.md.
-  let gatewayServer: ReturnType<typeof Bun.serve> | undefined;
-  if (!opts.noServe) {
-    const gatewayCfg = loadGatewayConfig();
-    if (gatewayCfg.devices.length > 0) {
-      const gatewayPort = process.env.CAPTAIN_MEMO_GATEWAY_PORT
-        ? Number(process.env.CAPTAIN_MEMO_GATEWAY_PORT)
-        : opts.port + 1;
-      try {
-        gatewayServer = Bun.serve({
-          port: gatewayPort,
-          hostname: '127.0.0.1',
-          async fetch(req) {
-            const auth = req.headers.get('authorization') ?? '';
-            const token = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '';
-            const device = verifyToken(token, loadGatewayConfig());
-            if (!device) return Response.json({ error: 'unauthorized' }, { status: 401 });
-
-            const server = new Server({ name: 'captain-memo-gateway', version: VERSION }, { capabilities: { tools: {} } });
-            server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
-            server.setRequestHandler(CallToolRequestSchema, async (request) => {
-              return dispatchTool(request.params.name, request.params.arguments, {
-                workerBase: `http://127.0.0.1:${opts.port}`,
-                sessionId: `gw-${device.id}`,
-                cwd: () => '/',
-              });
-            });
-            const transport = new WebStandardStreamableHTTPServerTransport({
-              sessionIdGenerator: () => crypto.randomUUID(),
-              enableJsonResponse: true,
-            });
-            await server.connect(transport);
-            return transport.handleRequest(req);
-          },
-        });
-        console.log(`[gateway] listening on 127.0.0.1:${gatewayServer.port} (${gatewayCfg.devices.length} device(s) paired)`);
-      } catch (err) {
-        console.warn(`[gateway] failed to start (port ${gatewayPort} in use?) — continuing without it:`, err);
-        gatewayServer = undefined;
-      }
-    }
-  }
-
   if (opts.noServe) {
     // Engine-thread mode: no port bound; the engine serves `handler` over the channel.
     return {
@@ -2077,12 +2031,78 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     hostname: '127.0.0.1',
     fetch: handler,
   });
+  const resolvedPort = server.port ?? opts.port;
+
+  // Optional local device-pairing gateway (GitHub #6) — an authenticated HTTP-MCP listener,
+  // started only when at least one device is paired. Localhost-only; the operator's own
+  // reverse proxy is responsible for public exposure + TLS. One MCP session (server+transport)
+  // per client connection, keyed by the transport-assigned mcp-session-id — mirrors
+  // captain-memo-fed's src/gateway/server.ts, the proven reference for this exact pattern.
+  // See docs/superpowers/specs/2026-07-05-local-device-pairing-design.md.
+  let gatewayServer: ReturnType<typeof Bun.serve> | undefined;
+  const gatewaySessions = new Map<string, { server: Server; transport: WebStandardStreamableHTTPServerTransport }>();
+  const gatewayCfg = loadGatewayConfig();
+  if (gatewayCfg.devices.length > 0) {
+    const gatewayPort = process.env.CAPTAIN_MEMO_GATEWAY_PORT
+      ? Number(process.env.CAPTAIN_MEMO_GATEWAY_PORT)
+      : resolvedPort + 1;
+    try {
+      gatewayServer = Bun.serve({
+        port: gatewayPort,
+        hostname: '127.0.0.1',
+        async fetch(req) {
+          const sid = req.headers.get('mcp-session-id');
+          if (sid) {
+            const existing = gatewaySessions.get(sid);
+            if (!existing) return new Response('unknown session', { status: 404 });
+            return existing.transport.handleRequest(req);
+          }
+
+          const auth = req.headers.get('authorization') ?? '';
+          const token = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '';
+          const device = verifyToken(token, loadGatewayConfig());
+          if (!device) return Response.json({ error: 'unauthorized' }, { status: 401 });
+
+          const mcpServer = new Server({ name: 'captain-memo-gateway', version: VERSION }, { capabilities: { tools: {} } });
+          mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+          mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
+            return dispatchTool(request.params.name, request.params.arguments, {
+              workerBase: `http://127.0.0.1:${resolvedPort}`,
+              sessionId: `gw-${device.id}`,
+              cwd: () => '/',
+            });
+          });
+          let session: { server: Server; transport: WebStandardStreamableHTTPServerTransport };
+          const transport = new WebStandardStreamableHTTPServerTransport({
+            sessionIdGenerator: () => crypto.randomUUID(),
+            enableJsonResponse: true,
+            onsessioninitialized: (newSid) => { gatewaySessions.set(newSid, session); },
+            onsessionclosed: (closedSid) => { gatewaySessions.delete(closedSid); },
+          });
+          session = { server: mcpServer, transport };
+          await mcpServer.connect(transport);
+          return transport.handleRequest(req);
+        },
+      });
+      console.log(`[gateway] listening on 127.0.0.1:${gatewayServer.port} (${gatewayCfg.devices.length} device(s) paired)`);
+    } catch (err) {
+      console.warn(`[gateway] failed to start (port ${gatewayPort} in use?) — continuing without it:`, err);
+      gatewayServer = undefined;
+    }
+  }
 
   return {
-    port: server.port ?? opts.port,
+    port: resolvedPort,
     handler,
     ...(obsStore ? { store: obsStore } : {}),
-    stop: async () => { gatewayServer?.stop(true); server.stop(true); await stopResources(); },
+    stop: async () => {
+      for (const s of gatewaySessions.values()) {
+        try { await s.server.close(); } catch { /* best-effort */ }
+      }
+      gatewayServer?.stop(true);
+      server.stop(true);
+      await stopResources();
+    },
   };
 }
 
