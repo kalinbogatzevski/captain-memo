@@ -1,7 +1,7 @@
 // PreToolUse (Bash) — warn before a mutating git op on a working tree another session is using.
 // Advisory only (fail-open): parse the command, resolve the cwd's repo root, ask the board who holds it,
 // and if a PEER session does, emit additionalContext suggesting a worktree. Any error → silent no-op.
-import { workerFetch, writeStdout, logHookError } from './shared.ts';
+import { workerFetch, writeStdout } from './shared.ts';
 import { detectRepoRootSync } from '../worker/branch.ts';
 
 const MUTATING = /^(checkout|switch|commit|reset|stash|rebase|merge|cherry-pick|clean|restore)$/;
