@@ -5,11 +5,13 @@ import {
   _resetBranchCache,
   branchCache,
   BRANCH_CACHE_TTL_MS,
+  detectRepoRootSync,
+  detectDirtySync,
 } from '../../src/worker/branch.ts';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { execSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { execSync, execFileSync } from 'node:child_process';
 
 // CI runners have no git user.name/email configured and — unlike a dev box —
 // git won't auto-derive one there, so `git commit` aborts with "Please tell me
@@ -124,4 +126,31 @@ describe('detectBranchSyncCached', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+function tmpRepo(): string {
+  const d = mkdtempSync(join(tmpdir(), 'wb-repo-'));
+  execFileSync('git', ['-C', d, 'init', '-q']);
+  execFileSync('git', ['-C', d, 'config', 'user.email', 't@t']);
+  execFileSync('git', ['-C', d, 'config', 'user.name', 't']);
+  writeFileSync(join(d, 'a.txt'), 'x');
+  execFileSync('git', ['-C', d, 'add', 'a.txt']);
+  execFileSync('git', ['-C', d, 'commit', '-qm', 'init']);
+  return d;
+}
+
+test('detectRepoRootSync returns the working-tree root, null outside a repo', () => {
+  const d = tmpRepo();
+  mkdirSync(join(d, 'sub'));
+  expect(detectRepoRootSync(join(d, 'sub'))).toBe(d);          // resolves from a subdir
+  expect(detectRepoRootSync(tmpdir())).toBeNull();             // tmpdir itself is not a repo
+});
+
+test('detectDirtySync reports clean, dirty, and staged', () => {
+  const d = tmpRepo();
+  expect(detectDirtySync(d)).toEqual({ is_dirty: false, staged: false });
+  writeFileSync(join(d, 'b.txt'), 'y');                        // untracked → dirty, not staged
+  expect(detectDirtySync(d)).toEqual({ is_dirty: true, staged: false });
+  execFileSync('git', ['-C', d, 'add', 'b.txt']);             // staged
+  expect(detectDirtySync(d)).toEqual({ is_dirty: true, staged: true });
 });

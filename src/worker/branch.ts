@@ -63,3 +63,29 @@ export function detectBranchSyncCached(cwd: string): string | null {
   branchCache.set(cwd, { branch, expires_at_ms: now + BRANCH_CACHE_TTL_MS });
   return branch;
 }
+
+/** Resolve the physical working-tree root for a path (git rev-parse --show-toplevel).
+ *  null when the path is missing, not in a git repo, git absent, or any error. Never throws. */
+export function detectRepoRootSync(cwd: string): string | null {
+  if (!existsSync(cwd)) return null;
+  try {
+    const result = spawnSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { encoding: 'utf-8', timeout: 2000 });
+    if (result.status !== 0) return null;
+    const out = result.stdout.trim();
+    return out.length > 0 ? out : null;
+  } catch { return null; }
+}
+
+/** Working-tree dirtiness via `git status --porcelain`. is_dirty = any output; staged = any entry
+ *  whose first (index) column is not space or '?'. Never throws → {false,false} on any error. */
+export function detectDirtySync(repoRoot: string): { is_dirty: boolean; staged: boolean } {
+  if (!existsSync(repoRoot)) return { is_dirty: false, staged: false };
+  try {
+    const result = spawnSync('git', ['-C', repoRoot, 'status', '--porcelain'], { encoding: 'utf-8', timeout: 2000 });
+    if (result.status !== 0) return { is_dirty: false, staged: false };
+    const lines = result.stdout.split('\n').filter((l) => l.length > 0);
+    const is_dirty = lines.length > 0;
+    const staged = lines.some((l) => l[0] !== ' ' && l[0] !== '?');
+    return { is_dirty, staged };
+  } catch { return { is_dirty: false, staged: false }; }
+}
