@@ -31,6 +31,15 @@
             "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/captain-memo-hook.js\" PreToolUse"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/captain-memo-hook.js\" PreToolUse"
+          }
+        ]
       }
     ],
     "PostToolUse": [

@@ -31,6 +31,117 @@ var init_paths = __esm(() => {
   DEFAULT_REMEMBER_DIR = join(homedir(), ".claude", "memory");
 });
 
+// src/hooks/shared.ts
+import { appendFileSync, mkdirSync, statSync, renameSync, existsSync } from "fs";
+import { homedir as homedir2 } from "os";
+import { join as join2 } from "path";
+function rotateIfNeeded() {
+  try {
+    if (!existsSync(HOOK_LOG_FILE))
+      return;
+    const sz = statSync(HOOK_LOG_FILE).size;
+    if (sz < HOOK_LOG_ROTATE_BYTES)
+      return;
+    renameSync(HOOK_LOG_FILE, HOOK_LOG_FILE + ".1");
+  } catch {}
+}
+function logHookError(event, err) {
+  try {
+    mkdirSync(HOOK_LOG_DIR, { recursive: true });
+    rotateIfNeeded();
+    const e = err;
+    const line = `${new Date().toISOString()} [${event}] ${e?.name ?? "Error"}: ${e?.message ?? String(err)}
+${e?.stack ?? ""}
+`;
+    appendFileSync(HOOK_LOG_FILE, line);
+    if (process.env.CAPTAIN_MEMO_HOOK_DEBUG === "1") {
+      process.stderr.write(line);
+    }
+  } catch {}
+}
+async function readStdinJson() {
+  const text = await Bun.stdin.text();
+  if (!text || !text.trim())
+    return {};
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    throw new Error(`hook: failed to parse stdin JSON: ${err.message}`);
+  }
+}
+function writeStdout(s) {
+  process.stdout.write(s);
+}
+async function workerFetch(path, opts) {
+  const controller = new AbortController;
+  const timer = setTimeout(() => controller.abort(), opts.timeoutMs);
+  try {
+    const init = {
+      method: opts.method ?? "GET",
+      signal: controller.signal
+    };
+    if (opts.body !== undefined) {
+      init.headers = { "content-type": "application/json" };
+      init.body = JSON.stringify(opts.body);
+    }
+    const res = await fetch(`${WORKER_BASE}${path}`, init);
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      return { ok: false, status: res.status, body: null, timedOut: false, errorMessage: `${res.status}: ${txt}` };
+    }
+    const body = await res.json();
+    return { ok: true, status: res.status, body, timedOut: false, errorMessage: null };
+  } catch (err) {
+    const e = err;
+    const timedOut = e.name === "AbortError" || /aborted/i.test(e.message);
+    return { ok: false, status: 0, body: null, timedOut, errorMessage: e.message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function workerFailureMessage(path, res) {
+  if (res.ok)
+    return null;
+  const detail = res.timedOut ? "timed out" : res.errorMessage ?? `status ${res.status}`;
+  return `worker ${path} failed: ${detail}`;
+}
+function logWorkerFailure(event, path, res) {
+  const msg = workerFailureMessage(path, res);
+  if (msg)
+    logHookError(event, new Error(msg));
+}
+function resolveProjectId(cwd) {
+  if (process.env.CAPTAIN_MEMO_PROJECT_ID)
+    return process.env.CAPTAIN_MEMO_PROJECT_ID;
+  if (!cwd)
+    return "default";
+  const parts = cwd.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? "default";
+}
+function clamp(s, max) {
+  if (typeof s !== "string")
+    return "";
+  const points = [...s];
+  if (points.length <= max)
+    return s;
+  return points.slice(0, max - 1).join("") + "\u2026";
+}
+function summarize(value, max = 1500) {
+  try {
+    return clamp(typeof value === "string" ? value : JSON.stringify(value), max);
+  } catch {
+    return "[unserializable]";
+  }
+}
+var HOOK_LOG_DIR, HOOK_LOG_FILE, HOOK_LOG_ROTATE_BYTES, WORKER_BASE;
+var init_shared = __esm(() => {
+  init_paths();
+  HOOK_LOG_DIR = join2(homedir2(), ".captain-memo", "logs");
+  HOOK_LOG_FILE = join2(HOOK_LOG_DIR, "hook.log");
+  HOOK_LOG_ROTATE_BYTES = 10 * 1024 * 1024;
+  WORKER_BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
+});
+
 // src/shared/worker-heal-lock.ts
 var exports_worker_heal_lock = {};
 __export(exports_worker_heal_lock, {
@@ -468,115 +579,99 @@ async function restartWorker(sm, name, opts) {
   await sm.restart(name, { graceful: opts.graceful ?? false, port: opts.port, force: true });
 }
 
-// src/hooks/shared.ts
-init_paths();
-import { appendFileSync, mkdirSync, statSync, renameSync, existsSync } from "fs";
-import { homedir as homedir2 } from "os";
-import { join as join2 } from "path";
-var HOOK_LOG_DIR = join2(homedir2(), ".captain-memo", "logs");
-var HOOK_LOG_FILE = join2(HOOK_LOG_DIR, "hook.log");
-var HOOK_LOG_ROTATE_BYTES = 10 * 1024 * 1024;
-function rotateIfNeeded() {
-  try {
-    if (!existsSync(HOOK_LOG_FILE))
-      return;
-    const sz = statSync(HOOK_LOG_FILE).size;
-    if (sz < HOOK_LOG_ROTATE_BYTES)
-      return;
-    renameSync(HOOK_LOG_FILE, HOOK_LOG_FILE + ".1");
-  } catch {}
-}
-function logHookError(event, err) {
-  try {
-    mkdirSync(HOOK_LOG_DIR, { recursive: true });
-    rotateIfNeeded();
-    const e = err;
-    const line = `${new Date().toISOString()} [${event}] ${e?.name ?? "Error"}: ${e?.message ?? String(err)}
-${e?.stack ?? ""}
-`;
-    appendFileSync(HOOK_LOG_FILE, line);
-    if (process.env.CAPTAIN_MEMO_HOOK_DEBUG === "1") {
-      process.stderr.write(line);
-    }
-  } catch {}
-}
-var WORKER_BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
-async function readStdinJson() {
-  const text = await Bun.stdin.text();
-  if (!text || !text.trim())
-    return {};
-  try {
-    return JSON.parse(text);
-  } catch (err) {
-    throw new Error(`hook: failed to parse stdin JSON: ${err.message}`);
-  }
-}
-function writeStdout(s) {
-  process.stdout.write(s);
-}
-async function workerFetch(path, opts) {
-  const controller = new AbortController;
-  const timer = setTimeout(() => controller.abort(), opts.timeoutMs);
-  try {
-    const init = {
-      method: opts.method ?? "GET",
-      signal: controller.signal
-    };
-    if (opts.body !== undefined) {
-      init.headers = { "content-type": "application/json" };
-      init.body = JSON.stringify(opts.body);
-    }
-    const res = await fetch(`${WORKER_BASE}${path}`, init);
-    if (!res.ok) {
-      const txt = await res.text().catch(() => "");
-      return { ok: false, status: res.status, body: null, timedOut: false, errorMessage: `${res.status}: ${txt}` };
-    }
-    const body = await res.json();
-    return { ok: true, status: res.status, body, timedOut: false, errorMessage: null };
-  } catch (err) {
-    const e = err;
-    const timedOut = e.name === "AbortError" || /aborted/i.test(e.message);
-    return { ok: false, status: 0, body: null, timedOut, errorMessage: e.message };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-function workerFailureMessage(path, res) {
-  if (res.ok)
+// src/worker/branch.ts
+import { spawnSync as spawnSync2 } from "child_process";
+import { existsSync as existsSync3 } from "fs";
+function detectBranchSync(cwd) {
+  if (!existsSync3(cwd))
     return null;
-  const detail = res.timedOut ? "timed out" : res.errorMessage ?? `status ${res.status}`;
-  return `worker ${path} failed: ${detail}`;
-}
-function logWorkerFailure(event, path, res) {
-  const msg = workerFailureMessage(path, res);
-  if (msg)
-    logHookError(event, new Error(msg));
-}
-function resolveProjectId(cwd) {
-  if (process.env.CAPTAIN_MEMO_PROJECT_ID)
-    return process.env.CAPTAIN_MEMO_PROJECT_ID;
-  if (!cwd)
-    return "default";
-  const parts = cwd.split(/[\\/]/).filter(Boolean);
-  return parts[parts.length - 1] ?? "default";
-}
-function clamp(s, max) {
-  if (typeof s !== "string")
-    return "";
-  const points = [...s];
-  if (points.length <= max)
-    return s;
-  return points.slice(0, max - 1).join("") + "\u2026";
-}
-function summarize(value, max = 1500) {
   try {
-    return clamp(typeof value === "string" ? value : JSON.stringify(value), max);
+    const result = spawnSync2("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf-8", timeout: 2000 });
+    if (result.status !== 0)
+      return null;
+    const out = result.stdout.trim();
+    return out.length > 0 ? out : null;
   } catch {
-    return "[unserializable]";
+    return null;
   }
 }
+function detectRepoRootSync(cwd) {
+  if (!existsSync3(cwd))
+    return null;
+  try {
+    const result = spawnSync2("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf-8", timeout: 2000 });
+    if (result.status !== 0)
+      return null;
+    const out = result.stdout.trim();
+    return out.length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+var branchCache;
+var init_branch = __esm(() => {
+  branchCache = new Map;
+});
+
+// src/hooks/pre-git.ts
+var exports_pre_git = {};
+__export(exports_pre_git, {
+  runPreGit: () => runPreGit,
+  parseGitOp: () => parseGitOp
+});
+function parseGitOp(command) {
+  if (typeof command !== "string")
+    return null;
+  for (const seg of command.split(/&&|\|\||;|\|/)) {
+    const toks = seg.trim().split(/\s+/).filter(Boolean);
+    let i = 0;
+    while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i]))
+      i++;
+    if (toks[i] !== "git")
+      continue;
+    let j = i + 1;
+    while (j < toks.length && toks[j].startsWith("-")) {
+      const flag = toks[j];
+      j++;
+      if (flag === "-C" || flag === "-c")
+        j++;
+    }
+    const sub = toks[j];
+    if (sub && MUTATING.test(sub))
+      return sub;
+  }
+  return null;
+}
+async function runPreGit(payload) {
+  const op = parseGitOp(typeof payload.tool_input?.command === "string" ? payload.tool_input.command : "");
+  if (!op || !payload.cwd)
+    return;
+  const root = detectRepoRootSync(payload.cwd);
+  if (!root || root.includes("/claude-1000/"))
+    return;
+  const res = await workerFetch(`/worknote/repo-active?repo_root=${encodeURIComponent(root)}`, { method: "GET", timeoutMs: HOOK_TIMEOUT_MS });
+  if (!res.ok || !res.body?.holders)
+    return;
+  const peers = res.body.holders.filter((h) => h.session_id !== payload.session_id);
+  if (peers.length === 0)
+    return;
+  const who = peers.map((h) => `${(h.session_id ?? "").slice(0, 12)} (${h.agent ?? "?"})${h.branch ? ` on ${h.branch}` : ""}${h.is_dirty ? ", dirty" : ""}`).join(" ; ");
+  const warning = `WORK-BOARD SHARED CHECKOUT: peer session(s) are using ${root} \u2014 ${who}. Running \`git ${op}\` here changes that shared working tree for them. Isolate instead: \`git worktree add ../<name> <branch>\` and work there. (advisory)`;
+  writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: warning } }));
+}
+var MUTATING, HOOK_TIMEOUT_MS;
+var init_pre_git = __esm(() => {
+  init_shared();
+  init_branch();
+  MUTATING = /^(checkout|switch|commit|reset|stash|rebase|merge|cherry-pick|clean|restore)$/;
+  HOOK_TIMEOUT_MS = Number(process.env.CAPTAIN_MEMO_PRE_TOOL_USE_TIMEOUT_MS ?? 1500);
+});
+
+// src/hooks/dispatcher.ts
+init_shared();
 
 // src/hooks/user-prompt-submit.ts
+init_shared();
 init_paths();
 async function main() {
   let payload = {};
@@ -631,6 +726,7 @@ async function main() {
 if (false) {}
 
 // src/hooks/session-start.ts
+init_shared();
 init_paths();
 // package.json
 var package_default = {
@@ -936,7 +1032,8 @@ ${banner}` : banner;
 if (false) {}
 
 // src/hooks/pre-tool-use.ts
-var HOOK_TIMEOUT_MS = Number(process.env.CAPTAIN_MEMO_PRE_TOOL_USE_TIMEOUT_MS ?? 1500);
+init_shared();
+var HOOK_TIMEOUT_MS2 = Number(process.env.CAPTAIN_MEMO_PRE_TOOL_USE_TIMEOUT_MS ?? 1500);
 var MAX_FILES = 25;
 async function main3() {
   let payload = {};
@@ -946,6 +1043,14 @@ async function main3() {
     logHookError("PreToolUse", err);
     return;
   }
+  if (payload.tool_name === "Bash") {
+    try {
+      await (await Promise.resolve().then(() => (init_pre_git(), exports_pre_git))).runPreGit(payload);
+    } catch (err) {
+      logHookError("PreToolUse", err);
+    }
+    return;
+  }
   const sid = payload.session_id;
   const ip = payload.tool_input ?? {};
   const fp = typeof ip.file_path === "string" ? ip.file_path : typeof ip.notebook_path === "string" ? ip.notebook_path : undefined;
@@ -953,7 +1058,7 @@ async function main3() {
     return;
   const project = resolveProjectId(payload.cwd);
   let files = [fp];
-  const cur = await workerFetch(`/worknote/active?session_id=${encodeURIComponent(sid)}`, { method: "GET", timeoutMs: HOOK_TIMEOUT_MS });
+  const cur = await workerFetch(`/worknote/active?session_id=${encodeURIComponent(sid)}`, { method: "GET", timeoutMs: HOOK_TIMEOUT_MS2 });
   if (cur.ok && cur.body?.claims) {
     const mine = cur.body.claims.find((c) => c.session_id === sid);
     if (mine?.files?.length) {
@@ -965,7 +1070,7 @@ async function main3() {
   const set = await workerFetch("/worknote/set", {
     method: "POST",
     body: { session_id: sid, agent: "claude", what: `editing ${files.length} file(s) in ${project}`, files, enrich_from_observations: true },
-    timeoutMs: HOOK_TIMEOUT_MS
+    timeoutMs: HOOK_TIMEOUT_MS2
   });
   logWorkerFailure("PreToolUse", "/worknote/set", set);
   if (!set.ok || !set.body)
@@ -989,23 +1094,9 @@ async function main3() {
 }
 if (false) {}
 
-// src/worker/branch.ts
-import { spawnSync as spawnSync2 } from "child_process";
-import { existsSync as existsSync3 } from "fs";
-function detectBranchSync(cwd) {
-  if (!existsSync3(cwd))
-    return null;
-  try {
-    const result = spawnSync2("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf-8", timeout: 2000 });
-    if (result.status !== 0)
-      return null;
-    const out = result.stdout.trim();
-    return out.length > 0 ? out : null;
-  } catch {
-    return null;
-  }
-}
-var branchCache = new Map;
+// src/hooks/post-tool-use.ts
+init_shared();
+init_branch();
 
 // src/shared/origin-agent.ts
 var ORIGIN_AGENTS = [
@@ -1036,7 +1127,7 @@ function detectOriginAgent(env = process.env) {
 }
 
 // src/hooks/post-tool-use.ts
-var HOOK_TIMEOUT_MS2 = Number(process.env.CAPTAIN_MEMO_POST_TOOL_USE_TIMEOUT_MS ?? 1000);
+var HOOK_TIMEOUT_MS3 = Number(process.env.CAPTAIN_MEMO_POST_TOOL_USE_TIMEOUT_MS ?? 1000);
 function extractFiles(input, response) {
   const read = [];
   const modified = [];
@@ -1079,13 +1170,14 @@ async function main4() {
   const res = await workerFetch("/observation/enqueue", {
     method: "POST",
     body: event,
-    timeoutMs: HOOK_TIMEOUT_MS2
+    timeoutMs: HOOK_TIMEOUT_MS3
   });
   logWorkerFailure("PostToolUse", "/observation/enqueue", res);
 }
 if (false) {}
 
 // src/hooks/stop.ts
+init_shared();
 init_paths();
 async function main5() {
   let payload = {};
@@ -1107,7 +1199,9 @@ async function main5() {
 if (false) {}
 
 // src/hooks/pre-compact.ts
-var HOOK_TIMEOUT_MS3 = Number(process.env.CAPTAIN_MEMO_PRE_COMPACT_TIMEOUT_MS ?? 5000);
+init_shared();
+init_branch();
+var HOOK_TIMEOUT_MS4 = Number(process.env.CAPTAIN_MEMO_PRE_COMPACT_TIMEOUT_MS ?? 5000);
 async function main6() {
   let payload = {};
   try {
@@ -1133,7 +1227,7 @@ async function main6() {
   const res = await workerFetch("/observation/enqueue", {
     method: "POST",
     body: event,
-    timeoutMs: HOOK_TIMEOUT_MS3
+    timeoutMs: HOOK_TIMEOUT_MS4
   });
   logWorkerFailure("PreCompact", "/observation/enqueue", res);
 }
@@ -1164,6 +1258,7 @@ async function main7() {
 if (false) {}
 
 // bin/captain-memo-hook.ts
+init_shared();
 try {
   await main7();
 } catch (err) {

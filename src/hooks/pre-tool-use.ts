@@ -28,6 +28,8 @@ export async function main(): Promise<void> {
   let payload: PreToolUsePayload = {};
   try { payload = await readStdinJson<PreToolUsePayload>(); } catch (err) { logHookError('PreToolUse', err); return; }
 
+  if (payload.tool_name === 'Bash') { try { await (await import('./pre-git.ts')).runPreGit(payload as any); } catch (err) { logHookError('PreToolUse', err); } return; }
+
   const sid = payload.session_id;
   const ip = payload.tool_input ?? {};
   const fp = typeof ip.file_path === 'string' ? ip.file_path
