@@ -27,7 +27,7 @@ import { runPromotionSlice, type PromotionDeps } from './promotion.ts';
 import { buildPromotionJudge } from './promotion-judge.ts';
 import { runQmDedupSlice } from './quartermaster.ts';
 import { runQmSupersedeSlice, applySupersedeDemotion } from './supersede.ts';
-import { setWorkNote, listLocalActive, clearWorkNote, overlapsAgainst, repoOverlapsAgainst, groupRepoContention, type SetWorkNoteInput } from './work-notes.ts';
+import { setWorkNote, listLocalActive, clearWorkNote, overlapsAgainst, repoOverlapsAgainst, groupRepoContention, repoActiveHolders, type SetWorkNoteInput } from './work-notes.ts';
 import { resolveRepoClaim } from './repo-claim.ts';
 import { warmWorknoteVecs, semanticOverlapPass, hasIntent, SEMANTIC_ENABLED } from './worknote-semantic.ts';
 import { centroid } from '../shared/vector-math.ts';
@@ -1371,6 +1371,13 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           : [];
         const repo_contention = groupRepoContention(claims);
         return Response.json({ claims, overlaps_with_mine, repo_contention });
+      }
+      if (req.method === 'GET' && url.pathname === '/worknote/repo-active') {
+        const now = Date.now();
+        const repoRoot = url.searchParams.get('repo_root') ?? '';
+        if (!repoRoot) return Response.json({ holders: [] });
+        const holders = repoActiveHolders(listLocalActive(meta, now), repoRoot);
+        return Response.json({ holders });
       }
       if (req.method === 'POST' && url.pathname === '/worknote/clear') {
         const body = (await req.json().catch(() => null)) as { session_id?: unknown } | null;

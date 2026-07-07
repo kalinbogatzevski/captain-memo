@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test';
 import {
   setWorkNote, listLocalActive, clearWorkNote, overlapsAgainst, WORKNOTE_PREFIX,
   setFleetSnapshot, listFleetActive, filterActive, sanitizeFleetNotes, FLEET_SNAPSHOT_KEY,
-  cosineSimilarity, semanticOverlaps, repoOverlapsAgainst, groupRepoContention,
+  cosineSimilarity, semanticOverlaps, repoOverlapsAgainst, groupRepoContention, repoActiveHolders,
   type WorkNoteKv, type WorkNote, type ClaimVec,
 } from '../../src/worker/work-notes.ts';
 
@@ -256,4 +256,10 @@ test('groupRepoContention returns only roots with >=2 distinct sessions', () => 
   expect(g[0]!.repo_root).toBe('/proj/erp');
   expect(g[0]!.holders.map((h) => h.session_id).sort()).toEqual(['a', 'b']);
   expect(g[0]!.branches.sort()).toEqual(['feat', 'master']);
+});
+
+test('repoActiveHolders returns holders of the given root only', () => {
+  const notes = [repoNote('a', '/proj/erp', 'master'), repoNote('b', '/proj/erp', 'feat'), repoNote('c', '/proj/other')];
+  expect(repoActiveHolders(notes, '/proj/erp').map((h) => h.session_id).sort()).toEqual(['a', 'b']);
+  expect(repoActiveHolders(notes, '/nope')).toEqual([]);
 });

@@ -239,6 +239,15 @@ export function groupRepoContention(notes: WorkNote[]): RepoContention[] {
   return out;
 }
 
+/** Holders (session/agent/branch/dirty/ts) of a specific working-tree root among live claims. */
+export function repoActiveHolders(notes: WorkNote[], repoRoot: string): RepoContention['holders'] {
+  return notes.filter((n) => n.repo_root === repoRoot).map((n) => ({
+    session_id: n.session_id, agent: n.agent, ts: n.ts,
+    ...(n.branch ? { branch: n.branch } : {}),
+    ...(n.is_dirty !== undefined ? { is_dirty: n.is_dirty } : {}),
+  }));
+}
+
 /** Validate + cap an UNTRUSTED array of FLEET notes (sibling captains' self-report, relayed via the hub) into
  *  clean, currently-live WorkNotes. Same field caps as setWorkNote; drops malformed/expired entries; preserves
  *  the `captain` tag the receiver stamped. Defense-in-depth: the hub already bounds these, but the worker route
