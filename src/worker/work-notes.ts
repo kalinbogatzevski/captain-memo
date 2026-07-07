@@ -35,7 +35,7 @@ export interface WorkNote {
 
 export interface OverlapHit {
   agent: string; session_id: string; captain?: string; what: string; files: string[]; overlapping: string[];
-  kind?: 'files' | 'semantic';   // how the collision was detected (absent ⇒ 'files', for back-compat)
+  kind?: 'files' | 'semantic' | 'repo';   // how the collision was detected (absent ⇒ 'files', for back-compat)
   similarity?: number;           // cosine similarity in [0,1], semantic hits only
 }
 
@@ -193,6 +193,50 @@ export function listFleetActive(kv: WorkNoteKv, now: number): WorkNote[] {
     if (typeof snap.at !== 'number' || now - snap.at >= FLEET_SNAPSHOT_TTL_MS) return [];
     return filterActive(Array.isArray(snap.notes) ? (snap.notes as WorkNote[]) : [], now);
   } catch { return []; }
+}
+
+export interface RepoContention {
+  repo_root: string;
+  holders: Array<{ session_id: string; agent?: string; branch?: string; is_dirty?: boolean; ts: number }>;
+  branches: string[];
+}
+
+/** Live claims (excluding my session) that share my working-tree root — the shared-checkout collision the
+ *  file-glob pass misses (peers claim different files but mutate the same HEAD/branch/dirty tree). */
+export function repoOverlapsAgainst(myRepoRoot: string | undefined, others: WorkNote[], excludeSession: string): OverlapHit[] {
+  if (!myRepoRoot) return [];
+  const hits: OverlapHit[] = [];
+  for (const o of others) {
+    if (o.session_id === excludeSession || o.repo_root !== myRepoRoot) continue;
+    hits.push({ agent: o.agent, session_id: o.session_id, ...(o.captain ? { captain: o.captain } : {}), what: o.what, files: o.files, overlapping: [myRepoRoot], kind: 'repo' });
+  }
+  return hits;
+}
+
+/** Group live repo-stamped claims by working-tree root; return only roots held by >=2 DISTINCT sessions. */
+export function groupRepoContention(notes: WorkNote[]): RepoContention[] {
+  const byRoot = new Map<string, WorkNote[]>();
+  for (const n of notes) {
+    if (!n.repo_root) continue;
+    const bucket = byRoot.get(n.repo_root);
+    if (bucket) bucket.push(n);
+    else byRoot.set(n.repo_root, [n]);
+  }
+  const out: RepoContention[] = [];
+  for (const [repo_root, ns] of byRoot) {
+    const sessions = new Set(ns.map((n) => n.session_id));
+    if (sessions.size < 2) continue;
+    out.push({
+      repo_root,
+      holders: ns.map((n) => ({
+        session_id: n.session_id, agent: n.agent, ts: n.ts,
+        ...(n.branch ? { branch: n.branch } : {}),
+        ...(n.is_dirty !== undefined ? { is_dirty: n.is_dirty } : {}),
+      })),
+      branches: [...new Set(ns.map((n) => n.branch).filter((b): b is string => !!b))],
+    });
+  }
+  return out;
 }
 
 /** Validate + cap an UNTRUSTED array of FLEET notes (sibling captains' self-report, relayed via the hub) into

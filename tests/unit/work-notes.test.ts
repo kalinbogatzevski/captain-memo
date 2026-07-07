@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test';
 import {
   setWorkNote, listLocalActive, clearWorkNote, overlapsAgainst, WORKNOTE_PREFIX,
   setFleetSnapshot, listFleetActive, filterActive, sanitizeFleetNotes, FLEET_SNAPSHOT_KEY,
-  cosineSimilarity, semanticOverlaps,
+  cosineSimilarity, semanticOverlaps, repoOverlapsAgainst, groupRepoContention,
   type WorkNoteKv, type WorkNote, type ClaimVec,
 } from '../../src/worker/work-notes.ts';
 
@@ -234,4 +234,26 @@ test('setWorkNote omits repo fields when absent (scratchpad claim)', () => {
   const kv = makeKv();
   const n = setWorkNote(kv, { session_id: 's2', files: ['/tmp/x/scratchpad/a.ts'] }, 1000);
   expect(n.repo_root).toBeUndefined();
+});
+
+// ── repoOverlapsAgainst / groupRepoContention (same-repo-root collision) ──────
+const repoNote = (session_id: string, repo_root?: string, branch?: string): WorkNote => ({
+  agent: 'claude', session_id, what: 'w', files: [], ts: 1, ttl_s: 60,
+  ...(repo_root ? { repo_root } : {}), ...(branch ? { branch } : {}),
+});
+
+test('repoOverlapsAgainst fires on same repo_root, excludes self + no-repo', () => {
+  const others = [repoNote('a', '/proj/erp', 'master'), repoNote('b', '/proj/other'), repoNote('c')];
+  const hits = repoOverlapsAgainst('/proj/erp', others, 'me');
+  expect(hits.map((h) => h.session_id)).toEqual(['a']);
+  expect(hits[0]!.kind).toBe('repo');
+});
+
+test('groupRepoContention returns only roots with >=2 distinct sessions', () => {
+  const notes = [repoNote('a', '/proj/erp', 'master'), repoNote('b', '/proj/erp', 'feat'), repoNote('c', '/proj/solo', 'master')];
+  const g = groupRepoContention(notes);
+  expect(g.length).toBe(1);
+  expect(g[0]!.repo_root).toBe('/proj/erp');
+  expect(g[0]!.holders.map((h) => h.session_id).sort()).toEqual(['a', 'b']);
+  expect(g[0]!.branches.sort()).toEqual(['feat', 'master']);
 });
