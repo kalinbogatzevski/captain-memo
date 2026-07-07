@@ -9,7 +9,10 @@ This repo also has an internal `federation` branch (GitLab-only, never public) w
 independent version counter — its release tags use a `fed-v` prefix (`fed-v0.19.0`, etc.) specifically
 so they never collide with this line's plain `vX.Y.Z` GitHub tags in a shared local clone.
 
-## [0.17.0] — 2026-07-05
+## [0.18.0] — 2026-07-08
+
+### Added
+- **Shared git checkout coordination on the work board.** `work_set`/`work_active` now treat a shared git working tree as a first-class resource: editing a file in a real repo stamps `{repo_root, branch, is_dirty}` on the claim; `work_active` surfaces `repo_contention[]` (who holds a checkout, its branch, and dirty/clean — host-local) and fires `overlaps_with_mine` on a shared working-tree root, not just an identical file path; and a new advisory `Bash` PreToolUse hook warns before a mutating git op (`checkout`/`switch`/`commit`/`reset`/`stash`/…) on a checkout another session is using, suggesting `git worktree add` instead. Scratchpad claims are unchanged (no false cross-session overlaps). Git detection (`rev-parse --show-toplevel` + `status --porcelain`) is short-TTL cached and fail-open. Advisory only — never blocks.## [0.17.0] — 2026-07-05
 
 ### Added
 - **Local device pairing — pair a second device (phone, another machine) to this captain's memory, no hub required.** `captain-memo gateway pair|list|revoke` mints/lists/removes bearer tokens; the worker serves an authenticated HTTP-MCP listener (localhost-only, started only when a device is paired) that the operator reaches via their own reverse proxy + TLS. Full tool access per paired device in this release — no separate identity, no peer/federation concept, no new process to manage.
