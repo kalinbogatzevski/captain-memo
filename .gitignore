@@ -18,3 +18,6 @@ WINDOWS_SMOKE_TEST_v0.2.14.md
 # Local-only symlink (plugin/bin -> ../bin). Never commit: it breaks on Windows
 # checkouts. The committed, symlink-free entrypoints live in plugin/dist/ (above).
 plugin/bin
+
+# SDD scratch
+.superpowers/
