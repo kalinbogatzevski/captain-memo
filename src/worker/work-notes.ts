@@ -27,6 +27,10 @@ export interface WorkNote {
   meaningful?: boolean; // the `what` is REAL declared intent (explicit, or enriched from an observation), not the
                         // hook's generic "editing N files" placeholder. Only meaningful claims join the semantic
                         // pass — two generic placeholders are byte-identical and would falsely match at cosine ~1.
+  repo_root?: string;   // shared-checkout stamp (see resolveRepoClaim): the git working-tree root this claim's
+                        // files resolved into. Absent for plain file-claims (relative globs, scratchpad paths).
+  branch?: string;      // the repo's current branch at claim time, when repo_root is set.
+  is_dirty?: boolean;   // whether the working tree had uncommitted changes at claim time, when repo_root is set.
 }
 
 export interface OverlapHit {
@@ -67,6 +71,9 @@ export interface SetWorkNoteInput {
   // the route replaces a generic `what` with the session's latest observation title before storing. The pure
   // setWorkNote ignores it.
   enrich_from_observations?: boolean;
+  // Shared-repo stamp (see resolveRepoClaim), resolved by the /worknote/set route BEFORE calling setWorkNote —
+  // setWorkNote stays pure (no git I/O) and just copies these through onto the note.
+  repo_root?: string; branch?: string; is_dirty?: boolean;
 }
 
 /** Publish/refresh a session's claim (a heartbeat re-`set`s it). Returns the stored note. Validated + capped. */
@@ -80,6 +87,9 @@ export function setWorkNote(kv: WorkNoteKv, input: SetWorkNoteInput, now: number
     ttl_s: Math.min(MAX_TTL_S, Math.max(MIN_TTL_S, Math.floor(Number(input.ttl_s) || DEFAULT_TTL_S))),
   };
   if (input.meaningful === true) note.meaningful = true;   // only store when true (keeps notes lean + back-compat)
+  if (typeof input.repo_root === 'string' && input.repo_root) note.repo_root = input.repo_root.slice(0, 512);
+  if (typeof input.branch === 'string' && input.branch) note.branch = input.branch.slice(0, 256);
+  if (typeof input.is_dirty === 'boolean') note.is_dirty = input.is_dirty;
   // Keep the stored value VALID JSON within the byte ceiling: a blind slice() would truncate mid-string and the
   // note would be silently lost (JSON.parse fails → reaped on read). Instead shed files (the only unbounded field
   // — up to MAX_FILES×256) until it fits; the minimal note (no files) is always well under the ceiling.
@@ -211,6 +221,9 @@ export function sanitizeFleetNotes(input: unknown, now: number): WorkNote[] {
       ttl_s: Math.min(MAX_TTL_S, Math.max(0, Math.floor(ttl_s))),
       ...(typeof r.captain === 'string' && r.captain ? { captain: r.captain.slice(0, 64) } : {}),
       ...(r.meaningful === true ? { meaningful: true } : {}),   // a sibling's declared-intent flag (else file-only)
+      ...(typeof r.repo_root === 'string' && r.repo_root ? { repo_root: r.repo_root.slice(0, 512) } : {}),
+      ...(typeof r.branch === 'string' && r.branch ? { branch: r.branch.slice(0, 256) } : {}),
+      ...(r.is_dirty === true ? { is_dirty: true } : {}),
     };
     if (isLive(note, now)) out.push(note);
   }

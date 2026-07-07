@@ -28,6 +28,7 @@ import { buildPromotionJudge } from './promotion-judge.ts';
 import { runQmDedupSlice } from './quartermaster.ts';
 import { runQmSupersedeSlice, applySupersedeDemotion } from './supersede.ts';
 import { setWorkNote, listLocalActive, clearWorkNote, overlapsAgainst, type SetWorkNoteInput } from './work-notes.ts';
+import { resolveRepoClaim } from './repo-claim.ts';
 import { warmWorknoteVecs, semanticOverlapPass, hasIntent, SEMANTIC_ENABLED } from './worknote-semantic.ts';
 import { centroid } from '../shared/vector-math.ts';
 import { PendingEmbedQueue } from './pending-embed-queue.ts';
@@ -1338,6 +1339,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // asking for enrichment (the MCP work_set path). A hook claim that wasn't enriched (no observation yet) is
         // still the generic placeholder — NOT meaningful, so it stays out of the semantic pass (no false ~1.0 match).
         setBody.meaningful = enriched || !enrichReq;
+        // Shared-repo stamp: if the claimed files resolve into a real checkout (not a scratchpad), record
+        // repo_root/branch/is_dirty so the board can surface cross-session contention on that working tree.
+        const repoClaim = resolveRepoClaim(setBody.files ?? []);
+        if (repoClaim.repo_root) {
+          setBody.repo_root = repoClaim.repo_root;
+          if (repoClaim.branch) setBody.branch = repoClaim.branch;
+          if (typeof repoClaim.is_dirty === 'boolean') setBody.is_dirty = repoClaim.is_dirty;
+        }
         const note = setWorkNote(meta, setBody, now);
         const others = listLocalActive(meta, now);
         const overlaps = overlapsAgainst(note.files, others, note.session_id);

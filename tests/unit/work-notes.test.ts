@@ -223,3 +223,15 @@ test('sanitizeFleetNotes preserves a sibling meaningful flag (so cross-captain i
   const generic = sanitizeFleetNotes([{ session_id: 's2', ts: NOW, ttl_s: 1800, what: 'editing 2 files', agent: 'codex' }], NOW);
   expect('meaningful' in generic[0]!).toBe(false);                // absent ⇒ file-only for that sibling
 });
+
+// ── Shared-repo stamp (repo_root/branch/is_dirty) ─────────────────────────────
+test('setWorkNote stores optional repo fields when provided', () => {
+  const kv = makeKv();
+  const n = setWorkNote(kv, { session_id: 's1', files: ['/proj/erp/a.php'], repo_root: '/proj/erp', branch: 'master', is_dirty: true }, 1000);
+  expect(n.repo_root).toBe('/proj/erp'); expect(n.branch).toBe('master'); expect(n.is_dirty).toBe(true);
+});
+test('setWorkNote omits repo fields when absent (scratchpad claim)', () => {
+  const kv = makeKv();
+  const n = setWorkNote(kv, { session_id: 's2', files: ['/tmp/x/scratchpad/a.ts'] }, 1000);
+  expect(n.repo_root).toBeUndefined();
+});
