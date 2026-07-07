@@ -89,3 +89,68 @@ export function detectDirtySync(repoRoot: string): { is_dirty: boolean; staged: 
     return { is_dirty, staged };
   } catch { return { is_dirty: false, staged: false }; }
 }
+
+// ─── TTL cache for detectRepoRootSync ────────────────────────────────────────
+// A repo's working-tree root is stable per directory, so it's safe to memoise
+// for the same TTL as the branch cache. Keeps the hot /worknote/set path from
+// spawning `git rev-parse --show-toplevel` once per claimed file.
+
+interface RepoRootCacheEntry {
+  root: string | null;
+  expires_at_ms: number;
+}
+
+// Exported so tests can flush it between cases via _resetRepoRootCache().
+export const repoRootCache = new Map<string, RepoRootCacheEntry>();
+
+/** Test-only helper — clears the in-memory TTL cache. */
+export function _resetRepoRootCache(): void {
+  repoRootCache.clear();
+}
+
+/**
+ * Like detectRepoRootSync, but memoises the result per cwd for BRANCH_CACHE_TTL_MS.
+ * Use this on hot search paths to avoid a git spawn per request.
+ */
+export function detectRepoRootSyncCached(cwd: string): string | null {
+  const now = Date.now();
+  const cached = repoRootCache.get(cwd);
+  if (cached && cached.expires_at_ms > now) return cached.root;
+  const root = detectRepoRootSync(cwd);
+  repoRootCache.set(cwd, { root, expires_at_ms: now + BRANCH_CACHE_TTL_MS });
+  return root;
+}
+
+// ─── TTL cache for detectDirtySync ───────────────────────────────────────────
+// Dirty state changes with every edit, so this cache uses a much shorter TTL
+// than branch/repo-root — long enough to collapse a burst of per-file probes
+// within a single claim, short enough that it won't mask real changes.
+
+export const DIRTY_CACHE_TTL_MS = 2_000;
+
+interface DirtyCacheEntry {
+  result: { is_dirty: boolean; staged: boolean };
+  expires_at_ms: number;
+}
+
+// Exported so tests can flush it between cases via _resetDirtyCache().
+export const dirtyCache = new Map<string, DirtyCacheEntry>();
+
+/** Test-only helper — clears the in-memory TTL cache. */
+export function _resetDirtyCache(): void {
+  dirtyCache.clear();
+}
+
+/**
+ * Like detectDirtySync, but memoises the {is_dirty,staged} result per repoRoot
+ * for DIRTY_CACHE_TTL_MS. Use this on hot search paths to avoid a git spawn
+ * per request.
+ */
+export function detectDirtySyncCached(repoRoot: string): { is_dirty: boolean; staged: boolean } {
+  const now = Date.now();
+  const cached = dirtyCache.get(repoRoot);
+  if (cached && cached.expires_at_ms > now) return cached.result;
+  const result = detectDirtySync(repoRoot);
+  dirtyCache.set(repoRoot, { result, expires_at_ms: now + DIRTY_CACHE_TTL_MS });
+  return result;
+}

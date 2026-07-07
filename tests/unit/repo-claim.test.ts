@@ -20,3 +20,18 @@ test('no repo → empty', () => {
 test('ignores relative globs (no absolute path to resolve)', () => {
   expect(resolveRepoClaim(['src/**', 'billing/*.ts'], deps)).toEqual({});
 });
+
+test('dedupes dirnames: probes each unique dir at most once, not once per file', () => {
+  let calls = 0;
+  const countingDeps = {
+    detectRepoRootSync: (p: string) => { calls++; return p.startsWith('/scratch/a') || p.startsWith('/scratch/b') ? null : null; },
+    detectBranchSync: () => 'master',
+    detectDirtySync: () => ({ is_dirty: false, staged: false }),
+  };
+  const files = [
+    '/scratch/a/one.ts', '/scratch/a/two.ts', '/scratch/a/three.ts',
+    '/scratch/b/four.ts', '/scratch/b/five.ts',
+  ];
+  expect(resolveRepoClaim(files, countingDeps)).toEqual({});
+  expect(calls).toBe(2); // 2 distinct dirs (/scratch/a, /scratch/b), not 5 files
+});

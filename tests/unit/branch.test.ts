@@ -6,7 +6,14 @@ import {
   branchCache,
   BRANCH_CACHE_TTL_MS,
   detectRepoRootSync,
+  detectRepoRootSyncCached,
+  _resetRepoRootCache,
+  repoRootCache,
   detectDirtySync,
+  detectDirtySyncCached,
+  _resetDirtyCache,
+  dirtyCache,
+  DIRTY_CACHE_TTL_MS,
 } from '../../src/worker/branch.ts';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -28,8 +35,12 @@ function git(cmd: string, dir: string): Buffer {
   return execSync(cmd, { cwd: dir, env: GIT_ENV });
 }
 
-// Flush the TTL cache before each test so cases don't bleed into each other.
-beforeEach(() => _resetBranchCache());
+// Flush the TTL caches before each test so cases don't bleed into each other.
+beforeEach(() => {
+  _resetBranchCache();
+  _resetRepoRootCache();
+  _resetDirtyCache();
+});
 
 describe('detectBranchSync', () => {
   test('returns branch name inside a git repo', () => {
@@ -153,4 +164,99 @@ test('detectDirtySync reports clean, dirty, and staged', () => {
   expect(detectDirtySync(d)).toEqual({ is_dirty: true, staged: false });
   execFileSync('git', ['-C', d, 'add', 'b.txt']);             // staged
   expect(detectDirtySync(d)).toEqual({ is_dirty: true, staged: true });
+});
+
+describe('detectRepoRootSyncCached', () => {
+  test('first call misses cache and resolves root from git', () => {
+    const d = tmpRepo();
+    try {
+      expect(repoRootCache.has(d)).toBe(false);
+      const root = detectRepoRootSyncCached(d);
+      expect(root).toBe(d);
+      expect(repoRootCache.has(d)).toBe(true);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  test('second call within TTL returns cached value without re-spawning git', () => {
+    const d = tmpRepo();
+    const first = detectRepoRootSyncCached(d);
+    expect(first).toBe(d);
+
+    // Delete the repo. If the cache works, the next call within TTL still
+    // returns the cached value without trying to re-spawn git.
+    rmSync(d, { recursive: true, force: true });
+    const second = detectRepoRootSyncCached(d);
+    expect(second).toBe(d);
+  });
+
+  test('after TTL expires the cache entry is refreshed', () => {
+    const d = tmpRepo();
+    try {
+      detectRepoRootSyncCached(d);
+
+      // Manually backdate the cached entry so it looks expired.
+      const entry = repoRootCache.get(d)!;
+      repoRootCache.set(d, { ...entry, expires_at_ms: Date.now() - 1 });
+
+      const refreshed = detectRepoRootSyncCached(d);
+      expect(refreshed).toBe(d);
+
+      const updated = repoRootCache.get(d)!;
+      expect(updated.expires_at_ms).toBeGreaterThan(Date.now() + BRANCH_CACHE_TTL_MS - 1000);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('detectDirtySyncCached', () => {
+  test('first call misses cache and resolves dirty state from git', () => {
+    const d = tmpRepo();
+    try {
+      expect(dirtyCache.has(d)).toBe(false);
+      const result = detectDirtySyncCached(d);
+      expect(result).toEqual({ is_dirty: false, staged: false });
+      expect(dirtyCache.has(d)).toBe(true);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  test('second call within TTL returns cached value without re-spawning git', () => {
+    const d = tmpRepo();
+    try {
+      const first = detectDirtySyncCached(d);
+      expect(first).toEqual({ is_dirty: false, staged: false });
+
+      // Dirty the tree. If the cache works, the next call within TTL still
+      // returns the stale cached result rather than re-probing git.
+      writeFileSync(join(d, 'b.txt'), 'y');
+      const second = detectDirtySyncCached(d);
+      expect(second).toEqual({ is_dirty: false, staged: false });
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  test('after TTL expires the cache entry is refreshed', () => {
+    const d = tmpRepo();
+    try {
+      detectDirtySyncCached(d);
+      writeFileSync(join(d, 'b.txt'), 'y');
+
+      // Manually backdate the cached entry so it looks expired.
+      const entry = dirtyCache.get(d)!;
+      dirtyCache.set(d, { ...entry, expires_at_ms: Date.now() - 1 });
+
+      const refreshed = detectDirtySyncCached(d);
+      expect(refreshed).toEqual({ is_dirty: true, staged: false });
+
+      const updated = dirtyCache.get(d)!;
+      expect(updated.expires_at_ms).toBeGreaterThan(Date.now() + DIRTY_CACHE_TTL_MS - 1000);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
 });
