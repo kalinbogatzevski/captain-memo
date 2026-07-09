@@ -5,10 +5,6 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
-This repo also has an internal `federation` branch (GitLab-only, never public) with its OWN
-independent version counter — its release tags use a `fed-v` prefix (`fed-v0.19.0`, etc.) specifically
-so they never collide with this line's plain `vX.Y.Z` GitHub tags in a shared local clone.
-
 ## [0.19.0] — 2026-07-09
 
 ### Added
@@ -25,7 +21,7 @@ so they never collide with this line's plain `vX.Y.Z` GitHub tags in a shared lo
 ## [0.17.0] — 2026-07-05
 
 ### Added
-- **Local device pairing — pair a second device (phone, another machine) to this captain's memory, no hub required.** `captain-memo gateway pair|list|revoke` mints/lists/removes bearer tokens; the worker serves an authenticated HTTP-MCP listener (localhost-only, started only when a device is paired) that the operator reaches via their own reverse proxy + TLS. Full tool access per paired device in this release — no separate identity, no peer/federation concept, no new process to manage.
+- **Local device pairing — pair a second device (phone, another machine) to this captain's memory, no hub required.** `captain-memo gateway pair|list|revoke` mints/lists/removes bearer tokens; the worker serves an authenticated HTTP-MCP listener (localhost-only, started only when a device is paired) that the operator reaches via their own reverse proxy + TLS. Full tool access per paired device in this release — no separate identity, no peer concept, no new process to manage.
 
 ## [0.16.0] — 2026-07-05
 
@@ -123,7 +119,7 @@ so they never collide with this line's plain `vX.Y.Z` GitHub tags in a shared lo
 
 ### Added
 - **Build edition in `/stats` + the SessionStart banner.** The worker now reports its build
-  edition (`oss` / `federation`), so the banner reads e.g. `⚓ Captain Memo v0.11.1 (OSS)` —
+  edition, so the banner reads e.g. `⚓ Captain Memo v0.11.1 (OSS)` —
   derived from the checkout (no per-branch constant), so it's accurate without manual upkeep.
 
 ## [0.11.0] — 2026-06-14

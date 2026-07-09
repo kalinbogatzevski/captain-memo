@@ -1,5 +1,5 @@
 // captain-memo gateway — pair/list/revoke a second device (phone, tablet, another machine)
-// against THIS captain's existing corpus. No hub, no separate process, no peer/federation
+// against THIS captain's existing corpus. No hub, no separate process, no peer
 // concept — a paired device is an authenticated client of the same single worker. See
 // docs/superpowers/specs/2026-07-05-local-device-pairing-design.md.
 //

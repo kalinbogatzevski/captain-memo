@@ -110,7 +110,7 @@ export interface Observation {
   branch: string | null;
   /** Originating AI agent that authored this observation, or null for rows
    *  captured before C1 (vendor provenance) or by a hook that sent no signal.
-   *  Surfaced as 'unknown' in result metadata when null. Mirrors federation's
+   *  Surfaced as 'unknown' in result metadata when null. Mirrors the fleet's
    *  origin_peer, but at the agent layer. */
   origin_agent: OriginAgent | null;
   /** Total tokens the summarizer spent producing this observation (input + output).

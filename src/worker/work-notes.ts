@@ -45,10 +45,10 @@ export interface OverlapHit {
 export interface ClaimVec { note: WorkNote; vec: number[]; }
 
 export const WORKNOTE_PREFIX = 'worknote:';
-// The whole fleet's notes arrive as ONE snapshot pushed from the federation thread on each ~10s roster poll.
+// The whole fleet's notes arrive as ONE snapshot pushed from the fleet thread on each ~10s roster poll.
 // Stored under a SINGLE kv key (NOT the worknote: prefix, so listLocalActive never sees it) so it is shared
 // across the writer/reader thread split via the SQLite DB — realm-agnostic, unlike an in-process cache. The
-// snapshot self-expires: if the federation thread stops pushing (hub down / un-federated), it goes stale and
+// snapshot self-expires: if the fleet thread stops pushing (hub down / disconnected), it goes stale and
 // listFleetActive returns nothing, so a dead link can never leave phantom fleet claims on the board.
 export const FLEET_SNAPSHOT_KEY = 'fleetnotes:snapshot';
 const FLEET_SNAPSHOT_TTL_MS = 30_000;   // a snapshot older than this (no recent push) is ignored wholesale
@@ -168,13 +168,13 @@ export function semanticOverlaps(
   return hits.sort((x, y) => y.similarity - x.similarity);
 }
 
-/** The live subset of an IN-MEMORY note array (the fleet cache holds notes pushed from the federation thread,
+/** The live subset of an IN-MEMORY note array (the fleet cache holds notes pushed from the fleet thread,
  *  not the kv; each still carries its own lease). Pure — no reaping side effect. */
 export function filterActive(notes: WorkNote[], now: number): WorkNote[] {
   return (notes ?? []).filter((n) => n && typeof n === 'object' && typeof n.session_id === 'string' && isLive(n, now));
 }
 
-/** Store the fleet's current notes as ONE timestamped snapshot (the federation thread pushes this each poll).
+/** Store the fleet's current notes as ONE timestamped snapshot (the fleet thread pushes this each poll).
  *  Input is sanitized + capped here. Returns the count stored. Replacing the whole snapshot each push is the
  *  reap: a sibling's dropped claim simply isn't in the next snapshot. */
 export function setFleetSnapshot(kv: WorkNoteKv, input: unknown, now: number): number {
@@ -184,7 +184,7 @@ export function setFleetSnapshot(kv: WorkNoteKv, input: unknown, now: number): n
 }
 
 /** The live fleet notes (siblings' active claims), or [] if the snapshot is missing, malformed, or STALE (no
- *  push within FLEET_SNAPSHOT_TTL_MS ⇒ the federation link is down, so we surface no fleet claims at all). */
+ *  push within FLEET_SNAPSHOT_TTL_MS ⇒ the fleet link is down, so we surface no fleet claims at all). */
 export function listFleetActive(kv: WorkNoteKv, now: number): WorkNote[] {
   const raw = kv.getKv(FLEET_SNAPSHOT_KEY);
   if (!raw) return [];

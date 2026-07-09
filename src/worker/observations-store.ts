@@ -214,7 +214,7 @@ export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
   },
   {
     // v13 — C1 vendor provenance: tag each observation with the AI agent that
-    // authored it, mirroring how federation tags origin_peer at the captain
+    // authored it, mirroring how the fleet tags origin_peer at the captain
     // layer. Nullable with NO default: pre-v13 rows stay NULL (rendered
     // 'unknown' to consumers), and a hook that sends no agent signal also
     // stores NULL. Purely additive — the live recall path never filters on

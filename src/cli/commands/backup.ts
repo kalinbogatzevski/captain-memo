@@ -68,7 +68,7 @@ async function backupRestore(args: string[]): Promise<number> {
       console.log(`  secrets restored to: ${res.workerEnvDest}`);
       console.log('  (system-mode installs that load worker.env from /etc may need it copied there manually)');
     }
-    console.log('  note: federation/peer identity is not transferred — re-establish it on this host if needed.');
+    console.log('  note: peer identity is not transferred — re-establish it on this host if needed.');
     return 0;
   } catch (err) {
     if (err instanceof RestoreError) { console.error(`✗ ${err.message}`); return 1; }

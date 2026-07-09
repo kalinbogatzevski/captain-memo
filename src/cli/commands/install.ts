@@ -704,7 +704,7 @@ function workerEnvLines(cfg: WizardConfig, dataDir: string): string[] {
 }
 
 // Keys the install wizard MANAGES (the complete set workerEnvLines can emit). Anything else in an
-// existing worker.env is a hand-added setting — federation (DIAL/LISTEN/AUTO), Tide, Quartermaster,
+// existing worker.env is a hand-added setting — fleet (DIAL/LISTEN/AUTO), Tide, Quartermaster,
 // reader pool, etc. — and MUST survive a reinstall, since the file header promises "Safe to hand-edit".
 const MANAGED_ENV_KEYS = new Set<string>([
   'CAPTAIN_MEMO_DATA_DIR', 'CAPTAIN_MEMO_PROJECT_ID', 'CAPTAIN_MEMO_WORKER_PORT', 'CAPTAIN_MEMO_HOOK_TIMEOUT_MS',
@@ -1018,7 +1018,7 @@ async function installWindows(args: string[], opts: InstallOptions): Promise<num
   header('Writing worker config');
   if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true });
   // Same key=value content the Linux path emits (data lives in the user's home), and the same
-  // preserve-hand-edits-on-reinstall behavior so federation/Tide/QM tuning survives.
+  // preserve-hand-edits-on-reinstall behavior so fleet/Tide/QM tuning survives.
   const { body, kept } = composeWorkerEnvBody(workerEnvLines(cfg, DATA_DIR), WORKER_ENV_PATH);
   // Only rewrite worker.env when its content actually changes — a no-op reinstall
   // (e.g. re-running install just to update code) must leave the file (bytes + mtime)

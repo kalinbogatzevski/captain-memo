@@ -8,8 +8,8 @@ import { validateManifest, type BackupManifest } from './manifest.ts';
 export interface DurableTarget { archivePath: string; srcPath: string; isVector: boolean }
 
 /** The backup ALLOWLIST. Anything not named here (queue.db, pending_embed.db,
- *  logs/, federation.json, *.bak, sockets) is excluded by construction — which is
- *  also what keeps the feature free of any federation coupling. */
+ *  logs/, edition-specific config, *.bak, sockets) is excluded by construction — which is
+ *  also what keeps the feature free of any edition coupling. */
 export function durableTargets(dataDir: string): DurableTarget[] {
   return [
     { archivePath: 'data/meta.sqlite3',            srcPath: join(dataDir, 'meta.sqlite3'),               isVector: false },

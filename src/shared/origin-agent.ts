@@ -1,7 +1,7 @@
 /**
  * Vendor provenance: which AI agent authored a captured memory/observation.
  *
- * Mirrors the federation `origin_peer` tag (which captain a memory came from)
+ * Mirrors the `origin_peer` tag (which captain a memory came from)
  * but at the agent layer (which CLI/tool produced it). Stored alongside `branch`
  * on each observation and surfaced in search / get_full result metadata so a
  * consumer can see who wrote a memory.

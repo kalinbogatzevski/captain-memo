@@ -1,6 +1,6 @@
 // Token store for the local device-pairing gateway (GitHub #6). A "device" here is just an
 // authenticated client of the SAME single worker/corpus every local session already uses —
-// no separate identity, no peer/federation concept. See
+// no separate identity, no peer concept. See
 // docs/superpowers/specs/2026-07-05-local-device-pairing-design.md.
 //
 // defaultGatewayConfigPath() is recomputed on every call (not a frozen module-level const)
