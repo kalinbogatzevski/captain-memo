@@ -7,8 +7,10 @@ import type { WorkNote } from '../../src/worker/work-notes.ts';
 const NOW = 1_700_000_000_000;
 // Default to meaningful:true — these matching tests assume a claim with real declared intent. The gate tests
 // below override it to false to prove generic placeholders never enter the pass.
-function note(p: Partial<WorkNote> & { session_id: string; what: string }): WorkNote {
-  return { agent: 'claude', files: [], ts: NOW, ttl_s: 1800, meaningful: true, ...p };
+function note(p: Omit<Partial<WorkNote>, 'meaningful'> & { session_id: string; what: string; meaningful?: boolean | undefined }): WorkNote {
+  // `meaningful` may be overridden to undefined (an unset flag — the real state of notes captured before the
+  // flag existed) to exercise the intent gate; that's out of WorkNote's nominal `boolean`, hence the cast.
+  return { agent: 'claude', files: [], ts: NOW, ttl_s: 1800, meaningful: true, ...p } as WorkNote;
 }
 // Deterministic fake embedder: each known phrase maps to a fixed unit-ish vector.
 const VEC: Record<string, number[]> = {

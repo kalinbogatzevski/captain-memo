@@ -31,7 +31,7 @@ function flagValue(args: string[], name: string): string | undefined {
 async function backupCreate(args: string[]): Promise<number> {
   const outPath = flagValue(args, '--out');
   const includeVectors = !args.includes('--no-vectors');
-  const res = await createBackup({ outPath, includeVectors });
+  const res = await createBackup({ ...(outPath !== undefined ? { outPath } : {}), includeVectors });
   console.log(`✓ backup written: ${res.outPath}  (${fmtBytes(res.sizeBytes)})`);
   console.log(
     `  ${res.manifest.counts.chunks} chunks · ${res.manifest.counts.observations} observations · ` +
