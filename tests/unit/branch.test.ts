@@ -147,7 +147,11 @@ function tmpRepo(): string {
   writeFileSync(join(d, 'a.txt'), 'x');
   execFileSync('git', ['-C', d, 'add', 'a.txt']);
   execFileSync('git', ['-C', d, 'commit', '-qm', 'init']);
-  return d;
+  // Return git's OWN canonical form of the root, not the raw mkdtemp path: on Windows CI, tmpdir() is the 8.3
+  // short name (…\RUNNER~1\…) with backslashes while `git rev-parse --show-toplevel` emits the long name with
+  // forward slashes, so comparing detectRepoRootSync() output against a raw temp path mismatches. Canonicalising
+  // here makes every `.toBe(root)` assertion platform-robust (also handles a symlinked /tmp on macOS).
+  return detectRepoRootSync(d) ?? d;
 }
 
 test('detectRepoRootSync returns the working-tree root, null outside a repo', () => {
