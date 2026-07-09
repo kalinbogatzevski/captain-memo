@@ -296,6 +296,47 @@ const geminiAdapter: ToolAdapter = {
   },
 };
 
+// Google Antigravity CLI (agy) — SUCCESSOR to the Gemini CLI (Gemini CLI is sunset for consumer tiers
+// 2026-06-18). It reuses ~/.gemini but keeps its OWN MCP config at ~/.gemini/config/mcp_config.json and has
+// NO `agy mcp add` subcommand, so register by read+parse+merge+write (never clobber). That file's top-level
+// `mcpServers` object uses the same {name:{command,args,env}} stdio shape as Cursor's mcp.json (verified against
+// agy 1.1.0's embedded schema), so we reuse mergeCursorMcpConfig. Skill best-effort to ~/.gemini/skills (shared
+// with gemini; agy reads GEMINI.md/AGENTS.md context + skills). Wiring is auth-independent (config file) — agy's
+// own login is a separate keyring OAuth.
+const agyAdapter: ToolAdapter = {
+  id: 'agy',
+  label: 'Antigravity CLI (agy)',
+  detect({ home, run }) {
+    return cliOnPath(run, 'agy')
+      || existsSync(join(home, '.gemini', 'antigravity-cli'))
+      || existsSync(join(home, '.gemini', 'config', 'mcp_config.json'));
+  },
+  connect(ctx) {
+    const mcpJsonPath = join(ctx.home, '.gemini', 'config', 'mcp_config.json');
+    const serverPath = mcpServerPath(ctx.mcpCommand);
+    let mcp: ConnectResult['mcp'] = 'failed';
+    let detail: string | undefined;
+    try {
+      const existing = existsSync(mcpJsonPath) ? readFileSync(mcpJsonPath, 'utf-8') : null;
+      let already = false;
+      if (existing && existing.trim().length > 0) {
+        try {
+          const entry = JSON.parse(existing)?.mcpServers?.['captain-memo'];
+          if (entry && Array.isArray(entry.args) && entry.args.includes(serverPath)) already = true;
+        } catch { /* unparseable → merge below throws and we report failed */ }
+      }
+      const merged = mergeCursorMcpConfig(existing, serverPath);   // same top-level `mcpServers` stdio shape
+      mkdirSync(dirname(mcpJsonPath), { recursive: true });
+      writeFileSync(mcpJsonPath, merged);
+      mcp = already ? 'present' : 'added';
+    } catch (e) {
+      detail = (e as Error).message;
+    }
+    const skill = copySkill(ctx.skillSource, join(ctx.home, '.gemini', 'skills', 'captain-memo', 'SKILL.md'));
+    return withDetail({ tool: 'agy', mcp, skill }, detail);
+  },
+};
+
 // Cursor (~/.cursor) — no CLI for MCP. Register by merging ~/.cursor/mcp.json
 // (read+parse+merge+write, never clobber). Skill: copy SKILL.md → ~/.cursor/rules/captain-memo.md.
 const cursorAdapter: ToolAdapter = {
@@ -458,7 +499,7 @@ const jetbrainsAdapter: ToolAdapter = {
   },
 };
 
-export const ADAPTERS: ToolAdapter[] = [codexAdapter, geminiAdapter, cursorAdapter, opencodeAdapter, vibeAdapter, vscodeAdapter, jetbrainsAdapter];
+export const ADAPTERS: ToolAdapter[] = [codexAdapter, geminiAdapter, agyAdapter, cursorAdapter, opencodeAdapter, vibeAdapter, vscodeAdapter, jetbrainsAdapter];
 
 // Detect installed tools (or the `only` subset), connect each, return reports.
 // `only` filters by adapter id; an unknown id yields a skipped result so the

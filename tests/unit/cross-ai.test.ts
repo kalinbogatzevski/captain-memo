@@ -128,6 +128,33 @@ test('connectCrossAi — only:[cursor] preserves a pre-existing foreign server i
   expect(cfg.mcpServers['captain-memo']).toEqual({ command: 'bun', args: [MCP_PATH] });
 });
 
+// Antigravity CLI (agy) — successor to Gemini CLI. Wires agy's OWN MCP config
+// (~/.gemini/config/mcp_config.json, top-level mcpServers) via file-merge (no `agy mcp add`).
+test('connectCrossAi — only:[agy] wires ~/.gemini/config/mcp_config.json + copies the skill', () => {
+  const results = connectCrossAi({ only: ['agy'], mcpCommand: ['bun', MCP_PATH], skillSource, home, run: noopRunner });
+  expect(results.length).toBe(1);
+  const r = results[0]!;
+  expect(r.tool).toBe('agy');
+  expect(r.mcp).toBe('added');
+  expect(r.skill).toBe('installed');
+  // agy's OWN MCP config (~/.gemini/config/mcp_config.json), top-level mcpServers, stdio {command,args}.
+  const cfg = JSON.parse(readFileSync(join(home, '.gemini', 'config', 'mcp_config.json'), 'utf-8'));
+  expect(cfg.mcpServers['captain-memo']).toEqual({ command: 'bun', args: [MCP_PATH] });
+  expect(existsSync(join(home, '.gemini', 'skills', 'captain-memo', 'SKILL.md'))).toBe(true);
+});
+
+test('connectCrossAi — agy is idempotent + preserves a foreign server in mcp_config.json', () => {
+  mkdirSync(join(home, '.gemini', 'config'), { recursive: true });
+  writeFileSync(join(home, '.gemini', 'config', 'mcp_config.json'), JSON.stringify({ mcpServers: { foreign: { command: 'x', args: [] } } }));
+  connectCrossAi({ only: ['agy'], mcpCommand: ['bun', MCP_PATH], skillSource, home, run: noopRunner });
+  const second = connectCrossAi({ only: ['agy'], mcpCommand: ['bun', MCP_PATH], skillSource, home, run: noopRunner });
+  expect(second[0]!.mcp).toBe('present');
+  const cfg = JSON.parse(readFileSync(join(home, '.gemini', 'config', 'mcp_config.json'), 'utf-8'));
+  expect(cfg.mcpServers.foreign).toEqual({ command: 'x', args: [] });
+  expect(cfg.mcpServers['captain-memo']).toEqual({ command: 'bun', args: [MCP_PATH] });
+  expect(Object.keys(cfg.mcpServers).filter((k) => k === 'captain-memo').length).toBe(1);
+});
+
 test('connectCrossAi — skill-copy failure still counts the MCP as wired (best-effort skill)', () => {
   const results = connectCrossAi({
     only: ['cursor'],
