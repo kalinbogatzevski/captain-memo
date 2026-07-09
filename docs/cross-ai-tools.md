@@ -1,4 +1,4 @@
-# Captain Memo across AI tools (Codex, Cursor, Gemini CLI, opencode, Mistral Vibe, VS Code, JetBrains, …)
+# Captain Memo across AI tools (Codex, Cursor, Gemini CLI, Antigravity, opencode, Mistral Vibe, VS Code, JetBrains, …)
 
 Captain Memo's worker is an **agent-agnostic local HTTP service**, and it ships an **MCP server**. So
 *any* MCP-speaking AI coding tool can share the **same local memory corpus** — the same one Claude Code
@@ -20,9 +20,13 @@ session hooks write.
 **The fast path: `captain-memo connect`.** Every tool below can be wired automatically —
 `captain-memo connect` detects every installed tool and wires all of them in one shot;
 `captain-memo connect --list` shows what's detected without changing anything;
-`captain-memo connect <tool>` wires just one (`codex | gemini | cursor | opencode | vibe | vscode | jetbrains`).
+`captain-memo connect <tool>` wires just one (`codex | gemini | agy | cursor | opencode | vibe | vscode | jetbrains`).
 The manual steps in each section below are what `connect` does under the hood, for tools that don't have
 one, want to inspect the exact config, or are on an unsupported OS.
+
+**Added an AI tool *after* installing Captain Memo?** Just re-run `captain-memo connect` — it re-detects and
+wires anything new (e.g. you had Claude Code, then installed `agy` → `captain-memo connect agy`). It's
+idempotent: re-running never duplicates or clobbers your existing config.
 
 ## Codex CLI
 
@@ -55,6 +59,20 @@ Then drop the skill body into `.cursor/rules/captain-memo.md` (Cursor reads proj
 
 Register the MCP server in Gemini's settings (`~/.gemini/settings.json` `mcpServers`), same command/args,
 and place the skill text in `GEMINI.md`.
+
+## Antigravity CLI (agy)
+
+`agy` is the successor to the Gemini CLI (Gemini CLI is retired for consumer tiers on 2026-06-18). It reuses
+`~/.gemini/` but keeps its **own** MCP config at `~/.gemini/config/mcp_config.json`, and there is no `agy mcp add`
+subcommand — so `captain-memo connect agy` writes that file directly, merging:
+
+```json
+{ "mcpServers": { "captain-memo": { "command": "bun", "args": ["/path/to/captain-memo/plugin/dist/mcp-server.js"] } } }
+```
+
+(the same top-level `mcpServers` stdio shape as Cursor's, verified against agy 1.1.0), and drops the skill in
+`~/.gemini/skills/`. agy's Google sign-in is a **separate keyring OAuth**, independent of this wiring. Once wired
+and signed in, an `agy` session discovers captain-memo's full memory toolset.
 
 ## opencode
 
