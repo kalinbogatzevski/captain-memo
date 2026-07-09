@@ -9,6 +9,14 @@ This repo also has an internal `federation` branch (GitLab-only, never public) w
 independent version counter — its release tags use a `fed-v` prefix (`fed-v0.19.0`, etc.) specifically
 so they never collide with this line's plain `vX.Y.Z` GitHub tags in a shared local clone.
 
+## [0.19.0] — 2026-07-09
+
+### Added
+- **Google Antigravity CLI (`agy`) support.** `agy` is the successor to the Gemini CLI (Gemini CLI is retired for consumer tiers on 2026-06-18). `captain-memo install` / `connect` now detects `agy` and wires captain-memo into its own MCP config (`~/.gemini/config/mcp_config.json`), so an `agy` session gets the full captain-memo memory toolset. Verified live against agy 1.1.0: it discovers all of captain-memo's tools from the wired config. There is no `agy mcp add` subcommand, so the registration is an idempotent config-file merge (top-level `mcpServers`, same stdio shape as Cursor's mcp.json; foreign servers preserved).
+
+### Fixed
+- **Manifest version drift.** `.claude-plugin/marketplace.json` had lagged at 0.17.0 while the plugin was 0.18.0; all three manifests (`package.json`, `plugin.json`, `marketplace.json`) are re-synced and the committed `plugin/dist` bundle is rebuilt at the current version, so the version-consistency checks pass again.
+
 ## [0.18.0] — 2026-07-08
 
 ### Added

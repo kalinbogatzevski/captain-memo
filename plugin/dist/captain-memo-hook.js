@@ -608,9 +608,11 @@ function detectRepoRootSync(cwd) {
     return null;
   }
 }
-var branchCache;
+var branchCache, repoRootCache, dirtyCache;
 var init_branch = __esm(() => {
   branchCache = new Map;
+  repoRootCache = new Map;
+  dirtyCache = new Map;
 });
 
 // src/hooks/pre-git.ts
@@ -731,7 +733,7 @@ init_paths();
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.17.0",
+  version: "0.19.0",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
