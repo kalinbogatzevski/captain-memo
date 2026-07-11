@@ -17,10 +17,17 @@ test('v2 = weighted + temporal + proper-noun', () => {
   expect(v.keywordWeight).toBeCloseTo(0.3, 6);
   expect(v.temporalIntent).toBe(true);
   expect(v.properNounBoost).toBe(true);
-  expect(v.temporalHalfLifeDays).toBe(7);
+  expect(v.temporalHalfLifeDays).toBe(21);
   expect(v.temporalTopN).toBe(10);
   expect(v.relevanceFloor).toBeCloseTo(0.6, 6);
+  expect(v.temporalFloor).toBeCloseTo(0.5, 6);
   expect(v.properNounBoostWeight).toBeCloseTo(1.15, 6);
+});
+
+test('temporalFloor: legacy off (1), v2 gentle (0.5), env override', () => {
+  expect(RANK_PROFILES.legacy.temporalFloor).toBe(1);
+  expect(resolveRankConfig('v2', {}).temporalFloor).toBeCloseTo(0.5, 6);
+  expect(resolveRankConfig('v2', { CAPTAIN_MEMO_TEMPORAL_FLOOR: '0.8' }).temporalFloor).toBeCloseTo(0.8, 6);
 });
 
 test('OSS default profile is v2 (ships better ranking out of the box)', () => {

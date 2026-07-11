@@ -1,6 +1,6 @@
 // src/worker/temporal-intent.ts — query-time temporal-intent detection + a
-// recency-dominant re-rank of the returned top-N. Pure, no I/O, no LLM (the
-// detector runs on every auto-inject). v2-gated; a no-op unless cfg.temporalIntent
+// gentle, bounded recency blend over the returned top-N. Pure, no I/O, no LLM
+// (the detector runs on every auto-inject). Gated: a no-op unless cfg.temporalIntent
 // is on AND the query reads as temporal — so legacy is byte-identical.
 import type { RankConfig } from './search-config.ts';
 
@@ -18,39 +18,41 @@ interface TemporalHit {
 }
 
 /**
- * Reorder the top-N hits so the newest *relevant* dated hit wins, when the query
- * is temporal and cfg.temporalIntent is on. Reorder-only (never drops/adds).
- * Undated hits (no created_at_epoch — memory/skill) get recency 0, so a dated
- * observation above the relevance floor outranks a stale undated memory file.
+ * Blend a gentle recency factor into the top-N when the query is temporal and
+ * cfg.temporalIntent is on: final = score · factor, then sort by final.
+ *
+ * factor is a bounded multiplier in [temporalFloor, 1]:
+ *   factor = temporalFloor + (1 - temporalFloor) · exp(-ln2 · ageDays / halfLife)
+ * so a maximally-stale observation still keeps ≥ temporalFloor of its relevance —
+ * recency reorders near-ties but never buries a much-more-relevant older fact.
+ *
+ * Channel-aware: only the `observation` channel decays. Curated memory/skill (and
+ * remote) are exempt (factor 1) so authoritative references are never pushed below
+ * fresh observations. Undated (no created_at_epoch), halfLife ≤ 0, or a future
+ * timestamp → factor 1 (neutral, never a penalty).
  */
 export function applyTemporalRerank<T extends TemporalHit>(
   hits: T[], query: string, cfg: RankConfig, nowMs: number,
 ): T[] {
-  if (!cfg.temporalIntent || cfg.temporalHalfLifeDays <= 0 || hits.length <= 1 || !detectTemporalIntent(query)) return hits;
+  if (!cfg.temporalIntent || hits.length <= 1 || !detectTemporalIntent(query)) return hits;
   const n = Math.min(cfg.temporalTopN, hits.length);
   if (n <= 1) return hits;
   const pool = hits.slice(0, n);
   const tail = hits.slice(n);
-  const topScore = pool[0]!.score;
+  const halfMs = cfg.temporalHalfLifeDays * 86_400_000;
+  const floor = cfg.temporalFloor;
   const scored = pool.map((h, i) => {
-    const eligible = h.score >= cfg.relevanceFloor * topScore;
-    // recency sort key: dated-eligible by exp-decay recency (monotonic in age);
-    // eligible-but-undated = 0 (above ineligible, below any dated-eligible);
-    // ineligible = -1 (sinks to the bottom of the reordered pool). Higher = earlier.
-    let key = -1;
-    if (eligible) {
+    let factor = 1;
+    if (h.channel === 'observation' && halfMs > 0) {
       const epochS = typeof h.metadata.created_at_epoch === 'number' ? h.metadata.created_at_epoch : null;
-      if (epochS === null) {
-        key = 0;
-      } else {
+      if (epochS !== null) {
         const ageMs = nowMs - epochS * 1000;
-        const halfMs = cfg.temporalHalfLifeDays * 86_400_000;
-        key = ageMs > 0 ? Math.exp(-Math.LN2 * ageMs / halfMs) : 1;
+        if (ageMs > 0) factor = floor + (1 - floor) * Math.exp(-Math.LN2 * ageMs / halfMs);
       }
     }
-    return { h, key, i };
+    return { h: { ...h, score: h.score * factor }, score: h.score * factor, i };
   });
-  // Recency-primary: sort by key desc, tie-break original index (stable).
-  scored.sort((a, b) => b.key - a.key || a.i - b.i);
+  // Gentle blend: sort by blended score desc, stable tie-break on original index.
+  scored.sort((a, b) => b.score - a.score || a.i - b.i);
   return [...scored.map(s => s.h), ...tail];
 }

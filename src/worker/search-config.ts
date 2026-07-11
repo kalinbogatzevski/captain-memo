@@ -13,9 +13,10 @@ export interface RankConfig {
   keywordWeight: number;
   temporalIntent: boolean;
   properNounBoost: boolean;
-  temporalHalfLifeDays: number; // recency half-life (days) for the temporal re-rank (0 = re-rank off)
-  temporalTopN: number;         // candidate pool the temporal re-rank reorders
-  relevanceFloor: number;       // fraction of top score a hit must reach to be recency-promotable
+  temporalHalfLifeDays: number; // observation recency half-life (days) for the temporal blend (0 = no decay)
+  temporalTopN: number;         // candidate pool the temporal blend re-ranks
+  relevanceFloor: number;       // deprecated: no longer consumed by the temporal blend (kept for config compat)
+  temporalFloor: number;        // bounded-multiplier floor in [0,1]: a max-stale obs keeps ≥ this of its score (1 = recency off)
   properNounBoostWeight: number;// rare-token boost multiplier (1 = no-op)
   supersedePenalty: number;     // score multiplier for superseded hits (1 = inert/no demote)
 }
@@ -32,6 +33,7 @@ const LEGACY: RankConfig = {
   temporalHalfLifeDays: 0,
   temporalTopN: 0,
   relevanceFloor: 0,
+  temporalFloor: 1,
   properNounBoostWeight: 1,
   supersedePenalty: 1,
 };
@@ -46,9 +48,10 @@ export const RANK_PROFILES: Record<RankProfileName, RankConfig> = {
     keywordWeight: 0.3,
     temporalIntent: true,
     properNounBoost: true,
-    temporalHalfLifeDays: 7,
+    temporalHalfLifeDays: 21,
     temporalTopN: 10,
     relevanceFloor: 0.6,
+    temporalFloor: 0.5,
     properNounBoostWeight: 1.15,
     supersedePenalty: 0.5,
   },
@@ -89,6 +92,7 @@ export function resolveRankConfig(
     temporalHalfLifeDays: num(env.CAPTAIN_MEMO_TEMPORAL_HALF_LIFE_DAYS, base.temporalHalfLifeDays),
     temporalTopN: num(env.CAPTAIN_MEMO_TEMPORAL_TOP_N, base.temporalTopN),
     relevanceFloor: num(env.CAPTAIN_MEMO_RELEVANCE_FLOOR, base.relevanceFloor),
+    temporalFloor: num(env.CAPTAIN_MEMO_TEMPORAL_FLOOR, base.temporalFloor),
     properNounBoostWeight: num(env.CAPTAIN_MEMO_PROPER_NOUN_BOOST_WEIGHT, base.properNounBoostWeight),
     supersedePenalty: num(env.CAPTAIN_MEMO_SUPERSEDE_PENALTY, base.supersedePenalty),
   };
