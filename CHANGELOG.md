@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.20.0] — 2026-07-11
+
+### Changed
+- **Recency-aware ranking — gentle temporal blend.** The `current/latest` temporal re-rank (`applyTemporalRerank`) is now a *gentle, bounded multiplicative blend* rather than a recency-dominant reorder: `final = score · (temporalFloor + (1 − temporalFloor)·exp(−ln2·age_days/halflife))`. Fresh observations win near-ties **without burying a more-relevant older fact**, curated `memory`/`skill` hits are exempt (factor 1 — never demoted below a fresh observation), and undated or future-dated hits stay neutral (×1). Observation half-life default is now **21d** (was 7d). New tunable **`temporalFloor`** (`CAPTAIN_MEMO_TEMPORAL_FLOOR`, default `0.5`) sets the gentleness — a maximally-stale observation keeps ≥ `temporalFloor` of its relevance; lower is sharper, `1.0` disables recency. The `legacy` profile is unchanged (byte-identical); `v2` (the OSS default) now ships the gentle blend.
+
 ## [0.19.0] — 2026-07-09
 
 ### Added
