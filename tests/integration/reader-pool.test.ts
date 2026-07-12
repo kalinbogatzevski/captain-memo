@@ -92,7 +92,7 @@ function spawnWorker(poolSize: number, extraEnv: Record<string, string> = {}): {
       CAPTAIN_MEMO_ENABLE_TEST_ENDPOINTS: '1',
       CAPTAIN_MEMO_SKIP_EMBED: '1',
       ANTHROPIC_API_KEY: '',
-      CAPTAIN_MEMO_DATA_DIR: dir,
+      CAPTAIN_MEMO_DATA_DIR: dir, CAPTAIN_MEMO_CONFIG_DIR: dir,
       CAPTAIN_MEMO_WORKER_PORT: String(port),
       CAPTAIN_MEMO_WATCH_MEMORY: join(dir, 'mem', '*.md'),
       ...extraEnv,

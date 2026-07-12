@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.22.2] — 2026-07-12
+
+### Fixed
+- **Integration tests silently inherited the developer's real `worker.env`.** A spawned test worker calls `loadWorkerEnv()`, which reads `CONFIG_DIR/worker.env` and injects every variable **not already in `process.env`**. On any machine that also runs a real captain, that meant `~/.config/captain-memo/worker.env` — the developer's own live config (`EMBEDDER_ENDPOINT`, `EMBEDDER_API_KEY`, `QM_DEDUP`, `TIDE_*`, `RECALL_AUDIT`, `FEDERATION_*`, …) — quietly became the fixture's config. Tests therefore behaved differently depending on **whose box they ran on**: green in CI, and able to fail (or falsely pass) locally. Every worker-spawning integration test now pins `CAPTAIN_MEMO_CONFIG_DIR` to its own temp dir (`paths.ts` honours it), so no `worker.env` is found and **nothing is inherited**. Suite: 1072/1072.
+
 ## [0.22.1] — 2026-07-12
 
 ### Fixed
