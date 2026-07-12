@@ -246,6 +246,80 @@ export function mergeVibeMcpConfig(existingToml: string | null, mcpServerPath: s
   return base + sep + block;
 }
 
+// --- kimi config.toml merge (PURE — unit-tested without disk) -----------------
+// `connect kimi` must leave kimi LAUNCHABLE, and kimi's launchability lives entirely in ~/.kimi/config.toml:
+// a [providers.*] table + [models.<alias>] aliases + a root `default_model` (bare `kimi` has nothing to route
+// to without them). VERIFIED shape (kimi-cli 1.48.0): provider type "openai_legacy", a loopback base_url needs
+// NO api key and NO /login, and `-m <alias>` takes a [models.*] KEY — so the aliases are named after the Ollama
+// model ids, 1:1. Managed BEGIN/END block: re-running REGENERATES it (so a newly pulled model shows up) and
+// never touches a line outside it. `default_model` is a ROOT key ⇒ it MUST precede all tables (a bare key after
+// a [section] header belongs to THAT table, and kimi then dies with "LLM not set") ⇒ it is PREPENDED — and it is
+// only KEPT when it still RESOLVES to a [models.*] alias in the final file. A default left pointing at a model
+// the user has since `ollama rm`'d is dangling, and dangling == "LLM not set" == exactly the breakage this
+// function exists to prevent.
+const KIMI_BEGIN = '# >>> captain-memo (managed by `captain-memo connect kimi`) >>>';
+const KIMI_END = '# <<< captain-memo <<<';
+const KIMI_LOCAL_ENDPOINT = 'http://127.0.0.1:11434/v1';   // ponytail: loopback Ollama, the only verified provider
+const KIMI_MAX_CONTEXT = 32768;
+
+export function mergeKimiConfig(existingToml: string | null, opts: { models: string[]; endpoint?: string }): string {
+  // Drop any previous managed block — this is a regenerate, not an append. Trailing whitespace goes with it so
+  // a re-run is byte-stable (no blank line creeping in each time).
+  const base = (existingToml ?? '').replace(
+    new RegExp(KIMI_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '[\\s\\S]*?' + KIMI_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\n?'),
+    '',
+  ).replace(/\s+$/, '');
+  const endpoint = opts.endpoint ?? KIMI_LOCAL_ENDPOINT;
+  let block = KIMI_BEGIN + '\n'
+    + '[providers.ollama]\n'
+    + 'type = "openai_legacy"\n'
+    + 'base_url = ' + JSON.stringify(endpoint) + '\n';
+  for (const m of opts.models) {
+    block += '\n[models.' + JSON.stringify(m) + ']\n'
+      + 'provider = "ollama"\n'
+      + 'model = ' + JSON.stringify(m) + '\n'
+      + 'max_context_size = ' + KIMI_MAX_CONTEXT + '\n';
+  }
+  block += KIMI_END + '\n';
+
+  // ROOT default_model. Only lines BEFORE the first [table] are root keys (one under a [section] belongs to
+  // that section). Keep the declared one ONLY if it still resolves to an alias in the FINAL file — a
+  // user-defined [models.mine] survives, a stale pointer into a regenerated block does not.
+  const lines = base === '' ? [] : base.split('\n');
+  const firstTable = lines.findIndex((l) => /^\s*\[/.test(l));
+  const at = lines.slice(0, firstTable === -1 ? lines.length : firstTable)
+    .findIndex((l) => /^\s*default_model\s*=/.test(l));
+  const declared = at === -1 ? undefined : /=\s*["']([^"']*)["']/.exec(lines[at]!)?.[1];
+  const resolves = declared !== undefined && (opts.models.includes(declared)
+    || base.includes('[models.' + JSON.stringify(declared) + ']')   // quoted key
+    || base.includes('[models.' + declared + ']'));                 // bare key
+  const wanted = pickChatModel(opts.models);
+  let prefix = '';
+  if (!resolves && wanted) {
+    const line = 'default_model = ' + JSON.stringify(wanted);
+    if (at === -1) prefix = line + '\n\n'; else lines[at] = line;
+  }
+  const merged = lines.join('\n');
+  return prefix + (merged === '' ? block : merged + '\n\n' + block);
+}
+
+/** The model bare `kimi` should default to: the first that isn't obviously an embedder (`ollama list` returns
+ *  those too — captain-memo's own README tells users to pull one — and an embedder cannot chat). undefined ⇒
+ *  nothing chat-like is installed. Every model is still emitted as a [models.*] alias, so `-m` reaches them all.
+ *  ponytail: a name heuristic, not a capability probe — the real check is POST /api/show and connect() is sync. */
+export function pickChatModel(models: string[]): string | undefined {
+  return models.find((m) => !/embed|bge|minilm|nomic|gte-|e5-/i.test(m)) ?? undefined;
+}
+
+/** The local Ollama model ids, via the `ollama` CLI (`ollama list` → first column, header skipped).
+ *  ponytail: no tools-capability filter — that needs an async POST /api/show and connect() is sync. A
+ *  non-agentic model simply fails at run time; the user picks with `-m`. */
+export function parseOllamaList(stdout: string): string[] {
+  return stdout.split('\n').slice(1)
+    .map((l) => l.trim().split(/\s+/)[0] ?? '')
+    .filter((n) => n.length > 0 && n !== 'NAME');
+}
+
 // --- adapters ----------------------------------------------------------------
 
 // Codex CLI (~/.codex). Register: `codex mcp add captain-memo -- bun <path>`.
@@ -442,6 +516,57 @@ const vibeAdapter: ToolAdapter = {
   },
 };
 
+// kimi (MoonshotAI kimi-cli, ~/.kimi) — the local-first tool (a loopback Ollama in its own config.toml).
+// TWO halves, and BOTH matter:
+//   1. PROVIDER CONFIG (~/.kimi/config.toml) — the LAUNCHABILITY half. Without it bare `kimi` has no
+//      default_model to route to. Written as a managed block (mergeKimiConfig) from the host's own `ollama list`.
+//      No models ⇒ we write NOTHING and say so in `detail` — a base_url-only config would be a lie.
+//   2. MCP registration — `kimi mcp add <name> -- <command...>` (the codex form). VERIFIED on kimi-cli 1.48.0.
+//      MCP servers land in ~/.kimi/mcp.json, SEPARATE from config.toml — the two halves never collide. A failure
+//      soft-lands in `detail` with the CLI's own stderr; nothing is clobbered.
+// Skill best-effort to ~/.kimi/skills (read path unverified upstream, like gemini).
+const kimiAdapter: ToolAdapter = {
+  id: 'kimi',
+  label: 'Kimi CLI',
+  detect({ home, run }) {
+    return cliOnPath(run, 'kimi') || existsSync(join(home, '.kimi'));
+  },
+  connect(ctx) {
+    let mcp: ConnectResult['mcp'] = 'failed';
+    const details: string[] = [];
+
+    // 1. provider/model config — the half that actually makes kimi launchable.
+    const cfgPath = join(ctx.home, '.kimi', 'config.toml');
+    const models = parseOllamaList(ctx.run('ollama', ['list']).stdout ?? '');
+    if (models.length === 0) {
+      details.push('no local Ollama models found (`ollama list` empty or ollama not installed) — ~/.kimi/config.toml NOT written; pull a model (e.g. `ollama pull qwen3:8b`) and re-run `captain-memo connect kimi`');
+    } else {
+      if (!pickChatModel(models)) {
+        details.push('every local Ollama model looks like an embedder (' + models.join(', ') + ') — no default_model written (an embedder cannot chat); pull a chat model (e.g. `ollama pull qwen3:8b`) and re-run `captain-memo connect kimi`');
+      }
+      try {
+        const existing = existsSync(cfgPath) ? readFileSync(cfgPath, 'utf-8') : null;
+        const merged = mergeKimiConfig(existing, { models });
+        if (merged !== existing) {
+          mkdirSync(dirname(cfgPath), { recursive: true });
+          writeFileSync(cfgPath, merged);
+        }
+      } catch (e) {
+        details.push('config.toml: ' + (e as Error).message);
+      }
+    }
+
+    // 2. MCP registration (→ ~/.kimi/mcp.json). Soft-fails into `detail`.
+    const r = ctx.run('kimi', ['mcp', 'add', 'captain-memo', '--', ...ctx.mcpCommand]);
+    if (r.status === 0) mcp = 'added';
+    else if (looksAlreadyPresent(r)) mcp = 'present';
+    else details.push(errDetail(r, 'kimi mcp add failed'));
+
+    const skill = copySkill(ctx.skillSource, join(ctx.home, '.kimi', 'skills', 'captain-memo', 'SKILL.md'));
+    return withDetail({ tool: 'kimi', mcp, skill }, details.length ? details.join('; ') : undefined);
+  },
+};
+
 // VS Code (Copilot agent mode) — MCP is GA. Auto-wire by merging ~/.config/Code/User/mcp.json (top-level
 // `servers`, stdio). Skill best-effort to the user prompts folder as a *.instructions.md (read path unverified).
 const vscodeAdapter: ToolAdapter = {
@@ -499,7 +624,7 @@ const jetbrainsAdapter: ToolAdapter = {
   },
 };
 
-export const ADAPTERS: ToolAdapter[] = [codexAdapter, geminiAdapter, agyAdapter, cursorAdapter, opencodeAdapter, vibeAdapter, vscodeAdapter, jetbrainsAdapter];
+export const ADAPTERS: ToolAdapter[] = [codexAdapter, geminiAdapter, agyAdapter, cursorAdapter, opencodeAdapter, vibeAdapter, kimiAdapter, vscodeAdapter, jetbrainsAdapter];
 
 // Detect installed tools (or the `only` subset), connect each, return reports.
 // `only` filters by adapter id; an unknown id yields a skipped result so the
