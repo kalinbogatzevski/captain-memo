@@ -529,7 +529,7 @@ Detailed docs: [`docs/USAGE.md`](docs/USAGE.md).
 | 3 — Layers C-G | observation dedup + supersede (`dedup`, `supersede`) · retrieval-quality eval (`eval seed` / `eval run`) | Shipped |
 | 3 — remaining | MEMORY.md transformation · `forget` · doctor enhancements | Planned |
 
-1072 tests across 160 files. Typecheck clean. Bun ≥ 1.1.14, TypeScript strict.
+1072 tests pass across 160 files. Typecheck clean. Bun ≥ 1.1.14, TypeScript strict.
 
 ---
 

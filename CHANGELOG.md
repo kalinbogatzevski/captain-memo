@@ -5,6 +5,12 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.22.1] — 2026-07-12
+
+### Fixed
+- **Background jobs could write to the database *after* the worker shut it down.** `stopResources()` cleared all six interval timers and then immediately closed the stores — but `clearInterval` cancels the *schedule*, not work already **in flight**. Every background slice (ingest batch, Tide sweep, Quartermaster dedup/supersede, promotion) is async and yields to the loop, so a slice that started before `stop()` kept running and then wrote its result / audit row into a closed DB: `RangeError: Cannot use a closed database`, thrown from a timer callback — an **unhandled rejection with no caller to attribute it to**. `stop()` now drains every in-flight job (`Promise.allSettled`) before releasing the handles.
+  - Symptom in the wild: a phantom test failure that attached itself to whichever test happened to be running when an orphaned tick fired, so the "failing test" *migrated between files run-to-run* and never reproduced in isolation. The full suite is green again (1072/1072).
+
 ## [0.22.0] — 2026-07-12
 
 ### Added

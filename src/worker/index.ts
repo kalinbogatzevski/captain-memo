@@ -2026,6 +2026,17 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     if (qmSupersedeTimer) clearInterval(qmSupersedeTimer);
     if (promotionTimer) clearInterval(promotionTimer);
     if (pendingTickTimer) clearInterval(pendingTickTimer);
+    // clearInterval cancels the SCHEDULE, not work already IN FLIGHT. Every background slice below is
+    // async (they even yieldToLoop), so one that started before stop() keeps running and then writes its
+    // result / audit row into a store we are about to close — "RangeError: Cannot use a closed database",
+    // thrown from a timer callback, i.e. an UNHANDLED rejection with no test to attribute it to. Under
+    // `bun test` that surfaced as a phantom failure attached to whichever test happened to be running,
+    // migrating between files run-to-run. Drain every in-flight job BEFORE the handles go.
+    // allSettled, not all: a slice that rejects has already logged + recorded its own errored audit row —
+    // here we only care that it is DONE, and one failing slice must not skip the drain of the others.
+    await Promise.allSettled([
+      processBatchPromise, tideSweepPromise, qmDedupPromise, qmSupersedePromise, promotionPromise,
+    ].filter((p): p is Promise<unknown> => p != null));
     if (watcher) await watcher.close();
     if (obsQueue) obsQueue.close();
     if (obsStore) obsStore.close();
