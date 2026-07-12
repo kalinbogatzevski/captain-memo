@@ -34,7 +34,7 @@ So I sat down to build that "something different" for myself, and ended up with 
 
 - **Local-first.** Vector store and metadata live on your machine — `sqlite-vec` + SQLite WAL. No cloud database, no per-call billing for retrieval, no network round-trips on the hot path.
 - **Cross-AI — one corpus, many tools.** Claude Code, Codex, Gemini CLI, Antigravity (`agy`, the Gemini-CLI successor), Cursor, opencode, Mistral Vibe, Kimi CLI, VS Code (Copilot), and JetBrains (AI Assistant) all share the same local memory through Captain Memo's MCP server + a portable skill. `captain-memo install` (or `captain-memo connect`) auto-detects the AI tools on your machine and wires each one — no manual setup. Verified live: Codex *and* Gemini CLI recalling an observation Claude Code captured, from the same worker; the rest are supported via their standard MCP config (JetBrains is IDE-only config, so `connect` drops a paste-ready snippet instead of auto-wiring). See [docs/cross-ai-tools.md](docs/cross-ai-tools.md).
-- **Hybrid search.** Voyage embeddings (default) + SQLite FTS5 keyword index, fused via Reciprocal Rank Fusion with exponential recency decay on observations. Multilingual (BG/EN/etc.) — your non-English memory is searchable too.
+- **Hybrid search.** Voyage embeddings (default) + SQLite FTS5 keyword index, fused by weighted cosine + BM25 scoring (RRF still available via the `legacy` rank profile), with a recency-aware re-rank on observations. Multilingual (BG/EN/etc.) — your non-English memory is searchable too.
 - **Four summarizer providers**, picked at install time:
   - `claude-oauth` *(default)* — direct Anthropic API using the OAuth token Claude Code already stored. No API key. ~700 ms/call. Just works on a Max plan.
   - `anthropic` — direct Anthropic SDK with `ANTHROPIC_API_KEY` (paid)
@@ -42,7 +42,7 @@ So I sat down to build that "something different" for myself, and ended up with 
   - `openai-compatible` — Ollama / LM Studio / vLLM / OpenAI / OpenRouter / DeepSeek / Groq / Together / Mistral / etc.
 - **Four embedder backends**, picked at install time:
   - `voyage-hosted` *(default)* — Voyage API (`voyage-4-lite`, 1024-dim). Free signup, ~$0.30/year typical use, fast on any hardware.
-  - `local-sidecar` — `voyageai/voyage-4-nano` open weights via a self-contained FastAPI sidecar (offline, private, 2048-dim, needs AVX2)
+  - `local-sidecar` — `voyageai/voyage-4-nano` open weights via a self-contained FastAPI sidecar (offline, private, 2048-dim, AVX2 recommended)
   - `openai-compatible` — Any `/v1/embeddings` endpoint (Ollama, OpenAI, OpenRouter, etc.)
   - `skip` — keyword-only retrieval (FTS5 only, no vectors)
 - **Auto-injected context.** A `<memory-context>` envelope is added to every user prompt by the `UserPromptSubmit` hook. The model sees relevant memory, skills, and prior session observations before it answers.
@@ -68,7 +68,7 @@ So I sat down to build that "something different" for myself, and ended up with 
 | If you choose | Extra requirement | Approx footprint |
 |---|---|---|
 | **Hosted Voyage API** *(recommended)* | Free API key from [dash.voyageai.com](https://dash.voyageai.com), outbound HTTPS | ~$0.30/year typical use, no install bloat |
-| **Local voyage-4-nano sidecar** | Python 3.11+, **AVX2 CPU**, 8 GB RAM, ~6 GB disk | Self-contained but heavy; bring patience for first-time pip install + model download |
+| **Local voyage-4-nano sidecar** | Python 3.11+, AVX2 CPU recommended (works without — ~10× slower), 4 GB RAM, ~6 GB disk | Self-contained but heavy; bring patience for first-time pip install + model download |
 | **Other OpenAI-compatible endpoint** (Ollama, OpenAI, OpenRouter) | Whatever your endpoint requires | Depends on backend |
 
 **And, depending on the summarizer you pick:**
@@ -97,6 +97,8 @@ The wizard asks ~5 questions and sets up:
 - **Worker daemon** at `~/.config/systemd/user/captain-memo-worker.service` (port 39888)
 - **Plugin registration** via `claude plugin marketplace add` + `claude plugin install` — your hooks, MCP server, and slash commands all auto-register
 - **Config** at `~/.config/captain-memo/worker.env`
+- **CLI shim** at `~/.local/bin/captain-memo` (`/usr/local/bin` in system mode)
+- **Cross-AI wiring** — auto-detects the other AI tools on the machine (Codex, Gemini CLI, Cursor, opencode, …) and points each at the same worker (re-runnable anytime with `captain-memo connect`; skip with `--no-cross-ai`)
 - **Embedder sidecar** at `~/.captain-memo/embed/` *(only if you pick the local backend)*
 
 After the wizard, **fully restart Claude Code** (quit the `claude` process, not just the session) for the plugin to load.
@@ -122,7 +124,16 @@ After the wizard, **fully restart Claude Code** (quit the `claude` process, not 
 | External /v1/embeddings | Self-hosted (Ollama, vLLM, llama.cpp), or another hosted provider. |
 | Skip | Keyword-only retrieval (FTS5, no vectors). Search quality drops a lot. |
 
-If you pick Voyage hosted and don't have your API key handy, leave it blank — the wizard writes a placeholder and tells you which line of `worker.env` to edit later.
+If you pick Voyage hosted and don't have your API key handy, leave it blank — the wizard writes `worker.env` without a key and tells you to add one before starting; put a `CAPTAIN_MEMO_EMBEDDER_API_KEY=…` line in `worker.env` and restart the worker.
+
+**Question 3 — Watched memory files** (which markdown the worker indexes and keeps in sync):
+
+| Pick | When |
+|---|---|
+| **All Claude project memories** *(recommended)* | Index every project's `~/.claude/projects/*/memory/*.md`. |
+| User-global only | Just `~/.claude/memory/*.md`. |
+| Custom paths | You keep memory files elsewhere — the wizard prompts for comma-separated globs. |
+| Skip | No file watching; observations only. |
 
 ### System-wide install (headless servers, multi-user)
 
@@ -143,7 +154,7 @@ claude plugin marketplace add kalinbogatzevski/captain-memo
 claude plugin install captain-memo@captain-memo
 ```
 
-You'll need to set `CAPTAIN_MEMO_WORKER_BASE` in your environment to point at the remote worker's `:39888`. This is a power-user setup; most people should run the wizard.
+The plugin only ever talks to a worker on **localhost** (`CAPTAIN_MEMO_WORKER_PORT` overrides the port, not the host), so forward the remote worker's `:39888` onto this machine's localhost — e.g. `ssh -L 39888:localhost:39888 <remote-host>`. This is a power-user setup; most people should run the wizard.
 
 ### Updating
 
@@ -215,6 +226,8 @@ This is the simplest route for local-sidecar-heavy users: everything stays on th
 
 ```bash
 captain-memo doctor              # health check across all components
+captain-memo restart             # restart the worker (reload config / recover; --force to hard-stop)
+captain-memo connect             # re-wire the other AI tools to this worker (--list to see them)
 captain-memo uninstall           # clean removal (--purge for data too)
 captain-memo uninstall --system  # for the system-mode install
 ```
@@ -305,6 +318,7 @@ captain-memo observation flush   # force-drain the queue
 captain-memo config show         # effective config (secrets masked)
 captain-memo doctor              # component health probe
 captain-memo install             # interactive install wizard
+captain-memo connect             # wire other AI tools (Codex, Gemini, Cursor, opencode…) to this worker (--list)
 captain-memo uninstall           # clean removal
 captain-memo inspect-claude-mem        # read-only row counts of ~/.claude-mem/
 captain-memo migrate-from-claude-mem   # one-time migration (--dry-run for preview)
@@ -321,6 +335,7 @@ navigable table you can reshape in place:
 - `s` / `r` / `n` — Surfaced / Recalled / Recent views
 - `↑↓` / `j` `k`, `PgUp` / `PgDn`, `g` / `G` — move + page the selection
 - `o` sort · `t` type filter · `/` find-by-title · `c` collapse near-duplicates
+- `Tab` cycle views (in the table) · `+` / `-` refresh rate (on the dashboard)
 - `⏎` open the full observation (counts as a drill) · `Esc` back · `?` help · `q` quit
 
 A live date/time clock sits top-right and advances on every refresh, so you can
@@ -346,7 +361,7 @@ Set any flag to `0` to hide it, or `1` to show it. When all four are `0` no badg
 
 ### Recall audit log
 
-Disabled by default. Enable with `CAPTAIN_MEMO_RECALL_AUDIT=1` in your `worker.env` to start recording retrieved hits and boost provenance to `${CAPTAIN_MEMO_DATA_DIR:-~/.captain-memo}/recall-audit.jsonl` (one JSON line per search). Each line records the timestamp, session and project IDs, the query, and for every returned hit: the chunk ID, channel, score, a 200-character snippet, and which of the identifier-match or same-branch boosts fired and with what multiplier. Useful for tuning the search boosts against real prompts. The file is append-only; rotate manually if needed.
+Disabled by default. Enable with `CAPTAIN_MEMO_RECALL_AUDIT=1` in your `worker.env` to start recording retrieved hits and boost provenance to `${CAPTAIN_MEMO_DATA_DIR:-~/.captain-memo}/recall-audit.jsonl` (one JSON line per auto-injection — the `UserPromptSubmit` hook's `/inject/context` call; explicit MCP searches are not audited). Each line records the timestamp, session and project IDs, the query, and for every returned hit: the chunk ID, channel, score, a 200-character snippet, and which of the identifier-match, rare-token, or same-branch boosts fired and with what multiplier. The active rank profile is recorded on each line too. Useful for tuning the search boosts against real prompts. The file is append-only; rotate manually if needed.
 
 ### Retrieval tracking with provenance (v0.1.12+)
 
@@ -420,8 +435,10 @@ captain-memo migrate-from-claude-mem
 
 # Flags:
 #   --dry-run             preview only, no writes
-#   --limit N             cap at N observations (useful for testing)
+#   --limit N             cap at N source rows (useful for testing)
 #   --from-id <obs_id>    resume from a specific observation
+#   --project <id>        target project id (default: $CAPTAIN_MEMO_PROJECT_ID or "default")
+#   --db <path>           source DB (default: ~/.claude-mem/claude-mem.db)
 ```
 
 While running, you'll see a live progress bar (`⠋ obs ████████░░░░░░░░ 5,234/13,440 (39%)  10.2/s  ETA 13m 22s`) and, on completion, a side-by-side comparison of the source claude-mem DB vs your new Captain Memo data dir — disk size, row counts, channel breakdown, observed date range.
@@ -462,20 +479,23 @@ captain-memo vacuum                                # reclaim freed pages from me
 systemctl --user start captain-memo-worker
 ```
 
-Optional — re-import claude-mem under the new chunker for an even bigger reduction (the migration also delegates to the same chunker now, so imports land at the smaller, structured shape):
+Optional — a **fresh** claude-mem import now lands at the smaller, structured shape (the migration delegates to the same chunker):
 
 ```bash
 captain-memo migrate-from-claude-mem               # idempotent; safe to re-run
 ```
 
+Note: this does **not** shrink a corpus you already imported — the migration skips rows recorded in `migration_progress`, and `reindex` covers Captain Memo's own observations, not migrated claude-mem documents.
+
 Run `captain-memo doctor` to see which migrations have been applied per database:
 
 ```
 Schema migrations:
-  observations.db:      2/2 applied
+  observations.db:      13/13 applied
     [1] add_branch      (2026-05-11T...)
     [2] add_work_tokens (2026-05-11T...)
-  observation_queue.db: 1/1 applied
+    ...
+  queue.db:             1/1 applied
     [1] add_last_error  (2026-05-11T...)
 ```
 
@@ -488,11 +508,11 @@ Schema migrations:
 | **Worker** (`:39888`) | Long-lived HTTP daemon. Owns the SQLite + sqlite-vec stores, file watcher, observation queue, summarizer + embedder wiring. |
 | **Embedder** | Pluggable: hosted Voyage API (default), local voyage-4-nano sidecar (`:8124`), or any OpenAI-compatible `/v1/embeddings` endpoint. |
 | **Summarizer** | Pluggable: Claude Max via OAuth (default, no API key), Anthropic API, `claude -p` subprocess, or any OpenAI-compatible `/v1/chat/completions`. |
-| **MCP server** (stdio) | Exposes 9 tools to Claude Code (`search_all`, `search_memory`, `remember`, `search_skill`, `search_observations`, `get_full`, `reindex`, `stats`, `status`). |
-| **Four hooks** | `SessionStart` (corpus banner), `UserPromptSubmit` (inject memory envelope, ≤1.5 s budget), `PostToolUse` (queue tool-use events), `Stop` (drain → summarize → index). |
+| **MCP server** (stdio) | Exposes 12 tools to Claude Code (`search_all`, `search_memory`, `remember`, `search_skill`, `search_observations`, `get_full`, `reindex`, `stats`, `status`, `work_set`, `work_active`, `work_clear`). |
+| **Six hooks** | `SessionStart` (corpus banner), `UserPromptSubmit` (inject memory envelope, ≤1.5 s budget), `PreToolUse` (work-board claim + overlap/git warning, advisory only), `PostToolUse` (queue tool-use events), `Stop` (drain → summarize → index), `PreCompact` (capture before context compaction). |
 | **CLI** | The commands above. |
 
-Channels indexed: `memory` (curated user memory files), `skill` (Claude Code skill bodies, section-level), `observation` (summarized session events). Observations get an exponential recency decay at search time (90-day half-life by default) so newer truth ranks above stale truth without losing history.
+Channels indexed: `memory` (curated user memory files), `skill` (Claude Code skill bodies, section-level), `observation` (summarized session events). Observations age at search time: Tide (on by default) demotes stale hits with a bounded multiplier that never falls below a 0.30 relevance floor, so newer truth ranks above stale truth without losing history. (`CAPTAIN_MEMO_TIDE_ENABLED=0` falls back to the older flat exponential decay, 90-day half-life.)
 
 Detailed docs: [`docs/USAGE.md`](docs/USAGE.md).
 
@@ -506,9 +526,10 @@ Detailed docs: [`docs/USAGE.md`](docs/USAGE.md).
 | 2 | Hooks + observation pipeline + 4-provider summarizer + 4-provider embedder | Shipped |
 | 3 — Layer A | claude-mem migration (`inspect-claude-mem`, `migrate-from-claude-mem`) | Shipped |
 | 3 — Layer B | OAuth-direct summarizer (no API key needed) · recency decay · install wizard fast-path defaults | Shipped |
-| 3 — Layers C-G | MEMORY.md transformation · optimize/purge/forget · retrieval-quality eval · doctor enhancements | Planned |
+| 3 — Layers C-G | observation dedup + supersede (`dedup`, `supersede`) · retrieval-quality eval (`eval seed` / `eval run`) | Shipped |
+| 3 — remaining | MEMORY.md transformation · `forget` · doctor enhancements | Planned |
 
-172 tests pass. Typecheck clean. Bun ≥ 1.1.14, TypeScript strict.
+1072 tests across 160 files. Typecheck clean. Bun ≥ 1.1.14, TypeScript strict.
 
 ---
 
