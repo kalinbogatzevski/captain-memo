@@ -1,4 +1,4 @@
-# Captain Memo across AI tools (Codex, Cursor, Gemini CLI, Antigravity, opencode, Mistral Vibe, VS Code, JetBrains, …)
+# Captain Memo across AI tools (Codex, Cursor, Gemini CLI, Antigravity, opencode, Mistral Vibe, Kimi CLI, VS Code, JetBrains, …)
 
 Captain Memo's worker is an **agent-agnostic local HTTP service**, and it ships an **MCP server**. So
 *any* MCP-speaking AI coding tool can share the **same local memory corpus** — the same one Claude Code
@@ -20,7 +20,7 @@ session hooks write.
 **The fast path: `captain-memo connect`.** Every tool below can be wired automatically —
 `captain-memo connect` detects every installed tool and wires all of them in one shot;
 `captain-memo connect --list` shows what's detected without changing anything;
-`captain-memo connect <tool>` wires just one (`codex | gemini | agy | cursor | opencode | vibe | vscode | jetbrains`).
+`captain-memo connect <tool>` wires just one (`codex | gemini | agy | cursor | opencode | vibe | kimi | vscode | jetbrains`).
 The manual steps in each section below are what `connect` does under the hood, for tools that don't have
 one, want to inspect the exact config, or are on an unsupported OS.
 
@@ -89,6 +89,29 @@ Vibe (Apache-2.0, EU-sovereign — Devstral) reads MCP servers from `~/.vibe/con
 `[[mcp_servers]]` array-of-tables. `captain-memo connect vibe` appends one managed, marker-delimited
 block — it never rewrites the rest of your TOML. Skill copied to
 `~/.vibe/skills/captain-memo/SKILL.md`.
+
+## Kimi CLI
+
+Kimi CLI (Moonshot AI, Apache-2.0) keeps MCP servers in `~/.kimi/mcp.json` and providers/models in
+`~/.kimi/config.toml`. `captain-memo connect kimi` does both: it registers the MCP server
+(`kimi mcp add captain-memo -- …`) **and** writes a managed, marker-delimited block into `config.toml` — a
+**local Ollama provider** plus one `[models."<id>"]` alias per model from `ollama list`. So Kimi runs
+**entirely on your own machine: no Moonshot key, no `/login`** — and `kimi -m "<id>"` reaches every model
+you've pulled. Foreign tables in your TOML are never touched, and re-running is idempotent (newly pulled
+models simply appear). Skill copied to `~/.kimi/skills/captain-memo/SKILL.md`.
+
+Honest about capability, by design:
+
+- **No local Ollama models ⇒ `config.toml` is NOT written** (a `base_url`-only config would claim a
+  capability you don't have). It tells you to pull a chat model and re-run.
+- The root **`default_model` is kept only if it still resolves** to a declared alias — so an `ollama rm`
+  can't leave Kimi pointing at a model that's gone (bare `kimi` would die with *"LLM not set"* while the
+  installer claimed success).
+- An **embedding model is never chosen as the default.** `ollama list` returns embedders (Captain Memo's
+  own docs tell you to pull one for the embedder backend) and an embedder cannot chat.
+
+> Note: `default_model` is a **root** TOML key — it must precede every `[section]`, or TOML makes it a key of
+> the preceding table and Kimi reports *"LLM not set"*. `connect kimi` always emits it in the right place.
 
 ## VS Code (Copilot agent mode)
 
