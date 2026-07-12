@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.21.0] — 2026-07-12
+
+### Changed
+- **opencode is a first-class cross-AI tool in the `connect` docs.** De-staled the `connect`/install prose and the `KNOWN_TOOLS` comment that still enumerated only "Codex, Gemini, Cursor" — opencode (and the other adapters) are auto-detected and wired by `captain-memo connect`; the help text and comments now reflect that.
+
 ## [0.20.0] — 2026-07-11
 
 ### Changed

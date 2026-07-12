@@ -93,7 +93,7 @@ interface InstallOptions {
   // Skip adding captain-memo's MCP tools to the user's settings `permissions.allow`.
   noGrantPermissions?: boolean;
   // Skip the post-install cross-AI wiring (auto-detect + register the MCP server
-  // with Codex/Gemini/Cursor). The core install never depends on this step.
+  // with Codex/Gemini/opencode/…). The core install never depends on this step.
   noCrossAi?: boolean;
 }
 
@@ -884,7 +884,7 @@ function registerPlugin(mode: InstallMode): void {
   ok('plugin registered with Claude Code (captain-memo@captain-memo · enabled · scope: user)');
 }
 
-// Post-install: auto-detect OTHER MCP-speaking AI tools (Codex, Gemini, Cursor)
+// Post-install: auto-detect OTHER MCP-speaking AI tools (Codex, Gemini, opencode, Cursor, …)
 // and wire each to the SAME worker so they share one corpus. Best-effort and
 // fully decoupled — a cross-AI wiring failure must NEVER fail the core install
 // (everything is wrapped; we only warn). Skipped entirely with --no-cross-ai.
@@ -895,7 +895,7 @@ function wireCrossAi(opts: InstallOptions): void {
     const skillSource = join(REPO_ROOT, 'skills/captain-memo/SKILL.md');
     const results = connectCrossAi({ mcpCommand, skillSource });
     if (results.length === 0) {
-      info('No other AI tools detected (Codex, Gemini CLI, Cursor) — only Claude Code wired.');
+      info('No other AI tools detected (Codex, Gemini, opencode, …) — only Claude Code wired.');
     } else {
       info('Wired other AI tools to the shared memory worker:');
       printConnectReport(results);
@@ -1200,9 +1200,9 @@ NON-INTERACTIVE (headless / CI / non-TTY stdin):
   --watch <all-projects|none|path> Memory dirs to watch; a path/glob = custom
                                    (env CAPTAIN_MEMO_WATCH_MEMORY)
   --yes, -y                        No prompts; reuse existing config (flags/env override, defaults fill the rest)
-  --no-cross-ai                    Skip auto-wiring other AI tools (Codex/Gemini/Cursor) to the shared worker
+  --no-cross-ai                    Skip auto-wiring other AI tools (Codex/Gemini/opencode/…) to the shared worker
 
-After install, other detected AI tools (Codex, Gemini CLI, Cursor) are auto-wired
+After install, other detected AI tools (Codex, Gemini, opencode, …) are auto-wired
 to the SAME memory worker (best-effort; never fails the install). Re-run anytime
 with \`captain-memo connect\`, or skip with --no-cross-ai.
 

@@ -1,6 +1,6 @@
 {
   "name": "captain-memo",
-  "version": "0.20.0",
+  "version": "0.21.0",
   "description": "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) — Voyage-embedded, hybrid search",
   "type": "module",
   "private": true,

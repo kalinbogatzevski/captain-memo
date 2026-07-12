@@ -42,7 +42,7 @@ function info(s: string): void { console.log(`  ${s}`); }
 function ok(s: string): void { console.log(`  \x1b[32m✓\x1b[0m ${s}`); }
 function warn(s: string): void { console.log(`  \x1b[33m!\x1b[0m ${s}`); }
 
-const KNOWN_TOOLS = ADAPTERS.map((a) => a.id); // ['codex','gemini','cursor']
+const KNOWN_TOOLS = ADAPTERS.map((a) => a.id);
 
 const HELP = `Usage: captain-memo connect [<tool>] [--list] [--local-provider <ollama|vllm|lmstudio>]
 
