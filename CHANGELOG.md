@@ -5,6 +5,14 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.22.0] — 2026-07-12
+
+### Added
+- **`captain-memo connect kimi` — share the corpus with Kimi CLI, and set it up on your own local Ollama.** Registers the captain-memo MCP server into kimi (`kimi mcp add captain-memo -- …` → `~/.kimi/mcp.json`) so Kimi reads the SAME local memory as Claude Code, Codex, Gemini, opencode and the rest. It also writes `~/.kimi/config.toml` for you: the local Ollama provider (`openai_legacy` at `http://127.0.0.1:11434/v1`) plus one `[models."<id>"]` alias per model from `ollama list` — so **Kimi runs entirely on your own machine, with no Moonshot key and no login**, and `kimi -m "<id>"` reaches every model you have pulled. Verified against kimi-cli 1.48.0.
+  - Honest by construction: a box with **no** local Ollama models gets **nothing** written (a `base_url`-only config would claim a capability you don't have), and it tells you to pull a model.
+  - The root `default_model` is only kept if it still **resolves** to a declared alias, so an `ollama rm` can never leave Kimi pointing at a model that's gone (it would die with "LLM not set" while the installer claimed success).
+  - An **embedding** model is never chosen as the default — `ollama list` returns embedders (this project's own docs tell you to pull one) and an embedder cannot chat.
+
 ## [0.21.0] — 2026-07-12
 
 ### Changed
