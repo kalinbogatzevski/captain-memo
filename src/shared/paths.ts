@@ -66,9 +66,27 @@ export const ENV_OBSERVATION_TICK_MS = 'CAPTAIN_MEMO_OBSERVATION_TICK_MS';
  *                          OAuth token storage is unavailable.
  *  - 'openai-compatible' — POST /v1/chat/completions to CAPTAIN_MEMO_OPENAI_ENDPOINT;
  *                          works with Ollama, LM Studio, vLLM, llama.cpp, OpenAI,
- *                          OpenRouter, Together, Groq, DeepSeek, Mistral, etc. */
-export type SummarizerProvider = 'claude-oauth' | 'anthropic' | 'claude-code' | 'openai-compatible';
+ *                          OpenRouter, Together, Groq, DeepSeek, Mistral, etc.
+ *  - 'codex'             — `codex exec` subprocess on a ChatGPT Plus/Pro account.
+ *                          The only zero-key option for users with NO Anthropic
+ *                          subscription. ~6-7 s/call (Codex agent boot, not
+ *                          inference — flat across the model ladder). Requires
+ *                          `codex login`. */
+export type SummarizerProvider = 'claude-oauth' | 'anthropic' | 'claude-code' | 'openai-compatible' | 'codex';
 export const DEFAULT_SUMMARIZER_PROVIDER: SummarizerProvider = 'claude-oauth';
+
+// Codex model defaults. Deliberately separate from DEFAULT_SUMMARIZER_MODEL —
+// that one is a Claude slug, and handing a Claude slug to `codex exec` is an
+// instant 400. The worker substitutes these when provider=codex and the user
+// hasn't pinned CAPTAIN_MEMO_SUMMARIZER_MODEL themselves.
+//
+// gpt-5.4-mini is the Haiku-tier pick: cheapest slug a ChatGPT account will
+// actually accept (gpt-5.4-nano is rejected). The chain ends in 'default' — the
+// sentinel for "send no -m at all" — because a ChatGPT account gates models
+// server-side per plan, so the only candidate guaranteed not to 400 is the
+// account's own default. See summarizer-codex.ts:CODEX_ACCOUNT_DEFAULT.
+export const DEFAULT_CODEX_MODEL = 'gpt-5.4-mini';
+export const DEFAULT_CODEX_FALLBACKS: string[] = ['gpt-5.5', 'default'];
 
 /** Endpoint URL for openai-compatible provider. Required when provider=openai-compatible. */
 export const ENV_OPENAI_ENDPOINT = 'CAPTAIN_MEMO_OPENAI_ENDPOINT';

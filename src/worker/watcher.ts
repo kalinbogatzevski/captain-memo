@@ -62,7 +62,9 @@ function resolveTargets(paths: string[]): WatchTarget[] {
     const dirs = new Set<string>();
     try {
       const glob = new Bun.Glob(pattern);
-      for (const rel of glob.scanSync({ cwd: root, dot: false })) {
+      // dot:true — see expandWatchPaths: hidden dirs (.claude/, .github/, .cursor/)
+      // hold repo-level memory, and dot:false makes the watcher blind to them.
+      for (const rel of glob.scanSync({ cwd: root, dot: true })) {
         dirs.add(dirname(join(root, rel)));
       }
     } catch (err) {

@@ -22,11 +22,12 @@ import { homedir } from 'os';
 import { spawnSync } from 'child_process';
 import { printMiniBanner } from '../banner.ts';
 import { isWindows, totalMemGb, diskFreeGb, whichBun as probeBun } from '../../shared/platform.ts';
-import { WORKER_ENV_PATH, CONFIG_DIR, LOGS_DIR, DATA_DIR, DEFAULT_WORKER_PORT } from '../../shared/paths.ts';
+import { WORKER_ENV_PATH, CONFIG_DIR, LOGS_DIR, DATA_DIR, DEFAULT_WORKER_PORT, DEFAULT_CODEX_MODEL } from '../../shared/paths.ts';
 import { getServiceManager } from '../../services/service-manager/index.ts';
 import { grantPluginToolPermissions } from './install-hooks.ts';
 import { getEmbedderInstaller } from '../../services/embedder-installer/index.ts';
 import { connectCrossAi, printConnectReport } from '../cross-ai.ts';
+import { discoverMemoryGlobs, toolFromPath } from '../../shared/ai-memory-sources.ts';
 
 const REPO_ROOT = resolve(import.meta.dir, '../../..');
 const WORKER_UNIT_NAME = 'captain-memo-worker.service';
@@ -68,9 +69,9 @@ function resolvePaths(mode: InstallMode): ModePaths {
 // 'claude-oauth' is a runtime-valid provider offered by the wizard prompt (and a
 // documented --summarizer value) even though writeWorkerEnv just passes the
 // string straight through; keep it in the union so flag parsing is type-checked.
-type SummarizerProvider = 'claude-oauth' | 'claude-code' | 'anthropic' | 'openai-compatible' | 'skip';
+type SummarizerProvider = 'claude-oauth' | 'claude-code' | 'anthropic' | 'openai-compatible' | 'codex' | 'skip';
 type EmbedderProvider = 'voyage-hosted' | 'local-sidecar' | 'openai-compatible' | 'skip';
-type WatchPaths = 'all-projects' | 'user-global' | 'custom' | 'skip';
+type WatchPaths = 'auto' | 'all-projects' | 'user-global' | 'custom' | 'skip';
 
 // Parsed CLI flags + env fallbacks that let the wizard run headless (no TTY /
 // CI / worker spawning the installer). Every field is optional — an absent
@@ -97,7 +98,7 @@ interface InstallOptions {
   noCrossAi?: boolean;
 }
 
-const SUMMARIZER_VALUES: readonly SummarizerProvider[] = ['claude-oauth', 'anthropic', 'claude-code', 'openai-compatible', 'skip'];
+const SUMMARIZER_VALUES: readonly SummarizerProvider[] = ['claude-oauth', 'anthropic', 'claude-code', 'openai-compatible', 'codex', 'skip'];
 const EMBEDDER_VALUES: readonly EmbedderProvider[] = ['voyage-hosted', 'local-sidecar', 'openai-compatible', 'skip'];
 
 // Pull the value following a flag (`--flag value`). Returns undefined if the
@@ -528,6 +529,7 @@ export function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOpt
     'Which summarizer should I use to compress session events into observations?',
     [
       { value: 'claude-oauth', label: 'Claude Max plan via OAuth (~700 ms/call, no API key, requires `claude login`)', recommended: true },
+      { value: 'codex', label: 'ChatGPT Plus/Pro via Codex CLI (~6-7 s/call, no API key, requires `codex login`) — pick this if you have NO Claude subscription' },
       { value: 'anthropic', label: 'Anthropic API (paid, sub-second, needs ANTHROPIC_API_KEY)' },
       { value: 'claude-code', label: 'Claude Code subprocess (`claude -p`) — slower but works without OAuth file' },
       { value: 'openai-compatible', label: 'OpenAI / Ollama / OpenRouter / etc. (any /v1/chat/completions)' },
@@ -545,6 +547,20 @@ export function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOpt
     const anthropicDefault = existing?.anthropicApiKey ?? process.env.ANTHROPIC_API_KEY ?? '';
     anthropicApiKey = resolveText(undefined, nonInteractive, 'Anthropic API key (sk-ant-...)', anthropicDefault);
     summarizerModel = resolveText(undefined, nonInteractive, 'Summarizer model', (existing?.summarizer === 'anthropic' ? existing?.summarizerModel : undefined) ?? 'claude-haiku-4-5');
+  } else if (summarizer === 'codex') {
+    // Haiku-tier default. Note a ChatGPT account gates the model list server-side:
+    // gpt-5.4-nano and every gpt-5.1-* slug are rejected outright. If the pinned
+    // model 400s, the worker's fallback chain ends at the 'default' sentinel
+    // (= send no -m), which the account always accepts. See paths.ts.
+    summarizerModel = resolveText(
+      undefined, nonInteractive, 'Codex model (leave as "default" to use your account default)',
+      (existing?.summarizer === 'codex' ? existing?.summarizerModel : undefined) ?? DEFAULT_CODEX_MODEL,
+    );
+    // ponytail: no which() helper in this codebase and one call site doesn't earn one.
+    const codexOk = spawnSync('codex', ['--version'], { stdio: 'ignore', shell: isWindows }).status === 0;
+    if (!codexOk) {
+      warn('`codex` is not on PATH. Install it (`npm i -g @openai/codex`) then run `codex login`, or the summarizer stays idle.');
+    }
   } else if (summarizer === 'openai-compatible') {
     summarizerOpenaiEndpoint = resolveText(opts?.openaiEndpoint, nonInteractive, 'OpenAI-compatible endpoint URL', existing?.summarizerOpenaiEndpoint ?? 'http://localhost:11434/v1/chat/completions');
     summarizerOpenaiKey = resolveText(opts?.openaiKey, nonInteractive, 'API key (leave blank for local servers)', existing?.summarizerOpenaiKey ?? '');
@@ -611,7 +627,8 @@ export function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOpt
   let watchChoice: WatchPaths;
   let watchPreset: string | undefined;
   if (opts?.watch !== undefined) {
-    if (opts.watch === 'all-projects') watchChoice = 'all-projects';
+    if (opts.watch === 'auto') watchChoice = 'auto';
+    else if (opts.watch === 'all-projects') watchChoice = 'all-projects';
     else if (opts.watch === 'none') watchChoice = 'skip';
     else { watchChoice = 'custom'; watchPreset = opts.watch; }
   } else {
@@ -622,6 +639,7 @@ export function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOpt
     let existingChoice: WatchPaths | undefined;
     if (ew === undefined) existingChoice = undefined;
     else if (ew === '') existingChoice = 'skip';
+    else if (ew === 'auto') existingChoice = 'auto';
     else if (ew === allProjectsGlob) existingChoice = 'all-projects';
     else if (ew === userGlobalGlob) existingChoice = 'user-global';
     else existingChoice = 'custom';
@@ -631,7 +649,8 @@ export function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOpt
       nonInteractive,
       'Which directories should the worker watch for memory files?',
       [
-        { value: 'all-projects', label: 'All Claude project memories (~/.claude/projects/*/memory/*.md)', recommended: true },
+        { value: 'auto', label: 'Auto-detect EVERY installed assistant\'s memory (Claude, Codex, Gemini, Cursor, Copilot, AGENTS.md)', recommended: true },
+        { value: 'all-projects', label: 'All Claude project memories only (~/.claude/projects/*/memory/*.md)' },
         { value: 'user-global', label: 'User-global only (~/.claude/memory/*.md)' },
         { value: 'custom', label: 'Custom paths (I prompt for them)' },
         { value: 'skip', label: 'Skip watching — observations only' },
@@ -639,7 +658,19 @@ export function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOpt
     );
   }
   let watchMemory = '';
-  if (watchChoice === 'all-projects') watchMemory = allProjectsGlob;
+  if (watchChoice === 'auto') {
+    // The literal sentinel is stored, not the expanded list — so installing a new
+    // assistant later is picked up on the next worker restart with no re-install.
+    watchMemory = 'auto';
+    const found = discoverMemoryGlobs();
+    if (found.length === 0) info('Auto-detect found no assistant memory yet — it will pick them up once they exist.');
+    else {
+      info(`Auto-detected ${found.length} memory source(s):`);
+      for (const g of found) info(`    ${toolFromPath(g).padEnd(9)} ${g}`);
+      info('  (restart the worker after installing a new assistant to pick it up)');
+    }
+  }
+  else if (watchChoice === 'all-projects') watchMemory = allProjectsGlob;
   else if (watchChoice === 'user-global') watchMemory = userGlobalGlob;
   else if (watchChoice === 'custom') watchMemory = resolveText(watchPreset, nonInteractive, 'Comma-separated glob patterns', existing?.watchMemory ?? userGlobalGlob);
 
@@ -677,7 +708,7 @@ function workerEnvLines(cfg: WizardConfig, dataDir: string): string[] {
     // explicitly. The worker silently drops queue events when no provider
     // resolves, which matches the "skip" semantic; document it in worker.env.
     lines.push(`# Summarizer disabled by install wizard — observations queue but no summary chunk is produced.`);
-    lines.push(`# Re-enable later by replacing this block with one of: claude-code | anthropic | openai-compatible.`);
+    lines.push(`# Re-enable later by replacing this block with one of: claude-oauth | claude-code | codex | anthropic | openai-compatible.`);
   } else {
     lines.push(`CAPTAIN_MEMO_SUMMARIZER_PROVIDER=${cfg.summarizer}`);
     lines.push(`CAPTAIN_MEMO_SUMMARIZER_MODEL=${cfg.summarizerModel}`);
@@ -1191,8 +1222,14 @@ NON-INTERACTIVE (headless / CI / non-TTY stdin):
                                    (env CAPTAIN_MEMO_EMBEDDER_MODEL)
   --embedding-dim <n>              Embedding dimension
                                    (env CAPTAIN_MEMO_EMBEDDING_DIM)
-  --summarizer <claude-oauth|anthropic|claude-code|openai-compatible>
+  --watch <auto|all-projects|none|GLOB>
+                                   auto = detect every installed assistant's
+                                   memory (Claude, Codex, Gemini, Cursor, ...).
+                                   (env CAPTAIN_MEMO_WATCH_MEMORY)
+  --summarizer <claude-oauth|anthropic|claude-code|openai-compatible|codex>
                                    (env CAPTAIN_MEMO_SUMMARIZER_PROVIDER)
+                                   codex = ChatGPT Plus/Pro via codex exec,
+                                   no API key; needs 'codex login'.
   --openai-endpoint <url>          OpenAI-compatible endpoint (summarizer/embedder)
                                    (env CAPTAIN_MEMO_OPENAI_ENDPOINT)
   --openai-key <key>               OpenAI-compatible API key

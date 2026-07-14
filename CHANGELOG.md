@@ -5,6 +5,23 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.23.0] — 2026-07-14
+
+### Added
+- **`codex` summarizer provider — the zero-key option for users with no Claude subscription.** Until now every provider assumed either an Anthropic plan (`claude-oauth`, `claude-code`) or a paid API key (`anthropic`, `openai-compatible`); someone with only a ChatGPT Plus/Pro account had no way to get observations. `CAPTAIN_MEMO_SUMMARIZER_PROVIDER=codex` shells out to `codex exec --json` and authenticates off `codex login`. Defaults to `gpt-5.4-mini` (the Haiku-tier pick). Codex reports real token usage, so observations get accurate work-token costs — something the `claude-code` transport cannot provide.
+  - **~6–7 s/call, and the model does not change that.** Measured across the whole ladder (`gpt-5.4-mini` → `gpt-5.6-sol`) the latency is flat, because the cost is `codex exec` booting an agent runtime, not inference. A smaller model saves quota, not wall-clock. This never reaches the user: summarization runs on the worker's 5 s background tick and collapses an entire prompt window into a single call.
+  - **A ChatGPT account gates the model list server-side** — `gpt-5.4-nano` and every `gpt-5.1-*` slug are rejected with "not supported when using Codex with a ChatGPT account". The fallback chain therefore ends at the sentinel `default`, meaning "send no `-m` at all", which the account always accepts. Users never need to know which slugs their plan allows.
+  - Runs with `--ignore-user-config --ephemeral --sandbox read-only`. The first is load-bearing: a user's `~/.codex/config.toml` may set a heavyweight reasoning effort *and register MCP servers* (including captain-memo itself), which would otherwise be booted as child processes on every single summarize call.
+- **`CAPTAIN_MEMO_WATCH_MEMORY=auto` — auto-discover every installed assistant's memory.** Captain only ever indexed the one hand-written glob you gave it, which in practice meant Claude's memory and nothing else, even with Codex/Gemini/Cursor installed alongside. The sentinel `auto` probes the machine and expands to whichever memory locations actually exist: `~/.claude/CLAUDE.md`, per-project Claude memories, `~/.codex/`, `~/.gemini/`, `~/.cursor/rules/`, and repo-level `AGENTS.md` / `CLAUDE.md` / `.github/copilot-instructions.md`. It composes with your own globs (`auto,/my/notes/*.md`), and is now the recommended install default.
+  - Each indexed doc carries a `tool` metadata tag, so provenance survives — `filename_id` is no longer unique once three assistants can each own an `AGENTS.md`.
+  - **Credentials and session logs are structurally unindexable, not blocklisted.** Every discovery glob must end in `.md`/`.mdc`, which is enforced by a test. That single rule is what keeps `~/.codex/auth.json`, `~/.gemini/oauth_creds.json`, `~/.codex/sessions/**.jsonl` (53 MB of transcripts on the dev box) and `*.sqlite` out of the corpus — a blocklist is something you forget to update when a vendor adds a file.
+
+### Fixed
+- **The file watcher was blind to hidden directories, so repo-level memory never indexed.** Both glob scans defaulted to `dot: false` (`index.ts` omitted it, `watcher.ts` set it explicitly), which meant `~/projects/*/.claude/CLAUDE.md` matched **zero** files despite existing — as would any `.github/` or `.cursor/` rule file. Both scans now pass `dot: true`.
+
+### Notes
+- Suite: 1087/1087. `master` remains free of federation code (moat-guard green).
+
 ## [0.22.2] — 2026-07-12
 
 ### Fixed

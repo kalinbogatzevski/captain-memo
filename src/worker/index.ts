@@ -15,6 +15,7 @@ import { VectorStore } from './vector-store.ts';
 import { HybridSearcher } from './search.ts';
 import { IngestPipeline } from './ingest.ts';
 import { writeMemory, type WriteMemoryDeps, type RememberInput } from './memory-writer.ts';
+import { discoverMemoryGlobs } from '../shared/ai-memory-sources.ts';
 import { FileWatcher } from './watcher.ts';
 import { ObservationQueue } from './observation-queue.ts';
 import { ObservationsStore } from './observations-store.ts';
@@ -58,6 +59,8 @@ import {
   ENV_SUMMARIZER_MODEL,
   ENV_SUMMARIZER_FALLBACKS,
   DEFAULT_SUMMARIZER_MODEL,
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_CODEX_FALLBACKS,
   DEFAULT_SUMMARIZER_FALLBACKS,
   ENV_HOOK_BUDGET_TOKENS,
   DEFAULT_HOOK_BUDGET_TOKENS,
@@ -443,7 +446,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     const out: string[] = [];
     for (const pattern of patterns) {
       const glob = new Bun.Glob(pattern);
-      for await (const file of glob.scan({ absolute: true, onlyFiles: true })) {
+      // dot:true — repo-level rules live in HIDDEN dirs (.claude/, .github/, .cursor/).
+      // Without it `~/projects/*/.claude/CLAUDE.md` silently matches ZERO files.
+      for await (const file of glob.scan({ absolute: true, onlyFiles: true, dot: true })) {
         out.push(file);
       }
     }
@@ -2169,8 +2174,18 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
   let watchPaths: string[] | undefined;
   let watchChannel: 'memory' | 'skill' | undefined;
   if (watchMemory) {
-    watchPaths = watchMemory.split(',').map(s => s.trim()).filter(Boolean);
+    // `auto` expands to every OTHER AI assistant's memory location that actually
+    // exists here (Codex, Gemini, Cursor, Copilot, AGENTS.md, …) — see
+    // shared/ai-memory-sources.ts. It composes: `auto,/my/notes/*.md` is a union,
+    // so a hand-written glob is still available and never has to be replaced.
+    watchPaths = [...new Set(
+      watchMemory.split(',').map(s => s.trim()).filter(Boolean)
+        .flatMap(p => p === 'auto' ? discoverMemoryGlobs() : [p]),
+    )];
     watchChannel = 'memory';
+    if (watchMemory.split(',').some(s => s.trim() === 'auto')) {
+      console.error(`[worker] watch memory: auto-detected ${watchPaths.length} memory source(s) — ${watchPaths.join(', ')}`);
+    }
     if (watchSkills) {
       console.error(
         '[worker] both CAPTAIN_MEMO_WATCH_MEMORY and CAPTAIN_MEMO_WATCH_SKILLS set; ' +
@@ -2183,31 +2198,40 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
   }
 
   const anthropicKey = process.env[ENV_ANTHROPIC_API_KEY];
-  const summarizerModel = process.env[ENV_SUMMARIZER_MODEL] ?? DEFAULT_SUMMARIZER_MODEL;
-  const summarizerFallbacksRaw = process.env[ENV_SUMMARIZER_FALLBACKS];
-  const summarizerFallbacks = summarizerFallbacksRaw
-    ? summarizerFallbacksRaw.split(',').map(s => s.trim()).filter(Boolean)
-    : DEFAULT_SUMMARIZER_FALLBACKS;
   const hookBudgetTokens = Number(process.env[ENV_HOOK_BUDGET_TOKENS] ?? DEFAULT_HOOK_BUDGET_TOKENS);
   const observationBatchSize = Number(process.env[ENV_OBSERVATION_BATCH_SIZE] ?? DEFAULT_OBSERVATION_BATCH_SIZE);
   const observationTickMs = Number(process.env[ENV_OBSERVATION_TICK_MS] ?? DEFAULT_OBSERVATION_TICK_MS);
 
-  // Summarizer provider toggle. Two paths:
-  //   - 'anthropic' (default): direct SDK call, requires ANTHROPIC_API_KEY.
-  //     Per-call cost on Anthropic's API, sub-second latency.
-  //   - 'claude-code':         shells out to `claude -p`, uses your Max/Pro
-  //     plan (no API key needed). Higher latency (~1-2s subprocess overhead),
-  //     counts against Max session quota.
+  // Summarizer provider toggle:
+  //   - 'claude-oauth' (default): direct HTTPS with Claude Code's OAuth token.
+  //     No key, no subprocess, ~700 ms/call. Needs a Max/Pro plan.
+  //   - 'anthropic':      direct SDK call, requires ANTHROPIC_API_KEY (paid).
+  //   - 'claude-code':    shells out to `claude -p`; Max/Pro plan, ~1-2 s.
+  //   - 'openai-compatible': any /v1/chat/completions (Ollama, OpenAI, …).
+  //   - 'codex':          shells out to `codex exec`; ChatGPT Plus/Pro, no key,
+  //     ~6-7 s. The only zero-key path for someone with no Anthropic plan.
   const providerRaw = (process.env[ENV_SUMMARIZER_PROVIDER] ?? DEFAULT_SUMMARIZER_PROVIDER).toLowerCase();
   const provider: SummarizerProvider =
     providerRaw === 'claude-oauth'                               ? 'claude-oauth' :
     providerRaw === 'claude-code'                                ? 'claude-code' :
     providerRaw === 'openai-compatible' || providerRaw === 'openai' ? 'openai-compatible' :
     providerRaw === 'anthropic'                                  ? 'anthropic' :
+    providerRaw === 'codex'                                      ? 'codex' :
     (() => {
       console.error(`[worker] unknown ${ENV_SUMMARIZER_PROVIDER}="${providerRaw}" — falling back to '${DEFAULT_SUMMARIZER_PROVIDER}'`);
       return DEFAULT_SUMMARIZER_PROVIDER;
     })();
+
+  // Model defaults are provider-shaped: DEFAULT_SUMMARIZER_MODEL is a Claude slug,
+  // and handing a Claude slug to `codex exec` is an instant 400. Resolve the
+  // default AFTER the provider is known. An explicit CAPTAIN_MEMO_SUMMARIZER_MODEL
+  // always wins — the user may be on a plan with a different allowed model set.
+  const summarizerModel = process.env[ENV_SUMMARIZER_MODEL]
+    ?? (provider === 'codex' ? DEFAULT_CODEX_MODEL : DEFAULT_SUMMARIZER_MODEL);
+  const summarizerFallbacksRaw = process.env[ENV_SUMMARIZER_FALLBACKS];
+  const summarizerFallbacks = summarizerFallbacksRaw
+    ? summarizerFallbacksRaw.split(',').map(s => s.trim()).filter(Boolean)
+    : (provider === 'codex' ? DEFAULT_CODEX_FALLBACKS : DEFAULT_SUMMARIZER_FALLBACKS);
 
   let summarize: ((events: import('../shared/types.ts').RawObservationEvent[]) => Promise<import('./index.ts').SummarizerResult>) | undefined;
   let summarizerTransport: import('./summarizer.ts').SummarizerTransport | undefined;
@@ -2246,6 +2270,20 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
     summarize = (events) => summarizer.summarize(events);
     summarizerTransport = summarizer.getTransport();
     console.error(`[worker] summarizer provider = claude-code (Max/Pro plan auth via 'claude -p')`);
+  } else if (provider === 'codex') {
+    const { createCodexTransport } = await import('./summarizer-codex.ts');
+    const summarizer = new Summarizer({
+      apiKey: '', // unused under the codex transport (auth via `codex login`)
+      model: summarizerModel,
+      fallbackModels: summarizerFallbacks,
+      transport: createCodexTransport(),
+    });
+    summarize = (events) => summarizer.summarize(events);
+    summarizerTransport = summarizer.getTransport();
+    console.error(
+      `[worker] summarizer provider = codex (ChatGPT Plus/Pro auth via 'codex exec', model ${summarizerModel}; ` +
+      `~6-7s/call — agent boot, not inference. Runs on the background tick, so it never blocks a prompt.)`,
+    );
   } else if (provider === 'openai-compatible') {
     const endpoint = process.env[ENV_OPENAI_ENDPOINT];
     if (!endpoint) {
@@ -2281,7 +2319,9 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
   } else {
     console.error(
       `[worker] observation summarizer disabled — set one of:\n` +
+      `         - ${ENV_SUMMARIZER_PROVIDER}=claude-oauth       (Claude Max/Pro, no key, fastest)\n` +
       `         - ${ENV_SUMMARIZER_PROVIDER}=claude-code        (Max/Pro plan, no key)\n` +
+      `         - ${ENV_SUMMARIZER_PROVIDER}=codex              (ChatGPT Plus/Pro, no key — run \`codex login\`)\n` +
       `         - ${ENV_SUMMARIZER_PROVIDER}=openai-compatible  + ${ENV_OPENAI_ENDPOINT} (Ollama / LM Studio / OpenAI / etc.)\n` +
       `         - ${ENV_ANTHROPIC_API_KEY}=sk-...                (direct Anthropic API)`
     );

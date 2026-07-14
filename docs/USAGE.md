@@ -24,7 +24,7 @@ Default port: `39888`. Override via env:
 | `CAPTAIN_MEMO_VOYAGE_ENDPOINT` | `http://localhost:8124/v1/embeddings` | Voyage embeddings endpoint. |
 | `CAPTAIN_MEMO_VOYAGE_MODEL` | `voyage-4-nano` | Model identifier passed to Voyage. |
 | `CAPTAIN_MEMO_VOYAGE_API_KEY` | — | Optional bearer token for Voyage. |
-| `CAPTAIN_MEMO_WATCH_MEMORY` | — | Comma-separated globs to watch for memory files (channel = `memory`). |
+| `CAPTAIN_MEMO_WATCH_MEMORY` | — | Comma-separated globs to watch for memory files (channel = `memory`). The sentinel **`auto`** expands to every installed assistant's memory location that exists on this machine (Claude, Codex, Gemini, Cursor, Copilot, repo `AGENTS.md`). Composes: `auto,/my/notes/*.md`. |
 | `CAPTAIN_MEMO_WATCH_SKILLS` | — | Comma-separated globs to watch for skill files (channel = `skill`). |
 | `CAPTAIN_MEMO_DATA_DIR` | `~/.captain-memo` | Where the meta SQLite + vector SQLite + logs live. |
 
@@ -95,9 +95,28 @@ The summarizer compresses raw tool-use events into structured observations. Pick
 
 | Provider | How it works | When to use |
 |---|---|---|
-| `claude-code` | Shells out to `claude -p`, uses your **Claude Code Max/Pro plan** | Recommended for individuals — zero setup, no API key |
+| `claude-oauth` (default) | Direct Anthropic API with Claude Code's stored OAuth token | Fastest (~700 ms). Needs a Claude Max/Pro plan + `claude login` |
+| `codex` | Shells out to `codex exec`, uses your **ChatGPT Plus/Pro account** | **No Claude subscription and no API key.** ~6–7 s/call (agent boot, not inference). Needs `codex login` |
+| `claude-code` | Shells out to `claude -p`, uses your **Claude Code Max/Pro plan** | Zero setup, no API key |
 | `openai-compatible` | POSTs to any `/v1/chat/completions` endpoint you point it at | Local LLMs (Ollama, LM Studio, vLLM, llama.cpp), OpenAI, OpenRouter, Together, Groq, DeepSeek, Mistral, etc. |
 | `anthropic` (default) | Direct Anthropic SDK + `ANTHROPIC_API_KEY` | You already have Anthropic API billing |
+
+### Quick start — ChatGPT Plus/Pro (no API key, no Claude subscription)
+
+```bash
+npm i -g @openai/codex && codex login    # once
+export CAPTAIN_MEMO_SUMMARIZER_PROVIDER=codex
+# CAPTAIN_MEMO_SUMMARIZER_MODEL defaults to gpt-5.4-mini; set it to `default`
+# to just use whatever model your ChatGPT plan gives you.
+```
+
+A ChatGPT account gates the model list server-side (`gpt-5.4-nano` and every
+`gpt-5.1-*` slug are rejected outright), so the fallback chain ends at the
+sentinel `default` — meaning "send no model at all" — which the account always
+accepts. You never have to know which slugs your plan allows.
+
+Summarization runs on the worker's 5 s background tick and collapses a whole
+prompt window into ONE call, so the ~6–7 s never lands on your keystrokes.
 
 ### Quick start — Max/Pro plan (no API key, no install)
 
@@ -146,7 +165,7 @@ bun run worker:start
 
 | Variable | Default | Required for |
 |---|---|---|
-| `CAPTAIN_MEMO_SUMMARIZER_PROVIDER` | `anthropic` | `anthropic` / `claude-code` / `openai-compatible`. |
+| `CAPTAIN_MEMO_SUMMARIZER_PROVIDER` | `claude-oauth` | `claude-oauth` / `codex` / `anthropic` / `claude-code` / `openai-compatible`. |
 | `ANTHROPIC_API_KEY` | — | Required when `provider=anthropic`. Ignored under other providers. |
 | `CAPTAIN_MEMO_OPENAI_ENDPOINT` | — | Required when `provider=openai-compatible`. Full URL to `/v1/chat/completions`. |
 | `CAPTAIN_MEMO_OPENAI_API_KEY` | — | Optional bearer token for `provider=openai-compatible`. Local servers (Ollama, LM Studio) typically don't need it. |

@@ -1,5 +1,6 @@
 import { basename } from 'path';
 import type { ChunkInput } from '../../shared/types.ts';
+import { toolFromPath } from '../../shared/ai-memory-sources.ts';
 import { splitByH2Sections } from './markdown-sections.ts';
 
 const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n?/;
@@ -40,6 +41,11 @@ export function chunkMemoryFile(content: string, sourcePath: string): ChunkInput
     doc_type: 'memory_file',
     filename_id: filenameId,
     source_path: sourcePath,
+    // Which assistant's memory this is. Needed now that `auto` discovery pulls in
+    // Codex/Gemini/Cursor/Copilot alongside Claude: filename_id is no longer unique
+    // (three tools can each own an AGENTS.md), and "what does Codex know" is a
+    // question you can only ask if provenance survives indexing.
+    tool: toolFromPath(sourcePath),
   };
   if (fields.type) baseMetadata.memory_type = fields.type;
   if (fields.description) baseMetadata.description = fields.description;
