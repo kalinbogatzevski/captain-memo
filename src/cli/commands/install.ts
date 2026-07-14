@@ -22,7 +22,7 @@ import { homedir } from 'os';
 import { spawnSync } from 'child_process';
 import { printMiniBanner } from '../banner.ts';
 import { isWindows, totalMemGb, diskFreeGb, whichBun as probeBun } from '../../shared/platform.ts';
-import { WORKER_ENV_PATH, CONFIG_DIR, LOGS_DIR, DATA_DIR, DEFAULT_WORKER_PORT, DEFAULT_CODEX_MODEL } from '../../shared/paths.ts';
+import { WORKER_ENV_PATH, CONFIG_DIR, LOGS_DIR, DATA_DIR, DEFAULT_WORKER_PORT, DEFAULT_CODEX_MODEL, DEFAULT_AGY_MODEL } from '../../shared/paths.ts';
 import { getServiceManager } from '../../services/service-manager/index.ts';
 import { grantPluginToolPermissions } from './install-hooks.ts';
 import { getEmbedderInstaller } from '../../services/embedder-installer/index.ts';
@@ -69,7 +69,7 @@ function resolvePaths(mode: InstallMode): ModePaths {
 // 'claude-oauth' is a runtime-valid provider offered by the wizard prompt (and a
 // documented --summarizer value) even though writeWorkerEnv just passes the
 // string straight through; keep it in the union so flag parsing is type-checked.
-type SummarizerProvider = 'claude-oauth' | 'claude-code' | 'anthropic' | 'openai-compatible' | 'codex' | 'skip';
+type SummarizerProvider = 'claude-oauth' | 'claude-code' | 'anthropic' | 'openai-compatible' | 'codex' | 'agy' | 'skip';
 type EmbedderProvider = 'voyage-hosted' | 'local-sidecar' | 'openai-compatible' | 'skip';
 type WatchPaths = 'auto' | 'all-projects' | 'user-global' | 'custom' | 'skip';
 
@@ -98,7 +98,7 @@ interface InstallOptions {
   noCrossAi?: boolean;
 }
 
-const SUMMARIZER_VALUES: readonly SummarizerProvider[] = ['claude-oauth', 'anthropic', 'claude-code', 'openai-compatible', 'codex', 'skip'];
+const SUMMARIZER_VALUES: readonly SummarizerProvider[] = ['claude-oauth', 'anthropic', 'claude-code', 'openai-compatible', 'codex', 'agy', 'skip'];
 const EMBEDDER_VALUES: readonly EmbedderProvider[] = ['voyage-hosted', 'local-sidecar', 'openai-compatible', 'skip'];
 
 // Pull the value following a flag (`--flag value`). Returns undefined if the
@@ -530,6 +530,7 @@ export function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOpt
     [
       { value: 'claude-oauth', label: 'Claude Max plan via OAuth (~700 ms/call, no API key, requires `claude login`)', recommended: true },
       { value: 'codex', label: 'ChatGPT Plus/Pro via Codex CLI (~6-7 s/call, no API key, requires `codex login`) — pick this if you have NO Claude subscription' },
+      { value: 'agy', label: 'Google account via Antigravity CLI `agy` (~3-5 s/call, no API key) — pick this if you have NEITHER a Claude nor a ChatGPT subscription' },
       { value: 'anthropic', label: 'Anthropic API (paid, sub-second, needs ANTHROPIC_API_KEY)' },
       { value: 'claude-code', label: 'Claude Code subprocess (`claude -p`) — slower but works without OAuth file' },
       { value: 'openai-compatible', label: 'OpenAI / Ollama / OpenRouter / etc. (any /v1/chat/completions)' },
@@ -561,6 +562,16 @@ export function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOpt
     if (!codexOk) {
       warn('`codex` is not on PATH. Install it (`npm i -g @openai/codex`) then run `codex login`, or the summarizer stays idle.');
     }
+  } else if (summarizer === 'agy') {
+    // Display names, not slugs — that's what `agy models` prints and `--model` accepts.
+    // An unrecognised value exits 1 and lists the valid ones, so a typo is loud, not silent.
+    summarizerModel = resolveText(
+      undefined, nonInteractive, 'Antigravity model (leave as "default" to use your account default)',
+      (existing?.summarizer === 'agy' ? existing?.summarizerModel : undefined) ?? DEFAULT_AGY_MODEL,
+    );
+    const agyOk = spawnSync('agy', ['--version'], { stdio: 'ignore', shell: isWindows }).status === 0;
+    if (!agyOk) warn('`agy` is not on PATH. Install the Antigravity CLI and run `agy` once to log in, or the summarizer stays idle.');
+    else info('agy runs under an isolated $HOME — your real `agy --continue` history stays clean.');
   } else if (summarizer === 'openai-compatible') {
     summarizerOpenaiEndpoint = resolveText(opts?.openaiEndpoint, nonInteractive, 'OpenAI-compatible endpoint URL', existing?.summarizerOpenaiEndpoint ?? 'http://localhost:11434/v1/chat/completions');
     summarizerOpenaiKey = resolveText(opts?.openaiKey, nonInteractive, 'API key (leave blank for local servers)', existing?.summarizerOpenaiKey ?? '');
@@ -708,7 +719,7 @@ function workerEnvLines(cfg: WizardConfig, dataDir: string): string[] {
     // explicitly. The worker silently drops queue events when no provider
     // resolves, which matches the "skip" semantic; document it in worker.env.
     lines.push(`# Summarizer disabled by install wizard — observations queue but no summary chunk is produced.`);
-    lines.push(`# Re-enable later by replacing this block with one of: claude-oauth | claude-code | codex | anthropic | openai-compatible.`);
+    lines.push(`# Re-enable later by replacing this block with one of: claude-oauth | claude-code | codex | agy | anthropic | openai-compatible.`);
   } else {
     lines.push(`CAPTAIN_MEMO_SUMMARIZER_PROVIDER=${cfg.summarizer}`);
     lines.push(`CAPTAIN_MEMO_SUMMARIZER_MODEL=${cfg.summarizerModel}`);
@@ -1226,10 +1237,11 @@ NON-INTERACTIVE (headless / CI / non-TTY stdin):
                                    auto = detect every installed assistant's
                                    memory (Claude, Codex, Gemini, Cursor, ...).
                                    (env CAPTAIN_MEMO_WATCH_MEMORY)
-  --summarizer <claude-oauth|anthropic|claude-code|openai-compatible|codex>
+  --summarizer <claude-oauth|anthropic|claude-code|openai-compatible|codex|agy>
                                    (env CAPTAIN_MEMO_SUMMARIZER_PROVIDER)
-                                   codex = ChatGPT Plus/Pro via codex exec,
-                                   no API key; needs 'codex login'.
+                                   codex = ChatGPT Plus/Pro via codex exec.
+                                   agy   = Google account via Antigravity CLI.
+                                   Both are no-API-key; each needs its own login.
   --openai-endpoint <url>          OpenAI-compatible endpoint (summarizer/embedder)
                                    (env CAPTAIN_MEMO_OPENAI_ENDPOINT)
   --openai-key <key>               OpenAI-compatible API key

@@ -61,6 +61,8 @@ import {
   DEFAULT_SUMMARIZER_MODEL,
   DEFAULT_CODEX_MODEL,
   DEFAULT_CODEX_FALLBACKS,
+  DEFAULT_AGY_MODEL,
+  DEFAULT_AGY_FALLBACKS,
   DEFAULT_SUMMARIZER_FALLBACKS,
   ENV_HOOK_BUDGET_TOKENS,
   DEFAULT_HOOK_BUDGET_TOKENS,
@@ -2217,6 +2219,7 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
     providerRaw === 'openai-compatible' || providerRaw === 'openai' ? 'openai-compatible' :
     providerRaw === 'anthropic'                                  ? 'anthropic' :
     providerRaw === 'codex'                                      ? 'codex' :
+    providerRaw === 'agy' || providerRaw === 'antigravity'       ? 'agy' :
     (() => {
       console.error(`[worker] unknown ${ENV_SUMMARIZER_PROVIDER}="${providerRaw}" — falling back to '${DEFAULT_SUMMARIZER_PROVIDER}'`);
       return DEFAULT_SUMMARIZER_PROVIDER;
@@ -2226,12 +2229,19 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
   // and handing a Claude slug to `codex exec` is an instant 400. Resolve the
   // default AFTER the provider is known. An explicit CAPTAIN_MEMO_SUMMARIZER_MODEL
   // always wins — the user may be on a plan with a different allowed model set.
-  const summarizerModel = process.env[ENV_SUMMARIZER_MODEL]
-    ?? (provider === 'codex' ? DEFAULT_CODEX_MODEL : DEFAULT_SUMMARIZER_MODEL);
+  const providerDefaultModel =
+    provider === 'codex' ? DEFAULT_CODEX_MODEL :
+    provider === 'agy'   ? DEFAULT_AGY_MODEL   : DEFAULT_SUMMARIZER_MODEL;
+  const providerDefaultFallbacks =
+    provider === 'codex' ? DEFAULT_CODEX_FALLBACKS :
+    provider === 'agy'   ? DEFAULT_AGY_FALLBACKS   : DEFAULT_SUMMARIZER_FALLBACKS;
+  const summarizerModel = process.env[ENV_SUMMARIZER_MODEL] ?? providerDefaultModel;
   const summarizerFallbacksRaw = process.env[ENV_SUMMARIZER_FALLBACKS];
+  // NOTE: agy model names contain commas? No — but they DO contain spaces and parens
+  // ('Gemini 3.5 Flash (Low)'). Comma stays a safe separator; don't switch to spaces.
   const summarizerFallbacks = summarizerFallbacksRaw
     ? summarizerFallbacksRaw.split(',').map(s => s.trim()).filter(Boolean)
-    : (provider === 'codex' ? DEFAULT_CODEX_FALLBACKS : DEFAULT_SUMMARIZER_FALLBACKS);
+    : providerDefaultFallbacks;
 
   let summarize: ((events: import('../shared/types.ts').RawObservationEvent[]) => Promise<import('./index.ts').SummarizerResult>) | undefined;
   let summarizerTransport: import('./summarizer.ts').SummarizerTransport | undefined;
@@ -2284,6 +2294,20 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
       `[worker] summarizer provider = codex (ChatGPT Plus/Pro auth via 'codex exec', model ${summarizerModel}; ` +
       `~6-7s/call — agent boot, not inference. Runs on the background tick, so it never blocks a prompt.)`,
     );
+  } else if (provider === 'agy') {
+    const { createAgyTransport } = await import('./summarizer-agy.ts');
+    const summarizer = new Summarizer({
+      apiKey: '', // unused under the agy transport (auth via the Google OAuth token agy stored)
+      model: summarizerModel,
+      fallbackModels: summarizerFallbacks,
+      transport: createAgyTransport(),
+    });
+    summarize = (events) => summarizer.summarize(events);
+    summarizerTransport = summarizer.getTransport();
+    console.error(
+      `[worker] summarizer provider = agy (Google account via Antigravity CLI, model ${summarizerModel}; ` +
+      `~3.4-5.5s/call, runs under an isolated $HOME so your real \`agy --continue\` history stays clean)`,
+    );
   } else if (provider === 'openai-compatible') {
     const endpoint = process.env[ENV_OPENAI_ENDPOINT];
     if (!endpoint) {
@@ -2322,6 +2346,7 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
       `         - ${ENV_SUMMARIZER_PROVIDER}=claude-oauth       (Claude Max/Pro, no key, fastest)\n` +
       `         - ${ENV_SUMMARIZER_PROVIDER}=claude-code        (Max/Pro plan, no key)\n` +
       `         - ${ENV_SUMMARIZER_PROVIDER}=codex              (ChatGPT Plus/Pro, no key — run \`codex login\`)\n` +
+      `         - ${ENV_SUMMARIZER_PROVIDER}=agy                (Google account, no key — run \`agy\` once to log in)\n` +
       `         - ${ENV_SUMMARIZER_PROVIDER}=openai-compatible  + ${ENV_OPENAI_ENDPOINT} (Ollama / LM Studio / OpenAI / etc.)\n` +
       `         - ${ENV_ANTHROPIC_API_KEY}=sk-...                (direct Anthropic API)`
     );

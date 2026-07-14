@@ -97,9 +97,27 @@ The summarizer compresses raw tool-use events into structured observations. Pick
 |---|---|---|
 | `claude-oauth` (default) | Direct Anthropic API with Claude Code's stored OAuth token | Fastest (~700 ms). Needs a Claude Max/Pro plan + `claude login` |
 | `codex` | Shells out to `codex exec`, uses your **ChatGPT Plus/Pro account** | **No Claude subscription and no API key.** ~6–7 s/call (agent boot, not inference). Needs `codex login` |
+| `agy` | Shells out to `agy -p`, uses a plain **Google account** (Antigravity CLI) | **No Claude AND no ChatGPT subscription needed.** ~3–5 s/call — fastest agent CLI. Needs agy ≥ 1.1.1, logged in |
 | `claude-code` | Shells out to `claude -p`, uses your **Claude Code Max/Pro plan** | Zero setup, no API key |
 | `openai-compatible` | POSTs to any `/v1/chat/completions` endpoint you point it at | Local LLMs (Ollama, LM Studio, vLLM, llama.cpp), OpenAI, OpenRouter, Together, Groq, DeepSeek, Mistral, etc. |
 | `anthropic` (default) | Direct Anthropic SDK + `ANTHROPIC_API_KEY` | You already have Anthropic API billing |
+
+### Quick start — a plain Google account (no Claude, no ChatGPT, no API key)
+
+```bash
+agy                                        # once, to log in (Antigravity CLI, >= 1.1.1)
+export CAPTAIN_MEMO_SUMMARIZER_PROVIDER=agy
+# Model defaults to 'Gemini 3.5 Flash (Low)' — the Flash tier, cheapest AND fastest.
+# Set it to `default` to just use your account default.
+```
+
+Model names here are the **display names** `agy models` prints (`Gemini 3.5 Flash (Low)`), not
+slugs. A typo exits 1 and lists the valid ones, so it fails loudly rather than silently.
+
+`agy` has no `--ephemeral` flag and no home override — every run persists a conversation
+(~364 KB). So captain-memo runs it under a private `$HOME` (`<DATA_DIR>/agy-home`) with your
+OAuth token symlinked in, and prunes its conversations after each call. Your real
+`agy --continue` history is never touched and never grows.
 
 ### Quick start — ChatGPT Plus/Pro (no API key, no Claude subscription)
 
@@ -165,7 +183,7 @@ bun run worker:start
 
 | Variable | Default | Required for |
 |---|---|---|
-| `CAPTAIN_MEMO_SUMMARIZER_PROVIDER` | `claude-oauth` | `claude-oauth` / `codex` / `anthropic` / `claude-code` / `openai-compatible`. |
+| `CAPTAIN_MEMO_SUMMARIZER_PROVIDER` | `claude-oauth` | `claude-oauth` / `codex` / `agy` / `anthropic` / `claude-code` / `openai-compatible`. |
 | `ANTHROPIC_API_KEY` | — | Required when `provider=anthropic`. Ignored under other providers. |
 | `CAPTAIN_MEMO_OPENAI_ENDPOINT` | — | Required when `provider=openai-compatible`. Full URL to `/v1/chat/completions`. |
 | `CAPTAIN_MEMO_OPENAI_API_KEY` | — | Optional bearer token for `provider=openai-compatible`. Local servers (Ollama, LM Studio) typically don't need it. |

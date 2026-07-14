@@ -5,6 +5,20 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.24.0] — 2026-07-14
+
+### Added
+- **`agy` summarizer provider — a zero-key summarizer on a plain Google account.** `codex` (0.23.0) closed the gap for ChatGPT subscribers; this closes it for everyone else. `CAPTAIN_MEMO_SUMMARIZER_PROVIDER=agy` shells out to the Antigravity CLI (`agy -p`), authenticating off the Google OAuth token agy already stored. No Claude plan, no ChatGPT plan, no API key. Three of the six providers now need no key at all.
+  - **Fastest of the three agent-CLI transports: ~3.4–5.5 s/call** on `Gemini 3.5 Flash (Low)`, the Flash/Haiku tier (measured; also the cheapest). Still an agent-runtime boot rather than inference, and still on the background tick, so it never blocks a prompt.
+  - Model names are the **display names** `agy models` prints (`Gemini 3.5 Flash (Low)`), not slugs. An unrecognised value exits 1 and lists the valid ones — a typo fails loudly. The fallback chain still ends at the `default` sentinel (= pass no `--model`).
+  - **Runs under an isolated `$HOME` (`<DATA_DIR>/agy-home`), and this is not optional.** `agy` has no `--ephemeral` equivalent and no home-override env var — it derives everything from `$HOME`, and *every* run persists a conversation (measured: **~364 KB and 3 conversation entries per single call**). Unmanaged, a summarizer on the prompt-window tick would grow `~/.gemini` without bound **and poison the user's `agy --continue` history** — their next `agy -c` would resume a *summarizer* conversation instead of their own work. So captain-memo points `$HOME` at a private dir with the real OAuth token **symlinked** in (a symlink, so re-login stays in sync) and prunes its own conversations after each call. Verified: the user's real `~/.gemini` conversation count stays at delta 0.
+  - Always passes `--sandbox`; the summarizer must never execute model-authored commands (session tool-logs are semi-untrusted input).
+  - **Requires agy ≥ 1.1.1.** Two upstream fixes there are non-negotiable for subprocess use: 1.1.1 fixed `agy -p` **hanging when run inside a subprocess** (it read stdin — a hang would strand `processBatch`'s in-flight guard and silently halt the observation queue), and fixed print mode exiting 0 with empty output on a server-side failure, which is otherwise indistinguishable from success.
+
+### Notes
+- **Argument order in the agy transport is load-bearing and is enforced by a test.** `--print`/`-p` is a *string* flag whose value IS the prompt — it is not a boolean. `agy -p --model "<m>" "<prompt>"` makes `-p` swallow the literal string `"--model"`; agy then answers *"I am running on Gemini 3.5 Flash"*, silently discards the real prompt, and **exits 0**. It does not fail — it succeeds against the wrong input. The correct form is `agy --sandbox --model "<m>" -p "<prompt>"`, with the prompt always the final element. `summarizer-agy.test.ts` asserts this so nobody can "tidy" the flags and reintroduce it.
+- Suite: 1095/1095. moat-guard green (master carries no federation code).
+
 ## [0.23.0] — 2026-07-14
 
 ### Added

@@ -71,8 +71,12 @@ export const ENV_OBSERVATION_TICK_MS = 'CAPTAIN_MEMO_OBSERVATION_TICK_MS';
  *                          The only zero-key option for users with NO Anthropic
  *                          subscription. ~6-7 s/call (Codex agent boot, not
  *                          inference — flat across the model ladder). Requires
- *                          `codex login`. */
-export type SummarizerProvider = 'claude-oauth' | 'anthropic' | 'claude-code' | 'openai-compatible' | 'codex';
+ *                          `codex login`.
+ *  - 'agy'               — `agy -p` subprocess on a GOOGLE account (Antigravity CLI).
+ *                          The widest-reach zero-key option: no Claude plan, no ChatGPT
+ *                          plan, no API key. ~3.4-5.5 s/call — fastest of the three
+ *                          agent-CLI transports. Requires agy >= 1.1.1. */
+export type SummarizerProvider = 'claude-oauth' | 'anthropic' | 'claude-code' | 'openai-compatible' | 'codex' | 'agy';
 export const DEFAULT_SUMMARIZER_PROVIDER: SummarizerProvider = 'claude-oauth';
 
 // Codex model defaults. Deliberately separate from DEFAULT_SUMMARIZER_MODEL —
@@ -87,6 +91,14 @@ export const DEFAULT_SUMMARIZER_PROVIDER: SummarizerProvider = 'claude-oauth';
 // account's own default. See summarizer-codex.ts:CODEX_ACCOUNT_DEFAULT.
 export const DEFAULT_CODEX_MODEL = 'gpt-5.4-mini';
 export const DEFAULT_CODEX_FALLBACKS: string[] = ['gpt-5.5', 'default'];
+
+// Antigravity (`agy`) model defaults. These are DISPLAY names, not slugs — that is what
+// `agy models` prints and what `--model` accepts (an unrecognised value exits 1 and lists
+// the valid ones). 'Gemini 3.5 Flash (Low)' is the Flash/Haiku tier: cheapest and, measured,
+// also the fastest. Chain ends at the 'default' sentinel (= pass no --model), which the
+// account always accepts. See summarizer-agy.ts:AGY_ACCOUNT_DEFAULT.
+export const DEFAULT_AGY_MODEL = 'Gemini 3.5 Flash (Low)';
+export const DEFAULT_AGY_FALLBACKS: string[] = ['Gemini 3.5 Flash (Medium)', 'default'];
 
 /** Endpoint URL for openai-compatible provider. Required when provider=openai-compatible. */
 export const ENV_OPENAI_ENDPOINT = 'CAPTAIN_MEMO_OPENAI_ENDPOINT';
