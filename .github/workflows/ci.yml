@@ -4,8 +4,38 @@ on:
   push:
     branches: [master]
   pull_request:
+  # Advisories appear without anyone pushing. Without a schedule, a vulnerability
+  # published tomorrow stays invisible until the next commit.
+  schedule:
+    - cron: '0 6 * * 1'   # Mondays 06:00 UTC
 
 jobs:
+  # Dependency audit. This job exists because Dependabot CANNOT see this repo's real
+  # dependency tree: GitHub's dependency graph does not parse `bun.lock`, so it reads only
+  # the ~10 DIRECT deps out of package.json — as version RANGES ("^1.25.1"), not resolved
+  # versions. Bun actually resolves 115 packages.
+  #
+  # That gap is not theoretical: it is exactly how 10 advisories (1 high, 9 moderate) sat
+  # unnoticed in `hono` and `qs`, both pulled in transitively via @modelcontextprotocol/sdk.
+  # Dependabot could not have flagged them — it never saw the packages. `bun audit` resolves
+  # the same tree bun installs, so it does.
+  #
+  # Keep Dependabot on as well: it still covers direct npm deps, the Python embedder's
+  # requirements.txt, and the GitHub Actions pins, none of which bun audit looks at.
+  #
+  # `bun audit` exits 1 on any finding (verified). If an advisory is genuinely unreachable
+  # here AND has no fix available, pin it out with `--ignore=<CVE>` and say why — do not
+  # weaken this to `|| true`, which would silently turn the gate off for everything.
+  audit:
+    name: audit (transitive deps — bun.lock)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - name: bun audit (fails on any advisory)
+        run: bun audit
+
   # Moat guard: fail if federation code ever lands on the OSS master branch. The private `federation`
   # branch is gitlab-only and never reaches github; this is the CI belt behind the per-clone pre-push hook.
   moat:
