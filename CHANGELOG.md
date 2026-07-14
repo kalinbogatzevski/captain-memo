@@ -5,6 +5,15 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.24.1] — 2026-07-15
+
+### Security
+- **Pinned `qs` and `hono` past their advisories via `overrides` — `bun audit` goes from 10 findings (1 high, 9 moderate) to zero.** Both arrive transitively through `@modelcontextprotocol/sdk` (`sdk › express › body-parser › qs`, `sdk › @hono/node-server › hono`). The high was GHSA-88fw-hqm2-52qc: hono's CORS middleware reflecting any Origin with credentials when `origin` defaults to the wildcard.
+  - **Reachability, checked before fixing rather than assumed: neither package is ever loaded.** captain-memo imports exactly two SDK entrypoints — `server/stdio.js` and `server/webStandardStreamableHttp.js` — and *neither* pulls in express or hono; the SDK's express-dependent code lives in `server/express.js` and `server/auth/*`, which we never import. The gateway is served by `Bun.serve`, and no file under `src/` or `bin/` references express, hono, or qs. So the advisories were not exploitable here.
+  - Fixed anyway, because "unreachable today" is a property of current code, not a guarantee — a future HTTP/auth code path would have silently inherited a known-vulnerable CORS middleware. `overrides` makes it true regardless of what we import later.
+  - Both bumps are semver-compatible (`qs` 6.15.1 → 6.15.3, `hono` 4.12.18 → 4.12.30); bumping the SDK itself would not have helped, as it is already at the latest (1.29.0) and still resolves the vulnerable ranges.
+  - Suite: 1095/1095, typecheck clean.
+
 ## [0.24.0] — 2026-07-14
 
 ### Added

@@ -733,7 +733,7 @@ init_paths();
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.24.0",
+  version: "0.24.1",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -788,6 +788,10 @@ var package_default = {
     nanoid: "^5.0.7",
     "sqlite-vec": "^0.1.9",
     zod: "^3.24.0"
+  },
+  overrides: {
+    qs: "^6.15.3",
+    hono: "^4.12.30"
   },
   devDependencies: {
     "@types/bun": "^1.1.0",
