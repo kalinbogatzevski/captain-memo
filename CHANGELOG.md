@@ -5,6 +5,20 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.25.0] — 2026-07-15
+
+### Added
+- **Opt-in autonomous self-update for git-clone installs (`CAPTAIN_MEMO_AUTO_UPDATE=1`).** A marketplace install already self-updates via Claude Code, but a local `git clone` install sat on old code until someone ran `git pull` + `captain-memo install`. With this flag, on session start Captain **fast-forwards the checkout to the newest stable `vX.Y.Z` tag on its own `origin`, runs `bun install`, restarts the worker, and shows a `⚓ Captain Memo auto-updated` banner** — then verifies the worker booted and **rolls back** if it didn't. Off by default (auto-pulling a developer's checkout should be a choice); no-op on a non-git / marketplace install. Throttled to one `git fetch` per 6h (`CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS`). The git mechanics are a moat-safe re-lift of the federation self-updater (which can't be shared directly — it lives under `src/worker/federation/`).
+
+### Security
+- **The feature was adversarially reviewed BEFORE release; two serious holes were found and fixed, so they never shipped:**
+  - **Command-injection → RCE (git argument-injection).** The current branch name from `git rev-parse --abbrev-ref HEAD` flowed unsanitized into `git fetch … origin <branch>`; a repo whose HEAD is a branch named `--upload-pack=…` executed arbitrary code on an opted-in user's next session (reproduced end-to-end on git 2.47.3, and it fired *before* the clean-tree / ff-only gates). Fixed two ways: the branch positional is **dropped from the fetch entirely** (tag discovery doesn't need it), and any dash-leading branch/tag/sha is **refused** (`isSafeRefName`). Re-verified: a real dash-named-HEAD repo now bails before any git command runs.
+  - **Origin invariant was not enforced.** Candidate tags came from `git tag --list` — the *entire* local tag namespace — so a contributor who added a fork remote could get a malicious `v99.0.0` fast-forwarded in, despite the "only from your own origin" promise. Now candidates are scoped to `git ls-remote --tags origin`, and `git fetch --tags --force` guarantees a name in that set resolves to origin's exact sha.
+- Also hardened from the same review: **rollback** if the new code crash-loops (captures the prior HEAD sha, resets + reinstalls + restarts the old code); a **repo-identity gate** (only touch a checkout whose `package.json` name is `captain-memo`, so a marketplace install nested in an unrelated git repo can't mis-target it); a **concurrency lock** (only one session updates at a time); **`bun install` gets its own 300s budget** instead of the 20s `git fetch` cap (a half-written `node_modules` would crash the worker); **`GIT_TERMINAL_PROMPT=0` + ssh `BatchMode`** so an auth prompt can't stall session start; and suppression of a **redundant second worker restart**.
+
+### Notes
+- 20 dedicated unit tests (fake git port, no real git) cover every gate and the two exploits; the git path was also dry-run and the RCE reproduction re-run against the real repo. Suite: 1119/1119.
+
 ## [0.24.2] — 2026-07-15
 
 ### Fixed

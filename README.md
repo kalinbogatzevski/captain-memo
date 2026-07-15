@@ -169,6 +169,8 @@ Use the **fully-qualified id** (`captain-memo@captain-memo`). The simplest upgra
 
 **Auto-updates.** Install the plugin from the **GitHub marketplace** (`claude plugin marketplace add kalinbogatzevski/captain-memo`) and Claude Code re-fetches new versions on its own — **no git required**. When a newer version goes live, Captain Memo's SessionStart hook self-heals the worker to it and shows a one-time **`⚓ Captain Memo self-upgraded: vX → vY`** banner. It only ever touches the plugin + worker process — **never** your `worker.env`, config, or corpus. Opt out of the auto worker-restart with `CAPTAIN_MEMO_DISABLE_SELF_HEAL=1`. (The local-clone full install is a `directory`-source snapshot Claude Code doesn't auto-refetch, so there you upgrade by re-running `captain-memo install`.)
 
+**Auto-updates for a git-clone install (opt-in).** A local `git clone` install isn't refreshed by Claude Code, so it normally stays put until you `git pull`. Set **`CAPTAIN_MEMO_AUTO_UPDATE=1`** and Captain Memo will, on session start, **fast-forward your checkout to the newest stable `vX.Y.Z` tag** on its own `origin`, run `bun install`, restart the worker, and show a **`⚓ Captain Memo auto-updated: vX → vY`** banner. Safety rails: it **only** fast-forwards (never a merge/rebase), **refuses a dirty work-tree or detached HEAD** (never clobbers local edits), ignores pre-release tags, and is throttled to one `git fetch` per 6h (`CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS`). Opt-in only — off by default, because auto-pulling a developer's checkout should be a choice. It never runs on a marketplace install (those already self-update above).
+
 ### Windows (native)
 
 Captain Memo runs natively on **Windows x64** — no WSL required.

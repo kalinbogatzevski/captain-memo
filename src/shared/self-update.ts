@@ -44,6 +44,32 @@ export function formatUpgradeBanner(from: string, to: string): string {
   ].join('\n');
 }
 
+/** Banner for the OPT-IN autonomous git self-update (CAPTAIN_MEMO_AUTO_UPDATE=1). Distinct from
+ *  formatUpgradeBanner because here Captain actively fast-forwarded the checkout + restarted the
+ *  worker itself, rather than just noticing a marketplace refresh. */
+export function formatAutoUpdateBanner(from: string, to: string, installFailed?: boolean): string {
+  const lines = [
+    `⚓ Captain Memo auto-updated: v${from} → v${to}`,
+    '  Fast-forwarded your checkout to the latest stable tag and restarted the worker.',
+  ];
+  if (installFailed) lines.push('  ⚠ `bun install` failed — run it in your checkout if the worker misbehaves.');
+  lines.push('  Opt out with CAPTAIN_MEMO_AUTO_UPDATE=0.');
+  return lines.join('\n');
+}
+
+/** Banner when an auto-update's new code failed to boot and Captain rolled the checkout back. */
+export function formatRollbackBanner(from: string, attempted: string, rolledBack: boolean): string {
+  return rolledBack
+    ? [
+        `⚓ Captain Memo auto-update to v${attempted} FAILED to start — rolled back to v${from}.`,
+        '  Your worker is running the previous version again. The bad tag is skipped until it changes.',
+      ].join('\n')
+    : [
+        `⚓ Captain Memo auto-update to v${attempted} FAILED to start AND rollback failed.`,
+        '  Run `git status` in your checkout and `captain-memo install` to recover.',
+      ].join('\n');
+}
+
 function markerPath(dataDir: string): string {
   return join(dataDir, MARKER_FILENAME);
 }

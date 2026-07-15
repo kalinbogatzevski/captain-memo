@@ -730,10 +730,12 @@ if (false) {}
 // src/hooks/session-start.ts
 init_shared();
 init_paths();
+import { mkdirSync as mkdirSync4, readFileSync as readFileSync4, statSync as statSync2, writeFileSync as writeFileSync4 } from "fs";
+import { join as join7 } from "path";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.24.2",
+  version: "0.25.0",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -834,6 +836,28 @@ function formatUpgradeBanner(from, to) {
   ].join(`
 `);
 }
+function formatAutoUpdateBanner(from, to, installFailed) {
+  const lines = [
+    `\u2693 Captain Memo auto-updated: v${from} \u2192 v${to}`,
+    "  Fast-forwarded your checkout to the latest stable tag and restarted the worker."
+  ];
+  if (installFailed)
+    lines.push("  \u26A0 `bun install` failed \u2014 run it in your checkout if the worker misbehaves.");
+  lines.push("  Opt out with CAPTAIN_MEMO_AUTO_UPDATE=0.");
+  return lines.join(`
+`);
+}
+function formatRollbackBanner(from, attempted, rolledBack) {
+  return rolledBack ? [
+    `\u2693 Captain Memo auto-update to v${attempted} FAILED to start \u2014 rolled back to v${from}.`,
+    "  Your worker is running the previous version again. The bad tag is skipped until it changes."
+  ].join(`
+`) : [
+    `\u2693 Captain Memo auto-update to v${attempted} FAILED to start AND rollback failed.`,
+    "  Run `git status` in your checkout and `captain-memo install` to recover."
+  ].join(`
+`);
+}
 function markerPath(dataDir) {
   return join6(dataDir, MARKER_FILENAME);
 }
@@ -865,6 +889,123 @@ function consumeUpgradeNotice(dataDir, runningVersion) {
     return action === "upgraded" ? formatUpgradeBanner(marker, runningVersion) : "";
   } catch {
     return "";
+  }
+}
+
+// src/worker/self-updater.ts
+var DEFAULT_UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+function isUpdateCheckDue(lastCheckMs, nowMs, intervalMs) {
+  if (lastCheckMs === null)
+    return true;
+  return nowMs - lastCheckMs >= intervalMs;
+}
+function isSafeRefName(name) {
+  return name.length > 0 && !name.startsWith("-");
+}
+function originTagNames(port, installDir) {
+  const names = new Set;
+  const ls = port.run(["git", "ls-remote", "--tags", "origin"], installDir);
+  if (ls.code !== 0)
+    return names;
+  for (const line of ls.stdout.split(`
+`)) {
+    const m = /\trefs\/tags\/(.+?)(\^\{\})?$/.exec(line);
+    if (m && m[1])
+      names.add(m[1]);
+  }
+  return names;
+}
+function isGitCheckout(port, installDir) {
+  const top = port.run(["git", "rev-parse", "--show-toplevel"], installDir);
+  return top.code === 0 && top.stdout.trim().length > 0;
+}
+function originUrl(port, installDir) {
+  const r = port.run(["git", "remote", "get-url", "origin"], installDir);
+  const url = r.code === 0 ? r.stdout.trim() : "";
+  return url.length > 0 ? url : null;
+}
+function pickUpdateTarget(port, installDir, runningVersion) {
+  const branchRes = port.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], installDir);
+  const branch = branchRes.stdout.trim();
+  if (branchRes.code !== 0 || !branch || branch === "HEAD")
+    return null;
+  if (!isSafeRefName(branch))
+    return null;
+  port.run(["git", "fetch", "--tags", "--force", "origin"], installDir, 20000);
+  const originTags = originTagNames(port, installDir);
+  if (originTags.size === 0)
+    return null;
+  let best = null;
+  for (const tag of originTags) {
+    if (!/^v\d+\.\d+\.\d+$/.test(tag))
+      continue;
+    if (compareSemver(tag, runningVersion) !== 1)
+      continue;
+    if (best && compareSemver(tag, best.version) !== 1)
+      continue;
+    const anc = port.run(["git", "merge-base", "--is-ancestor", "HEAD", tag], installDir);
+    if (anc.code !== 0)
+      continue;
+    best = { ref: tag, version: tag };
+  }
+  return best;
+}
+function resetBuildOutput(port, installDir) {
+  port.run(["git", "checkout", "--", "plugin/dist"], installDir);
+}
+function applyUpdateToRef(port, installDir, ref, fromVersion) {
+  if (!isGitCheckout(port, installDir))
+    return { ok: false, from: fromVersion, code: "not_a_checkout", reason: "not a git checkout" };
+  if (!isSafeRefName(ref))
+    return { ok: false, from: fromVersion, code: "pull_failed", reason: "unsafe ref name" };
+  resetBuildOutput(port, installDir);
+  const status = port.run(["git", "status", "--porcelain"], installDir);
+  if (status.code !== 0)
+    return { ok: false, from: fromVersion, code: "dirty_tree", reason: "git status failed" };
+  if (status.stdout.trim().length > 0)
+    return { ok: false, from: fromVersion, code: "dirty_tree", reason: "working tree not clean \u2014 refusing to auto-update over local edits" };
+  const branchRes = port.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], installDir);
+  const branch = branchRes.stdout.trim();
+  if (branchRes.code !== 0 || !branch || branch === "HEAD")
+    return { ok: false, from: fromVersion, code: "detached_head", reason: "detached HEAD or unknown branch" };
+  const headRes = port.run(["git", "rev-parse", "HEAD"], installDir);
+  const priorSha = headRes.code === 0 ? headRes.stdout.trim() : "";
+  const merge = port.run(["git", "merge", "--ff-only", ref], installDir);
+  if (merge.code !== 0)
+    return { ok: false, from: fromVersion, code: "pull_failed", reason: (merge.stderr || merge.stdout || "").slice(0, 240) };
+  const to = port.readPackageVersion(installDir);
+  return { ok: true, from: fromVersion, ...to ? { to } : {}, ...priorSha ? { priorSha } : {} };
+}
+function installDeps(port, installDir, bunPath) {
+  return port.run([bunPath, "install"], installDir, 300000);
+}
+function rollbackTo(port, installDir, sha, bunPath) {
+  if (!isSafeRefName(sha))
+    return false;
+  const reset = port.run(["git", "reset", "--hard", sha], installDir);
+  if (reset.code !== 0)
+    return false;
+  installDeps(port, installDir, bunPath);
+  return true;
+}
+function runAutoUpdate(port, installDir, runningVersion, bunPath) {
+  try {
+    if (!isGitCheckout(port, installDir))
+      return null;
+    if (port.readPackageName(installDir) !== "captain-memo")
+      return null;
+    if (originUrl(port, installDir) === null)
+      return null;
+    const target = pickUpdateTarget(port, installDir, runningVersion);
+    if (!target)
+      return null;
+    const applied = applyUpdateToRef(port, installDir, target.ref, runningVersion);
+    if (!applied.ok)
+      return applied;
+    const deps = installDeps(port, installDir, bunPath);
+    return deps.code === 0 ? applied : { ...applied, installFailed: true };
+  } catch {
+    return null;
   }
 }
 
@@ -905,6 +1046,13 @@ async function ensureWorkerHealthy(deps) {
 
 // src/hooks/session-start.ts
 init_worker_heal_lock();
+function readPkgField(dir, field) {
+  try {
+    return JSON.parse(readFileSync4(join7(dir, "package.json"), "utf-8"))[field] ?? null;
+  } catch {
+    return null;
+  }
+}
 function fmtNum(n) {
   return n.toLocaleString("en-US");
 }
@@ -977,9 +1125,89 @@ async function main2() {
     return workerFetch("/stats", { method: "GET", timeoutMs });
   }
   let stats = await probeStats();
+  async function waitWorkerHealthy(budgetMs = 15000) {
+    const deadline = Date.now() + budgetMs;
+    while (Date.now() < deadline) {
+      const r = await workerFetch("/stats", { method: "GET", timeoutMs: 1500 });
+      if (r.ok) {
+        stats = r;
+        return true;
+      }
+      await new Promise((res) => setTimeout(res, 500));
+    }
+    return false;
+  }
+  let autoUpdateNotice = "";
+  let updatedThisSession = false;
+  if (process.env.CAPTAIN_MEMO_AUTO_UPDATE === "1") {
+    const AUTO_UPDATE_LOCK = join7(DATA_DIR, ".auto-update.lock");
+    try {
+      const port = {
+        run: (argv, cwd, timeoutMs2) => {
+          const r = Bun.spawnSync(argv, {
+            cwd,
+            stdout: "pipe",
+            stderr: "pipe",
+            timeout: timeoutMs2 ?? 20000,
+            env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oConnectTimeout=10" }
+          });
+          return { code: r.exitCode ?? 1, stdout: r.stdout.toString(), stderr: r.stderr.toString() };
+        },
+        readPackageVersion: (dir) => readPkgField(dir, "version"),
+        readPackageName: (dir) => readPkgField(dir, "name")
+      };
+      const intervalMs = Number(process.env.CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS ?? DEFAULT_UPDATE_CHECK_INTERVAL_MS);
+      try {
+        mkdirSync4(DATA_DIR, { recursive: true });
+      } catch {}
+      const stampPath = join7(DATA_DIR, ".last-update-check");
+      let lastCheck = null;
+      try {
+        lastCheck = statSync2(stampPath).mtimeMs;
+      } catch {}
+      if (isUpdateCheckDue(lastCheck, Date.now(), intervalMs) && acquireHealLock(AUTO_UPDATE_LOCK)) {
+        try {
+          try {
+            writeFileSync4(stampPath, `${new Date().toISOString()}
+`);
+          } catch {}
+          const top = port.run(["git", "rev-parse", "--show-toplevel"], import.meta.dir);
+          const installDir = top.code === 0 && top.stdout.trim() ? top.stdout.trim() : import.meta.dir;
+          const res = runAutoUpdate(port, installDir, VERSION, process.execPath);
+          if (res?.ok) {
+            const { getServiceManager: getServiceManager2 } = await Promise.resolve().then(() => (init_service_manager(), exports_service_manager));
+            const sm = getServiceManager2();
+            const wport = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
+            await restartWorker(sm, "captain-memo-worker", { port: wport, graceful: true });
+            const healthy = await waitWorkerHealthy();
+            if (healthy) {
+              updatedThisSession = true;
+              if (res.to)
+                writeMarker(DATA_DIR, res.to);
+              autoUpdateNotice = formatAutoUpdateBanner(res.from, res.to ?? "?", res.installFailed);
+            } else {
+              const rolled = res.priorSha ? rollbackTo(port, installDir, res.priorSha, process.execPath) : false;
+              await restartWorker(sm, "captain-memo-worker", { port: wport });
+              await waitWorkerHealthy();
+              stats = await probeStats();
+              updatedThisSession = true;
+              autoUpdateNotice = formatRollbackBanner(res.from, res.to ?? "?", rolled);
+              logHookError("SessionStart", new Error(`auto-update to ${res.to} failed to boot; rolled back=${rolled}`));
+            }
+          } else if (res && !res.ok) {
+            logHookError("SessionStart", new Error(`auto-update skipped: ${res.code} \u2014 ${res.reason}`));
+          }
+        } finally {
+          releaseHealLock(AUTO_UPDATE_LOCK);
+        }
+      }
+    } catch (err) {
+      logHookError("SessionStart", err);
+    }
+  }
   const selfHealOff = process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL === "1";
   const running = stats.ok && !!stats.body;
-  const stale = running && stats.body.version !== undefined && stats.body.version !== VERSION;
+  const stale = !updatedThisSession && running && stats.body.version !== undefined && stats.body.version !== VERSION;
   if (!selfHealOff && (!running || stale)) {
     try {
       const { getServiceManager: getServiceManager2 } = await Promise.resolve().then(() => (init_service_manager(), exports_service_manager));
@@ -1019,7 +1247,10 @@ async function main2() {
     }
   }
   const upgradeNotice = consumeUpgradeNotice(DATA_DIR, VERSION);
-  const withNotice = (banner) => upgradeNotice ? `${upgradeNotice}
+  const notices = [autoUpdateNotice, upgradeNotice].filter(Boolean).join(`
+
+`);
+  const withNotice = (banner) => notices ? `${notices}
 
 ${banner}` : banner;
   if (stats.ok && stats.body) {

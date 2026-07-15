@@ -191,6 +191,8 @@ bun run worker:start
 | `CAPTAIN_MEMO_SUMMARIZER_FALLBACKS` | `claude-haiku-4-5` | Comma-separated fallback chain. Each model is tried in order on `model_not_found`; the first one that responds is cached for the worker's lifetime. |
 | `CAPTAIN_MEMO_HOOK_BUDGET_TOKENS` | `4000` | Hard cap on `<memory-context>` token budget. |
 | `CAPTAIN_MEMO_HOOK_TIMEOUT_MS` | `250` | UserPromptSubmit hard timeout. |
+| `CAPTAIN_MEMO_AUTO_UPDATE` | `0` | `1` opts a **git-clone** install into autonomous self-update: on session start, fast-forward the checkout to the newest stable `vX.Y.Z` tag on `origin`, `bun install`, restart the worker. Fast-forward only; refuses a dirty tree / detached HEAD; ignores pre-release tags. No-op on a marketplace install. |
+| `CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS` | `21600000` (6h) | Minimum gap between auto-update checks (each does a `git fetch`), so it doesn't hit the network every session. |
 | `CAPTAIN_MEMO_OBSERVATION_BATCH_SIZE` | `20` | Rows pulled per processor tick. |
 | `CAPTAIN_MEMO_OBSERVATION_TICK_MS` | `5000` | Interval for the auto-tick processor. |
 
