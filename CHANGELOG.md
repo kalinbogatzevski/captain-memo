@@ -5,6 +5,18 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.24.2] — 2026-07-15
+
+### Fixed
+- **`agy` summarizer was broken on Windows — two platform bugs, both now fixed.** The provider shipped in 0.24.0 assuming POSIX:
+  - **Home isolation silently failed on Windows.** agy is a Go binary using `os.UserHomeDir()`, which reads `$HOME` on POSIX but `%USERPROFILE%` on Windows. The transport set only `HOME`, so on Windows agy ignored it, fell back to the real user profile, and would have **polluted the user's real `~/.gemini` history** (and grown it unbounded) — the exact thing the isolated home exists to prevent. Now sets **both** `HOME` and `USERPROFILE`.
+  - **The OAuth token was symlinked, which throws `EPERM` on Windows.** `fs.symlinkSync` needs Administrator or Developer Mode on Windows, so every summarize would have crashed. The token is now **copied** on Windows (and re-copied when the real token is newer, so a re-login still propagates), while POSIX keeps the symlink (token refresh flows through the real home for free).
+  - Home setup is now fail-safe: a missing token or a placement failure no longer throws — agy surfaces its own auth error on spawn, which is the better signal, and never crashes the worker.
+  - New unit tests exercise the Windows branch (copy-not-symlink, re-copy-on-newer, POSIX-symlink, missing-token-no-throw) via injectable `isWindows`/`tokenSource`, so they run on the POSIX CI. Linux behavior re-verified live: real `~/.gemini` conversation count stays at delta 0. Suite: 1099/1099.
+
+### Note
+- This only affects `CAPTAIN_MEMO_SUMMARIZER_PROVIDER=agy` on Windows. `claude-oauth` (recommended on Windows) and `codex` were never affected.
+
 ## [0.24.1] — 2026-07-15
 
 ### Security

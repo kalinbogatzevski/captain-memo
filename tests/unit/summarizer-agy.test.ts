@@ -1,4 +1,7 @@
 import { test, expect } from 'bun:test';
+import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { createAgyTransport, AGY_ACCOUNT_DEFAULT, type SpawnFn } from '../../src/worker/summarizer-agy.ts';
 
 function fakeSpawn(stdout: string, exitCode = 0, stderr = ''): {
@@ -69,6 +72,9 @@ test('agy transport — runs under an ISOLATED $HOME (protects the user\'s agy h
   await t({ model: AGY_ACCOUNT_DEFAULT, system: 's', user: 'u', max_tokens: 800 });
   expect(fake.lastEnv!.HOME).toBe('/tmp/cm-agy-test');
   expect(fake.lastEnv!.HOME).not.toBe(process.env.HOME);
+  // agy (Go, os.UserHomeDir) reads %USERPROFILE% on Windows, not $HOME — both must be redirected
+  // or the isolation silently fails on Windows and pollutes the real ~/.gemini.
+  expect(fake.lastEnv!.USERPROFILE).toBe('/tmp/cm-agy-test');
 });
 
 test('agy transport — the "default" sentinel omits --model entirely', async () => {
@@ -102,4 +108,65 @@ test('agy transport — empty stdout on exit 0 throws rather than yielding an em
   const e = await t({ model: 'Gemini 3.5 Flash (Low)', system: 's', user: 'u', max_tokens: 800 })
     .catch((x: Error) => x);
   expect((e as Error).message).toContain('empty stdout');
+});
+
+// ── Token placement across platforms (the Windows EPERM fix) ──
+// These run the REAL ensureAgyHome (skipHomeSetup omitted) against a temp home + a fixture token,
+// so the Windows branch is exercised on a POSIX CI via the injectable isWindows/tokenSource.
+
+function tokenFixture(): { home: string; src: string; cleanup: () => void } {
+  const root = mkdtempSync(join(tmpdir(), 'cm-agy-'));
+  const src = join(root, 'real-token');
+  writeFileSync(src, 'OAUTH-TOKEN-v1');
+  const home = join(root, 'iso-home');
+  return { home, src, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+const OK = fakeSpawn('{"type":"feature","title":"t","narrative":"n","facts":[],"concepts":[]}');
+
+test('Windows: the token is COPIED (a real file, not a symlink) — no EPERM from symlinkSync', async () => {
+  const fx = tokenFixture();
+  try {
+    const t = createAgyTransport({ spawn: OK.spawn, agyHome: fx.home, isWindows: true, tokenSource: fx.src });
+    await t({ model: AGY_ACCOUNT_DEFAULT, system: 's', user: 'u', max_tokens: 800 });
+    const placed = join(fx.home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token');
+    expect(existsSync(placed)).toBe(true);
+    expect(lstatSync(placed).isSymbolicLink()).toBe(false);   // a COPY, not a link
+    expect(readFileSync(placed, 'utf-8')).toBe('OAUTH-TOKEN-v1');
+  } finally { fx.cleanup(); }
+});
+
+test('Windows: a newer real token is re-copied so a re-login propagates', async () => {
+  const fx = tokenFixture();
+  try {
+    const t = createAgyTransport({ spawn: OK.spawn, agyHome: fx.home, isWindows: true, tokenSource: fx.src });
+    await t({ model: AGY_ACCOUNT_DEFAULT, system: 's', user: 'u', max_tokens: 800 });
+    // Simulate `agy login` writing a fresh token with a newer mtime.
+    writeFileSync(fx.src, 'OAUTH-TOKEN-v2');
+    const future = Date.now() / 1000 + 60;
+    utimesSync(fx.src, future, future);
+    await t({ model: AGY_ACCOUNT_DEFAULT, system: 's', user: 'u', max_tokens: 800 });
+    const placed = join(fx.home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token');
+    expect(readFileSync(placed, 'utf-8')).toBe('OAUTH-TOKEN-v2');
+  } finally { fx.cleanup(); }
+});
+
+test('POSIX: the token is SYMLINKED (refresh flows through the real home for free)', async () => {
+  const fx = tokenFixture();
+  try {
+    const t = createAgyTransport({ spawn: OK.spawn, agyHome: fx.home, isWindows: false, tokenSource: fx.src });
+    await t({ model: AGY_ACCOUNT_DEFAULT, system: 's', user: 'u', max_tokens: 800 });
+    const placed = join(fx.home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token');
+    expect(lstatSync(placed).isSymbolicLink()).toBe(true);
+  } finally { fx.cleanup(); }
+});
+
+test('no login (token source missing) does not throw — agy surfaces its own auth error on spawn', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cm-agy-'));
+  try {
+    const t = createAgyTransport({ spawn: OK.spawn, agyHome: join(root, 'h'), isWindows: true, tokenSource: join(root, 'nope') });
+    // ensureAgyHome must be fail-safe: a missing token is not a crash.
+    await t({ model: AGY_ACCOUNT_DEFAULT, system: 's', user: 'u', max_tokens: 800 });
+    expect(existsSync(join(root, 'h', '.gemini', 'antigravity-cli', 'antigravity-oauth-token'))).toBe(false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
