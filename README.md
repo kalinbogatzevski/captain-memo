@@ -195,17 +195,39 @@ After the wizard, **fully restart Claude Code** (run it on Windows too) for the 
 
 To move an existing native install to a newer release:
 
+Takes ~2 minutes. Your memory, `worker.env`, and API keys are **not** touched — only the code updates.
+
 ```powershell
-# The worker runs from your checkout; find it if you're unsure:
-#   (Get-ScheduledTask -TaskName 'captain-memo-worker').Actions[0].WorkingDirectory
+# 1. Go to your checkout. If unsure where it is, this prints the folder:
+#    (Get-ScheduledTask -TaskName 'captain-memo-worker').Actions[0].WorkingDirectory
 cd <your captain-memo checkout>
+
+# 2. Pull the new version + refresh deps (and the vec0.dll native lib) on this x64 box:
 git pull
-bun install                       # refresh deps (and vec0.dll) on this x64 box
+bun install
+
+# 3. Restart the worker so it loads the new code (it reads its version at process start):
 Stop-ScheduledTask -TaskName 'captain-memo-worker'; Start-ScheduledTask -TaskName 'captain-memo-worker'
-captain-memo doctor               # confirm the worker is healthy on :39888
+
+# 4. Run the data upgrade — re-indexes memory to the new chunk format + compacts the DB.
+#    Safe to run, safe to re-run, resumes if interrupted. Don't skip it: the /stats version
+#    may not fully settle until this has run.
+captain-memo upgrade
+
+# 5. Verify:
+captain-memo doctor               # all green; worker healthy on :39888
+captain-memo stats                # the `Summarizer` line shows which provider is live
 ```
 
-The Windows CLI shim runs the TypeScript source directly (`captain-memo.cmd` → `bun "<repo>\src\cli\index.ts"`), so `git pull` makes the new CLI live **with no rebuild** — `captain-memo help` then prints the new version. Re-running `bun .\bin\captain-memo install` is an equivalent, idempotent alternative: it replaces the Scheduled Task in place (`schtasks … /F`) and re-grants permissions. If `captain-memo` isn't on PATH, prefix every command with `bun bin\captain-memo` from the checkout.
+The Windows CLI shim runs the TypeScript source directly (`captain-memo.cmd` → `bun "<repo>\src\cli\index.ts"`), so `git pull` makes the new CLI live **with no rebuild** — `captain-memo help` then prints the new version. Re-running `bun .\bin\captain-memo install` is an equivalent, idempotent alternative: it replaces the Scheduled Task in place (`schtasks … /F`) and re-grants permissions. **If `captain-memo` isn't on PATH, prefix every command with `bun bin\captain-memo`** from the checkout (e.g. `bun bin\captain-memo upgrade`).
+
+**Skip all of this next time — turn on auto-upgrade** (from this version on). Set it once, then fully restart Claude Code:
+
+```powershell
+[Environment]::SetEnvironmentVariable('CAPTAIN_MEMO_AUTO_UPDATE','1','User')
+```
+
+Captain then checks for a newer release on session start (≤ once per 6 h), fast-forwards your checkout, `bun install`s, restarts the worker, and reports the upgrade — rolling back automatically if the new code fails to start. It only ever touches a **clean** checkout, so it never clobbers local edits. (Set it as a real environment variable, **not** in `worker.env` — the session-start hook that runs it reads the process environment.)
 
 Re-running `bun .\bin\captain-memo install` also **refreshes the plugin cache** for you (it does `marketplace remove`→`add`), so the cached hooks and MCP bundle always match your checkout — there's no separate `claude plugin update` step to remember. `captain-memo doctor` should then report all green. The `/stats` version (`captain-memo stats`) updates once the worker task has restarted, since the worker reads its version at process start.
 
