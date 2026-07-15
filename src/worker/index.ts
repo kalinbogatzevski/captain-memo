@@ -6,6 +6,7 @@ import { MetaStore } from './meta.ts';
 import { Embedder } from './embedder.ts';
 import { embedderMaxTokens } from '../shared/embedder-limits.ts';
 import { loadWorkerEnv } from '../shared/worker-env.ts';
+import { resolveSummarizerProvider } from '../shared/summarizer-provider.ts';
 import { loadGatewayConfig, verifyToken } from '../shared/gateway-tokens.ts';
 import { dispatchTool, TOOLS } from '../mcp-server.ts';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -1464,6 +1465,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           dream,
           version: VERSION,
           edition: EDITION,   // 'federation' | 'oss' — surfaced for the SessionStart banner
+          // The ACTIVE summarizer, so `captain-memo stats` / doctor can answer "which one is
+          // running?" — the RESOLVED provider (post-fallback), which is the ground truth the raw
+          // worker.env value can't give (a bad "codex,agy" shows here as its real fallback).
+          summarizer: {
+            provider: resolveSummarizerProvider(process.env[ENV_SUMMARIZER_PROVIDER]).provider,
+            model: process.env[ENV_SUMMARIZER_MODEL] ?? null,
+            enabled: summarize !== undefined,
+          },
           worker: {
             started_at_epoch: workerStartedAtEpoch,
             uptime_s: Math.floor(Date.now() / 1000) - workerStartedAtEpoch,
@@ -2212,18 +2221,11 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
   //   - 'openai-compatible': any /v1/chat/completions (Ollama, OpenAI, …).
   //   - 'codex':          shells out to `codex exec`; ChatGPT Plus/Pro, no key,
   //     ~6-7 s. The only zero-key path for someone with no Anthropic plan.
-  const providerRaw = (process.env[ENV_SUMMARIZER_PROVIDER] ?? DEFAULT_SUMMARIZER_PROVIDER).toLowerCase();
-  const provider: SummarizerProvider =
-    providerRaw === 'claude-oauth'                               ? 'claude-oauth' :
-    providerRaw === 'claude-code'                                ? 'claude-code' :
-    providerRaw === 'openai-compatible' || providerRaw === 'openai' ? 'openai-compatible' :
-    providerRaw === 'anthropic'                                  ? 'anthropic' :
-    providerRaw === 'codex'                                      ? 'codex' :
-    providerRaw === 'agy' || providerRaw === 'antigravity'       ? 'agy' :
-    (() => {
-      console.error(`[worker] unknown ${ENV_SUMMARIZER_PROVIDER}="${providerRaw}" — falling back to '${DEFAULT_SUMMARIZER_PROVIDER}'`);
-      return DEFAULT_SUMMARIZER_PROVIDER;
-    })();
+  //   - 'agy':            shells out to `agy -p`; Google account, no key.
+  // An unrecognized value (e.g. a customer who tried to set "codex,agy") FAILS LOUD with the
+  // valid list rather than silently working — see shared/summarizer-provider.ts.
+  const { provider, warning: providerWarning } = resolveSummarizerProvider(process.env[ENV_SUMMARIZER_PROVIDER]);
+  if (providerWarning) console.error(`[worker] ${ENV_SUMMARIZER_PROVIDER}: ${providerWarning}`);
 
   // Model defaults are provider-shaped: DEFAULT_SUMMARIZER_MODEL is a Claude slug,
   // and handing a Claude slug to `codex exec` is an instant 400. Resolve the

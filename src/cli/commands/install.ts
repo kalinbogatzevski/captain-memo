@@ -538,6 +538,13 @@ export function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOpt
     ],
   );
 
+  // Re-running install REPLACES the summarizer (it's a managed key) — it does NOT add a second one.
+  // Say so out loud, because a customer who ran the wizard twice expecting to "enable both" otherwise
+  // gets no signal that the earlier provider is now gone. There is only ever ONE active summarizer.
+  if (existing?.summarizer && existing.summarizer !== summarizer) {
+    warn(`summarizer changed: ${existing.summarizer} → ${summarizer} (this REPLACES it — only one summarizer runs at a time).`);
+  }
+
   let anthropicApiKey: string | undefined;
   let summarizerOpenaiEndpoint: string | undefined;
   let summarizerOpenaiKey: string | undefined;

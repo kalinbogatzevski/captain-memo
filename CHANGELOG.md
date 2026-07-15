@@ -5,6 +5,18 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.25.1] — 2026-07-15
+
+### Changed
+- **You can't run two summarizers, and now the tooling says so** — a customer ran `captain-memo install` twice (codex, then agy) expecting both; only ever one is active. Three idiot-proofing fixes:
+  - **The install wizard announces the swap.** Re-running with a different provider prints `summarizer changed: codex → agy (this REPLACES it — only one summarizer runs at a time)`. It was silently overwriting before.
+  - **An unrecognized `CAPTAIN_MEMO_SUMMARIZER_PROVIDER` fails LOUD instead of silently falling back.** A combined value like `codex,agy`, or any typo, now logs the valid list and — special-cased — calls out "you set more than one provider … only ONE is supported". It still falls back to `claude-oauth`, but the log now says that fallback needs a Claude login, so a no-Claude box isn't silently dead. (Resolution extracted to a pure, unit-tested `resolveSummarizerProvider`.)
+  - **`captain-memo stats` / `top` now show the active summarizer.** A new `Summarizer` line reports the RESOLVED provider (post-fallback — so a bad `codex,agy` shows as its real `claude-oauth` fallback, not the raw string), its model, and whether it's actually summarizing (`○ … (resolved, but NOT summarizing)` when the transport couldn't be built, e.g. `claude-oauth` with no login). `/stats` gained a `summarizer` field.
+- Docs: USAGE gains a "pick exactly ONE" callout up front — install replaces (not adds), a combined value is invalid, and how to check which one is live.
+
+### Notes
+- Suite: 1125/1125.
+
 ## [0.25.0] — 2026-07-15
 
 ### Added

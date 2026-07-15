@@ -25,6 +25,8 @@ export interface StatsResponse {
   /** Worker liveness: boot epoch + seconds since boot. Optional — older worker
    *  payloads omit it (the line is simply not shown then). */
   worker?: { started_at_epoch: number; uptime_s: number };
+  /** The ACTIVE summarizer (resolved provider, post-fallback). Optional — pre-0.25.1 payloads omit it. */
+  summarizer?: { provider: string; model: string | null; enabled: boolean };
   embedder: { model: string; endpoint: string };
   disk?: { bytes: number; path: string };
   efficiency?: EfficiencyReport | undefined;
@@ -240,6 +242,16 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
     out.push(...twoColumn(left, right, panelWidth));
   } else {
     out.push(...statusLines);
+  }
+  // Which summarizer is ACTUALLY running (resolved, post-fallback) — the answer to "is it codex
+  // or agy?" that used to require reading the worker log. `enabled:false` means the provider
+  // resolved but no transport was built (e.g. claude-oauth with no login) → nothing is summarized.
+  if (stats.summarizer) {
+    const s = stats.summarizer;
+    const dot = s.enabled ? green('●') : yellow('○');
+    const model = s.model ? dim(` · ${s.model}`) : '';
+    const off = s.enabled ? '' : dim(' (resolved, but NOT summarizing — check its login/config)');
+    out.push(`  ${dim('Summarizer'.padEnd(10))} ${dot} ${cyanBold(s.provider)}${model}${off}`);
   }
   out.push('');
 

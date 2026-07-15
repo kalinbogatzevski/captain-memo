@@ -91,6 +91,11 @@ Haiku-class summarizer on top of the Plan-1 foundation.
 
 ## Summarizer — pick a provider
 
+> **Pick exactly ONE.** There is only ever a single active summarizer. Setting two — two `install` runs, or a combined `codex,agy` value — does **not** run both:
+> - **`captain-memo install --summarizer <x>` REPLACES the previous choice** (it doesn't add). Running it for `codex` and then `agy` leaves you on `agy` only; the wizard prints `summarizer changed: codex → agy (replaces it)` so you can see the swap.
+> - **A combined value like `codex,agy` is invalid** — the worker won't understand it, logs a loud error listing the valid values, and falls back to `claude-oauth` (which needs a Claude login, so on a no-Claude machine that means *nothing gets summarized*).
+> - **To see which one is actually running:** `captain-memo stats` (or `captain-memo top`) now shows a `Summarizer` line with the resolved provider and whether it's actively summarizing. `captain-memo doctor` shows the configured value.
+
 The summarizer compresses raw tool-use events into structured observations. Pick how it gets a model via `CAPTAIN_MEMO_SUMMARIZER_PROVIDER`:
 
 | Provider | How it works | When to use |
