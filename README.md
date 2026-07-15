@@ -7,7 +7,7 @@
 <p align="center"><em>Your AI coding agent's logbook — local memory, kept in sync, retrieved on every prompt.</em></p>
 
 <p align="center">
-  Built by <a href="https://github.com/kalinbogatzevski">Kalin Bogatzevski</a> · <a href="LICENSE">Apache-2.0</a> · <a href="https://github.com/kalinbogatzevski/captain-memo/issues">Issues</a>
+  <a href="https://captain-memo.ispcq.com"><b>captain-memo.ispcq.com</b></a> · Built by <a href="https://github.com/kalinbogatzevski">Kalin Bogatzevski</a> · <a href="LICENSE">Apache-2.0</a> · <a href="https://github.com/kalinbogatzevski/captain-memo/issues">Issues</a>
 </p>
 
 Captain Memo is a Claude Code plugin — and a **cross-AI local-memory layer**: one local corpus shared by every MCP-speaking coding agent on your machine (Claude Code, Codex, Gemini CLI, Antigravity, Cursor, opencode, Kimi CLI), so what one tool learns, the others recall. Every session leaves a wake; Captain Memo keeps the log so the next session — in any of your AI tools — sails with what was learned in the last one.
