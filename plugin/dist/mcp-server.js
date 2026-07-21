@@ -12712,7 +12712,7 @@ var DEFAULT_WORKER_PORT = 39888;
 var DEFAULT_REMEMBER_DIR = join(homedir(), ".claude", "memory");
 
 // src/shared/worker-env.ts
-import { existsSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 function workerEnvPaths() {
   const paths = [WORKER_ENV_PATH];
   if (process.platform !== "win32")
@@ -12750,7 +12750,7 @@ function loadWorkerEnv() {
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.25.1",
+  version: "0.25.2",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,

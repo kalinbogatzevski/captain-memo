@@ -154,6 +154,28 @@ async function checkWorkerVersion(): Promise<void> {
   record({ name: 'worker version', status: v.status, detail: v.detail, ...(v.remedy ? { remedy: v.remedy } : {}) });
 }
 
+async function checkVectorDim(): Promise<void> {
+  // The dim-mismatch trap: the embedder returns N-dim vectors but the vector index
+  // was built at M dims. Every write (remember) throws at vector.add() and vector
+  // search silently falls back to keyword-only — reads "work" while writes are dead.
+  // The worker measures the embedder's real dim at boot and reports both in /stats.
+  const s = await fetchJson(`http://127.0.0.1:${DEFAULT_WORKER_PORT}/stats`);
+  if (!s.ok) return; // worker unreachable — the `worker service` check owns that
+  const b = s.body as { embedder?: { dim?: number | null }; vector_store?: { dim?: number } };
+  const embDim = b.embedder?.dim ?? null;
+  const storeDim = b.vector_store?.dim ?? null;
+  if (embDim == null || storeDim == null) return; // older worker without the fields — skip
+  if (embDim === storeDim) {
+    record({ name: 'embedding dim', status: 'PASS', detail: `embedder and index agree at ${storeDim} dims` });
+    return;
+  }
+  record({
+    name: 'embedding dim', status: 'FAIL',
+    detail: `embedder returns ${embDim}-dim but the vector index is ${storeDim}-dim — writes (remember) fail and vector search is silently keyword-only`,
+    remedy: `captain-memo reindex --redim ${embDim}   (rebuilds the index at the embedder's dimension; setting CAPTAIN_MEMO_EMBEDDING_DIM alone will NOT fix an existing index)`,
+  });
+}
+
 // Run a git command in repoRoot; { ok:false } on non-zero / missing binary (never throws).
 function gitOut(repoRoot: string, args: string[]): { ok: boolean; out: string } {
   const r = spawnSync('git', ['-C', repoRoot, ...args], { encoding: 'utf-8' });
@@ -526,6 +548,7 @@ export async function doctorCommand(_args: string[]): Promise<number> {
   await checkEmbedder();
   await checkWorker();
   await checkWorkerVersion();
+  await checkVectorDim();
   checkCheckout();
   checkConfig();
   checkRemember();

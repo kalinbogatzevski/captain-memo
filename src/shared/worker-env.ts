@@ -5,7 +5,8 @@
 // for secrets), so the daemon must load it itself. Calling loadWorkerEnv() at the
 // top of the worker / MCP / CLI bootstrap makes secrets reach the process on EVERY
 // platform, and de-risks the eventual macOS port for free.
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { dirname } from 'path';
 import { WORKER_ENV_PATH } from './paths.ts';
 
 /** Candidate worker.env locations, in precedence order (first existing wins per key,
@@ -20,6 +21,26 @@ export function workerEnvPaths(): string[] {
 /** Primary worker.env path (CONFIG_DIR/worker.env). */
 export function workerEnvPath(): string {
   return WORKER_ENV_PATH;
+}
+
+/**
+ * Upsert a single `KEY=VALUE` line in the primary worker.env (CONFIG_DIR/worker.env),
+ * preserving every other line. Rewrites the key in place if present, appends otherwise.
+ * Creates the file (and its dir) when missing. Used by `reindex --redim` to persist the
+ * new embedding dimension before restarting the worker.
+ */
+export function setWorkerEnvVar(key: string, value: string, path: string = workerEnvPath()): void {
+  const lines = existsSync(path) ? readFileSync(path, 'utf8').split(/\r?\n/) : [];
+  const entry = `${key}=${value}`;
+  const idx = lines.findIndex((l) => l.trimStart().startsWith(`${key}=`));
+  if (idx >= 0) lines[idx] = entry;
+  else {
+    // Drop a single trailing empty line before appending so we don't accrete blanks.
+    if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+    lines.push(entry);
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, lines.join('\n') + '\n');
 }
 
 /**

@@ -325,6 +325,11 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   const collectionName = `am_${opts.projectId}`;
   await vector.ensureCollection(collectionName);
 
+  // The embedder's actual output dim, measured by the boot probe below. Surfaced
+  // in /stats so `doctor` can compare it against the index dim (opts.embeddingDimension)
+  // and flag a mismatch — the trap that silently blocks every write.
+  let probedEmbedderDim: number | null = null;
+
   // Boot-time dim probe — catch the dim-mismatch trap (where vector store
   // expects N but embedder returns M) BEFORE any chunk hits vector.add().
   // Skip when the user opted into keyword-only mode.
@@ -332,11 +337,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     try {
       const probe = await embedder.embed(['probe']);
       const actualDim = probe[0]?.length ?? 0;
+      probedEmbedderDim = actualDim || null;
       if (actualDim !== opts.embeddingDimension) {
         console.error(
-          `[worker] DIM MISMATCH: VectorStore expects ${opts.embeddingDimension} but embedder returns ${actualDim}. ` +
-          `Set CAPTAIN_MEMO_EMBEDDING_DIM=${actualDim} (or pick a model that returns ${opts.embeddingDimension}-dim) ` +
-          `then restart the worker. Current state will fail at every vector.add() call.`,
+          `[worker] DIM MISMATCH: the vector index is ${opts.embeddingDimension}-dim but the embedder returns ${actualDim}-dim. ` +
+          `Every write (remember) will fail and vector search silently falls back to keyword-only. ` +
+          `Fix: run \`captain-memo reindex --redim ${actualDim}\` — it rebuilds the index at the embedder's dimension ` +
+          `(re-embedding from observations.db). Setting CAPTAIN_MEMO_EMBEDDING_DIM alone will NOT fix an existing index. ` +
+          `Alternatively, switch back to a model that returns ${opts.embeddingDimension}-dim.`,
         );
       } else {
         console.log(`[worker] embedder probe OK (dim=${actualDim})`);
@@ -1455,7 +1463,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             percent: indexingState.total > 0 ? Math.round((indexingState.done / indexingState.total) * 100) : 100,
           },
           project_id: opts.projectId,
-          embedder: { model: opts.embedderModel, endpoint: opts.embedderEndpoint },
+          embedder: { model: opts.embedderModel, endpoint: opts.embedderEndpoint, dim: probedEmbedderDim },
+          vector_store: { dim: opts.embeddingDimension },
           disk: { bytes: diskBytes, path: DATA_DIR },
           efficiency,
           recall,

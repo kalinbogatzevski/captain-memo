@@ -5,6 +5,14 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.25.2] — 2026-07-21
+
+### Fixed
+- **Embedding-dimension mismatch now has a real fix and honest guidance.** When the embedder returns N-dim vectors but the vector index was built at M dims (e.g. after switching to `voyage-4-lite` (1024) on a 2048 index), every write (`remember`) throws at `vector.add()` and **vector search silently falls back to keyword-only** — reads "work" while writes are dead. Three changes:
+  - **`captain-memo reindex --redim <n>`** — one guarded command that rebuilds the index at a new dimension: stop worker → persist `CAPTAIN_MEMO_EMBEDDING_DIM=<n>` → drop the derived `embeddings.db` (never `observations.db`) → restart → re-embed everything from source. Replaces the error-prone "hand-edit env + hand-delete files" dance.
+  - **`captain-memo doctor` gains an `embedding dim` check** — compares the embedder's measured dim against the index dim and **FAILs** with the exact remedy. The worker now reports both `embedder.dim` and `vector_store.dim` in `/stats`.
+  - **The boot-time `DIM MISMATCH` message was actively misleading** — it said "set `CAPTAIN_MEMO_EMBEDDING_DIM` and restart", which does **not** fix an existing index (the vec0 table is locked to its original dimension). It now names the real symptom (keyword-only search) and points at `reindex --redim`.
+
 ## [0.25.1] — 2026-07-15
 
 ### Changed
