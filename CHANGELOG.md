@@ -5,6 +5,14 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.2] — 2026-07-21
+
+### Security
+- **Clears a new `bun audit` advisory** (GHSA-frvp-7c67-39w9, moderate): `@modelcontextprotocol/sdk` transitively pulled `@hono/node-server <2.0.5` (path traversal in `serve-static` on Windows via encoded backslash). Added `@hono/node-server: ^2.0.5` to `overrides`. Lockfile-only.
+
+### Performance
+- **Faster first `/stats` / `top` load.** The Dreams co-retrieval digest reads `recall-audit.jsonl` incrementally, but the *first* call after boot digested the whole file from offset 0 (~1.4s on an 18 MB log) on the request path. The worker now pre-warms that digest at boot (fire-and-forget), so the first `/stats` returns without the cold-digest stall. (Note: on a busy federation worker, periodic engine contention can still add latency — separate from this.)
+
 ## [0.27.1] — 2026-07-21
 
 ### Changed

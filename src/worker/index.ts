@@ -884,6 +884,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     }
   }
 
+  // Pre-warm the Dreams co-retrieval digest at boot (fire-and-forget) so the FIRST
+  // /stats doesn't block ~1.4s digesting a large recall-audit.jsonl from offset 0
+  // (it's incremental after that). Never blocks startup; audit-off is a no-op.
+  if (!opts.readOnly) {
+    getDreamStats(`${process.env.CAPTAIN_MEMO_DATA_DIR ?? DATA_DIR}/recall-audit.jsonl`)
+      .catch(() => { /* audit off / unreadable — the first /stats will handle it */ });
+  }
+
   // Tide ebb sweep (Phase 2, opt-in). Writer-only, bounded, heartbeat-safe: each slice
   // pulls a capped batch of idle candidates, flips eligible ones down a tier, yields
   // between rows, and aborts the instant ingest is queued. Skips (not queues) if a
