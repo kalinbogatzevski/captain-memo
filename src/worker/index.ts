@@ -892,6 +892,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       .catch(() => { /* audit off / unreadable — the first /stats will handle it */ });
   }
 
+  // Short-TTL /stats cache + in-flight dedup: `top` polls every ~2s and /stats is
+  // expensive (recall scans, dream digest, tide counts). Serving a fresh-enough
+  // snapshot — and sharing ONE in-flight computation across concurrent/piled-up
+  // requests — keeps the engine from drowning under the poll load.
+  const STATS_CACHE_MS = Number(process.env.CAPTAIN_MEMO_STATS_CACHE_MS ?? 1500);
+  let statsCache: { at: number; body: unknown } | null = null;
+  let statsInflight: Promise<unknown> | null = null;
+
   // Tide ebb sweep (Phase 2, opt-in). Writer-only, bounded, heartbeat-safe: each slice
   // pulls a capped batch of idle candidates, flips eligible ones down a tier, yields
   // between rows, and aborts the instant ingest is queued. Skips (not queues) if a
@@ -1465,6 +1473,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       }
 
       if (req.method === 'GET' && url.pathname === '/stats') {
+        if (statsCache && Date.now() - statsCache.at < STATS_CACHE_MS) return Response.json(statsCache.body);
+        if (!statsInflight) statsInflight = (async () => {
         const { total_chunks, by_channel } = meta.stats();
         const obsTotal = obsStore ? obsStore.countAll() : 0;
         const queuePending = obsQueue ? obsQueue.pendingCount() : 0;
@@ -1506,7 +1516,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           return `${dir}/recall-audit.jsonl`;
         })();
         const dream = await getDreamStats(auditLogPath).catch(() => undefined);
-        return Response.json({
+        return {
           total_chunks,
           by_channel,
           observations: {
@@ -1551,7 +1561,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             started_at_epoch: workerStartedAtEpoch,
             uptime_s: Math.floor(Date.now() / 1000) - workerStartedAtEpoch,
           },
-        });
+        };
+        })().then(
+          (b) => { statsCache = { at: Date.now(), body: b }; statsInflight = null; return b; },
+          (e) => { statsInflight = null; throw e; },
+        );
+        return Response.json(await statsInflight);
       }
       if (req.method === 'GET' && url.pathname === '/observations/recent') {
         if (!obsStore) return Response.json({ items: [] });

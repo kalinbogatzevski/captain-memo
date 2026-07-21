@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.3] — 2026-07-21
+
+### Performance
+- **Short-TTL `/stats` cache with in-flight dedup.** `top` polls `/stats` every ~2s, and `/stats` is expensive (recall scans, dream digest, Tide counts). Under a busy worker a poll could land while the previous computation was still running, piling requests onto the engine. `/stats` now serves a cached snapshot for `CAPTAIN_MEMO_STATS_CACHE_MS` (default 1500 ms) and shares a single in-flight computation across concurrent requests — so `top`'s polling can no longer stack up on the engine. (Verified: `uptime_s` is frozen across rapid calls, i.e. served from cache.)
+
 ## [0.27.2] — 2026-07-21
 
 ### Security
