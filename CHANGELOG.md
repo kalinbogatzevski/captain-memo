@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.26.1] — 2026-07-21
+
+### Fixed
+- **agy sessions are now actually captured — the lingering-WAL trap.** The agy capture source skipped any conversation `.db` that had a `-wal` sibling, treating it as "session still live". But agy **never checkpoints its WAL on exit** — the `-wal`/`-shm` linger indefinitely (and the freshest transcript lives *in* the WAL), so agy sessions were **never** ingested by the normal tick. Fixed: `discover()` now gates on the freshest mtime across `.db`/`-wal`/`-shm` (the WAL is the real last-write) instead of requiring the WAL's absence, and folds the WAL's size/mtime into the dedup marker so a resumed session re-ingests. Extraction already read the WAL correctly (a readonly open applies it). Verified end-to-end on a live captain: a real agy session now produces an observation. (codex/gemini were unaffected and already worked.)
+
 ## [0.26.0] — 2026-07-21
 
 ### Added

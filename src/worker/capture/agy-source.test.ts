@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { mkdtempSync } from 'fs';
+import { mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Database } from 'bun:sqlite';
@@ -30,6 +30,21 @@ test('agy extract: reads steps blobs, stamps origin_agent=agy', () => {
   expect(events[0]!.session_id).toBe('aaaa-bbbb');
   expect(events[0]!.prompt_number).toBe(1);
   expect(events[0]!.tool_result_summary).toContain('MARK_7f3c');
+});
+
+test('agy discover: captures a quiescent session even with a lingering -wal (agy never checkpoints on exit)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-agy-disc-'));
+  const dbPath = join(dir, 'sess1.db');
+  const db = new Database(dbPath);
+  db.exec('CREATE TABLE steps (idx INTEGER, step_payload BLOB)');
+  db.query('INSERT INTO steps (idx, step_payload) VALUES (?, ?)').run(0, Uint8Array.from(Buffer.from('hello agy')));
+  db.close();
+  writeFileSync(dbPath + '-wal', 'lingering wal bytes'); // agy leaves this behind after the session ends
+
+  const src = createAgySource({ projectId: 'p', dir, quiesceMs: 0, now: () => Date.now() + 10_000 });
+  const refs = src.discover();
+  expect(refs.map((r) => r.sessionId)).toContain('sess1');            // discovered DESPITE the -wal
+  expect(refs.find((r) => r.sessionId === 'sess1')!.marker).toMatch(/:\d+:\d+$/); // marker folds in the wal sig
 });
 
 test('agy enabled(): default on, off via env=0', () => {

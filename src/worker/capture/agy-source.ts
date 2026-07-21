@@ -79,15 +79,29 @@ export function createAgySource(opts: AgySourceOptions): CaptureSource {
       for (const name of entries) {
         if (!name.endsWith('.db')) continue;
         const path = join(dir, name);
-        if (existsSync(path + '-wal')) continue; // open db — session still live
-        let st;
-        try { st = statSync(path); } catch { continue; }
-        if (now() - st.mtimeMs < quiesceMs) continue;
+        // agy leaves a lingering -wal/-shm even AFTER the session ends (it doesn't
+        // checkpoint on exit), so the WAL's PRESENCE can't mean "still live" — that
+        // would make agy never capturable. Gate on the freshest mtime across
+        // .db/-wal/-shm (the WAL is the real last write) and fold the WAL's
+        // size/mtime into the marker so a resumed/grown session re-ingests. The
+        // transcript lives in the WAL; a readonly open reads it (verified).
+        let dbSt;
+        try { dbSt = statSync(path); } catch { continue; }
+        let freshestMs = dbSt.mtimeMs;
+        let walSig = '';
+        for (const suffix of ['-wal', '-shm']) {
+          try {
+            const s = statSync(path + suffix);
+            freshestMs = Math.max(freshestMs, s.mtimeMs);
+            walSig += `:${Math.floor(s.mtimeMs)}:${s.size}`;
+          } catch { /* sibling absent — fine */ }
+        }
+        if (now() - freshestMs < quiesceMs) continue; // still being written
         refs.push({
           sessionId: name.slice(0, -3),
           path,
-          marker: `${Math.floor(st.mtimeMs)}:${st.size}`,
-          mtimeEpoch: Math.floor(st.mtimeMs / 1000),
+          marker: `${Math.floor(dbSt.mtimeMs)}:${dbSt.size}${walSig}`,
+          mtimeEpoch: Math.floor(freshestMs / 1000),
         });
       }
       return refs;
