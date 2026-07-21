@@ -735,7 +735,7 @@ import { join as join7 } from "path";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.27.4",
+  version: "0.27.5",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -795,7 +795,8 @@ var package_default = {
     qs: "^6.15.3",
     hono: "^4.12.30",
     "body-parser": "^2.3.0",
-    "@hono/node-server": "^2.0.5"
+    "@hono/node-server": "^2.0.5",
+    "fast-uri": "^3.1.3"
   },
   devDependencies: {
     "@types/bun": "^1.1.0",

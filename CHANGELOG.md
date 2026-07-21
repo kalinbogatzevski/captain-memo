@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.5] — 2026-07-21
+
+### Security
+- **Clears a new `bun audit` advisory** (GHSA-4c8g-83qw-93j6, high): `@modelcontextprotocol/sdk › ajv › fast-uri <3.1.3` (host confusion via failed IDN canonicalization). Added `fast-uri: ^3.1.3` to `overrides` (resolves to 3.1.4). Lockfile + bundle rebuild only.
+
 ## [0.27.4] — 2026-07-21
 
 ### Fixed
