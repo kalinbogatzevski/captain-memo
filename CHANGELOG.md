@@ -5,6 +5,25 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.26.0] — 2026-07-21
+
+### Added
+- **Cross-AI observation capture — non-Claude tools now submit their own observations.** Until now only Claude Code fed the observation pipeline (via its plugin hooks); every other wired tool was recall-only. A new worker-side capture driver reads the per-session transcripts these tools persist to disk and enqueues them into the same summarize→embed→store pipeline, stamped with the right `origin_agent`. **Five sources ship on by default** (each activates only when its tool's session dir exists on the host):
+  - **codex** — `~/.codex/sessions/**/rollout-*.jsonl` (JSONL)
+  - **agy** (Antigravity CLI) — `~/.gemini/antigravity-cli/conversations/*.db` (SQLite; heuristic text extraction, since the payload is an undocumented protobuf)
+  - **gemini** (Google Gemini CLI) — `~/.gemini/tmp/*/chats/session-*.json` (JSON)
+  - **kimi** (MoonshotAI kimi-cli) — `~/.kimi/sessions/*/*/context.jsonl` (JSONL)
+  - **opencode** — `~/.local/share/opencode/opencode.db` (SQLite `session`/`message`/`part`)
+  - All live-verified against real sessions producing real observations. Sessions are aggregated **per user turn** (Claude-like granularity), deduped by a change marker, and a **first-run cutoff** means enabling capture never floods on pre-existing history. `origin_agent` gained `agy` and `kimi`.
+- **`captain-memo capture <status|backfill>`** — `status` shows which sources are active and how many sessions each has ingested; `backfill` ingests pre-cutoff history on demand (`POST /capture/backfill`).
+- **`doctor` + `config show` report capture** — doctor gains a `cross-AI capture` line (active sources from `/stats`); `config show` shows the tick interval and any opt-outs.
+
+### Config
+- `CAPTAIN_MEMO_CAPTURE_<CODEX|AGY|GEMINI|KIMI|OPENCODE>=0` to opt a source out; `CAPTAIN_MEMO_CAPTURE_<TOOL>_DIR` / `_OPENCODE_DB` to override a location; `CAPTAIN_MEMO_CAPTURE_TICK_MS` (default 60s) and `CAPTAIN_MEMO_CAPTURE_QUIESCE_MS` (default 60s) to tune cadence.
+
+### Notes
+- `cursor` / `vibe` / `vscode` persist transcripts too and are a documented next batch (build when there's a live install to test against). `jetbrains` keeps no local transcript (IDE-only) and is not capturable without an in-IDE plugin. Suite: 1147/1147.
+
 ## [0.25.2] — 2026-07-21
 
 ### Fixed

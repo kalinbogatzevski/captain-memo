@@ -82,6 +82,13 @@ import { applyTemporalRerank } from './temporal-intent.ts';
 import { getDreamStats } from './dream-stats.ts';
 import { Summarizer, type SummarizerTransport } from './summarizer.ts';
 import { classifySummarizeFailure, computeBackoffMs } from './summarizer-backoff.ts';
+import { CaptureState } from './capture/state.ts';
+import { createCodexSource } from './capture/codex-source.ts';
+import { createAgySource } from './capture/agy-source.ts';
+import { createGeminiSource } from './capture/gemini-source.ts';
+import { createKimiSource } from './capture/kimi-source.ts';
+import { createOpencodeSource } from './capture/opencode-source.ts';
+import { runCaptureTick } from './capture/driver.ts';
 import { createWorkerMetrics, recordEmbed, recordIndexResult } from './metrics.ts';
 import { computeEfficiency } from './efficiency.ts';
 import { countTokens } from '../shared/tokens.ts';
@@ -832,6 +839,51 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     }, tickMs);
   }
 
+  // Cross-AI capture: on by default. Ingest FINISHED codex/agy sessions on this
+  // host into the obs pipeline (they have no hooks; we read the transcripts they
+  // persist to disk). First tick seeds a per-source cutoff so pre-existing history
+  // isn't summarized in bulk; only sessions finished after enable are captured.
+  let captureTimer: ReturnType<typeof setInterval> | null = null;
+  // Exposed to the /capture/backfill handler: runs one tick that IGNORES the cutoff,
+  // so `captain-memo capture backfill` can ingest pre-cutoff history on demand.
+  let captureBackfill: (() => { ingested: number; events: number }) | null = null;
+  const captureSourceIds: string[] = [];
+  if (!opts.readOnly && obsQueue && obsStore && summarize) {
+    const captureQueue = obsQueue;
+    const captureSources = [
+      createCodexSource({ projectId: opts.projectId }),
+      createAgySource({ projectId: opts.projectId }),
+      createGeminiSource({ projectId: opts.projectId }),
+      createKimiSource({ projectId: opts.projectId }),
+      createOpencodeSource({ projectId: opts.projectId }),
+    ].filter(s => s.available() && s.enabled());
+    if (captureSources.length > 0) {
+      const captureState = new CaptureState(join(DATA_DIR, 'capture-state.db'));
+      captureSourceIds.push(...captureSources.map(s => s.id));
+      const runTick = (ignoreCutoff: boolean): { ingested: number; events: number } => {
+        try {
+          const r = runCaptureTick({
+            sources: captureSources,
+            state: captureState,
+            enqueue: (ev) => { captureQueue.enqueue(ev); },
+            log: (m) => console.log(m),
+            ignoreCutoff,
+          });
+          if (r.ingested > 0) console.log(`[capture] ingested ${r.ingested} session(s), ${r.events} event(s)${ignoreCutoff ? ' (backfill)' : ''}`);
+          return r;
+        } catch (err) {
+          console.error('[capture-tick]', (err as Error).message);
+          return { ingested: 0, events: 0 };
+        }
+      };
+      captureBackfill = () => runTick(true);
+      const captureTickMs = Number(process.env.CAPTAIN_MEMO_CAPTURE_TICK_MS ?? 60_000);
+      runTick(false); // seed cutoffs at boot (ingests nothing pre-existing)
+      captureTimer = setInterval(() => runTick(false), captureTickMs);
+      console.error(`[worker] cross-AI capture on: ${captureSourceIds.join(', ')} (tick ${Math.round(captureTickMs / 1000)}s)`);
+    }
+  }
+
   // Tide ebb sweep (Phase 2, opt-in). Writer-only, bounded, heartbeat-safe: each slice
   // pulls a capped batch of idle candidates, flips eligible ones down a tier, yields
   // between rows, and aborts the instant ingest is queued. Skips (not queues) if a
@@ -1482,6 +1534,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             model: process.env[ENV_SUMMARIZER_MODEL] ?? null,
             enabled: summarize !== undefined,
           },
+          // Cross-AI capture sources active on this host (codex/agy/gemini/kimi/opencode),
+          // so `doctor` / `config show` can report which non-Claude tools feed observations.
+          capture: { sources: captureSourceIds },
           worker: {
             started_at_epoch: workerStartedAtEpoch,
             uptime_s: Math.floor(Date.now() / 1000) - workerStartedAtEpoch,
@@ -2024,6 +2079,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         });
       }
 
+      if (req.method === 'POST' && url.pathname === '/capture/backfill') {
+        if (!captureBackfill) return Response.json({ ingested: 0, events: 0, sources: captureSourceIds, detail: 'no cross-AI capture sources active on this host' });
+        const r = captureBackfill();
+        return Response.json({ ...r, sources: captureSourceIds });
+      }
+
       if (req.method === 'POST' && url.pathname === '/pending_embed/retry') {
         if (!pendingEmbed) return Response.json({ error: 'pending_embed_disabled' }, { status: 503 });
         const parsed = PendingEmbedRetrySchema.safeParse(await req.json());
@@ -2046,6 +2107,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 
   const stopResources = async () => {
     if (tickTimer) clearInterval(tickTimer);
+    if (captureTimer) clearInterval(captureTimer);
     if (tideSweepTimer) clearInterval(tideSweepTimer);
     if (qmDedupTimer) clearInterval(qmDedupTimer);
     if (qmSupersedeTimer) clearInterval(qmSupersedeTimer);

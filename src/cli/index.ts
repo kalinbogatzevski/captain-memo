@@ -4,6 +4,7 @@ import { reindexCommand } from './commands/reindex.ts';
 import { vacuumCommand } from './commands/vacuum.ts';
 import { upgradeCommand } from './commands/upgrade.ts';
 import { observationCommand } from './commands/observation.ts';
+import { captureCommand } from './commands/capture.ts';
 import { restoreCommand } from './commands/restore.ts';
 import { backupCommand } from './commands/backup.ts';
 import { configCommand } from './commands/config.ts';
@@ -115,6 +116,10 @@ export async function main(args: string[]): Promise<void> {
     case 'upgrade':
       exit = await upgradeCommand(args.slice(1));
       break;
+    case 'capture':
+      exit = await captureCommand(args.slice(1));
+      break;
+
     case 'observation':
       exit = await observationCommand(args.slice(1));
       break;

@@ -735,7 +735,7 @@ import { join as join7 } from "path";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.25.2",
+  version: "0.26.0",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -1341,7 +1341,9 @@ var ORIGIN_AGENTS = [
   "codex",
   "cursor",
   "gemini",
+  "agy",
   "opencode",
+  "kimi",
   "vibe",
   "vscode",
   "jetbrains",

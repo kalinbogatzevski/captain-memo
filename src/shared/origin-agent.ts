@@ -11,7 +11,7 @@
  * reads back as null at the store layer and is rendered as 'unknown' to callers.
  */
 export const ORIGIN_AGENTS = [
-  'claude-code', 'codex', 'cursor', 'gemini', 'opencode', 'vibe', 'vscode', 'jetbrains', 'unknown',
+  'claude-code', 'codex', 'cursor', 'gemini', 'agy', 'opencode', 'kimi', 'vibe', 'vscode', 'jetbrains', 'unknown',
 ] as const;
 
 export type OriginAgent = (typeof ORIGIN_AGENTS)[number];

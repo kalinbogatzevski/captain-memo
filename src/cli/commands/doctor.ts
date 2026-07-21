@@ -176,6 +176,23 @@ async function checkVectorDim(): Promise<void> {
   });
 }
 
+async function checkCapture(): Promise<void> {
+  // Which non-Claude tools are feeding observations on this host (codex/agy/
+  // gemini/kimi/opencode). The worker reports the active capture sources in /stats.
+  const s = await fetchJson(`http://127.0.0.1:${DEFAULT_WORKER_PORT}/stats`);
+  if (!s.ok) return; // worker unreachable — the `worker service` check owns that
+  const b = s.body as { capture?: { sources?: string[] } };
+  const sources = b.capture?.sources;
+  if (sources === undefined) return; // older worker without the field — skip
+  record({
+    name: 'cross-AI capture',
+    status: 'PASS',
+    detail: sources.length > 0
+      ? `capturing obs from ${sources.join(', ')}`
+      : 'on — no non-Claude tool sessions detected on this host',
+  });
+}
+
 // Run a git command in repoRoot; { ok:false } on non-zero / missing binary (never throws).
 function gitOut(repoRoot: string, args: string[]): { ok: boolean; out: string } {
   const r = spawnSync('git', ['-C', repoRoot, ...args], { encoding: 'utf-8' });
@@ -549,6 +566,7 @@ export async function doctorCommand(_args: string[]): Promise<number> {
   await checkWorker();
   await checkWorkerVersion();
   await checkVectorDim();
+  await checkCapture();
   checkCheckout();
   checkConfig();
   checkRemember();
