@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.4] — 2026-07-21
+
+### Fixed
+- **`/stats` cache now preserves read-your-writes.** The 0.27.3 short-TTL cache could serve a stale snapshot — a retrieval bump or a newly-created observation wasn't reflected until the TTL expired (broke integration tests and would mislead `top`). The cache is now **invalidated on the mutations `/stats` reports**: retrieval bumps (`from_auto`/`search`/`drill`) and observation creation. Idle `top` polling still hits the cache; any state change serves fresh immediately. (Also fixes: the TTL being shorter than `top`'s 2s refresh meant every poll missed the cache and blocked on the ~1s recompute — now the default TTL (5000ms) exceeds top’s 2s refresh, so idle polls are cache hits.)
+
 ## [0.27.3] — 2026-07-21
 
 ### Performance

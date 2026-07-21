@@ -705,6 +705,15 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     }
   }
 
+  // Short-TTL /stats cache + in-flight dedup: `top` polls /stats every ~2s and it's
+  // expensive (recall scans, dream digest, tide counts). A cached snapshot is served
+  // for STATS_CACHE_MS and concurrent requests share one computation — but the cache
+  // is INVALIDATED on the mutations /stats reports (obs created below, retrieval bumps
+  // elsewhere) so it never serves stale counts (read-your-writes preserved).
+  const STATS_CACHE_MS = Number(process.env.CAPTAIN_MEMO_STATS_CACHE_MS ?? 5000);
+  let statsCache: { at: number; body: unknown } | null = null;
+  let statsInflight: Promise<unknown> | null = null;
+
   async function processBatch(limit: number): Promise<{ processed: number; observations_created: number }> {
     if (!obsQueue || !obsStore || !summarize) return { processed: 0, observations_created: 0 };
     // Summarizer cooldown: the API was overloaded/unreachable recently — skip this
@@ -809,6 +818,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       summarizerCooldownUntil = 0;
     }
 
+    if (observations_created > 0) statsCache = null; // new obs → /stats counts changed
     return { processed: batch.length, observations_created };
   }
 
@@ -891,14 +901,6 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     getDreamStats(`${process.env.CAPTAIN_MEMO_DATA_DIR ?? DATA_DIR}/recall-audit.jsonl`)
       .catch(() => { /* audit off / unreadable — the first /stats will handle it */ });
   }
-
-  // Short-TTL /stats cache + in-flight dedup: `top` polls every ~2s and /stats is
-  // expensive (recall scans, dream digest, tide counts). Serving a fresh-enough
-  // snapshot — and sharing ONE in-flight computation across concurrent/piled-up
-  // requests — keeps the engine from drowning under the poll load.
-  const STATS_CACHE_MS = Number(process.env.CAPTAIN_MEMO_STATS_CACHE_MS ?? 1500);
-  let statsCache: { at: number; body: unknown } | null = null;
-  let statsInflight: Promise<unknown> | null = null;
 
   // Tide ebb sweep (Phase 2, opt-in). Writer-only, bounded, heartbeat-safe: each slice
   // pulls a capped batch of idle candidates, flips eligible ones down a tier, yields
@@ -1330,6 +1332,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       }
     }
     applyBump(ids, source, opts.onRetrievalBump, obsStore ?? undefined);
+    statsCache = null; // retrieval bumps change /stats recall counts — serve fresh next call
   };
 
   // Local "search everything" → Hit[]. Backs POST /search/all. LOCAL channels only.
@@ -1619,6 +1622,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           return Response.json({ error: 'not_found' }, { status: 404 });
         }
         applyBump([id], 'drill', opts.onRetrievalBump, obsStore);
+        statsCache = null; // drill bump changes /stats recall counts
         return Response.json({ observation: obs });
       }
       if (req.method === 'POST' && url.pathname === '/search/all') {
