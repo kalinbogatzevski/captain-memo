@@ -12750,7 +12750,7 @@ function loadWorkerEnv() {
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.26.1",
+  version: "0.26.2",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -12808,7 +12808,8 @@ var package_default = {
   },
   overrides: {
     qs: "^6.15.3",
-    hono: "^4.12.30"
+    hono: "^4.12.30",
+    "body-parser": "^2.3.0"
   },
   devDependencies: {
     "@types/bun": "^1.1.0",

@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.26.2] — 2026-07-21
+
+### Security
+- **Clears the `bun audit` CI advisory** (GHSA-v422-hmwv-36x6, low): `express` (via `@modelcontextprotocol/sdk`) transitively pulled `body-parser@2.2.2`, vulnerable to a DoS when an invalid `limit` silently disables size enforcement. Added a `body-parser: ^2.3.0` entry to the existing `overrides` block so every resolution uses the patched line. Lockfile-only; no code or behavior change. (The advisory was published upstream and had reddened CI since 0.25.2 — unrelated to any feature here.)
+
 ## [0.26.1] — 2026-07-21
 
 ### Fixed
