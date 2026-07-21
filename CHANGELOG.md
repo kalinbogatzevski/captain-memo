@@ -5,6 +5,14 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.6] — 2026-07-21
+
+### Performance
+- **`/stats` cache is now stale-while-revalidate.** Under the 0.27.4 cache, an idle `top` poll that landed after the TTL expired still blocked on the ~1s recompute (an occasional ~4s clock step). Now a cached snapshot is served **instantly**; a past-TTL poll returns the cached body and kicks the refresh into the **background**, so an idle poll never blocks. Only a *missing* cache (fresh boot, or just-invalidated by a write) computes synchronously — which is what keeps read-your-writes exact.
+
+### Fixed
+- **Generation guard closes a stale-count race the background refresh could widen.** A refresh reads its counts, then yields at `await getDreamStats`; if a write landed during that yield (nulling the cache), the resolving refresh would overwrite the null with its *pre-write* snapshot. The refresh now captures a generation counter at kickoff and only writes the cache if no invalidation happened meanwhile — so the cache never holds counts older than the last write. Also: a failed background refresh can no longer surface as an unhandled promise rejection.
+
 ## [0.27.5] — 2026-07-21
 
 ### Security

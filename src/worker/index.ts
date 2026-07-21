@@ -705,14 +705,27 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     }
   }
 
-  // Short-TTL /stats cache + in-flight dedup: `top` polls /stats every ~2s and it's
-  // expensive (recall scans, dream digest, tide counts). A cached snapshot is served
-  // for STATS_CACHE_MS and concurrent requests share one computation — but the cache
-  // is INVALIDATED on the mutations /stats reports (obs created below, retrieval bumps
-  // elsewhere) so it never serves stale counts (read-your-writes preserved).
+  // Stale-while-revalidate /stats cache + in-flight dedup: `top` polls /stats every ~2s
+  // and it's expensive (recall scans, dream digest, tide counts). A cached snapshot is
+  // served instantly; once it's older than STATS_CACHE_MS the next poll still gets the
+  // cached body and triggers a background refresh, so an idle poll never blocks on the
+  // recompute. Concurrent requests share one computation. The cache is INVALIDATED on
+  // the mutations /stats reports (obs created below, retrieval bumps elsewhere) → a
+  // write nulls the cache, so the next read blocks on a fresh compute: read-your-writes
+  // stays exact, and a "stale" (un-nulled) cache means no mutation happened, so its
+  // counts are still correct — only soft fields (uptime, disk, dream) drift a poll.
   const STATS_CACHE_MS = Number(process.env.CAPTAIN_MEMO_STATS_CACHE_MS ?? 5000);
   let statsCache: { at: number; body: unknown } | null = null;
   let statsInflight: Promise<unknown> | null = null;
+  let statsInflightGen = -1; // the generation the in-flight compute captured at kickoff
+  // Generation counter, bumped on every invalidation. A compute reads its counts, then
+  // yields at `await getDreamStats`; if a write lands during that yield it nulls the cache
+  // and bumps the gen. The resolving compute (a) only writes the cache when its captured
+  // gen still matches (never resurrects pre-write counts over the null), and (b) is never
+  // reused by a post-write reader — a nulled cache with only a stale-gen compute in flight
+  // starts a FRESH current-gen compute, so read-your-writes stays exact.
+  let statsGen = 0;
+  const invalidateStats = () => { statsCache = null; statsGen++; };
 
   async function processBatch(limit: number): Promise<{ processed: number; observations_created: number }> {
     if (!obsQueue || !obsStore || !summarize) return { processed: 0, observations_created: 0 };
@@ -818,7 +831,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       summarizerCooldownUntil = 0;
     }
 
-    if (observations_created > 0) statsCache = null; // new obs → /stats counts changed
+    if (observations_created > 0) invalidateStats(); // new obs → /stats counts changed
     return { processed: batch.length, observations_created };
   }
 
@@ -1332,7 +1345,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       }
     }
     applyBump(ids, source, opts.onRetrievalBump, obsStore ?? undefined);
-    statsCache = null; // retrieval bumps change /stats recall counts — serve fresh next call
+    invalidateStats(); // retrieval bumps change /stats recall counts — serve fresh next call
   };
 
   // Local "search everything" → Hit[]. Backs POST /search/all. LOCAL channels only.
@@ -1476,8 +1489,17 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       }
 
       if (req.method === 'GET' && url.pathname === '/stats') {
-        if (statsCache && Date.now() - statsCache.at < STATS_CACHE_MS) return Response.json(statsCache.body);
-        if (!statsInflight) statsInflight = (async () => {
+        // Stale-while-revalidate: serve the cached snapshot instantly and refresh in the
+        // background, so an idle `top` poll never blocks on the ~1s recompute. Kick a
+        // fresh compute when the cache needs refreshing (missing or past TTL) AND no
+        // compute for the CURRENT generation is already in flight — a compute from an
+        // older gen started before a write, so its counts are pre-write and must not be
+        // reused. Only a MISSING cache (fresh boot / write-invalidated) blocks below, and
+        // it always blocks on a current-gen compute, so a reader after a write sees it.
+        const statsStale = !statsCache || Date.now() - statsCache.at >= STATS_CACHE_MS;
+        if (statsStale && (!statsInflight || statsInflightGen !== statsGen)) {
+          const gen = statsGen; statsInflightGen = gen;
+          const statsCompute = (async () => {
         const { total_chunks, by_channel } = meta.stats();
         const obsTotal = obsStore ? obsStore.countAll() : 0;
         const queuePending = obsQueue ? obsQueue.pendingCount() : 0;
@@ -1565,10 +1587,21 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             uptime_s: Math.floor(Date.now() / 1000) - workerStartedAtEpoch,
           },
         };
-        })().then(
-          (b) => { statsCache = { at: Date.now(), body: b }; statsInflight = null; return b; },
-          (e) => { statsInflight = null; throw e; },
-        );
+          })().then(
+            // Only write the cache if no invalidation happened while this ran, and only
+            // clear the single-flight slot if we still own it — a newer-gen compute may
+            // have replaced us, and it must not be evicted (a post-write reader awaits it).
+            (b) => { if (statsGen === gen) statsCache = { at: Date.now(), body: b }; if (statsInflight === statsCompute) statsInflight = null; return b; },
+            (e) => { if (statsInflight === statsCompute) statsInflight = null; throw e; },
+          );
+          statsInflight = statsCompute;
+        }
+        if (statsCache) {
+          // Serve stale now; attach a catch so a failed background refresh can't surface
+          // as an unhandled promise rejection (the blocking path below still propagates).
+          statsInflight?.catch(() => {});
+          return Response.json(statsCache.body);
+        }
         return Response.json(await statsInflight);
       }
       if (req.method === 'GET' && url.pathname === '/observations/recent') {
@@ -1622,7 +1655,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           return Response.json({ error: 'not_found' }, { status: 404 });
         }
         applyBump([id], 'drill', opts.onRetrievalBump, obsStore);
-        statsCache = null; // drill bump changes /stats recall counts
+        invalidateStats(); // drill bump changes /stats recall counts
         return Response.json({ observation: obs });
       }
       if (req.method === 'POST' && url.pathname === '/search/all') {
