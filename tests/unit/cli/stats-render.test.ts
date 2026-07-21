@@ -385,12 +385,12 @@ test('renderStats — Recall title trim guards against 200-char observation titl
   expect(text).toContain('…');
 });
 
-test('renderSourceBars — orders by count desc, unknown last, shows counts', () => {
+test('renderSourceBars — folds unknown (legacy) into claude-code, orders by count desc', () => {
   const lines = renderSourceBars({ codex: 5, 'claude-code': 100, unknown: 40, agy: 2 }, 20).map(stripAnsi);
   const labels = lines.map((l) => l.trim().split(/\s{2,}/)[0]);
-  expect(labels[0]).toBe('claude-code');                    // highest count first
-  expect(labels[labels.length - 1]).toBe('(unclassified)'); // unknown always last
-  expect(lines.some((l) => l.includes('100'))).toBe(true);
+  expect(labels).not.toContain('(unclassified)'); // legacy unknown folded into claude-code
+  expect(labels[0]).toBe('claude-code');           // 100 + 40 legacy = 140, still first
+  expect(lines.some((l) => l.includes('140'))).toBe(true);
 });
 
 test('renderStats — includes the AI sources block when by_origin is present', () => {

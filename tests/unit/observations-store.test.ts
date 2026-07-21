@@ -322,8 +322,8 @@ test('ObservationsStore — schema_versions records all migrations after constru
   const db = new Database(join(workDir, 'observations.db'), { readonly: true });
   const rows = getAppliedVersions(db);
   db.close();
-  expect(rows).toHaveLength(13);
-  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+  expect(rows).toHaveLength(16);
+  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
   expect(rows.map(r => r.name)).toEqual([
     'add_branch',
     'add_work_tokens',
@@ -338,6 +338,9 @@ test('ObservationsStore — schema_versions records all migrations after constru
     'add_promoted_at',
     'add_superseded_by',
     'add_origin_agent',
+    'add_origin_agent_index',
+    'add_stability_index',
+    'add_anchored_index',
   ]);
   store = new ObservationsStore(join(workDir, 'observations.db'));
 });

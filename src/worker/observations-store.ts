@@ -224,6 +224,30 @@ export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
     name: 'add_origin_agent',
     up: (db) => db.exec('ALTER TABLE observations ADD COLUMN origin_agent TEXT'),
   },
+  {
+    // Index for countByOrigin()'s GROUP BY (the "AI sources" chart in /stats,
+    // hit every ~2s under `top`). Turns the full-table SCAN + temp b-tree into
+    // an index scan — cheap now, and it keeps /stats flat as the corpus grows.
+    version: 14,
+    name: 'add_origin_agent_index',
+    up: (db) => db.exec('CREATE INDEX IF NOT EXISTS idx_obs_origin ON observations(origin_agent)'),
+  },
+  {
+    // PARTIAL indexes for the two remaining full-scan counts in getTideStats()
+    // (run every ~2s under `top`). Partial ⇒ they index ONLY strengthened /
+    // anchored rows, so with Tide off they're empty and the counts are instant,
+    // at near-zero write cost. (dormant/archived already have idx_obs_tide_state;
+    // paired-token SUM + recall's computed ORDER BY read most rows and aren't
+    // cheaply indexable, so they're left as scans.)
+    version: 15,
+    name: 'add_stability_index',
+    up: (db) => db.exec('CREATE INDEX IF NOT EXISTS idx_obs_stability ON observations(stability_days) WHERE stability_days IS NOT NULL'),
+  },
+  {
+    version: 16,
+    name: 'add_anchored_index',
+    up: (db) => db.exec('CREATE INDEX IF NOT EXISTS idx_obs_anchored ON observations(is_anchored) WHERE is_anchored = 1'),
+  },
 ];
 
 export type NewObservation = Omit<

@@ -602,7 +602,15 @@ export function orderedOrigins(byOrigin: Record<string, number>): Array<[string,
  *  scaled to the max count, with count + % of total. Shared by `stats` and the
  *  `top` Sources tab. */
 export function renderSourceBars(byOrigin: Record<string, number>, barWidth: number): string[] {
-  const entries = orderedOrigins(byOrigin);
+  // Legacy pre-capture observations carry no origin_agent (null → 'unknown'), but
+  // Captain Memo was Claude-Code-only before cross-AI capture — so they ARE Claude
+  // Code. Fold them in rather than showing a big "(unclassified)" bucket.
+  const folded: Record<string, number> = {};
+  for (const [o, n] of Object.entries(byOrigin)) {
+    const key = o === 'unknown' ? 'claude-code' : o;
+    folded[key] = (folded[key] ?? 0) + n;
+  }
+  const entries = orderedOrigins(folded);
   if (entries.length === 0) return [`   ${dim('— no observations yet')}`];
   const total = entries.reduce((a, [, n]) => a + n, 0);
   const max = Math.max(1, ...entries.map(([, n]) => n));

@@ -5,6 +5,14 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.1] — 2026-07-21
+
+### Changed
+- **AI sources chart folds legacy `(unclassified)` into `claude-code`.** Pre-capture observations carry no `origin_agent` (null), but Captain Memo was Claude-Code-only before cross-AI capture — so those *are* Claude Code. The chart now attributes them to `claude-code` instead of a large `(unclassified)` bucket.
+
+### Performance
+- **Indexed the hot `/stats` counts** (run every ~2s under `top`, previously full-table `SCAN`s on the whole observations table): `idx_obs_origin` makes the "AI sources" GROUP BY a covering-index scan; **partial** indexes `idx_obs_stability` (`stability_days IS NOT NULL`) and `idx_obs_anchored` (`is_anchored=1`) make the Tide `strengthened`/`anchored` counts index lookups (empty ⇒ instant when Tide is off), at near-zero write cost. Keeps `/stats` flat as the corpus grows. (The paired-token `SUM` and recall's computed `ORDER BY` read most rows and aren't cheaply indexable, so they remain scans.)
+
 ## [0.27.0] — 2026-07-21
 
 ### Added
