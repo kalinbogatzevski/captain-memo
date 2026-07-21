@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.7] — 2026-07-21
+
+### Performance
+- **`/stats` recall/token queries indexed — ~1040ms → ~100ms.** The stale-while-revalidate cache (0.27.6) stopped *most* polls blocking, but the refresh still runs its DB reads **synchronously on the event loop**, so the poll that triggers a refresh stalled ~1s (and stalled every concurrent request with it). Measured, the cost was four un-indexed full scans: the recall aggregate (243ms), the surfaced/recalled candidate scans (191+169ms), the recently-surfaced scan (170ms), and the paired-token SUM (185ms). Added four indexes (migrations 17–20): a **covering partial** index on the recall score `(from_auto+from_search+from_drill)` (surfaced rows are only ~12% of the table), partial indexes on `from_drill>0` and `last_surfaced_at`, and a **covering** index on `(work_tokens, stored_tokens)`. The recall aggregate is also rewritten to sum over surfaced rows only (non-surfaced rows contribute 0), making it a covering index-only search. Each query dropped to single-digit ms; net `/stats` synchronous cost ~10×. (Supersedes the v15 note that these "aren't cheaply indexable".) Indexes build once on upgrade (~0.7s) and add ~8 MB.
+
 ## [0.27.6] — 2026-07-21
 
 ### Performance

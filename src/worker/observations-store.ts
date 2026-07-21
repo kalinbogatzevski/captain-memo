@@ -248,6 +248,41 @@ export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
     name: 'add_anchored_index',
     up: (db) => db.exec('CREATE INDEX IF NOT EXISTS idx_obs_anchored ON observations(is_anchored) WHERE is_anchored = 1'),
   },
+  {
+    // The four remaining full-scan queries in getRecallStats() + sumPairedTokens() were
+    // the bulk of /stats' ~1s synchronous cost (hit every ~2s under `top`, and it runs
+    // ON the event loop, so that scan stalls every concurrent request). The v15 note that
+    // these "aren't cheaply indexable" was wrong: surfaced rows are a small fraction
+    // (~12% measured) and the paired-token SUM reads just two narrow columns, so PARTIAL
+    // and COVERING indexes turn each into an index-only search. Measured: ~1040ms → ~100ms.
+    //
+    // v17 — covering PARTIAL index for surfaced_candidates (filter + ORDER BY on the same
+    // computed score) AND the rewritten recall aggregate (COUNT + SUMs over surfaced rows
+    // only — non-surfaced rows contribute 0). The three from_* columns are included so
+    // both queries are index-only.
+    version: 17,
+    name: 'add_recall_score_index',
+    up: (db) => db.exec('CREATE INDEX IF NOT EXISTS idx_obs_recall_score ON observations((from_auto + from_search + from_drill) DESC, last_surfaced_at DESC, from_auto, from_search, from_drill) WHERE archived = 0 AND (from_auto + from_search + from_drill) > 0'),
+  },
+  {
+    // v18 — partial index for recalled_candidates (from_drill > 0 is a tiny subset).
+    version: 18,
+    name: 'add_drill_index',
+    up: (db) => db.exec('CREATE INDEX IF NOT EXISTS idx_obs_drill ON observations(from_drill DESC, last_surfaced_at DESC) WHERE archived = 0 AND from_drill > 0'),
+  },
+  {
+    // v19 — partial index for getRecentlySurfaced() (only surfaced rows carry last_surfaced_at).
+    version: 19,
+    name: 'add_last_surfaced_index',
+    up: (db) => db.exec('CREATE INDEX IF NOT EXISTS idx_obs_last_surfaced ON observations(last_surfaced_at DESC, id DESC) WHERE last_surfaced_at IS NOT NULL AND archived = 0'),
+  },
+  {
+    // v20 — covering index for sumPairedTokens(): summing two narrow columns off the index
+    // instead of scanning the full-row table cuts it from ~185ms to ~12ms.
+    version: 20,
+    name: 'add_paired_tokens_index',
+    up: (db) => db.exec('CREATE INDEX IF NOT EXISTS idx_obs_paired_tokens ON observations(work_tokens, stored_tokens) WHERE work_tokens IS NOT NULL'),
+  },
 ];
 
 export type NewObservation = Omit<
@@ -677,16 +712,20 @@ export class ObservationsStore {
    * collapse bounded by CANDIDATE_CAP.
    */
   getRecallStats(topN: number): RecallStats {
+    // Aggregate over SURFACED rows only (non-surfaced rows contribute 0 to every SUM and
+    // are neither surfaced nor recalled), so this rides idx_obs_recall_score as a covering
+    // index-only search instead of scanning the whole table. `surfaced` is therefore just
+    // the row count of the filtered set.
     const counts = this.db
       .query(
         `SELECT
-           SUM(CASE WHEN (from_auto + from_search + from_drill) > 0 THEN 1 ELSE 0 END) AS surfaced,
-           SUM(CASE WHEN from_drill > 0 THEN 1 ELSE 0 END)                              AS recalled,
+           COUNT(*)                                        AS surfaced,
+           SUM(CASE WHEN from_drill > 0 THEN 1 ELSE 0 END) AS recalled,
            COALESCE(SUM(from_auto),   0) AS total_auto,
            COALESCE(SUM(from_search), 0) AS total_search,
            COALESCE(SUM(from_drill),  0) AS total_drill
          FROM observations
-         WHERE archived = 0`,
+         WHERE archived = 0 AND (from_auto + from_search + from_drill) > 0`,
       )
       .get() as {
         surfaced: number | null;
