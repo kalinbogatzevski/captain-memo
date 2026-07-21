@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.8] — 2026-07-22
+
+### Fixed
+- **agy capture no longer re-ingests the same session every ~60s** (duplicate-observation loop). The agy `CaptureSource` marker folded in the `-wal`/`-shm` mtime+size. But a readonly open of a WAL-mode SQLite db **creates/touches those sidecars** (verified: they don't exist until we open the db), so our own read bumped the marker → the next tick saw "changed & quiesced" → re-ingest → open → bump, on a loop with period = the quiesce window. The effect was one near-duplicate observation per minute from a single stale session (and a `/stats` cache invalidation every minute). The marker is now **content-derived** (`stepCount:maxIdx`, read through the WAL), which is stable across our own reads and moves only when agy actually appends a step. Only agy was affected — codex/gemini/kimi read append-only JSONL whose mtime/size change only on real new content. Regression test asserts the marker is stable across repeated `discover()` calls.
+
 ## [0.27.7] — 2026-07-21
 
 ### Performance

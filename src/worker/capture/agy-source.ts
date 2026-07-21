@@ -81,26 +81,35 @@ export function createAgySource(opts: AgySourceOptions): CaptureSource {
         const path = join(dir, name);
         // agy leaves a lingering -wal/-shm even AFTER the session ends (it doesn't
         // checkpoint on exit), so the WAL's PRESENCE can't mean "still live" — that
-        // would make agy never capturable. Gate on the freshest mtime across
-        // .db/-wal/-shm (the WAL is the real last write) and fold the WAL's
-        // size/mtime into the marker so a resumed/grown session re-ingests. The
-        // transcript lives in the WAL; a readonly open reads it (verified).
+        // would make agy never capturable. Gate quiescence on the freshest mtime
+        // across .db/-wal/-shm (the WAL is the real last write). The transcript lives
+        // in the WAL; a readonly open merges it (verified).
         let dbSt;
         try { dbSt = statSync(path); } catch { continue; }
         let freshestMs = dbSt.mtimeMs;
-        let walSig = '';
         for (const suffix of ['-wal', '-shm']) {
-          try {
-            const s = statSync(path + suffix);
-            freshestMs = Math.max(freshestMs, s.mtimeMs);
-            walSig += `:${Math.floor(s.mtimeMs)}:${s.size}`;
-          } catch { /* sibling absent — fine */ }
+          try { freshestMs = Math.max(freshestMs, statSync(path + suffix).mtimeMs); } catch { /* sibling absent — fine */ }
         }
         if (now() - freshestMs < quiesceMs) continue; // still being written
+        // Marker is CONTENT-derived (step count + last idx), read through the WAL —
+        // NOT a file signature. A readonly open of a WAL-mode db CREATES/touches the
+        // -wal/-shm sidecars (verified: they don't exist until we open), so a marker
+        // that folded in sidecar mtime/size re-triggered every tick — our own read
+        // bumped the sidecar → marker "changed" → re-ingest → open → bump …, dupe-ing
+        // the session every quiesce window. Content identity is stable across our
+        // reads and moves only when agy actually appends a step.
+        let marker: string;
+        try {
+          const db = new Database(path, { readonly: true });
+          try {
+            const row = db.query('SELECT COUNT(*) AS c, COALESCE(MAX(idx), -1) AS m FROM steps').get() as { c: number; m: number };
+            marker = `${row.c}:${row.m}`;
+          } finally { db.close(); }
+        } catch { continue; } // unreadable / schema drift — skip, never crash the tick
         refs.push({
           sessionId: name.slice(0, -3),
           path,
-          marker: `${Math.floor(dbSt.mtimeMs)}:${dbSt.size}${walSig}`,
+          marker,
           mtimeEpoch: Math.floor(freshestMs / 1000),
         });
       }

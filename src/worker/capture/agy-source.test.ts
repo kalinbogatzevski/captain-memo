@@ -44,7 +44,28 @@ test('agy discover: captures a quiescent session even with a lingering -wal (agy
   const src = createAgySource({ projectId: 'p', dir, quiesceMs: 0, now: () => Date.now() + 10_000 });
   const refs = src.discover();
   expect(refs.map((r) => r.sessionId)).toContain('sess1');            // discovered DESPITE the -wal
-  expect(refs.find((r) => r.sessionId === 'sess1')!.marker).toMatch(/:\d+:\d+$/); // marker folds in the wal sig
+  expect(refs.find((r) => r.sessionId === 'sess1')!.marker).toBe('1:0'); // content marker: 1 step, max idx 0
+});
+
+test('agy discover: marker is STABLE across repeated reads (no dup re-ingestion loop)', () => {
+  // Regression: the marker used to fold in the -wal/-shm mtime+size. But a readonly
+  // open of a WAL-mode db CREATES those sidecars, so every discover() bumped the
+  // marker and the driver re-ingested the same session each quiesce window (a
+  // duplicate obs/min from one stale session). The content marker must not move.
+  const dir = mkdtempSync(join(tmpdir(), 'cm-agy-stable-'));
+  const dbPath = join(dir, 'sess1.db');
+  const db = new Database(dbPath);
+  db.exec('CREATE TABLE steps (idx INTEGER, step_payload BLOB)');
+  db.query('INSERT INTO steps (idx, step_payload) VALUES (?, ?)').run(0, Uint8Array.from(Buffer.from('hello agy')));
+  db.close();
+
+  const src = createAgySource({ projectId: 'p', dir, quiesceMs: 0, now: () => Date.now() + 10_000 });
+  const m1 = src.discover().find((r) => r.sessionId === 'sess1')!.marker; // this open creates -wal/-shm
+  const m2 = src.discover().find((r) => r.sessionId === 'sess1')!.marker; // sidecars now exist + touched
+  const m3 = src.discover().find((r) => r.sessionId === 'sess1')!.marker;
+  expect(m1).toBe('1:0');
+  expect(m2).toBe(m1); // unchanged despite our own reads touching the sidecars
+  expect(m3).toBe(m1);
 });
 
 test('agy enabled(): default on, off via env=0', () => {
