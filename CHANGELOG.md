@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.0] — 2026-07-21
+
+### Added
+- **"AI sources" chart — see observations per AI tool.** Now that codex/agy/gemini/kimi/opencode all feed observations, `captain-memo stats` gains an **AI sources** section: a horizontal bar chart of observation counts per originating AI (sorted, with counts + % of corpus; legacy pre-capture rows shown as `(unclassified)`). `top` gains a dedicated **Sources tab** (press **`a`**) showing the same chart full-width and live-refreshing, and the drill-in **detail view** now shows each observation's `source`. Backed by a new `/stats.observations.by_origin` breakdown (`obsStore.countByOrigin()`). Bars use the panel's cyan accent — the reserved gold/cyan/green provenance triad is untouched.
+
 ## [0.26.2] — 2026-07-21
 
 ### Security

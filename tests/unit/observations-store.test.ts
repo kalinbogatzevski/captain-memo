@@ -1349,3 +1349,14 @@ test('ObservationsStore — migration v13 is idempotent on a DB that already has
   db.close();
   store = new ObservationsStore(dbPath);   // restore for afterEach
 });
+
+test('countByOrigin — groups observations by origin_agent (null → unknown)', () => {
+  store.insert({ ...tideBase, origin_agent: 'codex' });
+  store.insert({ ...tideBase, origin_agent: 'codex' });
+  store.insert({ ...tideBase, origin_agent: 'agy' });
+  store.insert({ ...tideBase }); // origin_agent null → 'unknown'
+  const by = store.countByOrigin();
+  expect(by.codex).toBe(2);
+  expect(by.agy).toBe(1);
+  expect(by.unknown).toBe(1);
+});

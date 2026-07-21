@@ -118,6 +118,8 @@ export async function topCommand(args: string[]): Promise<number> {
         stats = await workerGet('/stats') as StatsResponse;
       } else if (state.mode === 'help') {
         stats = await workerGet('/stats') as StatsResponse;
+      } else if (state.mode === 'sources') {
+        stats = await workerGet('/stats') as StatsResponse;
       } else if (state.mode === 'table') {
         stats = await workerGet('/stats') as StatsResponse;
         const params = new URLSearchParams({
@@ -180,7 +182,7 @@ export async function topCommand(args: string[]): Promise<number> {
     timerMs = state.refreshMs;
     timer = setInterval(async () => {
       // Auto-refresh only the live views; detail/help/filter-input stay put.
-      if ((state.mode === 'dashboard' || state.mode === 'table') && !state.filter.active) {
+      if ((state.mode === 'dashboard' || state.mode === 'table' || state.mode === 'sources') && !state.filter.active) {
         await fetchForMode();
         render();
       }

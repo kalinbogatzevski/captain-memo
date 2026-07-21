@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { bar, renderStats, type StatsResponse } from '../../../src/cli/stats-render.ts';
+import { bar, renderStats, renderSourceBars, type StatsResponse } from '../../../src/cli/stats-render.ts';
 
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
 
@@ -383,4 +383,22 @@ test('renderStats — Recall title trim guards against 200-char observation titl
   // Trimmed to <= 48 chars (47 + '…'); no raw 100-char run survives.
   expect(text).not.toContain('X'.repeat(50));
   expect(text).toContain('…');
+});
+
+test('renderSourceBars — orders by count desc, unknown last, shows counts', () => {
+  const lines = renderSourceBars({ codex: 5, 'claude-code': 100, unknown: 40, agy: 2 }, 20).map(stripAnsi);
+  const labels = lines.map((l) => l.trim().split(/\s{2,}/)[0]);
+  expect(labels[0]).toBe('claude-code');                    // highest count first
+  expect(labels[labels.length - 1]).toBe('(unclassified)'); // unknown always last
+  expect(lines.some((l) => l.includes('100'))).toBe(true);
+});
+
+test('renderStats — includes the AI sources block when by_origin is present', () => {
+  const withOrigin: StatsResponse = {
+    ...SAMPLE,
+    observations: { ...SAMPLE.observations, by_origin: { 'claude-code': 10, codex: 2 } },
+  };
+  const out = renderStats(withOrigin).map(stripAnsi).join('\n');
+  expect(out).toContain('AI sources');
+  expect(out).toContain('codex');
 });

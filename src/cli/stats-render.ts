@@ -8,7 +8,11 @@ import type { EfficiencyReport } from '../worker/efficiency.ts';
 export interface StatsResponse {
   total_chunks: number;
   by_channel: Record<string, number>;
-  observations: { total: number; queue_pending: number; queue_processing: number };
+  observations: {
+    total: number; queue_pending: number; queue_processing: number;
+    /** Observation count per originating AI agent. Optional — pre-0.26.3 payloads omit it. */
+    by_origin?: Record<string, number>;
+  };
   indexing: {
     status: 'idle' | 'indexing' | 'ready' | 'error';
     total: number;
@@ -272,6 +276,14 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
       out.push(...efficiencyBlock);
       out.push('');
     }
+  }
+
+  // AI sources — observations per originating AI tool (codex/agy/gemini/kimi/
+  // opencode/claude-code). Only when the worker reports the breakdown.
+  const byOrigin = stats.observations.by_origin;
+  if (byOrigin && Object.keys(byOrigin).length > 0) {
+    out.push(...renderSourcesBlock(byOrigin, panelWidth, wide));
+    out.push('');
   }
 
   if (stats.recall) {
@@ -573,6 +585,36 @@ function renderCorpusBlock(
   out.push(`   ${dim('Total'.padEnd(14))}${cyanBold(fmtCount(stats.total_chunks).padStart(9))}`
     + `     ${dim(`${fmtCount(stats.observations.total)} observations`)}`);
   return out;
+}
+
+const ORIGIN_LABEL: Record<string, string> = { unknown: '(unclassified)' };
+
+/** Origins ordered by count desc, but 'unknown' (legacy/unclassified) always
+ *  last so the real AI tools lead. Zero-count origins dropped. */
+export function orderedOrigins(byOrigin: Record<string, number>): Array<[string, number]> {
+  return Object.entries(byOrigin)
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => (a[0] === 'unknown' ? 1 : b[0] === 'unknown' ? -1 : b[1] - a[1]));
+}
+
+/** The AI-sources bar chart body (no section rule). Cyan bars (the panel's
+ *  live-data accent — the reserved gold/cyan/green triad stays for provenance),
+ *  scaled to the max count, with count + % of total. Shared by `stats` and the
+ *  `top` Sources tab. */
+export function renderSourceBars(byOrigin: Record<string, number>, barWidth: number): string[] {
+  const entries = orderedOrigins(byOrigin);
+  if (entries.length === 0) return [`   ${dim('— no observations yet')}`];
+  const total = entries.reduce((a, [, n]) => a + n, 0);
+  const max = Math.max(1, ...entries.map(([, n]) => n));
+  return entries.map(([origin, n]) => {
+    const pct = total > 0 ? ((n / total) * 100).toFixed(1) : '0.0';
+    const label = ORIGIN_LABEL[origin] ?? origin;
+    return `   ${dim(label.padEnd(14))}${fmtCount(n).padStart(9)}   ${cyan(bar(n / max, barWidth))}  ${dim(`${pct}%`)}`;
+  });
+}
+
+function renderSourcesBlock(byOrigin: Record<string, number>, blockWidth: number, wide: boolean): string[] {
+  return [sectionRule('AI sources', blockWidth), ...renderSourceBars(byOrigin, wide ? 16 : BAR_WIDTH)];
 }
 
 /** Efficiency sub-block: compression bar + embedder + dedup. The compact

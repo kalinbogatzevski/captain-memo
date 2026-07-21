@@ -165,3 +165,12 @@ test('detail — Escape returns to the table, q quits', () => {
   expect(back.mode).toBe('table');
   expect(run(s, ch('q')).quit).toBe(true);
 });
+
+test("AI-sources tab — 'a' opens it; a/Esc close it; s/r/n jump to the table", () => {
+  expect(run(initialState(), ch('a')).mode).toBe('sources');
+  const s = run(initialState(), ch('a'));
+  expect(run(s, ch('a')).mode).toBe('dashboard');
+  expect(run(s, k({ type: 'escape' })).mode).toBe('dashboard');
+  expect(run(initialState(), ch('s'), ch('a')).mode).toBe('sources'); // from a table view too
+  expect(run(s, ch('s')).mode).toBe('table');
+});

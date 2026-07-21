@@ -1505,6 +1505,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             total: obsTotal,
             queue_pending: queuePending,
             queue_processing: queueProcessing,
+            // Per-AI-source breakdown for the "AI sources" chart (stats + top).
+            by_origin: obsStore ? obsStore.countByOrigin() : {},
           },
           indexing: {
             ...indexingState,

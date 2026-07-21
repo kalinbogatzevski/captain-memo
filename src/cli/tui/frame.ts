@@ -8,7 +8,7 @@
 import {
   bold, boldRed, cyan, cyanBold, dim, gold, green, padVisibleEnd, visibleWidth,
 } from '../../shared/ansi.ts';
-import { renderStats, type StatsResponse } from '../stats-render.ts';
+import { renderStats, renderSourceBars, type StatsResponse } from '../stats-render.ts';
 import type { TopState } from './state.ts';
 
 export interface RecallRowView {
@@ -39,6 +39,8 @@ export interface DetailObs {
   last_surfaced_at: number | null;
   last_surfaced_source: 'auto' | 'search' | 'drill' | null;
   created_at_epoch: number;
+  /** Originating AI tool (codex/agy/gemini/…), or null/absent for legacy rows. */
+  origin_agent?: string | null;
 }
 
 export interface FrameData {
@@ -69,6 +71,7 @@ export function buildFrame(state: TopState, data: FrameData, dims: Dims): string
       case 'table':      return tableFrame(state, data, dims);
       case 'detail':     return detailFrame(state, data, dims);
       case 'help':       return helpFrame(state, dims);
+      case 'sources':    return sourcesFrame(state, data, dims);
     }
   })();
   // A dead/zombie worker keeps the last-good stats on screen with a live clock —
@@ -173,8 +176,29 @@ function dashboardFrame(state: TopState, data: FrameData, dims: Dims): string[] 
   return [
     ...body,
     '',
-    hintBar(['[s]urfaced', '[r]ecalled', '[n]recent', '[+/-]rate', '[?]help', '[q]uit']),
+    hintBar(['[s]urfaced', '[r]ecalled', '[n]recent', '[a]I-sources', '[+/-]rate', '[?]help', '[q]uit']),
   ];
+}
+
+// The AI-sources tab: observations per originating AI tool, as a bar chart.
+// Reuses the same renderer as `captain-memo stats`, but full-width and focused.
+function sourcesFrame(state: TopState, data: FrameData, dims: Dims): string[] {
+  const cols = dims.cols;
+  const out: string[] = [];
+  out.push(spread(`  ${gold('⚓')} ${cyanBold('AI sources')} ${dim('· observations per AI tool')}`,
+    dim(liveStamp(state.refreshMs)), cols));
+  out.push(ruleLine(cols));
+  out.push('');
+  const byOrigin = data.stats?.observations.by_origin;
+  if (!byOrigin || Object.keys(byOrigin).length === 0) {
+    out.push('  ' + dim('(no observations yet — sessions from codex/agy/gemini/kimi/opencode land here)'));
+  } else {
+    const barWidth = Math.max(16, Math.min(60, cols - 40));
+    out.push(...renderSourceBars(byOrigin, barWidth));
+  }
+  out.push('');
+  out.push(hintBar(['[s]urfaced', '[r]ecalled', '[n]recent', '[a/Esc]back', '[+/-]rate', '[?]help', '[q]uit']));
+  return out;
 }
 
 // ── table ────────────────────────────────────────────────────────────────────
@@ -256,7 +280,7 @@ function tableFrame(state: TopState, data: FrameData, dims: Dims): string[] {
   // Pad to push the footer near the bottom, then the hint bar.
   out.push('');
   out.push(hintBar([
-    '[↑↓]select', '[⏎]open', '[Tab]view', '[o]sort', '[t]ype', '[/]find',
+    '[↑↓]select', '[⏎]open', '[Tab]view', '[a]I-sources', '[o]sort', '[t]ype', '[/]find',
     '[c]ollapse', '[Esc]back', '[?]help', '[q]uit',
   ]));
   return out;
@@ -294,7 +318,9 @@ function detailFrame(state: TopState, data: FrameData, dims: Dims): string[] {
     + `${dim('auto')} ${gold(String(obs.from_auto))} ${dim('search')} ${cyan(String(obs.from_search))} ${dim('drill')} ${green(String(obs.from_drill))}  ${dim('·')}  `
     + `${dim('last')} ${cyanBold(age)} ${dim('via')} ${sourceColored(obs.last_surfaced_source)}`);
   const created = new Date(obs.created_at_epoch * 1000).toISOString().slice(0, 10);
-  out.push(`  ${dim('created')} ${created}`);
+  const origin = obs.origin_agent && obs.origin_agent !== 'unknown'
+    ? `  ${dim('·')}  ${dim('source')} ${cyan(obs.origin_agent)}` : '';
+  out.push(`  ${dim('created')} ${created}${origin}`);
   const files = [...obs.files_modified, ...obs.files_read];
   if (files.length > 0) out.push(`  ${dim('files')} ${dim(trimTo(files.join(', '), cols - 10))}`);
   out.push('');

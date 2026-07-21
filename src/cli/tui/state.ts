@@ -8,7 +8,7 @@
 import type { Key } from './keys.ts';
 import type { RecallView, RecallSort } from '../../worker/observations-store.ts';
 
-export type Mode = 'dashboard' | 'table' | 'detail' | 'help';
+export type Mode = 'dashboard' | 'table' | 'detail' | 'help' | 'sources';
 
 export interface TopState {
   mode: Mode;
@@ -113,6 +113,7 @@ export function reduce(state: TopState, event: Event): TopState {
     case 'table':      return reduceTable(state, key);
     case 'detail':     return reduceDetail(state, key);
     case 'help':       return reduceHelp(state, key);
+    case 'sources':    return reduceSources(state, key);
   }
 }
 
@@ -135,6 +136,26 @@ function reduceDashboard(s: TopState, key: Key): TopState {
       case 's': return enterTable(s, 'surfaced');
       case 'r': return enterTable(s, 'recalled');
       case 'n': return enterTable(s, 'recent');
+      case 'a': return { ...s, mode: 'sources' };
+      case '+': return { ...s, refreshMs: clamp(s.refreshMs + REFRESH_STEP, MIN_REFRESH, MAX_REFRESH) };
+      case '-': return { ...s, refreshMs: clamp(s.refreshMs - REFRESH_STEP, MIN_REFRESH, MAX_REFRESH) };
+      case '?': return openHelp(s);
+      case 'q': return { ...s, quit: true };
+    }
+  }
+  return s;
+}
+
+// The AI-sources tab: a static per-AI observation chart. No row navigation —
+// s/r/n jump to the table views, `a`/Esc return to the dashboard.
+function reduceSources(s: TopState, key: Key): TopState {
+  if (key.type === 'escape') return { ...s, mode: 'dashboard' };
+  if (key.type === 'char') {
+    switch (key.value) {
+      case 's': return enterTable(s, 'surfaced');
+      case 'r': return enterTable(s, 'recalled');
+      case 'n': return enterTable(s, 'recent');
+      case 'a': return { ...s, mode: 'dashboard' };
       case '+': return { ...s, refreshMs: clamp(s.refreshMs + REFRESH_STEP, MIN_REFRESH, MAX_REFRESH) };
       case '-': return { ...s, refreshMs: clamp(s.refreshMs - REFRESH_STEP, MIN_REFRESH, MAX_REFRESH) };
       case '?': return openHelp(s);
@@ -176,6 +197,7 @@ function reduceTable(s: TopState, key: Key): TopState {
         case 's': return enterTable(s, 'surfaced');   // view switch in-place,
         case 'r': return enterTable(s, 'recalled');   // consistent with the
         case 'n': return enterTable(s, 'recent');     // dashboard s/r/n keys
+        case 'a': return { ...s, mode: 'sources' };   // AI-sources chart tab
         case 'j': return followScroll({ ...s, selection: clamp(s.selection + 1, 0, lastIndex) });
         case 'k': return followScroll({ ...s, selection: clamp(s.selection - 1, 0, lastIndex) });
         case 'g': return followScroll({ ...s, selection: 0 });

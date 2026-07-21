@@ -593,6 +593,17 @@ export class ObservationsStore {
     return (this.db.query('SELECT COUNT(*) AS n FROM observations').get() as { n: number }).n;
   }
 
+  /** Observation counts grouped by originating AI agent (origin_agent), for the
+   *  "AI sources" chart in /stats and `top`. null → 'unknown'. */
+  countByOrigin(): Record<string, number> {
+    const rows = this.db
+      .query("SELECT COALESCE(origin_agent, 'unknown') AS o, COUNT(*) AS n FROM observations GROUP BY o")
+      .all() as Array<{ o: string; n: number }>;
+    const out: Record<string, number> = {};
+    for (const r of rows) out[r.o] = r.n;
+    return out;
+  }
+
   /**
    * Aggregate Tide lifecycle counters for /stats. Cheap by construction: the
    * dormant/archived tallies ride the partial index `idx_obs_tide_state`
