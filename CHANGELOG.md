@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.11] — 2026-07-22
+
+### Fixed
+- **The capture-state SQLite handle is now closed on worker shutdown.** With capture armed on every boot (0.27.9), `CaptureState` opens `capture-state.db` at startup — but `stop()` never closed it (the handle was hoisted out of the capture block's scope). On Windows an open handle blocks the temp-dir cleanup (`EBUSY` — red CI), and in production it would hold a lock a `restart`/`vacuum` needs released. `stopResources()` now closes it alongside the other stores.
+
 ## [0.27.10] — 2026-07-22
 
 ### Fixed

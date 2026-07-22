@@ -871,6 +871,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // so `captain-memo capture backfill` can ingest pre-cutoff history on demand.
   let captureBackfill: (() => { ingested: number; events: number }) | null = null;
   const captureSourceIds: string[] = [];
+  // Hoisted so stopResources() can close its SQLite handle on shutdown — capture is now armed on every boot,
+  // and on Windows an unclosed db handle blocks the temp-dir rm (EBUSY) and, in prod, a `restart`/`vacuum`.
+  let captureState: CaptureState | null = null;
   if (!opts.readOnly && obsQueue && obsStore && summarize) {
     const captureQueue = obsQueue;
     // All ENABLED cross-AI sources (each defaults on; disable via its env flag). We deliberately DON'T
@@ -891,7 +894,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       // with custom store paths (tests; a threaded writer that doesn't inherit a runtime-set CAPTAIN_MEMO_DATA_DIR)
       // keeps its state file beside the stores it accompanies (in production both are DATA_DIR — a no-op there).
       const captureStateDir = opts.observationsDbPath ? dirname(opts.observationsDbPath) : DATA_DIR;
-      const captureState = new CaptureState(join(captureStateDir, 'capture-state.db'));
+      const cs = captureState = new CaptureState(join(captureStateDir, 'capture-state.db')); // cs: non-null binding for the tick closure
       // /stats.capture.sources = the sources whose data CURRENTLY exists. Refreshed each tick in place (so the
       // /stats closure sees the live set) → doctor/stats reflect a newly-appeared tool within one tick.
       const refreshActiveIds = () => {
@@ -902,7 +905,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         try {
           const r = runCaptureTick({
             sources: captureSources,
-            state: captureState,
+            state: cs,
             enqueue: (ev) => { captureQueue.enqueue(ev); },
             log: (m) => console.log(m),
             ignoreCutoff,
@@ -2205,6 +2208,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     if (watcher) await watcher.close();
     if (obsQueue) obsQueue.close();
     if (obsStore) obsStore.close();
+    if (captureState) captureState.close();
     if (pendingEmbed) pendingEmbed.close();
     vector.close();
     meta.close();
