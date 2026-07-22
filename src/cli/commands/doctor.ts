@@ -177,11 +177,51 @@ async function checkVectorDim(): Promise<void> {
 }
 
 async function checkCapture(): Promise<void> {
-  // Which non-Claude tools are feeding observations on this host (codex/agy/
-  // gemini/kimi/opencode). The worker reports the active capture sources in /stats.
   const s = await fetchJson(`http://127.0.0.1:${DEFAULT_WORKER_PORT}/stats`);
   if (!s.ok) return; // worker unreachable — the `worker service` check owns that
-  const b = s.body as { capture?: { sources?: string[] } };
+  const b = s.body as {
+    capture?: { sources?: string[] };
+    summarizer?: { provider?: string; enabled?: boolean; cooling_down?: boolean };
+  };
+
+  // Summarizer LIVENESS — the worker's ground truth (whether it actually built a summarizer), not the
+  // configured provider name. When the resolved provider has no usable credentials the worker runs with NO
+  // summarizer: NO observations are created (from Claude Code OR cross-AI) and capture is gated off. That
+  // failure previously went ONLY to worker.log — which no user reads — so doctor looked "all green" while the
+  // whole pipeline was dead. Surface it loudly here.
+  const sm = b.summarizer;
+  const summarizerOff = sm?.enabled === false;
+  if (sm && sm.enabled !== undefined) {
+    if (summarizerOff) {
+      record({
+        name: 'summarizer',
+        status: 'FAIL',
+        detail:
+          `NOT running — provider '${sm.provider ?? '?'}' has no usable credentials, so the worker built no ` +
+          `summarizer. No observations are being created and cross-AI capture is DISABLED. ` +
+          (sm.provider === 'claude-oauth'
+            ? 'The worker found no valid OAuth token at ~/.claude/.credentials.json (as IT resolves home — check the ' +
+              'worker.log line). Fix: run `claude login`, then restart the worker; if it still fails, set ' +
+              'CLAUDE_CODE_OAUTH_TOKEN in worker.env. '
+            : 'Fix: provide credentials for it, or set CAPTAIN_MEMO_SUMMARIZER_PROVIDER to a provider you have creds for. '),
+      });
+    } else if (sm.cooling_down) {
+      record({
+        name: 'summarizer',
+        status: 'FAIL',
+        detail:
+          `built, but FAILING — provider '${sm.provider ?? '?'}' is in error-backoff (recent API calls failed), so ` +
+          `observations aren't being distilled. ` +
+          (sm.provider === 'claude-oauth'
+            ? 'Most often an EXPIRED OAuth token (401) — run `claude login` to refresh, then restart the worker. '
+            : 'Check worker.log for the provider error (bad key / rate-limit / network). '),
+      });
+    } else {
+      record({ name: 'summarizer', status: 'PASS', detail: `${sm.provider} running — observations + capture enabled` });
+    }
+  }
+
+  // Which non-Claude tools are feeding observations (codex/agy/gemini/kimi/opencode).
   const sources = b.capture?.sources;
   if (sources === undefined) return; // older worker without the field — skip
   record({
@@ -189,7 +229,9 @@ async function checkCapture(): Promise<void> {
     status: 'PASS',
     detail: sources.length > 0
       ? `capturing obs from ${sources.join(', ')}`
-      : 'on — no non-Claude tool sessions detected on this host',
+      : summarizerOff
+        ? 'gated OFF — the summarizer is not running (fix the summarizer check above first)'
+        : 'on — no non-Claude tool sessions detected on this host',
   });
 }
 

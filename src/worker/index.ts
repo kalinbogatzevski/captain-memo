@@ -1600,6 +1600,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             provider: resolveSummarizerProvider(process.env[ENV_SUMMARIZER_PROVIDER]).provider,
             model: process.env[ENV_SUMMARIZER_MODEL] ?? null,
             enabled: summarize !== undefined,
+            // In backoff after a recent failure (API 401/429/network). A persistently-failing summarizer
+            // (e.g. an EXPIRED oauth token — 401 each call) stays here, so doctor can flag it even though
+            // `enabled` is true. Cleared on the next success.
+            cooling_down: Date.now() < summarizerCooldownUntil,
           },
           // Cross-AI capture sources active on this host (codex/agy/gemini/kimi/opencode),
           // so `doctor` / `config show` can report which non-Claude tools feed observations.

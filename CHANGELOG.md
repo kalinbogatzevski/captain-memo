@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.13] — 2026-07-22
+
+### Fixed
+- **`doctor` now surfaces a non-working summarizer** instead of hiding it. When the resolved summarizer provider has no usable credentials, the worker builds NO summarizer — which silently disables the ENTIRE observation pipeline (Claude Code AND cross-AI capture). That only ever went to `worker.log`, so `doctor` looked all-green while nothing was being distilled, and the capture line misleadingly read "on — no non-Claude tool sessions detected." `doctor` now reads the worker's live summarizer state (`/stats.summarizer.enabled`/`cooling_down`) and **fails loudly**: red when the summarizer isn't running (`claude-oauth`: no valid OAuth token found by the worker — run `claude login`, or set `CLAUDE_CODE_OAUTH_TOKEN` in `worker.env`) and red when it's built-but-failing (in error-backoff — most often an expired token → 401). The capture check now says "gated OFF — the summarizer is not running" in that case rather than blaming missing tool sessions.
+
 ## [0.27.12] — 2026-07-22
 
 ### Changed
