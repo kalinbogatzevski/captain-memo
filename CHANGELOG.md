@@ -5,6 +5,12 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.15] — 2026-07-22
+
+### Fixed
+- **`/stats.summarizer.enabled` was always `true` — the summarizer-down surfacing (0.27.13) never fired.** `summarize` is `opts.summarize ?? null`, so it's `null` (never `undefined`) when no summarizer was built — but the field computed `summarize !== undefined`, and `null !== undefined` is `true`. So `doctor` reported the summarizer green even when it was completely off (no token → whole obs + capture pipeline dead), exactly the case 0.27.13 was meant to catch. Now `summarize != null`. `doctor` (and `capture status`) now correctly go red when the summarizer isn't running.
+- **Corrected the claude-oauth token-storage note.** Verified against Claude Code's auth docs: on Windows the token is a plain JSON file at `%USERPROFILE%\.claude\.credentials.json` (NOT the Windows Credential Manager, as an old comment speculated). The file token expires ~24h and Claude Code does not auto-refresh it, so a long-running daemon should set `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`, ~1-year) in `worker.env` — now documented in the code.
+
 ## [0.27.14] — 2026-07-22
 
 ### Changed
