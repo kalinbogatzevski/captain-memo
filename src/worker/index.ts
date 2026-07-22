@@ -2168,7 +2168,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       }
 
       if (req.method === 'POST' && url.pathname === '/capture/backfill') {
-        if (!captureBackfill) return Response.json({ ingested: 0, events: 0, sources: captureSourceIds, detail: 'no cross-AI capture sources active on this host' });
+        // captureBackfill is only wired when the capture block armed — which requires a working summarizer
+        // (capture feeds it). If it's null, name the real reason instead of blaming "no sources".
+        if (!captureBackfill) return Response.json({
+          ingested: 0, events: 0, sources: captureSourceIds,
+          detail: !summarize
+            ? 'cross-AI capture is OFF because the summarizer is not running — run `captain-memo doctor`. Capture feeds the summarizer pipeline, so it stays off until the summarizer works.'
+            : 'no cross-AI capture sources active on this host',
+        });
         const r = captureBackfill();
         return Response.json({ ...r, sources: captureSourceIds });
       }

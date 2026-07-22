@@ -23,14 +23,21 @@ export async function captureCommand(args: string[]): Promise<number> {
 
   if (sub === 'status') {
     let sources: string[] = [];
+    let summarizerOff = false;
     try {
-      const s = await workerGet('/stats') as { capture?: { sources?: string[] } };
+      const s = await workerGet('/stats') as { capture?: { sources?: string[] }; summarizer?: { enabled?: boolean } };
       sources = s.capture?.sources ?? [];
+      summarizerOff = s.summarizer?.enabled === false;
     } catch { /* worker down — fall through to the on-disk counts */ }
 
     console.log('Cross-AI capture');
     console.log('---');
-    console.log(`active sources: ${sources.length ? sources.join(', ') : '(none detected — no codex/agy/gemini/kimi/opencode sessions on this host)'}`);
+    const activeLine = sources.length
+      ? sources.join(', ')
+      : summarizerOff
+        ? '(gated OFF — the summarizer is not running; run `captain-memo doctor`. Capture stays off until it works.)'
+        : '(none detected — no codex/agy/gemini/kimi/opencode sessions on this host)';
+    console.log(`active sources: ${activeLine}`);
 
     const dbPath = join(DATA_DIR, 'capture-state.db');
     if (!existsSync(dbPath)) { console.log('ingested:       (nothing yet)'); return 0; }

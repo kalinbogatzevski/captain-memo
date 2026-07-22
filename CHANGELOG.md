@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.14] — 2026-07-22
+
+### Changed
+- **`capture status` / `capture backfill` name the real cause when capture is off.** Both used to say "no cross-AI capture sources active" / "(none detected)" even when the actual reason was that the summarizer isn't running (capture is gated on it). They now read the worker's summarizer state and say "gated OFF — the summarizer is not running; run `captain-memo doctor`" instead — consistent with the `doctor` surfacing (0.27.13).
+
 ## [0.27.13] — 2026-07-22
 
 ### Fixed
