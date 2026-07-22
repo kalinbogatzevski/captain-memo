@@ -99,7 +99,7 @@ test('help frame — lists shortcuts and explains the terms', () => {
   // stats glossary + the link to the full one
   expect(text).toContain('Compression');   // a dashboard term now explained
   expect(text).toContain('Tide');
-  expect(text).toContain('captain-memo.ispcq.com/glossary');
+  expect(text).toContain('captain-memo.ispcq.com/glossary.html');
 });
 
 test('detail frame — shows the full observation and a back hint', () => {

@@ -5,10 +5,15 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.17] — 2026-07-22
+
+### Fixed
+- **Glossary link now points to `/glossary.html`.** The site host (Cloudflare + origin) does no extensionless routing — `/glossary` returns 404 — so the `top` help and README now link to [captain-memo.ispcq.com/glossary.html](https://captain-memo.ispcq.com/glossary.html), the page that actually resolves. The full glossary is also committed as [`docs/GLOSSARY.md`](docs/GLOSSARY.md).
+
 ## [0.27.16] — 2026-07-22
 
 ### Added
-- **`top` help now includes a stats glossary + a link to the full one.** The `?` help screen explains every dashboard term (Compression, Dedup, AI sources, Surfaced/Recalled, Drill-in rate, Tide/floor, Strengthened, Dream, …), and points to the full, detailed glossary at [captain-memo.ispcq.com/glossary](https://captain-memo.ispcq.com/glossary) — also committed as [`docs/GLOSSARY.md`](docs/GLOSSARY.md). Every definition is what the code actually computes. README `top` section updated with the `a` AI-sources tab and the glossary link.
+- **`top` help now includes a stats glossary + a link to the full one.** The `?` help screen explains every dashboard term (Compression, Dedup, AI sources, Surfaced/Recalled, Drill-in rate, Tide/floor, Strengthened, Dream, …), and points to the full, detailed glossary at [captain-memo.ispcq.com/glossary.html](https://captain-memo.ispcq.com/glossary.html) — also committed as [`docs/GLOSSARY.md`](docs/GLOSSARY.md). Every definition is what the code actually computes. README `top` section updated with the `a` AI-sources tab and the glossary link.
 
 ## [0.27.15] — 2026-07-22
 

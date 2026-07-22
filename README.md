@@ -369,7 +369,7 @@ navigable table you can reshape in place:
 Press `?` for the in-app help — including a **glossary** of every stat term
 (Compression, Surfaced/Recalled, Drill-in rate, Tide, Strengthened, Dream, …).
 The full, detailed version lives at
-[captain-memo.ispcq.com/glossary](https://captain-memo.ispcq.com/glossary)
+[captain-memo.ispcq.com/glossary.html](https://captain-memo.ispcq.com/glossary.html)
 (and [docs/GLOSSARY.md](docs/GLOSSARY.md)).
 
 A live date/time clock sits top-right and advances on every refresh, so you can

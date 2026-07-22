@@ -382,7 +382,7 @@ function helpFrame(state: TopState, dims: Dims): string[] {
     term('Tide', 'recency×stability re-rank · floor = min relevance kept'),
     term('Strengthened', 'observations whose stability grew from being recalled'),
     term('Dream', 'co-retrieval pairs feeding the Dreams pipeline'),
-    `    ${dim('Full glossary →')} ${cyan('captain-memo.ispcq.com/glossary')}`,
+    `    ${dim('Full glossary →')} ${cyan('captain-memo.ispcq.com/glossary.html')}`,
     '',
     hintBar(['[Esc]back', '[?]close', '[q]uit']),
   ];
