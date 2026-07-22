@@ -20,6 +20,7 @@ function fakeSource(refs: SessionRef[]): CaptureSource {
     id: 'codex',
     available: () => true,
     enabled: () => true,
+    describe: () => '/x',
     discover: () => refs,
     extract: (ref) => [ev(ref.sessionId)],
   };
@@ -63,7 +64,7 @@ test('a source that becomes available only on a LATER tick seeds its cutoff then
   let avail = false;
   let refs: SessionRef[] = [{ sessionId: 'old', path: '/x', marker: 'm', mtimeEpoch: 100 }]; // predates the tick
   const src: CaptureSource = {
-    id: 'codex', available: () => avail, enabled: () => true, discover: () => refs, extract: (r) => [ev(r.sessionId)],
+    id: 'codex', available: () => avail, enabled: () => true, describe: () => '/x', discover: () => refs, extract: (r) => [ev(r.sessionId)],
   };
   const enq: RawObservationEvent[] = [];
   const tick = () => runCaptureTick({ sources: [src], state, enqueue: (e) => enq.push(e), now: () => 500_000 });

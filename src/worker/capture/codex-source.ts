@@ -83,6 +83,7 @@ export function createCodexSource(opts: CodexSourceOptions): CaptureSource {
   return {
     id: 'codex',
     available: () => existsSync(dir),
+    describe: () => dir,
     enabled: () => (env.CAPTAIN_MEMO_CAPTURE_CODEX ?? '1') !== '0',
 
     discover(): SessionRef[] {

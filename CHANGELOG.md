@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.12] — 2026-07-22
+
+### Changed
+- **Cross-AI capture logs the resolved path + availability of every source at boot.** Previously a source that resolved to the wrong directory (or whose home didn't resolve) failed *silently* — `doctor`/`stats` just said "no non-Claude tool sessions detected," with no way to see WHERE it looked. The worker now logs one line, e.g. `cross-AI capture armed (tick 60s): agy=watching[/home/u/.gemini/antigravity-cli/conversations] codex=absent[/home/u/.codex/sessions] …`, so a misresolved path is visible in `worker.log`. Added `describe()` to the `CaptureSource` contract.
+
 ## [0.27.11] — 2026-07-22
 
 ### Fixed

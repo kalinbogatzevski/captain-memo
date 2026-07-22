@@ -922,7 +922,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       const captureTickMs = Number(process.env.CAPTAIN_MEMO_CAPTURE_TICK_MS ?? 60_000);
       runTick(false); // seed cutoffs + populate the active-source list at boot
       captureTimer = setInterval(() => runTick(false), captureTickMs);
-      console.error(`[worker] cross-AI capture armed: ${captureSources.map(s => s.id).join(', ')} (tick ${Math.round(captureTickMs / 1000)}s; each activates when its tool's data appears)`);
+      // Per-source diagnostic: the RESOLVED path each source watches + whether it currently exists. Makes a
+      // misresolved home / wrong path visible in the log instead of a silent "no sources detected".
+      const captureDiag = captureSources.map(s => `${s.id}=${s.available() ? 'watching' : 'absent'}[${s.describe()}]`).join(' ');
+      console.error(`[worker] cross-AI capture armed (tick ${Math.round(captureTickMs / 1000)}s): ${captureDiag}`);
     }
   }
 

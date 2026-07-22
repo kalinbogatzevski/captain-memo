@@ -51,6 +51,7 @@ export function createGeminiSource(opts: GeminiSourceOptions): CaptureSource {
   return {
     id: 'gemini' as CaptureSource['id'],
     available: () => existsSync(dir),
+    describe: () => dir,
     enabled: () => (env.CAPTAIN_MEMO_CAPTURE_GEMINI ?? '1') !== '0',
 
     discover(): SessionRef[] {

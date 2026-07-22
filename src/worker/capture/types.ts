@@ -27,6 +27,9 @@ export interface CaptureSource {
   available(): boolean;
   /** On by default; disabled only by an explicit env opt-out. */
   enabled(): boolean;
+  /** The resolved path this source watches (dir or db file). For boot diagnostics —
+   *  surfaced in the worker log so a missing/misresolved path is visible, not silent. */
+  describe(): string;
   /** Finished (quiescent), on-disk sessions. */
   discover(): SessionRef[];
   /** Parse a session transcript into events (origin_agent already stamped). */

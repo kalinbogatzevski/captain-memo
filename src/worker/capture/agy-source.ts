@@ -70,6 +70,7 @@ export function createAgySource(opts: AgySourceOptions): CaptureSource {
   return {
     id: 'agy',
     available: () => existsSync(dir),
+    describe: () => dir,
     enabled: () => (env.CAPTAIN_MEMO_CAPTURE_AGY ?? '1') !== '0',
 
     discover(): SessionRef[] {

@@ -47,6 +47,7 @@ export function createOpencodeSource(opts: OpencodeSourceOptions): CaptureSource
   return {
     id: 'opencode' as CaptureSource['id'],
     available: () => existsSync(dbPath),
+    describe: () => dbPath,
     enabled: () => (env.CAPTAIN_MEMO_CAPTURE_OPENCODE ?? '1') !== '0',
 
     discover(): SessionRef[] {

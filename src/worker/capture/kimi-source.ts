@@ -52,6 +52,7 @@ export function createKimiSource(opts: KimiSourceOptions): CaptureSource {
   return {
     id: 'kimi' as CaptureSource['id'],
     available: () => existsSync(dir),
+    describe: () => dir,
     enabled: () => (env.CAPTAIN_MEMO_CAPTURE_KIMI ?? '1') !== '0',
 
     discover(): SessionRef[] {
