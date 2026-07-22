@@ -55,6 +55,28 @@ test('ingests a session newer than the cutoff, exactly once (dedup on unchanged 
   expect(enq).toHaveLength(1);
 });
 
+test('a source that becomes available only on a LATER tick seeds its cutoff then — no bulk backfill', () => {
+  // Regression for the boot-frozen-capture fix: sources are no longer filtered by availability at boot, so
+  // a tool first used AFTER the worker started must (a) be skipped while absent, (b) seed its cutoff the
+  // first tick it IS available so its pre-existing history is NOT bulk-ingested, (c) capture new sessions after.
+  const state = tmpState();
+  let avail = false;
+  let refs: SessionRef[] = [{ sessionId: 'old', path: '/x', marker: 'm', mtimeEpoch: 100 }]; // predates the tick
+  const src: CaptureSource = {
+    id: 'codex', available: () => avail, enabled: () => true, discover: () => refs, extract: (r) => [ev(r.sessionId)],
+  };
+  const enq: RawObservationEvent[] = [];
+  const tick = () => runCaptureTick({ sources: [src], state, enqueue: (e) => enq.push(e), now: () => 500_000 });
+
+  expect(tick().ingested).toBe(0);              // absent → skipped before ensureCutoff (no cutoff seeded)
+  avail = true;                                  // tool's data dir appears post-boot
+  expect(tick().ingested).toBe(0);              // cutoff seeded at 500 now → pre-existing 'old' (100) skipped
+  expect(enq).toHaveLength(0);
+  refs = [{ sessionId: 'new', path: '/x', marker: 'm2', mtimeEpoch: 600 }]; // a session AFTER it appeared
+  expect(tick().ingested).toBe(1);
+  expect(enq.map((e) => e.session_id)).toEqual(['new']);
+});
+
 test('a grown session (changed marker) is re-ingested', () => {
   const state = tmpState();
   state.ensureCutoff('codex', 100);

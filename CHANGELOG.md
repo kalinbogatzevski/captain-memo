@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.9] — 2026-07-22
+
+### Fixed
+- **Cross-AI capture now picks up a tool used *after* the worker booted — no restart needed.** The capture source list was filtered by `available()` **once at boot**, so a captain that started before a tool's data dir existed (e.g. `~/.gemini/antigravity-cli/conversations` for agy) never captured that tool — and if *no* tool's data existed at boot, the capture tick wasn't even armed. Now every **enabled** source is armed and the driver re-checks availability **each tick** (it already seeds a per-source cutoff the first time a source appears, so pre-existing history is skipped, not bulk-ingested). `/stats.capture.sources` is refreshed each tick, so `doctor`/`stats` reflect a newly-appeared tool within one tick (≤60s). Regression test covers a source that becomes available on a later tick.
+
 ## [0.27.8] — 2026-07-22
 
 ### Fixed

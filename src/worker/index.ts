@@ -873,16 +873,27 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   const captureSourceIds: string[] = [];
   if (!opts.readOnly && obsQueue && obsStore && summarize) {
     const captureQueue = obsQueue;
+    // All ENABLED cross-AI sources (each defaults on; disable via its env flag). We deliberately DON'T
+    // pre-filter by availability here: the driver re-checks each source's availability EVERY tick, so a tool
+    // first used AFTER the worker booted is picked up automatically — no restart needed. (The old boot-time
+    // `.available()` filter meant a captain that started before a tool's data dir existed never captured it,
+    // and if NONE existed at boot the tick loop wasn't even armed.) The driver seeds a per-source cutoff the
+    // first tick a source is available, so its pre-existing history is skipped (`capture backfill` pulls it in).
     const captureSources = [
       createCodexSource({ projectId: opts.projectId }),
       createAgySource({ projectId: opts.projectId }),
       createGeminiSource({ projectId: opts.projectId }),
       createKimiSource({ projectId: opts.projectId }),
       createOpencodeSource({ projectId: opts.projectId }),
-    ].filter(s => s.available() && s.enabled());
+    ].filter(s => s.enabled());
     if (captureSources.length > 0) {
       const captureState = new CaptureState(join(DATA_DIR, 'capture-state.db'));
-      captureSourceIds.push(...captureSources.map(s => s.id));
+      // /stats.capture.sources = the sources whose data CURRENTLY exists. Refreshed each tick in place (so the
+      // /stats closure sees the live set) → doctor/stats reflect a newly-appeared tool within one tick.
+      const refreshActiveIds = () => {
+        captureSourceIds.length = 0;
+        for (const s of captureSources) if (s.available()) captureSourceIds.push(s.id);
+      };
       const runTick = (ignoreCutoff: boolean): { ingested: number; events: number } => {
         try {
           const r = runCaptureTick({
@@ -892,6 +903,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             log: (m) => console.log(m),
             ignoreCutoff,
           });
+          refreshActiveIds();
           if (r.ingested > 0) console.log(`[capture] ingested ${r.ingested} session(s), ${r.events} event(s)${ignoreCutoff ? ' (backfill)' : ''}`);
           return r;
         } catch (err) {
@@ -901,9 +913,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       };
       captureBackfill = () => runTick(true);
       const captureTickMs = Number(process.env.CAPTAIN_MEMO_CAPTURE_TICK_MS ?? 60_000);
-      runTick(false); // seed cutoffs at boot (ingests nothing pre-existing)
+      runTick(false); // seed cutoffs + populate the active-source list at boot
       captureTimer = setInterval(() => runTick(false), captureTickMs);
-      console.error(`[worker] cross-AI capture on: ${captureSourceIds.join(', ')} (tick ${Math.round(captureTickMs / 1000)}s)`);
+      console.error(`[worker] cross-AI capture armed: ${captureSources.map(s => s.id).join(', ')} (tick ${Math.round(captureTickMs / 1000)}s; each activates when its tool's data appears)`);
     }
   }
 
