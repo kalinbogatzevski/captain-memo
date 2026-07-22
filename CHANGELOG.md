@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.10] — 2026-07-22
+
+### Fixed
+- **`capture-state.db` is co-located with `observations.db`** instead of the module `DATA_DIR` constant. With capture now armed unconditionally (0.27.9), a worker started with custom store paths but a default `DATA_DIR` (a threaded writer that doesn't inherit a runtime-set `CAPTAIN_MEMO_DATA_DIR`; the test harness) would open its state file in the wrong directory — or fail to open it if that directory didn't exist. It now sits beside the stores it accompanies (in production both are `DATA_DIR`, so this is a no-op there). Prevents a latent split-brain where capture state and observations lived in different dirs.
+
 ## [0.27.9] — 2026-07-22
 
 ### Fixed

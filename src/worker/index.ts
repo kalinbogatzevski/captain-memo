@@ -1,4 +1,4 @@
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { statSync, readdirSync, chmodSync, existsSync } from 'node:fs';
 import { detectBranchSyncCached } from './branch.ts';
 import { z } from 'zod';
@@ -887,7 +887,11 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       createOpencodeSource({ projectId: opts.projectId }),
     ].filter(s => s.enabled());
     if (captureSources.length > 0) {
-      const captureState = new CaptureState(join(DATA_DIR, 'capture-state.db'));
+      // Co-locate capture-state.db with observations.db, NOT the module DATA_DIR constant, so a worker started
+      // with custom store paths (tests; a threaded writer that doesn't inherit a runtime-set CAPTAIN_MEMO_DATA_DIR)
+      // keeps its state file beside the stores it accompanies (in production both are DATA_DIR — a no-op there).
+      const captureStateDir = opts.observationsDbPath ? dirname(opts.observationsDbPath) : DATA_DIR;
+      const captureState = new CaptureState(join(captureStateDir, 'capture-state.db'));
       // /stats.capture.sources = the sources whose data CURRENTLY exists. Refreshed each tick in place (so the
       // /stats closure sees the live set) → doctor/stats reflect a newly-appeared tool within one tick.
       const refreshActiveIds = () => {
