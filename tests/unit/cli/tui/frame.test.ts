@@ -96,6 +96,10 @@ test('help frame — lists shortcuts and explains the terms', () => {
   expect(text).toContain('Tab');           // a shortcut
   expect(text).toContain('cycle');         // explanation text
   expect(text).toContain('drill');         // a term
+  // stats glossary + the link to the full one
+  expect(text).toContain('Compression');   // a dashboard term now explained
+  expect(text).toContain('Tide');
+  expect(text).toContain('captain-memo.ispcq.com/glossary');
 });
 
 test('detail frame — shows the full observation and a back hint', () => {

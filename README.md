@@ -360,10 +360,17 @@ compact dashboard (corpus + recall + a "last surfaced" pulse) opens onto a
 navigable table you can reshape in place:
 
 - `s` / `r` / `n` — Surfaced / Recalled / Recent views
+- `a` — the **AI-sources** chart: observations per originating tool (claude-code / codex / agy / gemini / …)
 - `↑↓` / `j` `k`, `PgUp` / `PgDn`, `g` / `G` — move + page the selection
 - `o` sort · `t` type filter · `/` find-by-title · `c` collapse near-duplicates
 - `Tab` cycle views (in the table) · `+` / `-` refresh rate (on the dashboard)
 - `⏎` open the full observation (counts as a drill) · `Esc` back · `?` help · `q` quit
+
+Press `?` for the in-app help — including a **glossary** of every stat term
+(Compression, Surfaced/Recalled, Drill-in rate, Tide, Strengthened, Dream, …).
+The full, detailed version lives at
+[captain-memo.ispcq.com/glossary](https://captain-memo.ispcq.com/glossary)
+(and [docs/GLOSSARY.md](docs/GLOSSARY.md)).
 
 A live date/time clock sits top-right and advances on every refresh, so you can
 see the data updating. Piped (non-TTY) stdout falls back to a single static
