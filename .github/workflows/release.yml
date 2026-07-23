@@ -1,0 +1,47 @@
+name: Release
+
+# Every semver tag push (vX.Y.Z) publishes a matching GitHub Release automatically,
+# so the "Latest" release can never drift behind the tags again (as it did up to 0.25.1).
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write   # required to create Releases
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish GitHub Release from the CHANGELOG
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VER="${TAG#v}"
+
+          # Notes = this version's CHANGELOG section ("## [X.Y.Z] …" up to the next "## [").
+          awk -v v="$VER" '
+            $0 ~ "^## \\[" v "\\]" {f=1}
+            f && seen && $0 ~ "^## \\[" {exit}
+            f {print; if ($0 ~ "^## \\[") seen=1}
+          ' CHANGELOG.md > RELEASE_NOTES.md
+
+          # Title = the release commit subject "release: X.Y.Z — summary" -> "vX.Y.Z — summary".
+          SUBJ="$(git log -1 --format=%s)"
+          case "$SUBJ" in
+            release:*) TITLE="v${SUBJ#release: }" ;;
+            *)         TITLE="$TAG" ;;
+          esac
+
+          # Fall back to the commit subject if the CHANGELOG has no matching section.
+          [ -s RELEASE_NOTES.md ] || printf '%s\n' "$SUBJ" > RELEASE_NOTES.md
+
+          gh release create "$TAG" \
+            --title "$TITLE" \
+            --notes-file RELEASE_NOTES.md \
+            --verify-tag \
+            --latest
