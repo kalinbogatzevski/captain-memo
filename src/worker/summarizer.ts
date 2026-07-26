@@ -18,6 +18,14 @@ const SummaryJsonSchema = z.object({
 });
 
 export interface SummarizerTransportArgs {
+  /**
+   * Model slug, or '' for "caller has no opinion — resolve it". ONLY
+   * Summarizer.getTransport()'s wrapper honours the empty form; the bare
+   * per-provider transports do not. codex/agy happen to tolerate it (they guard
+   * on `args.model &&` and fall through to the account default), but claude-oauth
+   * and claude-code put it straight on the wire → HTTP 400. Never hand a bare
+   * transport to a caller that passes ''.
+   */
   model: string;
   system: string;
   user: string;
@@ -77,6 +85,16 @@ function buildUserPrompt(events: RawObservationEvent[]): string {
   return lines.join('\n');
 }
 
+/** A "that model doesn't exist for this account" error — the only failure the chain walks past. */
+function isModelMissing(err: unknown): boolean {
+  const e = err as Error & { status?: number; error?: { type?: string } };
+  return (
+    e.status === 404 ||
+    /model_not_found|not_found/.test(e.message ?? '') ||
+    e.error?.type === 'not_found_error'
+  );
+}
+
 export class Summarizer {
   private apiKey: string;
   private primaryModel: string;
@@ -130,6 +148,36 @@ export class Summarizer {
     return { content, model: res.model, ...(usage && { usage }) };
   }
 
+  /**
+   * Send `args` through the model chain. An empty `args.model` means "you pick" —
+   * it resolves to the active model rather than going on the wire as "" (which
+   * api.anthropic.com rejects with 400 "model: String should have at least 1
+   * character"). Walks the fallbacks on model-not-found only; every other error
+   * propagates untouched so a 429 still reads as a 429 upstream.
+   *
+   * Shared by summarize() and getTransport() so the chain is resolved in exactly
+   * one place — writeMemory drives the raw transport and must not have to know
+   * which provider needs a model spelled out and which defaults on its own.
+   */
+  private async runWithModelChain(args: SummarizerTransportArgs): Promise<SummarizerTransportResult> {
+    const candidates = [args.model || this.activeModel, ...this.fallbackModels]
+      .filter((m, i, all) => Boolean(m) && all.indexOf(m) === i);
+    let lastErr: unknown = null;
+    for (const candidate of candidates) {
+      try {
+        const response = await this.transport({ ...args, model: candidate });
+        this.activeModel = candidate;
+        return response;
+      } catch (err) {
+        lastErr = err;
+        if (!isModelMissing(err)) throw err;
+      }
+    }
+    throw lastErr instanceof Error
+      ? lastErr
+      : new Error(`Summarizer: no model in chain succeeded — ${candidates.join(', ')}`);
+  }
+
   async summarize(events: RawObservationEvent[]): Promise<SummarizerResult> {
     if (events.length === 0) {
       return {
@@ -141,40 +189,12 @@ export class Summarizer {
       };
     }
 
-    const args: SummarizerTransportArgs = {
+    const response = await this.runWithModelChain({
       model: this.activeModel,
       system: SYSTEM_PROMPT,
       user: buildUserPrompt(events),
       max_tokens: this.maxTokens,
-    };
-
-    const isModelMissing = (err: unknown): boolean => {
-      const e = err as Error & { status?: number; error?: { type?: string } };
-      return (
-        e.status === 404 ||
-        /model_not_found|not_found/.test(e.message ?? '') ||
-        e.error?.type === 'not_found_error'
-      );
-    };
-
-    const candidates = [this.activeModel, ...this.fallbackModels];
-    let response: SummarizerTransportResult | null = null;
-    let lastErr: unknown = null;
-    for (const candidate of candidates) {
-      try {
-        response = await this.transport({ ...args, model: candidate });
-        this.activeModel = candidate;
-        break;
-      } catch (err) {
-        lastErr = err;
-        if (!isModelMissing(err)) throw err;
-      }
-    }
-    if (response === null) {
-      throw lastErr instanceof Error
-        ? lastErr
-        : new Error(`Summarizer: no model in chain succeeded — ${candidates.join(', ')}`);
-    }
+    });
 
     const textBlock = response.content.find(c => c.type === 'text');
     if (!textBlock) throw new Error('Summarizer: response had no text block');
@@ -209,11 +229,12 @@ export class Summarizer {
   }
 
   /**
-   * Exposed so the worker can reuse the model-fallback transport directly
-   * (writeMemory drives frontmatter/merge fills via the raw transport, not
-   * via the observation-shaped summarize()).
+   * The model-fallback transport, for callers that need the raw request shape
+   * rather than the observation-shaped summarize() (writeMemory's frontmatter
+   * fill + merge). Wrapped, not the bare transport: callers pass model:'' to
+   * mean "you pick", and only this wrapper knows what to pick.
    */
   getTransport(): SummarizerTransport {
-    return this.transport;
+    return (args) => this.runWithModelChain(args);
   }
 }

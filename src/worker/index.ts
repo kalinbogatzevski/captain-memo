@@ -628,6 +628,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // wait in the queue and are NOT dead-lettered while the API is down.
   let summarizerCooldownUntil = 0;
   let overloadStreak = 0;
+  // Last summarize failure, verbatim. Hoisted out of processBatch (where the reason
+  // used to be a local that died with the call) so /stats can answer WHY the pipeline
+  // stalled — otherwise a 21h outage is only discoverable in journalctl.
+  let lastSummarizerError: string | null = null;
 
   function dedupeFlat(lists: string[][]): string[] {
     return [...new Set(lists.flat())];
@@ -787,6 +791,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         const e = err as Error & { status?: number; retryAfterMs?: number };
         const msg = e.message ?? String(err);
         console.error(`[obs-batch] summarize failed: ${msg}`);
+        lastSummarizerError = msg.slice(0, 200);
         const ids = groupRows.map(r => r.id);
         // permanent  → never succeeds on retry (auth/bad-request/model) → dead-letter.
         // overloaded → transient API outage (5xx/429/network) → requeue (no retry
@@ -829,6 +834,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       // A clean summarize means the API recovered — clear the cooldown + streak.
       overloadStreak = 0;
       summarizerCooldownUntil = 0;
+      // Only a FULLY clean cycle clears the reason: a batch that summarized 19 of 20
+      // still has something worth showing for the 20th.
+      if (failedIds.length === 0 && permanentIds.length === 0) lastSummarizerError = null;
     }
 
     if (observations_created > 0) invalidateStats(); // new obs → /stats counts changed
@@ -1526,6 +1534,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         const obsTotal = obsStore ? obsStore.countAll() : 0;
         const queuePending = obsQueue ? obsQueue.pendingCount() : 0;
         const queueProcessing = obsQueue ? obsQueue.processingCount() : 0;
+        const queueFailed = obsQueue ? obsQueue.failedCount() : 0;
         const diskBytes = dirSizeBytes(DATA_DIR);
         const paired = obsStore
           ? obsStore.sumPairedTokens()
@@ -1570,6 +1579,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             total: obsTotal,
             queue_pending: queuePending,
             queue_processing: queueProcessing,
+            // Dead-lettered rows. Without this the only "failed" signal was a log line,
+            // so exhausted retries were indistinguishable from never-enqueued.
+            queue_failed: queueFailed,
             // Per-AI-source breakdown for the "AI sources" chart (stats + top).
             by_origin: obsStore ? obsStore.countByOrigin() : {},
           },
@@ -1604,6 +1616,13 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             // (e.g. an EXPIRED oauth token — 401 each call) stays here, so doctor can flag it even though
             // `enabled` is true. Cleared on the next success.
             cooling_down: Date.now() < summarizerCooldownUntil,
+            // WHY it stalled, and when it next tries. `cooling_down` alone told the user
+            // something was wrong but never what — the reason lived only in journalctl.
+            cooldown_until_epoch: summarizerCooldownUntil > 0
+              ? Math.floor(summarizerCooldownUntil / 1000)
+              : 0,
+            last_error: lastSummarizerError,
+            consecutive_failures: overloadStreak,
           },
           // Cross-AI capture sources active on this host (codex/agy/gemini/kimi/opencode),
           // so `doctor` / `config show` can report which non-Claude tools feed observations.

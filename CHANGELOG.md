@@ -5,6 +5,18 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.18] — 2026-07-26
+
+### Fixed
+- **`remember` merge/frontmatter fills no longer 400 on the default provider.** `Summarizer.getTransport()` returned the *bare* transport, but three separate comments described it as "the model-fallback transport" — the chain actually lived inside `summarize()`, which that path never calls. `writeMemory` passes `model: ''` to mean "you pick"; `codex`/`agy` tolerated it (they guard on `args.model &&` and fall through to the account default) but `claude-oauth` (the default) and `claude-code` put the empty string on the wire, so every merge failed with `HTTP 400: model: String should have at least 1 character` and silently fell back to appending instead of merging. `getTransport()` now wraps a shared `runWithModelChain()`, and the `''` sentinel is documented on `SummarizerTransportArgs` so a bare transport can't be handed to a `''` caller again.
+
+### Added
+- **The observation backlog is visible in `stats` and `top`.** `queue_pending`/`queue_processing` were already in the `/stats` payload but rendered nowhere, and `queue_failed` was not exposed at all — so ~2 900 observations stalled behind a dead summarizer looked exactly like an idle system. Both surfaces render through `renderStats`, which now emits `Queue  1 642 waiting · 20 in flight · 678 failed` whenever there is anything to report (silent when idle).
+- **The summarizer says *why* it stopped.** `/stats.summarizer` gains `cooldown_until_epoch`, `last_error` and `consecutive_failures`; the worker hoists the failure reason out of `processBatch` (where it was a local that died with the call) into `lastSummarizerError`. The status dot has three states instead of two — previously it was driven by `enabled`, which only means "a provider resolved at boot" and therefore stayed **green** through a 21-hour rate-limit outage. Now:
+  `Summarizer ● claude-oauth · claude-haiku-4-5 · paused, retries in 2d 1h`
+  `           ↳ reason: claude-oauth: HTTP 429: …rate_limit_error…`
+  A fully clean cycle clears the reason; a batch that summarizes 19 of 20 keeps it.
+
 ## [0.27.17] — 2026-07-22
 
 ### Fixed

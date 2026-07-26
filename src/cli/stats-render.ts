@@ -10,6 +10,8 @@ export interface StatsResponse {
   by_channel: Record<string, number>;
   observations: {
     total: number; queue_pending: number; queue_processing: number;
+    /** Dead-lettered rows (retries exhausted). Optional — pre-0.27.18 payloads omit it. */
+    queue_failed?: number;
     /** Observation count per originating AI agent. Optional — pre-0.26.3 payloads omit it. */
     by_origin?: Record<string, number>;
   };
@@ -29,8 +31,20 @@ export interface StatsResponse {
   /** Worker liveness: boot epoch + seconds since boot. Optional — older worker
    *  payloads omit it (the line is simply not shown then). */
   worker?: { started_at_epoch: number; uptime_s: number };
-  /** The ACTIVE summarizer (resolved provider, post-fallback). Optional — pre-0.25.1 payloads omit it. */
-  summarizer?: { provider: string; model: string | null; enabled: boolean };
+  /** The ACTIVE summarizer (resolved provider, post-fallback). Optional — pre-0.25.1 payloads omit it.
+   *  `enabled` only means "a provider resolved at boot" — it stays true through an outage, so the
+   *  health fields below are what actually answer "is it summarizing right now, and if not why". */
+  summarizer?: {
+    provider: string; model: string | null; enabled: boolean;
+    /** Backing off after a transient failure (429/5xx/network); no batch is attempted until then. */
+    cooling_down?: boolean;
+    /** When the cooldown lifts. Optional — pre-0.27.18 payloads omit it. */
+    cooldown_until_epoch?: number;
+    /** Verbatim last summarize failure, so the reason is visible without journalctl. */
+    last_error?: string | null;
+    /** Consecutive overloaded cycles — drives the exponential backoff. */
+    consecutive_failures?: number;
+  };
   embedder: { model: string; endpoint: string };
   disk?: { bytes: number; path: string };
   efficiency?: EfficiencyReport | undefined;
@@ -252,10 +266,47 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
   // resolved but no transport was built (e.g. claude-oauth with no login) → nothing is summarized.
   if (stats.summarizer) {
     const s = stats.summarizer;
-    const dot = s.enabled ? green('●') : yellow('○');
     const model = s.model ? dim(` · ${s.model}`) : '';
-    const off = s.enabled ? '' : dim(' (resolved, but NOT summarizing — check its login/config)');
-    out.push(`  ${dim('Summarizer'.padEnd(10))} ${dot} ${cyanBold(s.provider)}${model}${off}`);
+    // Three states, not two. `enabled` alone stayed GREEN through a 21h rate-limit
+    // outage (2026-07-26) because it only reports "a provider resolved at boot".
+    // A paused summarizer is the state users actually need to see.
+    let dot: string;
+    let note: string;
+    if (!s.enabled) {
+      dot = yellow('○');
+      note = dim(' (resolved, but NOT summarizing — check its login/config)');
+    } else if (s.cooling_down) {
+      dot = red('●');
+      const left = s.cooldown_until_epoch
+        ? Math.max(0, s.cooldown_until_epoch - Math.floor(Date.now() / 1000))
+        : 0;
+      const when = left > 0 ? `, retries in ${fmtUptime(left)}` : ', retrying now';
+      const streak = s.consecutive_failures && s.consecutive_failures > 1
+        ? ` after ${s.consecutive_failures} failures`
+        : '';
+      note = red(` · paused${streak}${when}`);
+    } else {
+      dot = green('●');
+      note = '';
+    }
+    out.push(`  ${dim('Summarizer'.padEnd(10))} ${dot} ${cyanBold(s.provider)}${model}${note}`);
+    // The verbatim reason. Shown whenever one exists — a summarizer that has
+    // recovered still explains the gap in the observation timeline.
+    if (s.last_error) {
+      const label = s.cooling_down ? 'reason' : 'last error';
+      const room = Math.max(20, panelWidth - 20 - label.length);
+      out.push(`  ${' '.repeat(10)} ${dim('↳')} ${dim(`${label}:`)} ${red(trimTitle(s.last_error, room))}`);
+    }
+  }
+  // Backlog. The counts were always in /stats but rendered nowhere, so 2 949
+  // observations stuck behind a dead summarizer looked exactly like idle.
+  const q = stats.observations;
+  const qFailed = q.queue_failed ?? 0;
+  if (q.queue_pending > 0 || q.queue_processing > 0 || qFailed > 0) {
+    const parts = [`${cyanBold(fmtCount(q.queue_pending))} ${dim('waiting')}`];
+    if (q.queue_processing > 0) parts.push(`${cyanBold(fmtCount(q.queue_processing))} ${dim('in flight')}`);
+    if (qFailed > 0) parts.push(`${red(fmtCount(qFailed))} ${dim('failed')}`);
+    out.push(`  ${dim('Queue'.padEnd(10))} ${parts.join(dim(' · '))}`);
   }
   out.push('');
 
