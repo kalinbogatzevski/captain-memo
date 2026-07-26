@@ -85,6 +85,8 @@ interface AnthropicMessageResponse {
   content?: Array<{ type: string; text?: string }>;
   model?: string;
   usage?: { input_tokens?: number; output_tokens?: number };
+  /** 'end_turn' | 'max_tokens' | 'stop_sequence' | … — the truncation tell. */
+  stop_reason?: string | null;
 }
 
 export interface ClaudeOauthTransportOptions {
@@ -134,7 +136,12 @@ export function createClaudeOauthTransport(opts: ClaudeOauthTransportOptions = {
         },
         body: JSON.stringify({
           model: args.model,
-          max_tokens: 4096,
+          // Honour the caller's budget. This used to be hardcoded 4096, silently
+          // discarding every args.max_tokens the contract passes (Summarizer 800,
+          // mergeBody 1200, fillFrontmatter 400) — so no caller could actually
+          // control its own truncation point. Floor at 1024: the observation schema
+          // does not fit in the smaller asks, and a truncated summary is worthless.
+          max_tokens: Math.max(1024, args.max_tokens),
           system: args.system,
           messages: [{ role: 'user', content: args.user }],
         }),
@@ -178,6 +185,9 @@ export function createClaudeOauthTransport(opts: ClaudeOauthTransportOptions = {
         content,
         model: json.model ?? args.model,
         ...(usage && { usage }),
+        // Pass through so the caller can distinguish "ran out of room" from
+        // "emitted malformed JSON" — the two produce identical parse errors.
+        ...(json.stop_reason !== undefined && { stop_reason: json.stop_reason }),
       };
     } finally {
       clearTimeout(timer);

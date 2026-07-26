@@ -5,6 +5,19 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.19] — 2026-07-26
+
+### Fixed
+- **Observations are no longer lost when the model leaves an interior quote unescaped.** Requeuing 675 dead-lettered rows surfaced repeated `failed to parse JSON: Expected '}'` / `Unterminated string`. Replaying a failing batch against the live API disproved both obvious theories: `stop_reason=end_turn` and `output_tokens=307` of a 4096 budget rule out truncation, and the greedy extraction regex captured 929 of 941 characters correctly. The real cause is that the model escapes *some* interior quotes and not others — reliably so when the observation is **about punctuation**:
+  `"...a straight ASCII double-quote (\") instead of the proper closing " (U+201D)..."` — first escaped, second bare. Content-dependent and deterministic, so all three retries fail identically and the row dead-letters.
+  `repairJsonQuotes()` now makes a second parse attempt: a JSON string can only end where the next non-space character is `,` `:` `}` `]` or EOF, so every other `"` inside a string is provably a literal and can be escaped without a second API call or model cooperation. Verified against the verbatim reply that killed rows 41682/41683 — both now summarize on the first attempt with the Bulgarian quotes intact.
+- **`max_tokens` truncation reports itself instead of masquerading as malformed JSON.** `stop_reason` was never inspected, so a response cut off at the token limit produced `Unterminated string` — indistinguishable from the model emitting junk, and the two need opposite fixes (raise the budget vs. fix the prompt). The transport now surfaces `stop_reason` and `summarize()` raises an explicit truncation error before attempting a parse.
+- **`claude-oauth` honours the caller's `max_tokens`.** It hardcoded `4096` and silently discarded every `args.max_tokens` the transport contract passes (`Summarizer` 800, `mergeBody` 1200, `fillFrontmatter` 400), so no caller could control its own truncation point. Now `max(1024, args.max_tokens)` — floored because the observation schema does not fit in the smaller asks.
+
+### Changed
+- Parse failures now include a length-capped echo of the model's actual reply. Diagnosing the above required replaying the payload against the API because the error threw the evidence away; `last_error` in `stats` now shows the offending text directly.
+- The summarizer system prompt explicitly requires escaping interior double quotes, naming the punctuation-describing case that triggers the failure. Prompting alone proved insufficient (hence `repairJsonQuotes`), but it reduces how often the repair is needed.
+
 ## [0.27.18] — 2026-07-26
 
 ### Fixed

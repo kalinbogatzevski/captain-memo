@@ -36,6 +36,14 @@ export interface SummarizerTransportResult {
   content: Array<{ type: 'text'; text: string }>;
   model: string;
   usage?: { input_tokens: number; output_tokens: number };
+  /**
+   * Why generation stopped ('end_turn' | 'max_tokens' | …), when the transport can
+   * tell. Optional: the subprocess transports (codex/agy) have no equivalent.
+   * Without it a truncated reply surfaces as a bare "Unterminated string" parse
+   * error, which reads as "the model emitted junk" and sends you hunting the
+   * wrong bug — the API already told us it ran out of room.
+   */
+  stop_reason?: string | null;
 }
 
 export type SummarizerTransport = (args: SummarizerTransportArgs) => Promise<SummarizerTransportResult>;
@@ -67,7 +75,14 @@ Output ONLY a single JSON object matching this schema, no prose around it:
   "narrative": "1-3 sentence prose summary",
   "facts": ["≤5 bullet-style atomic facts"],
   "concepts": ["≤5 short concept tags"]
-}`;
+}
+
+CRITICAL — the output must be parseable JSON. Any double quote INSIDE a string
+value must be escaped as \\". This matters most when the thing you are describing
+is itself punctuation: writing (") unescaped ends the string early and the whole
+observation is discarded. Prefer naming a character to quoting it — write
+'ASCII double-quote' rather than ("). Same for backslashes (\\\\) and literal
+newlines (\\n) inside values.`;
 
 function buildUserPrompt(events: RawObservationEvent[]): string {
   const lines: string[] = [];
@@ -83,6 +98,59 @@ function buildUserPrompt(events: RawObservationEvent[]): string {
     if (e.files_read.length > 0)     lines.push(`  read: ${e.files_read.join(', ')}`);
   }
   return lines.join('\n');
+}
+
+/**
+ * Escape interior double quotes the model forgot to escape.
+ *
+ * Models escape SOME quotes and not others — reliably so when the observation is
+ * ABOUT punctuation ("...the proper closing " (U+201D)..."). Prompting does not fix
+ * it, and a second API call to self-repair is neither free nor deterministic.
+ *
+ * The grammar makes it decidable: a JSON string ends only where the next non-space
+ * character is , : } ] or end-of-input. Every other '"' inside a string must be a
+ * literal, so escape it. Already-escaped quotes and backslash pairs are skipped.
+ *
+ * ponytail: quotes only — the failure we actually observe. Raw control characters
+ * would need the same treatment; add it if they ever show up in a last_error.
+ */
+export function repairJsonQuotes(text: string): string {
+  let out = '';
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (!inString) {
+      out += ch;
+      if (ch === '"') inString = true;
+      continue;
+    }
+    if (ch === '\\') {                 // escape pair — copy both, never inspect the 2nd
+      out += ch + (text[i + 1] ?? '');
+      i++;
+      continue;
+    }
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < text.length && /\s/.test(text[j]!)) j++;
+      const next = text[j];
+      if (next === undefined || next === ',' || next === ':' || next === '}' || next === ']') {
+        out += ch;                     // structural: really closes the string
+        inString = false;
+      } else {
+        out += '\\"';                  // literal the model left bare
+      }
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/** One-line, length-capped echo of a model reply for error messages. The worker stores
+ *  last_error at 200 chars, so keep it tight — enough to spot a stray quote, not a dump. */
+function trimForLog(text: string, max = 220): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
 }
 
 /** A "that model doesn't exist for this account" error — the only failure the chain walks past. */
@@ -199,12 +267,40 @@ export class Summarizer {
     const textBlock = response.content.find(c => c.type === 'text');
     if (!textBlock) throw new Error('Summarizer: response had no text block');
 
+    // Ran out of output budget → the JSON is cut off mid-token. Say THAT, instead of
+    // letting it fall through to an "Unterminated string" parse error that looks
+    // identical to the model emitting malformed JSON. Different cause, different fix
+    // (raise max_tokens vs. fix the prompt), so they must not share an error message.
+    if (response.stop_reason === 'max_tokens') {
+      throw new Error(
+        `Summarizer: response truncated at max_tokens (${this.maxTokens}) — raise ` +
+        `maxTokens or shrink the batch; the JSON is incomplete, not malformed`,
+      );
+    }
+
     let json: unknown;
     try {
+      // GREEDY on purpose: first '{' to LAST '}'. The model often wraps the object in a
+      // ```json fence, whose closing ``` sits after the final brace — a lazy match would
+      // stop at the first '}' and break every fenced reply. Do not "fix" this.
       const match = /\{[\s\S]*\}/.exec(textBlock.text);
-      json = JSON.parse(match ? match[0] : textBlock.text);
+      const candidate = match ? match[0] : textBlock.text;
+      try {
+        json = JSON.parse(candidate);
+      } catch {
+        // Second chance: the model left an interior quote bare. Deterministic repair,
+        // no extra API call. If it still fails we fall into the catch below with the
+        // ORIGINAL error, so the log shows what the model actually sent.
+        json = JSON.parse(repairJsonQuotes(candidate));
+      }
     } catch (err) {
-      throw new Error(`Summarizer: failed to parse JSON: ${(err as Error).message}`);
+      // Include the text. The usual cause is an UNESCAPED `"` inside a string value
+      // (observations ABOUT punctuation are the reliable trigger), and without the
+      // offending snippet in the log that is indistinguishable from truncation —
+      // it cost a full replay-against-the-API to tell the two apart once already.
+      throw new Error(
+        `Summarizer: failed to parse JSON: ${(err as Error).message} — raw: ${trimForLog(textBlock.text)}`,
+      );
     }
 
     const parsed = SummaryJsonSchema.safeParse(json);
