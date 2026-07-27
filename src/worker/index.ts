@@ -2078,6 +2078,16 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           trimmed, cfg, Date.now(),
         );
 
+        // Assembled here rather than after the audit block so the audit line can
+        // record what this injection actually cost the context window. Pure —
+        // moving it earlier changes nothing about the response.
+        const result = formatEnvelope({
+          project_id: opts.projectId,
+          budget_tokens: budget,
+          hits,
+          degradation_flags: flags,
+        });
+
         // Fire-and-forget recall audit (default-off; enable via CAPTAIN_MEMO_RECALL_AUDIT=1).
         // fused already carries .boosts from applyBoosts (BoostedItem); build a
         // lookup so we can attach provenance to each hit without a second scan.
@@ -2094,6 +2104,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             query: trimmed,
             rank_profile: cfg.profile,
             ...(rawPrompt !== trimmed && { prompt: rawPrompt }),
+            injected_tokens: result.used_tokens,
             hits: hits.map(h => {
               const boosts = fusedBoostMap.get(h.doc_id);
               return {
@@ -2113,13 +2124,6 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // are starved — pre-v5 this gap is exactly why the corpus showed
         // ~0% recalled despite continuous use.
         bumpRetrievalFromResults(hits, 'auto');
-
-        const result = formatEnvelope({
-          project_id: opts.projectId,
-          budget_tokens: budget,
-          hits,
-          degradation_flags: flags,
-        });
 
         return Response.json({
           envelope: result.envelope,
