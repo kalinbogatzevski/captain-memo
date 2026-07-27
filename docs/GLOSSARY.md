@@ -79,6 +79,12 @@ rather than deleting them. It runs locally, on your schedule, with the model log
 already have. Preview it with `captain-memo dream --dry-run`; the write path is not
 shipped yet.
 
+The name is Anthropic's: [Dreams](https://platform.claude.com/docs/en/managed-agents/dreams)
+shipped in Claude Managed Agents in May 2026 — a pass that re-reads an agent's memory store
+and past session transcripts and emits a reorganized store, leaving the input intact. Memory
+captures what an agent learns *as it works*; dreaming refines it *between sessions*. Captain
+Memo does that locally, and groups by co-retrieval instead of by re-reading transcripts.
+
 This section shows the **inputs** that pass would read — not its output.
 
 | Term | Meaning |

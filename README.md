@@ -458,6 +458,8 @@ The offline pass that keeps the corpus from growing forever. It groups observati
 
 Co-retrieval is the point. Clustering purely on embedding similarity produces "groups that share words", which is the failure mode the design set out to avoid; two observations you keep pulling up in the same breath are much stronger evidence that they are one topic. That signal comes from the recall audit log above, so `CAPTAIN_MEMO_RECALL_AUDIT=1` needs to have been on during the look-back window for Dreaming to see anything.
 
+**Why "dreaming".** The name is Anthropic's. [Dreams](https://platform.claude.com/docs/en/managed-agents/dreams) shipped in Claude Managed Agents in May 2026: a pass that reads an agent's memory store alongside its past session transcripts and produces a new, reorganized store — duplicates merged, stale or contradicted entries replaced with the latest value, new insights surfaced — leaving the input store untouched. Their split is the useful one: memory captures what an agent learns *as it works*, dreaming refines that memory *between sessions*. Captain Memo runs the same idea locally against your own SQLite files, and derives the grouping from co-retrieval rather than from re-reading transcripts with a model.
+
 ```bash
 captain-memo dream --dry-run              # preview the clusters, writes nothing
 captain-memo dream --dry-run --since 30d  # widen the look-back (default 14d)
