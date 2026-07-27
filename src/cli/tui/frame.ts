@@ -55,6 +55,8 @@ export interface SessionUsageRow {
   injections: number;
   memory_share_pct: number | null;
   last_activity_epoch_ms: number;
+  /** Working directory the session runs in — the only reliable human label. */
+  cwd?: string;
 }
 
 export interface FrameData {
@@ -267,8 +269,8 @@ function tokensFrame(state: TopState, data: FrameData, dims: Dims): string[] {
   const mins = Math.round((data.sessions?.window_ms ?? 0) / 60_000);
   out.push(`  ${dim(`sessions active in the last ${mins} min · fresh = input + cache-write, what actually entered the context`)}`);
   out.push('');
-  out.push('  ' + dim('session   ') + dim('     fresh in') + dim('       out') + dim('   cache-read')
-    + dim('     memory') + dim('   share') + dim('   last'));
+  out.push('  ' + dim('session   ') + dim('    fresh in') + dim('      out') + dim('  cache-read')
+    + dim('    memory') + dim('  share') + dim('  last') + dim('  project'));
 
   for (const r of rows.slice(0, Math.max(3, dims.rows - 10))) {
     // '—' rather than 0% when there is no measurement: a session that has not been
@@ -278,11 +280,15 @@ function tokensFrame(state: TopState, data: FrameData, dims: Dims): string[] {
       : `${r.memory_share_pct.toFixed(2)}%`.padStart(6);
     const mem = r.injections === 0 ? dim('—'.padStart(9)) : cyanBold(tok(r.injected_tokens).padStart(9));
     const age = fmtAge(Math.max(0, Math.floor((Date.now() - r.last_activity_epoch_ms) / 1000)));
+    // Project basename, not the full path — the leaf is what distinguishes sessions,
+    // and several panes routinely share a long common prefix.
+    const proj = r.cwd ? r.cwd.split('/').filter(Boolean).pop() ?? '' : '';
     out.push('  ' + r.session_id.slice(0, 8) + '  '
-      + tok(r.fresh_input_tokens).padStart(13)
-      + tok(r.output_tokens).padStart(10)
-      + dim(tok(r.cache_read_tokens).padStart(13))
-      + mem + '  ' + share + '  ' + dim(age.padStart(6)));
+      + tok(r.fresh_input_tokens).padStart(12)
+      + tok(r.output_tokens).padStart(9)
+      + dim(tok(r.cache_read_tokens).padStart(12))
+      + mem + '  ' + share + '  ' + dim(age.padStart(5))
+      + '  ' + dim(proj.slice(0, Math.max(8, dims.cols - 76))));
   }
 
   out.push('');

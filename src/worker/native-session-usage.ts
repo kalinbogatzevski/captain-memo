@@ -37,6 +37,16 @@ export interface NativeSessionUsage {
   cache_read_tokens: number;
   /** Transcript mtime — when the session last produced a message. */
   last_activity_epoch_ms: number;
+  /** Working directory the session runs in, read from the transcript's own `cwd`.
+   *
+   *  This is the only RELIABLE label available. A tmux session name cannot be joined
+   *  to a session id from outside the process: the CLI does not hold the transcript
+   *  open (no fd to read), several panes routinely share one cwd, `--resume` makes a
+   *  transcript predate its process so start-time correlation fails, and
+   *  CLAUDE_CODE_SESSION_ID is INHERITED by child processes — three panes here report
+   *  the same id. The transcript's own cwd is self-reported by the session itself, so
+   *  it is exact. Absent on transcripts that never recorded one. */
+  cwd?: string;
 }
 
 interface Totals {
@@ -45,6 +55,7 @@ interface Totals {
   output: number;
   cacheCreation: number;
   cacheRead: number;
+  cwd?: string;
 }
 
 const ACC = new Map<string, Totals>();
@@ -58,6 +69,7 @@ function fresh(): Totals {
  *  module reads COUNTS, never content, matching the corpus-telemetry posture. */
 interface TranscriptLine {
   message?: { usage?: Record<string, unknown> };
+  cwd?: string;
 }
 
 function n(v: unknown): number {
@@ -78,6 +90,9 @@ function digest(chunk: string, t: Totals): number {
     } catch {
       continue;   // a truncated or non-JSON line is skipped, never fatal
     }
+    // First cwd wins — a session does not move, and re-reading it on every line
+    // would cost a string compare per message for no gain.
+    if (t.cwd === undefined && typeof line.cwd === 'string' && line.cwd) t.cwd = line.cwd;
     const u = line.message?.usage;
     if (!u || typeof u !== 'object') continue;
     t.input += n(u.input_tokens);
@@ -176,6 +191,7 @@ export async function readNativeSessionUsage(
         cache_creation_tokens: t.cacheCreation,
         cache_read_tokens: t.cacheRead,
         last_activity_epoch_ms: Math.round(mtimeMs),
+        ...(t.cwd ? { cwd: t.cwd } : {}),
       });
     }
   }

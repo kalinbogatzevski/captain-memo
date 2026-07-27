@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.24] — 2026-07-27
+
+### Added
+- **The `[m]` token-flow tab now labels each session with its project**, read from the transcript's own `cwd`. This is the only *reliable* label available: a tmux session name cannot be joined to a session id from outside the process — the CLI does not hold its transcript open, several panes routinely share one cwd, `--resume` makes a transcript predate its process so start-time correlation fails, and `CLAUDE_CODE_SESSION_ID` is **inherited** by child processes (three panes here all reported the same id). The transcript's `cwd` is self-reported by the session itself, so it is exact. Sessions running in other terminals were always in this tab — each carries its own session id — they are now identifiable at a glance.
+
 ## [0.27.23] — 2026-07-27
 
 ### Added
