@@ -10,6 +10,8 @@ import {
   coRetrievalSimilarity,
   weightedSimilarity,
   similarityToDistance,
+  effectiveWeights,
+  maxBridgeableGapDays,
   DEFAULT_WEIGHTS,
 } from '../../../src/dreaming/distance.ts';
 
@@ -97,4 +99,53 @@ test('DEFAULT_WEIGHTS — co-retrieval is the dominant signal per spec', () => {
   expect(
     DEFAULT_WEIGHTS.semantic + DEFAULT_WEIGHTS.temporal + DEFAULT_WEIGHTS.coRetrieval,
   ).toBeCloseTo(1, 6);
+});
+
+test('effectiveWeights — semantic absent redistributes its share, sums to 1', () => {
+  const w = effectiveWeights(false);
+  expect(w.semantic).toBe(0);
+  expect(w.temporal).toBeCloseTo(0.375, 6);
+  expect(w.coRetrieval).toBeCloseTo(0.625, 6);
+  expect(w.temporal + w.coRetrieval).toBeCloseTo(1, 6);
+});
+
+test('effectiveWeights — semantic present passes DEFAULT_WEIGHTS through', () => {
+  expect(effectiveWeights(true)).toEqual({ ...DEFAULT_WEIGHTS });
+});
+
+test('effectiveWeights is what weightedSimilarity actually applies', () => {
+  // The regression this guards: orchestrate.ts once hardcoded its own copy of
+  // the renormalization for reporting. If the two ever diverge, the printed
+  // weights stop describing the distances that were computed.
+  const w = effectiveWeights(false);
+  const sim = weightedSimilarity({ semantic: null, temporal: 0.4, coRetrieval: 0.9 });
+  expect(sim).toBeCloseTo(w.temporal * 0.4 + w.coRetrieval * 0.9, 9);
+});
+
+test('maxBridgeableGapDays — default eps/τ cap co-retrieval at ~19 days', () => {
+  // Not cosmetic: this is why `--since 30d` cannot cluster across its own
+  // window. Δt ≤ −τ·ln((1−eps−wC)/wT) = −7·ln(0.025/0.375) ≈ 18.96d.
+  const gap = maxBridgeableGapDays(0.35, 7 * DAY);
+  expect(gap).toBeCloseTo(18.96, 1);
+});
+
+test('maxBridgeableGapDays — the ceiling is real, not advisory', () => {
+  const tau = 7 * DAY;
+  const eps = 0.35;
+  const gap = maxBridgeableGapDays(eps, tau);
+  const distAt = (days: number) => similarityToDistance(
+    weightedSimilarity({
+      semantic: null,
+      temporal: temporalSimilarity(0, days * DAY, tau),
+      coRetrieval: 1,          // perfect co-retrieval — the best possible case
+    }),
+  );
+  expect(distAt(gap - 0.5)).toBeLessThanOrEqual(eps);      // just inside: clusters
+  expect(distAt(gap + 0.5)).toBeGreaterThan(eps);          // just outside: cannot
+});
+
+test('maxBridgeableGapDays — unbounded when co-retrieval alone clears eps', () => {
+  // Loosen eps past the co-retrieval weight and the temporal term stops being
+  // the binding constraint at any age.
+  expect(maxBridgeableGapDays(0.5, 7 * DAY)).toBe(Infinity);
 });

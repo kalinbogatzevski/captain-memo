@@ -11,6 +11,7 @@ import {
   coRetrievalSimilarity,
   weightedSimilarity,
   similarityToDistance,
+  effectiveWeights,
 } from './distance.ts';
 
 export interface DreamRunOpts {
@@ -109,8 +110,10 @@ export function dryRun(inputs: DreamInputs, opts: DreamRunOpts): DreamReport {
     withoutCoRetrieval,
     clusters,
     noise,
-    // Renormalized weights as actually used (semantic absent → 0).
-    weights: { semantic: 0, temporal: 0.3 / 0.8, coRetrieval: 0.5 / 0.8 },
+    // Renormalized weights as actually used (semantic absent → 0). Derived from
+    // the same helper the distance function uses, so the report cannot drift
+    // from the arithmetic it describes.
+    weights: effectiveWeights(false),
     opts,
   };
 }

@@ -21,8 +21,12 @@
 
 /** Temporal similarity in (0, 1]. exp(-Δt / τ) — decays smoothly as the
  *  gap grows. τ = 7 days by default: pairs created within ~a week of each
- *  other still co-cluster; cross-month pairs essentially don't unless the
- *  co-retrieval signal carries them. */
+ *  other still co-cluster; older pairs need progressively more co-retrieval
+ *  to compensate, and past a hard ceiling they cannot cluster at all. That
+ *  ceiling is ~19 days at the default eps/τ — see maxBridgeableGapDays, which
+ *  computes it exactly and is printed in the dry-run report. (An earlier
+ *  version of this comment said co-retrieval could carry cross-month pairs.
+ *  It can't: at eps 0.35 even coRet=1.0 tops out just under 19 days.) */
 export function temporalSimilarity(
   a_epoch: number,
   b_epoch: number,
@@ -79,32 +83,84 @@ export const DEFAULT_WEIGHTS: SignalWeights = {
 };
 
 /**
+ * The weights ACTUALLY applied for a run. When the semantic layer is absent its
+ * share is redistributed across the other two, so the same eps threshold means
+ * the same thing whether or not semantic is wired up.
+ *
+ * Exported because two callers need this answer: the one that APPLIES the
+ * weights (weightedSimilarity, below) and the one that REPORTS them
+ * (orchestrate.ts). Those used to be separate copies of the same arithmetic —
+ * orchestrate hardcoded `0.3 / 0.8` — which meant the printed weights would
+ * have silently started lying the first time DEFAULT_WEIGHTS was tuned.
+ */
+export function effectiveWeights(
+  hasSemantic: boolean,
+  weights: SignalWeights = DEFAULT_WEIGHTS,
+): SignalWeights {
+  if (hasSemantic) return { ...weights };
+  const total = weights.temporal + weights.coRetrieval;
+  if (total <= 0) return { semantic: 0, temporal: 0, coRetrieval: 0 };
+  return {
+    semantic: 0,
+    temporal: weights.temporal / total,
+    coRetrieval: weights.coRetrieval / total,
+  };
+}
+
+/**
+ * Largest age gap, in days, that can still land inside `eps` — assuming a
+ * PERFECT co-retrieval score of 1.0. Past this point two observations cannot
+ * cluster however often they are recalled together, because the decayed
+ * temporal term can no longer cover the remaining distance.
+ *
+ * Solve  wC·1 + wT·e^(−Δt/τ) ≥ 1 − eps  for Δt:
+ *   Δt ≤ −τ · ln( (1 − eps − wC) / wT )
+ *
+ * Infinity when co-retrieval alone already clears the threshold (temporal is
+ * then never the binding constraint); 0 when even a same-instant pair can't.
+ *
+ * This is surfaced in the report because the default pairing is easy to
+ * misread: at eps 0.35, τ 7d and the semantic-less weights the ceiling is
+ * ~19 days, so a `--since 30d` run cannot cluster across its own window
+ * unless --tau-days is raised to match. The module header used to claim
+ * co-retrieval could carry cross-month pairs; at default eps it cannot.
+ */
+export function maxBridgeableGapDays(
+  eps: number,
+  tauSeconds: number,
+  weights: SignalWeights = effectiveWeights(false),
+): number {
+  const needed = 1 - eps - weights.coRetrieval;
+  if (needed <= 0) return Infinity;
+  if (weights.temporal <= 0) return 0;
+  const ratio = needed / weights.temporal;
+  if (ratio >= 1) return 0;
+  return (-tauSeconds * Math.log(ratio)) / 86400;
+}
+
+/**
  * Combine signals into a single [0, 1] similarity score.
  *
- * When semantic is null the remaining two weights are renormalized so the
- * scale stays comparable across runs with/without semantic input — important
- * because the same eps threshold should mean the same thing whether or not
- * the semantic layer is wired up.
+ * When semantic is null the remaining two weights are renormalized (see
+ * effectiveWeights) so the scale stays comparable across runs with/without
+ * semantic input.
  */
 export function weightedSimilarity(
   signals: SignalInputs,
   weights: SignalWeights = DEFAULT_WEIGHTS,
 ): number {
+  const w = effectiveWeights(signals.semantic !== null, weights);
   if (signals.semantic === null) {
-    const totalWithoutSem = weights.temporal + weights.coRetrieval;
-    if (totalWithoutSem <= 0) return 0;
-    const tNorm = weights.temporal / totalWithoutSem;
-    const cNorm = weights.coRetrieval / totalWithoutSem;
     return Math.max(0, Math.min(1,
-      tNorm * signals.temporal + cNorm * signals.coRetrieval,
+      w.temporal * signals.temporal + w.coRetrieval * signals.coRetrieval,
     ));
   }
   // Map cosine [-1, 1] → similarity [0, 1] (clipped) so weights compose cleanly.
   const semSim = Math.max(0, Math.min(1, (signals.semantic + 1) / 2));
   return Math.max(0, Math.min(1,
-    weights.semantic   * semSim
-    + weights.temporal * signals.temporal
-    + weights.coRetrieval * signals.coRetrieval,
+    w.semantic   * semSim
+    + w.temporal * signals.temporal
+    + w.coRetrieval * signals.coRetrieval,
   ));
 }
 

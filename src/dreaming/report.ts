@@ -5,6 +5,7 @@
 // the same CLI family. Pure: takes a DreamReport, returns string lines.
 
 import { bold, cyanBold, dim, gold, goldBold } from '../shared/ansi.ts';
+import { maxBridgeableGapDays } from './distance.ts';
 import type { DreamReport } from './orchestrate.ts';
 
 const RULE = '─'.repeat(60);
@@ -34,10 +35,21 @@ export function renderReport(report: DreamReport): string[] {
   out.push(`  ${dim('Without co-recall')} ${report.withoutCoRetrieval}`
     + `   ${dim(`(${fmtPct(report.withoutCoRetrieval / Math.max(1, report.total))} of input — high % means audit log is thin)`)}`);
   out.push(`  ${dim('eps / minPts / τ')}  ${report.opts.eps} / ${report.opts.minPts} / ${Math.round(report.opts.tauSeconds / 86400)}d`);
+  // Three decimals, not two: the renormalized weights are exact thirds-of-eights
+  // (0.375 / 0.625) and toFixed(2) rendered 0.3/0.8 as "0.37" — the float is
+  // 0.37499999999999994, so rounding at 2dp lost the value it was reporting.
   out.push(`  ${dim('Signal weights')}    `
-    + `semantic=${report.weights.semantic.toFixed(2)}  `
-    + `temporal=${report.weights.temporal.toFixed(2)}  `
-    + `coRet=${report.weights.coRetrieval.toFixed(2)}`);
+    + `semantic=${report.weights.semantic.toFixed(3)}  `
+    + `temporal=${report.weights.temporal.toFixed(3)}  `
+    + `coRet=${report.weights.coRetrieval.toFixed(3)}`);
+  // The eps/τ pair silently caps how far apart two observations can be and still
+  // cluster, no matter how strong the co-retrieval. Print it rather than let
+  // someone widen --since and wonder why the extra weeks produced nothing.
+  const bridge = maxBridgeableGapDays(report.opts.eps, report.opts.tauSeconds, report.weights);
+  out.push(`  ${dim('Max pair age gap')}  `
+    + (Number.isFinite(bridge)
+      ? `${bridge.toFixed(1)}d   ${dim('(pairs further apart cannot cluster at any co-retrieval — raise --tau-days to widen)')}`
+      : dim('unbounded (co-retrieval alone clears eps)')));
   out.push('');
 
   // Cluster summary
