@@ -43,8 +43,24 @@ export interface DetailObs {
   origin_agent?: string | null;
 }
 
+/** One live session's spend and memory's share of it, as GET /sessions/usage
+ *  reports it. `memory_share_pct` is null when the session has no fresh tokens
+ *  yet — rendered as '—' rather than 0%, which would claim a measurement. */
+export interface SessionUsageRow {
+  session_id: string;
+  fresh_input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  injected_tokens: number;
+  injections: number;
+  memory_share_pct: number | null;
+  last_activity_epoch_ms: number;
+}
+
 export interface FrameData {
   stats?: StatsResponse;
+  /** Live per-session token flow (the [m] tab). Absent until that tab is opened. */
+  sessions?: { window_ms: number; sessions: SessionUsageRow[] };
   page?: { rows: RecallRowView[]; total: number };
   detail?: DetailObs;
   /** The most recent worker fetch failed — everything on screen is the last-good
@@ -72,6 +88,7 @@ export function buildFrame(state: TopState, data: FrameData, dims: Dims): string
       case 'detail':     return detailFrame(state, data, dims);
       case 'help':       return helpFrame(state, dims);
       case 'sources':    return sourcesFrame(state, data, dims);
+      case 'tokens':     return tokensFrame(state, data, dims);
     }
   })();
   // A dead/zombie worker keeps the last-good stats on screen with a live clock —
@@ -198,7 +215,7 @@ function dashboardFrame(state: TopState, data: FrameData, dims: Dims): string[] 
   return [
     ...body,
     '',
-    hintBar(['[s]urfaced', '[r]ecalled', '[n]recent', '[a]I-sources', '[+/-]rate', '[?]help', '[q]uit']),
+    hintBar(['[s]urfaced', '[r]ecalled', '[n]recent', '[a]I-sources', '[m]tokens', '[+/-]rate', '[?]help', '[q]uit']),
   ];
 }
 
@@ -220,6 +237,58 @@ function sourcesFrame(state: TopState, data: FrameData, dims: Dims): string[] {
   }
   out.push('');
   out.push(hintBar(['[s]urfaced', '[r]ecalled', '[n]recent', '[a/Esc]back', '[+/-]rate', '[?]help', '[q]uit']));
+  return out;
+}
+
+// ── live per-session token flow ────────────────────────────────────────────
+
+/** Compact token count for a narrow column: 21630 → "21.6k", 2.1e6 → "2.1M". */
+function tok(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
+function tokensFrame(state: TopState, data: FrameData, dims: Dims): string[] {
+  const cols = dims.cols;
+  const out: string[] = [
+    spread(`  ${cyanBold('CAPTAIN MEMO')} ${dim('top — live token flow')}`, dim(liveStamp(state.refreshMs)), cols),
+    ruleLine(cols),
+    '',
+  ];
+  const rows = data.sessions?.sessions ?? [];
+  if (rows.length === 0) {
+    out.push('  ' + dim('(no sessions active in the window — a session appears once it writes a message)'));
+    out.push('');
+    out.push(hintBar(['[m/Esc]back', '[+/-]rate', '[?]help', '[q]uit']));
+    return out;
+  }
+
+  const mins = Math.round((data.sessions?.window_ms ?? 0) / 60_000);
+  out.push(`  ${dim(`sessions active in the last ${mins} min · fresh = input + cache-write, what actually entered the context`)}`);
+  out.push('');
+  out.push('  ' + dim('session   ') + dim('     fresh in') + dim('       out') + dim('   cache-read')
+    + dim('     memory') + dim('   share') + dim('   last'));
+
+  for (const r of rows.slice(0, Math.max(3, dims.rows - 10))) {
+    // '—' rather than 0% when there is no measurement: a session that has not been
+    // injected into is not one where memory cost nothing, it is one with no data.
+    const share = r.memory_share_pct === null || r.injections === 0
+      ? dim('     —')
+      : `${r.memory_share_pct.toFixed(2)}%`.padStart(6);
+    const mem = r.injections === 0 ? dim('—'.padStart(9)) : cyanBold(tok(r.injected_tokens).padStart(9));
+    const age = fmtAge(Math.max(0, Math.floor((Date.now() - r.last_activity_epoch_ms) / 1000)));
+    out.push('  ' + r.session_id.slice(0, 8) + '  '
+      + tok(r.fresh_input_tokens).padStart(13)
+      + tok(r.output_tokens).padStart(10)
+      + dim(tok(r.cache_read_tokens).padStart(13))
+      + mem + '  ' + share + '  ' + dim(age.padStart(6)));
+  }
+
+  out.push('');
+  out.push('  ' + dim('cache-read is the same context re-sent each turn — it dwarfs fresh, so share is of fresh'));
+  out.push('');
+  out.push(hintBar(['[s]urfaced', '[r]ecalled', '[a]I-sources', '[m/Esc]back', '[+/-]rate', '[?]help', '[q]uit']));
   return out;
 }
 

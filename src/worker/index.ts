@@ -1518,6 +1518,42 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         return Response.json({ ok: true });
       }
 
+      // LIVE PER-SESSION TOKEN FLOW — including sessions the broker cannot see.
+      // A brokered co-session is metered by the broker; a session the user started
+      // themselves talks straight to the provider and never crosses this machine's
+      // proxy. But it writes a transcript, and every assistant message in it carries
+      // the provider's OWN usage block — so the numbers exist on disk and this reads
+      // them rather than intercepting anything.
+      //
+      // The join to memory's side is free: the transcript filename IS the session_id,
+      // the same id recall-audit.jsonl records each injection against. One id, both
+      // halves — what a session spent on the model, and what memory contributed.
+      if (req.method === 'GET' && url.pathname === '/sessions/usage') {
+        const windowMs = Math.max(60_000, Number(url.searchParams.get('window_ms')) || 30 * 60_000);
+        const { readNativeSessionUsage, injectedBySession } = await import('./native-session-usage.ts');
+        const native = await readNativeSessionUsage(windowMs).catch(() => []);
+        const injected = await injectedBySession(
+          `${process.env.CAPTAIN_MEMO_DATA_DIR ?? DATA_DIR}/recall-audit.jsonl`,
+        ).catch(() => new Map<string, { tokens: number; injections: number }>());
+        return Response.json({
+          window_ms: windowMs,
+          sessions: native.map(s => {
+            const m = injected.get(s.session_id);
+            // FRESH tokens only. Cache reads are the same context re-sent every turn
+            // and dwarf everything in a long session, so a share measured against them
+            // compares a one-time write against N re-reads of itself.
+            const fresh = s.input_tokens + s.cache_creation_tokens;
+            return {
+              ...s,
+              fresh_input_tokens: fresh,
+              injected_tokens: m?.tokens ?? 0,
+              injections: m?.injections ?? 0,
+              memory_share_pct: fresh > 0 && m ? (m.tokens / fresh) * 100 : null,
+            };
+          }),
+        });
+      }
+
       if (req.method === 'GET' && url.pathname === '/stats') {
         // Stale-while-revalidate: serve the cached snapshot instantly and refresh in the
         // background, so an idle `top` poll never blocks on the ~1s recompute. Kick a

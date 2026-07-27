@@ -9,11 +9,11 @@
 // Replaces the old `watch`-based wrapper: a real TUI can sort, filter, page and
 // drill, which `watch` (a dumb reprint loop) never could.
 
-import { workerGet } from '../client.ts';
+import { workerGet, workerGetOptional } from '../client.ts';
 import { renderStats, type StatsResponse } from '../stats-render.ts';
 import { parseKey } from '../tui/keys.ts';
 import { initialState, reduce, type TopState, type Event } from '../tui/state.ts';
-import { buildFrame, clipFrame, type FrameData, type Dims, type RecallRowView, type DetailObs } from '../tui/frame.ts';
+import { buildFrame, clipFrame, type FrameData, type Dims, type RecallRowView, type DetailObs, type SessionUsageRow } from '../tui/frame.ts';
 
 const ALT_ON = '\x1b[?1049h';
 const ALT_OFF = '\x1b[?1049l';
@@ -111,6 +111,7 @@ export async function topCommand(args: string[]): Promise<number> {
     try {
       let stats: StatsResponse | undefined;
       let page: { rows: RecallRowView[]; total: number } | undefined;
+      let sessions: { window_ms: number; sessions: SessionUsageRow[] } | undefined;
       let detail: DetailObs | undefined;
       let detailId: number | null = null;
 
@@ -120,6 +121,12 @@ export async function topCommand(args: string[]): Promise<number> {
         stats = await workerGet('/stats') as StatsResponse;
       } else if (state.mode === 'sources') {
         stats = await workerGet('/stats') as StatsResponse;
+      } else if (state.mode === 'tokens') {
+        // Only fetched while the tab is open: it reads every live transcript, so it is
+        // the most expensive poll in `top` and must not run behind the dashboard.
+        const su = await workerGetOptional('/sessions/usage?window_ms=1800000') as
+          ({ window_ms: number; sessions: SessionUsageRow[] } | null);
+        sessions = su ?? undefined;
       } else if (state.mode === 'table') {
         stats = await workerGet('/stats') as StatsResponse;
         const params = new URLSearchParams({
@@ -143,6 +150,7 @@ export async function topCommand(args: string[]): Promise<number> {
       if (snapshot(state) !== reqSig) return;   // user navigated away; discard stale result
 
       if (stats) data.stats = stats;
+      if (sessions) data.sessions = sessions;
       if (page) { data.page = page; dispatch({ type: 'data', ids: page.rows.map(r => r.id) }); }
       if (detail) { data.detail = detail; loadedDetailId = detailId; }
       lastError = null;
