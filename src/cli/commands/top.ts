@@ -13,7 +13,7 @@ import { workerGet } from '../client.ts';
 import { renderStats, type StatsResponse } from '../stats-render.ts';
 import { parseKey } from '../tui/keys.ts';
 import { initialState, reduce, type TopState, type Event } from '../tui/state.ts';
-import { buildFrame, type FrameData, type Dims, type RecallRowView, type DetailObs } from '../tui/frame.ts';
+import { buildFrame, clipFrame, type FrameData, type Dims, type RecallRowView, type DetailObs } from '../tui/frame.ts';
 
 const ALT_ON = '\x1b[?1049h';
 const ALT_OFF = '\x1b[?1049l';
@@ -164,8 +164,11 @@ export async function topCommand(args: string[]): Promise<number> {
     // Keep the raw error as a dim detail line below (the banner is the alarm; this
     // is the "why" — timed out vs. connection refused).
     if (lastError) lines.push('  \x1b[2m(worker: ' + lastError + ')\x1b[0m');
+    // Clip AFTER the error line, so what we measure is the frame we actually write.
+    // Each line costs a row (the \r\n below), so an unclipped frame taller than the
+    // terminal scrolls the alt buffer and takes the wordmark with it.
     let buf = HOME;
-    for (const line of lines) buf += line + CLEAR_EOL + '\r\n';
+    for (const line of clipFrame(lines, d.rows)) buf += line + CLEAR_EOL + '\r\n';
     buf += CLEAR_BELOW;
     process.stdout.write(buf);
   };

@@ -5,6 +5,19 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.21] — 2026-07-27
+
+### Changed
+- **The dashboard uses the width it always had.** Measured at a 160-column panel: 69 rows with **5 873 unused cells — 85 blank columns per row, 53% of the panel** — because only a few blocks were laid out in columns and the rest hugged the left margin. `Tide │ Dream` and the status block now pair side by side when the panel affords it, each pair with its own minimum width so a block is never squeezed below its natural size — below the threshold it stacks exactly as before. **69 rows → 50.** `Embedder` deliberately keeps a full-width row of its own: with the 0.27.20 queue tail it reaches ~101 columns and a half-panel would wrap it.
+- **Percentages dropped the repeated `of corpus`.** It appeared on four separate lines (Recall Surfaced/Recalled, Tide Strengthened, Dream Co-retrieval) and the section heading already establishes the denominator. `(10.5% of corpus)` → `(10.5%)`. This is also what takes Tide's widest row from 81 columns to 71, which is what lets it pair inside a 145-column panel instead of needing 165.
+- **AI sources moved to the foot of the panel.** It has a dedicated `top` tab (`[a]`), so it is the right section to lose first when a short terminal clips the frame.
+
+### Fixed
+- **`top` no longer scrolls its own header off the screen.** The render loop wrote every frame line from `HOME` with no clip to `dims.rows`. The alt-screen buffer scrolls *gracefully*, so a panel taller than the terminal silently pushed the wordmark off the top and you saw the **bottom** of the dashboard with no indication anything was missing — and any change in row count moved everything on screen, which is what made an appearing queue row read as "the whole screen shifts". `clipFrame()` now pins the two header rows and the hint bar and drops from the bottom of the body; a frame that already fits is returned untouched.
+
+### Added
+- **A description of Local Dreaming** in `README.md` and `docs/GLOSSARY.md` — what the offline pass does, why it clusters on co-retrieval rather than embedding similarity, and an explicit note that `--dry-run` is the only path shipped. The glossary's `Dream` section now says outright that it lists the pipeline's **inputs**, not its output.
+
 ## [0.27.20] — 2026-07-27
 
 ### Changed

@@ -108,6 +108,15 @@ export interface DreamStatsBlock {
 
 const DEFAULT_PANEL_WIDTH = 60;
 const MIN_WIDE_PANEL = 100;     // below this we stick to single-column
+// Minimum panel width for a side-by-side pair: 2 × the wider block's content plus
+// the 3-column gap, so a paired block is never squeezed below its natural width —
+// it stacks instead. Measured 2026-07-27: Tide 71 and Dream 68, after the
+// percentages dropped their "of corpus" suffix.
+const PAIR_TIDE_DREAM = 145;
+// The status block pairs on the same principle, minus the Embedder row: its
+// widest halves are Indexing (~39) and Summarizer (~49), but a paused summarizer
+// carries a much longer note, so the threshold stays generous.
+const PAIR_STATUS = 137;
 const MAX_PANEL_WIDTH = 240;
 const BAR_WIDTH = 20;
 
@@ -250,53 +259,15 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
   out.push(...headerPanel(stats.version ?? 'unknown', panelWidth, opts.headerRight));
   out.push('');
 
-  // Status block. At narrow widths, four labeled rows. At wide widths,
-  // pair (Project, Indexing) | (Embedder, Disk) so the labels stay visible
-  // but the block is half as tall.
-  const statusLines = renderStatusBlock(stats);
-  if (wide && statusLines.length === 4) {
-    const left = statusLines.slice(0, 2);
-    const right = statusLines.slice(2, 4);
-    out.push(...twoColumn(left, right, panelWidth));
+  // Status block. Stacked when narrow; at wide widths `head` (Worker, Project,
+  // Indexing) pairs with `tail` (Summarizer, Disk) so the labels stay visible but
+  // the block is two rows shorter. `embedder` always takes its own full-width row:
+  // with a queue tail it reaches ~101 columns and a half-panel would wrap it.
+  const st = renderStatusBlock(stats, panelWidth);
+  if (wide && panelWidth >= PAIR_STATUS && st.tail.length > 0) {
+    out.push(...twoColumn(st.head, st.tail, panelWidth), st.embedder);
   } else {
-    out.push(...statusLines);
-  }
-  // Which summarizer is ACTUALLY running (resolved, post-fallback) — the answer to "is it codex
-  // or agy?" that used to require reading the worker log. `enabled:false` means the provider
-  // resolved but no transport was built (e.g. claude-oauth with no login) → nothing is summarized.
-  if (stats.summarizer) {
-    const s = stats.summarizer;
-    const model = s.model ? dim(` · ${s.model}`) : '';
-    // Three states, not two. `enabled` alone stayed GREEN through a 21h rate-limit
-    // outage (2026-07-26) because it only reports "a provider resolved at boot".
-    // A paused summarizer is the state users actually need to see.
-    let dot: string;
-    let note: string;
-    if (!s.enabled) {
-      dot = yellow('○');
-      note = dim(' (resolved, but NOT summarizing — check its login/config)');
-    } else if (s.cooling_down) {
-      dot = red('●');
-      const left = s.cooldown_until_epoch
-        ? Math.max(0, s.cooldown_until_epoch - Math.floor(Date.now() / 1000))
-        : 0;
-      const when = left > 0 ? `, retries in ${fmtUptime(left)}` : ', retrying now';
-      const streak = s.consecutive_failures && s.consecutive_failures > 1
-        ? ` after ${s.consecutive_failures} failures`
-        : '';
-      note = red(` · paused${streak}${when}`);
-    } else {
-      dot = green('●');
-      note = '';
-    }
-    out.push(`  ${dim('Summarizer'.padEnd(10))} ${dot} ${cyanBold(s.provider)}${model}${note}`);
-    // The verbatim reason. Shown whenever one exists — a summarizer that has
-    // recovered still explains the gap in the observation timeline.
-    if (s.last_error) {
-      const label = s.cooling_down ? 'reason' : 'last error';
-      const room = Math.max(20, panelWidth - 20 - label.length);
-      out.push(`  ${' '.repeat(10)} ${dim('↳')} ${dim(`${label}:`)} ${red(trimTitle(s.last_error, room))}`);
-    }
+    out.push(...st.head, st.embedder, ...st.tail);
   }
   out.push('');
 
@@ -320,12 +291,13 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
   }
 
   // AI sources — observations per originating AI tool (codex/agy/gemini/kimi/
-  // opencode/claude-code). Only when the worker reports the breakdown.
+  // opencode/claude-code). Only when the worker reports the breakdown. Built here,
+  // emitted at the foot of the panel: it has a dedicated `top` tab ([a]), so it is
+  // the right section to lose first when a short terminal clips the frame.
   const byOrigin = stats.observations.by_origin;
-  if (byOrigin && Object.keys(byOrigin).length > 0) {
-    out.push(...renderSourcesBlock(byOrigin, panelWidth, wide));
-    out.push('');
-  }
+  const sourcesBlock = byOrigin != null && Object.keys(byOrigin).length > 0
+    ? renderSourcesBlock(byOrigin, panelWidth, wide)
+    : [];
 
   if (stats.recall) {
     const recall = normalizeRecall(stats.recall);
@@ -356,9 +328,9 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
         ? ((recalled_count / surfaced_count) * 100).toFixed(2)
         : '0.00';
       out.push(`   ${dim('Surfaced'.padEnd(14))}${cyanBold(fmtCount(surfaced_count))}`
-        + ` ${dim('/')} ${fmtCount(total)}   ${dim(`(${sPct}% of corpus)`)}`);
+        + ` ${dim('/')} ${fmtCount(total)}   ${dim(`(${sPct}%)`)}`);
       out.push(`   ${dim('Recalled'.padEnd(14))}${cyanBold(fmtCount(recalled_count))}`
-        + ` ${dim('/')} ${fmtCount(total)}   ${dim(`(${rPct}% of corpus)`)}`);
+        + ` ${dim('/')} ${fmtCount(total)}   ${dim(`(${rPct}%)`)}`);
       out.push(`   ${dim('Drill-in rate'.padEnd(14))}${cyanBold(`${drillRate}%`)}`
         + `   ${dim(`(${recalled_count}/${surfaced_count} recalled out of surfaced)`)}`);
 
@@ -408,69 +380,156 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
     out.push('');
   }
 
-  if (stats.tide) {
-    out.push(...renderTideBlock(stats.tide, stats.observations.total, panelWidth));
-    out.push('');
-  }
+  // Tide │ Dream — side by side when the panel affords it. Both are 5 rows and
+  // neither fills half a wide panel on its own, so stacking them cost 6 rows for
+  // nothing.
+  out.push(...pairBlocks(
+    stats.tide ? renderTideBlock(stats.tide, stats.observations.total, pairWidth(panelWidth)) : [],
+    stats.dream ? renderDreamBlock(stats.dream, stats.observations.total, pairWidth(panelWidth)) : [],
+    stats.tide ? renderTideBlock(stats.tide, stats.observations.total, panelWidth) : [],
+    stats.dream ? renderDreamBlock(stats.dream, stats.observations.total, panelWidth) : [],
+    panelWidth, PAIR_TIDE_DREAM,
+  ));
 
-  if (stats.dream) {
-    out.push(sectionRule('Dream', panelWidth));
-    out.push(`   ${dim('data feeding the Dreams pipeline')}`);
-    const d = stats.dream;
-    const corpusTotal = stats.observations.total;
-
-    if (d.audit_log.bytes === 0 && d.audit_log.entries === 0) {
-      out.push(`   ${dim('Audit log'.padEnd(14))}${red('— off')}`
-        + `   ${dim('(set CAPTAIN_MEMO_RECALL_AUDIT=1 in worker.env)')}`);
-    } else {
-      const ageStr = d.audit_log.last_entry_epoch_ms !== null
-        ? fmtAgo(Math.floor((Date.now() - d.audit_log.last_entry_epoch_ms) / 1000))
-        : '—';
-      out.push(`   ${dim('Audit log'.padEnd(14))}`
-        + `${cyanBold(fmtBytes(d.audit_log.bytes))} ${dim('·')} ${cyanBold(fmtCount(d.audit_log.entries))} entries`
-        + ` ${dim('·')} ${dim(`last ${ageStr} ago`)}`);
-    }
-
-    if (d.co_retrieval.pairs === 0) {
-      out.push(`   ${dim('Co-retrieval'.padEnd(14))}${dim('0 pairs')}`
-        + `   ${dim('— no co-occurring observations yet')}`);
-    } else {
-      const pct = corpusTotal > 0
-        ? ((d.co_retrieval.docs_covered / corpusTotal) * 100).toFixed(1)
-        : '0.0';
-      out.push(`   ${dim('Co-retrieval'.padEnd(14))}`
-        + `${cyanBold(fmtCount(d.co_retrieval.pairs))} pairs`
-        + ` ${dim('·')} ${cyanBold(fmtCount(d.co_retrieval.docs_covered))} observations covered`
-        + ` ${dim(`(${pct}% of corpus)`)}`);
-    }
-    // Inline command, no "Preview" label — the dim arrow is the affordance.
-    out.push(`   ${dim('→')} ${cyan('captain-memo dream --dry-run')}`);
-    out.push('');
-  }
+  if (sourcesBlock.length > 0) out.push(...sourcesBlock, '');
 
   return out;
 }
 
-/** The four-row metadata block at the top of the panel. Caller decides
- *  whether to pair them side-by-side via twoColumn. */
-function renderStatusBlock(stats: StatsResponse): string[] {
-  const lines: string[] = [];
+/** Half of the panel, the width each block in a pair is rendered at. */
+function pairWidth(panelWidth: number): number {
+  return splitColumnWidths(panelWidth, 3).left;
+}
+
+/** Emit two sibling blocks side by side when the panel affords it, stacked otherwise.
+ *  Callers pass each block twice — rendered at column width and at full width — because
+ *  a block draws its own section rule to whatever width it was handed, so the two forms
+ *  are not interchangeable. An empty block (a section this payload doesn't have) makes
+ *  its partner render full width rather than sit in a half with a hole beside it. */
+function pairBlocks(
+  leftCol: string[], rightCol: string[],
+  leftFull: string[], rightFull: string[],
+  panelWidth: number, minPanel: number,
+): string[] {
+  if (leftCol.length > 0 && rightCol.length > 0 && panelWidth >= minPanel) {
+    return [...twoColumn(leftCol, rightCol, panelWidth), ''];
+  }
+  const out: string[] = [];
+  if (leftFull.length > 0) out.push(...leftFull, '');
+  if (rightFull.length > 0) out.push(...rightFull, '');
+  return out;
+}
+
+function renderDreamBlock(
+  dream: DreamStatsBlock, corpusTotal: number, blockWidth: number,
+): string[] {
+  const out: string[] = [];
+  out.push(sectionRule('Dream', blockWidth));
+  out.push(`   ${dim('data feeding the Dreams pipeline')}`);
+  const d = dream;
+
+  if (d.audit_log.bytes === 0 && d.audit_log.entries === 0) {
+    out.push(`   ${dim('Audit log'.padEnd(14))}${red('— off')}`
+      + `   ${dim('(set CAPTAIN_MEMO_RECALL_AUDIT=1 in worker.env)')}`);
+  } else {
+    const ageStr = d.audit_log.last_entry_epoch_ms !== null
+      ? fmtAgo(Math.floor((Date.now() - d.audit_log.last_entry_epoch_ms) / 1000))
+      : '—';
+    out.push(`   ${dim('Audit log'.padEnd(14))}`
+      + `${cyanBold(fmtBytes(d.audit_log.bytes))} ${dim('·')} ${cyanBold(fmtCount(d.audit_log.entries))} entries`
+      + ` ${dim('·')} ${dim(`last ${ageStr} ago`)}`);
+  }
+
+  if (d.co_retrieval.pairs === 0) {
+    out.push(`   ${dim('Co-retrieval'.padEnd(14))}${dim('0 pairs')}`
+      + `   ${dim('— no co-occurring observations yet')}`);
+  } else {
+    const pct = corpusTotal > 0
+      ? ((d.co_retrieval.docs_covered / corpusTotal) * 100).toFixed(1)
+      : '0.0';
+    out.push(`   ${dim('Co-retrieval'.padEnd(14))}`
+      + `${cyanBold(fmtCount(d.co_retrieval.pairs))} pairs`
+      + ` ${dim('·')} ${cyanBold(fmtCount(d.co_retrieval.docs_covered))} observations`
+      + ` ${dim(`(${pct}%)`)}`);
+  }
+  // Inline command, no "Preview" label — the dim arrow is the affordance.
+  out.push(`   ${dim('→')} ${cyan('captain-memo dream --dry-run')}`);
+  return out;
+}
+
+/** The metadata rows at the top of the panel, grouped by how they lay out rather
+ *  than returned as one flat list — the caller can then pair `head` against `tail`
+ *  without index arithmetic over an array of pre-rendered strings.
+ *
+ *  `head`     Worker / Project / Indexing — short rows, the left column.
+ *  `embedder` always its own full-width row: with a queue tail it is the widest
+ *             row on the panel (~101 columns) and would wrap inside a half.
+ *  `tail`     Summarizer (+ its reason line) and Disk — the right column. */
+function renderStatusBlock(stats: StatsResponse, panelWidth: number): {
+  head: string[]; embedder: string; tail: string[];
+} {
+  const head: string[] = [];
   // Liveness line. renderStats only runs when /stats actually answered, so the
   // worker IS online here (when it's down, the caller shows the unreachable
   // banner instead). Surfaces uptime so a silently-restarting worker is visible.
   if (stats.worker) {
-    lines.push(`  ${dim('Worker'.padEnd(10))} ${green('●')} online ${dim('·')} up ${cyanBold(fmtUptime(stats.worker.uptime_s))}`);
+    head.push(`  ${dim('Worker'.padEnd(10))} ${green('●')} online ${dim('·')} up ${cyanBold(fmtUptime(stats.worker.uptime_s))}`);
   }
-  lines.push(
+  head.push(
     `  ${dim('Project'.padEnd(10))} ${stats.project_id}`,
     `  ${dim('Indexing'.padEnd(10))} ${statusDot(stats.indexing.status)} ${indexingText(stats.indexing)}`,
-    `  ${dim('Embedder'.padEnd(10))} ${stats.embedder.model} ${dim('·')} ${dim(stats.embedder.endpoint)}`
-      + queueTail(stats.observations),
   );
+
+  const embedder = `  ${dim('Embedder'.padEnd(10))} ${stats.embedder.model} ${dim('·')} ${dim(stats.embedder.endpoint)}`
+    + queueTail(stats.observations);
+
+  const tail = renderSummarizerLines(stats.summarizer, panelWidth);
   if (stats.disk) {
-    lines.push(`  ${dim('Disk'.padEnd(10))} ${cyanBold(fmtBytes(stats.disk.bytes))}`);
+    tail.push(`  ${dim('Disk'.padEnd(10))} ${cyanBold(fmtBytes(stats.disk.bytes))}`);
   }
-  return lines;
+  return { head, embedder, tail };
+}
+
+/** Which summarizer is ACTUALLY running (resolved, post-fallback) — the answer to "is it codex
+ *  or agy?" that used to require reading the worker log. `enabled:false` means the provider
+ *  resolved but no transport was built (e.g. claude-oauth with no login) → nothing is summarized. */
+function renderSummarizerLines(
+  s: StatsResponse['summarizer'], panelWidth: number,
+): string[] {
+  if (!s) return [];
+  const out: string[] = [];
+  const model = s.model ? dim(` · ${s.model}`) : '';
+  // Three states, not two. `enabled` alone stayed GREEN through a 21h rate-limit
+  // outage (2026-07-26) because it only reports "a provider resolved at boot".
+  // A paused summarizer is the state users actually need to see.
+  let dot: string;
+  let note: string;
+  if (!s.enabled) {
+    dot = yellow('○');
+    note = dim(' (resolved, but NOT summarizing — check its login/config)');
+  } else if (s.cooling_down) {
+    dot = red('●');
+    const left = s.cooldown_until_epoch
+      ? Math.max(0, s.cooldown_until_epoch - Math.floor(Date.now() / 1000))
+      : 0;
+    const when = left > 0 ? `, retries in ${fmtUptime(left)}` : ', retrying now';
+    const streak = s.consecutive_failures && s.consecutive_failures > 1
+      ? ` after ${s.consecutive_failures} failures`
+      : '';
+    note = red(` · paused${streak}${when}`);
+  } else {
+    dot = green('●');
+    note = '';
+  }
+  out.push(`  ${dim('Summarizer'.padEnd(10))} ${dot} ${cyanBold(s.provider)}${model}${note}`);
+  // The verbatim reason. Shown whenever one exists — a summarizer that has
+  // recovered still explains the gap in the observation timeline.
+  if (s.last_error) {
+    const label = s.cooling_down ? 'reason' : 'last error';
+    const room = Math.max(20, panelWidth - 20 - label.length);
+    out.push(`  ${' '.repeat(10)} ${dim('↳')} ${dim(`${label}:`)} ${red(trimTitle(s.last_error, room))}`);
+  }
+  return out;
 }
 
 /** Observation backlog, rendered as a tail on the Embedder line instead of its
@@ -514,7 +573,7 @@ function renderTideBlock(
   // Recall "Surfaced" row typography; max stability rides alongside when present.
   const sPct = corpusTotal > 0 ? ((tide.strengthened / corpusTotal) * 100).toFixed(1) : '0.0';
   let strengthened = `   ${dim('Strengthened'.padEnd(14))}${cyanBold(fmtCount(tide.strengthened))}`
-    + ` ${dim('/')} ${fmtCount(corpusTotal)}   ${dim(`(${sPct}% of corpus)`)}`;
+    + ` ${dim('/')} ${fmtCount(corpusTotal)}   ${dim(`(${sPct}%)`)}`;
   if (tide.max_stability_days !== null) {
     strengthened += `   ${dim('· max stability')} ${cyanBold(`${tide.max_stability_days.toFixed(1)} d`)}`;
   }

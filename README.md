@@ -452,6 +452,20 @@ sqlite3 ~/.captain-memo/observations.db \
 
 The signal feeds future importance / decay scoring and "Dreaming" clustering — clusters of observations you actually keep drilling into, not just clusters that happen to share vocabulary.
 
+### Local Dreaming
+
+The offline pass that keeps the corpus from growing forever. It groups observations by what you actually recall **together** — not just by what shares vocabulary — and folds each cluster into one higher-level theme, archiving the originals rather than deleting them. It runs on your machine, on your schedule, against your local corpus, with the model login you already have.
+
+Co-retrieval is the point. Clustering purely on embedding similarity produces "groups that share words", which is the failure mode the design set out to avoid; two observations you keep pulling up in the same breath are much stronger evidence that they are one topic. That signal comes from the recall audit log above, so `CAPTAIN_MEMO_RECALL_AUDIT=1` needs to have been on during the look-back window for Dreaming to see anything.
+
+```bash
+captain-memo dream --dry-run              # preview the clusters, writes nothing
+captain-memo dream --dry-run --since 30d  # widen the look-back (default 14d)
+captain-memo dream --dry-run --json       # machine-readable report
+```
+
+**Preview only for now.** `--dry-run` is required — the write path (theme insertion + member archival) is deliberately not shipped until the dry-run output has been validated against real co-retrieval data. It never contacts the worker, never writes to the DB, and never calls the summarizer, so it is safe to run at any time. The `Dream` section in `stats` / `top` shows the inputs it would read: the audit log's size and entry count, and how many co-retrieval pairs have accumulated.
+
 ### Vendor provenance (v0.16.0+)
 
 Every captured observation is tagged with which AI tool wrote it — `claude-code`, `codex`, `cursor`, `gemini`, `opencode`, `vibe`, `vscode`, `jetbrains`, or `unknown` for older/unattributed rows — surfaced in `metadata.origin_agent` on every search and `get_full` hit. Today only Claude Code's hooks actively capture (the other tools are read-only recall, see [Cross-AI](#what-it-is)), so this is foundational: the tag is already there, ready for when another vendor's capture path lands, and it never blocks a capture — an unrecognized or missing signal always degrades to `unknown`, never an error.

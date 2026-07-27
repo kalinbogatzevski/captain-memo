@@ -255,7 +255,7 @@ test('renderStats — Dream section shows audit log + co-retrieval inputs', () =
   expect(text).toContain('87 entries');
   expect(text).toContain('Co-retrieval');
   expect(text).toContain('142');
-  expect(text).toContain('222 observations covered');
+  expect(text).toContain('222 observations');   // "covered" dropped 2026-07-27 — the label already says Co-retrieval
   expect(text).toContain('captain-memo dream --dry-run');
 });
 

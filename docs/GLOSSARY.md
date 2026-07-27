@@ -72,8 +72,14 @@ over time) outrank one-off noise, and lets idle memories fade.
 
 ## Dream — *data feeding the Dreams pipeline*
 
-Diagnostics for the co-retrieval / "dreaming" layer that finds relationships between
-observations.
+**Dreaming** is the offline pass that keeps the corpus from growing forever: it groups
+observations by what you actually recall **together** — not just by what shares
+vocabulary — and folds each cluster into one higher-level theme, archiving the originals
+rather than deleting them. It runs locally, on your schedule, with the model login you
+already have. Preview it with `captain-memo dream --dry-run`; the write path is not
+shipped yet.
+
+This section shows the **inputs** that pass would read — not its output.
 
 | Term | Meaning |
 |---|---|

@@ -83,6 +83,28 @@ export function buildFrame(state: TopState, data: FrameData, dims: Dims): string
   return frame;
 }
 
+/** Fit a frame to the terminal, keeping the two header rows and the hint bar pinned
+ *  and dropping from the bottom of the body.
+ *
+ *  Without this the render loop wrote every line from HOME and let the alt-screen
+ *  buffer scroll, so a panel taller than the terminal pushed its own wordmark off the
+ *  top — the user saw the BOTTOM of the dashboard and had no way to tell. It also made
+ *  every row-count change (a queue row appearing when work arrives) move the whole
+ *  screen. Pure and exported so the invariant is unit-testable. */
+export function clipFrame(lines: string[], rows: number): string[] {
+  if (rows <= 0) return [];
+  if (lines.length <= rows) return lines;
+  const HEAD = 2, TAIL = 1;
+  // Too short to hold the pinned rows themselves — take what fits from the top rather
+  // than emit head+tail and overflow anyway.
+  if (rows <= HEAD + TAIL) return lines.slice(0, rows);
+  return [
+    ...lines.slice(0, HEAD),
+    ...lines.slice(HEAD, HEAD + (rows - HEAD - TAIL)),
+    ...lines.slice(-TAIL),
+  ];
+}
+
 /** The prominent "data is stale" banner shown while the worker is unreachable.
  *  Pure + exported so its wording is unit-testable. `lastOkAtMs` is formatted as
  *  a wall-clock time (HH:MM:SS) so the user can see how old the on-screen data is. */
