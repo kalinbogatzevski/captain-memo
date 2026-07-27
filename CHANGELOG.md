@@ -5,6 +5,17 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.22] — 2026-07-27
+
+### Fixed
+- **The dry-run reported signal weights it could not prove.** `orchestrate.ts` hardcoded `temporal: 0.3 / 0.8, coRetrieval: 0.5 / 0.8` for the report while `weightedSimilarity` renormalized `DEFAULT_WEIGHTS` internally — two hand-maintained copies of one calculation, so tuning the weights would have left the report confidently describing the old ones with no test to catch it. Both now derive from a single exported `effectiveWeights()`. The duplication also produced the visible symptom: `0.3 / 0.8` evaluates to `0.37499999999999994`, so `toFixed(2)` printed `0.37` for a weight that is exactly `0.375`. Weights now print at 3dp — they are exact eighths, and anyone verifying a cluster by hand starts here.
+- **A hard ceiling on pair age that the code denied having.** `distance.ts` claimed cross-month pairs still cluster "unless the co-retrieval signal carries them". They don't, and it can't: requiring `0.625·coRet + 0.375·e^(−Δt/τ) ≥ 1 − eps` caps Δt at `−7·ln(0.025/0.375) ≈ 18.96 days` even at a **perfect** co-retrieval score of 1.0. So `--since 30d` could not cluster across its own window however strong the evidence, and nothing said so.
+
+### Added
+- **`Max pair age gap` on every dry-run**, computed by the new `maxBridgeableGapDays()`. No default was changed — the shipped pairing is coherent (a 14d window under a 19d ceiling), so re-clustering everyone's corpus to fix a problem that does not occur out of the box would have been the wrong trade. The run simply stops being silent about a limit it was already enforcing.
+- **A warning when `--since` is wider than that ceiling**, naming the exact fix: `Use --tau-days 12`. `tauDaysForWindow()` reads the per-day constant off `maxBridgeableGapDays` at τ=1d rather than restating the logarithm, so the advice cannot drift from the limit it advises about.
+- **Where the name "dreaming" comes from**, in `README.md` and `docs/GLOSSARY.md`. Anthropic shipped [Dreams](https://platform.claude.com/docs/en/managed-agents/dreams) in Claude Managed Agents in May 2026: a pass that reads an agent's memory store alongside its past session transcripts and emits a reorganised store, leaving the input intact. Their split is the one worth borrowing — memory captures what an agent learns *as it works*, dreaming refines it *between sessions*. Ours differs in where it runs and what it reads: local SQLite files, grouped by co-retrieval rather than by a model re-reading transcripts. Deliberately not repeated: several third-party write-ups attribute a REM-sleep metaphor and a "Harvey 6×" figure to Anthropic; neither appears in Anthropic's own doc or blog.
+
 ## [0.27.21] — 2026-07-27
 
 ### Changed
