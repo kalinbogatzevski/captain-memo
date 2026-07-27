@@ -139,6 +139,30 @@ export function maxBridgeableGapDays(
 }
 
 /**
+ * Smallest τ (in days) whose pair-age ceiling covers a look-back window of
+ * `windowDays` — i.e. what to pass to --tau-days so a widened --since can
+ * actually cluster across itself.
+ *
+ * The ceiling is linear in τ (ceiling = τ · K for a constant K fixed by eps and
+ * the weights), so K is read straight off maxBridgeableGapDays at τ = 1 day
+ * rather than restating the logarithm here. At the defaults K ≈ 2.708, which is
+ * why the shipped pairing is coherent: --since 14d against a 7d τ gives a 19d
+ * ceiling with room to spare.
+ *
+ * Returns 0 when no τ is needed (the ceiling is already unbounded).
+ */
+export function tauDaysForWindow(
+  windowDays: number,
+  eps: number,
+  weights: SignalWeights = effectiveWeights(false),
+): number {
+  const perDay = maxBridgeableGapDays(eps, 86400, weights);
+  if (!Number.isFinite(perDay)) return 0;
+  if (perDay <= 0) return Infinity;
+  return windowDays / perDay;
+}
+
+/**
  * Combine signals into a single [0, 1] similarity score.
  *
  * When semantic is null the remaining two weights are renormalized (see

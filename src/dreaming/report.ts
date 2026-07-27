@@ -5,7 +5,7 @@
 // the same CLI family. Pure: takes a DreamReport, returns string lines.
 
 import { bold, cyanBold, dim, gold, goldBold } from '../shared/ansi.ts';
-import { maxBridgeableGapDays } from './distance.ts';
+import { maxBridgeableGapDays, tauDaysForWindow } from './distance.ts';
 import type { DreamReport } from './orchestrate.ts';
 
 const RULE = '─'.repeat(60);
@@ -48,8 +48,22 @@ export function renderReport(report: DreamReport): string[] {
   const bridge = maxBridgeableGapDays(report.opts.eps, report.opts.tauSeconds, report.weights);
   out.push(`  ${dim('Max pair age gap')}  `
     + (Number.isFinite(bridge)
-      ? `${bridge.toFixed(1)}d   ${dim('(pairs further apart cannot cluster at any co-retrieval — raise --tau-days to widen)')}`
+      ? `${bridge.toFixed(1)}d   ${dim('(pairs further apart cannot cluster at any co-retrieval)')}`
       : dim('unbounded (co-retrieval alone clears eps)')));
+
+  // A window wider than the ceiling is the one way to widen --since and get
+  // silently worse results. Say so, and name the exact τ that fixes it — the
+  // defaults are coherent (14d window under a 19d ceiling), so this only fires
+  // for someone who has already reached for a bigger window.
+  const since = report.opts.sinceDays;
+  if (since !== undefined && Number.isFinite(bridge) && since > bridge) {
+    const needTau = Math.ceil(tauDaysForWindow(since, report.opts.eps, report.weights));
+    out.push('');
+    out.push(`  ${gold('⚠')}  ${bold(`--since ${since}d is wider than the ${bridge.toFixed(1)}d pair-age ceiling.`)}`);
+    out.push(`     ${dim(`Pairs more than ${bridge.toFixed(1)} days apart cannot cluster however often they are`)}`);
+    out.push(`     ${dim('recalled together, so the extra window is contributing nothing. Use')} ${gold(`--tau-days ${needTau}`)}`);
+    out.push(`     ${dim('to make the ceiling cover the whole window.')}`);
+  }
   out.push('');
 
   // Cluster summary

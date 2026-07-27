@@ -89,6 +89,7 @@ export async function dreamCommand(args: string[]): Promise<number> {
     eps,
     minPts,
     tauSeconds: tauDays * 86400,
+    sinceDays,
   };
 
   const inputs = await loadDreamInputs(sinceEpoch, projectId);

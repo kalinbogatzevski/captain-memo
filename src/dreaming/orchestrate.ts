@@ -21,6 +21,11 @@ export interface DreamRunOpts {
   minPts: number;
   /** Temporal decay constant in seconds. Spec default 7 days. */
   tauSeconds: number;
+  /** Look-back window in days, as the user asked for it. Carried purely so the
+   *  report can check it against the pair-age ceiling — a window wider than the
+   *  ceiling silently cannot cluster across itself, and that is worth saying out
+   *  loud rather than leaving to be discovered. */
+  sinceDays?: number;
 }
 
 export interface DreamCluster {

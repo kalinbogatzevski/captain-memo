@@ -12,6 +12,7 @@ import {
   similarityToDistance,
   effectiveWeights,
   maxBridgeableGapDays,
+  tauDaysForWindow,
   DEFAULT_WEIGHTS,
 } from '../../../src/dreaming/distance.ts';
 
@@ -148,4 +149,24 @@ test('maxBridgeableGapDays — unbounded when co-retrieval alone clears eps', ()
   // Loosen eps past the co-retrieval weight and the temporal term stops being
   // the binding constraint at any age.
   expect(maxBridgeableGapDays(0.5, 7 * DAY)).toBe(Infinity);
+});
+
+test('tauDaysForWindow — the suggested τ actually covers the window', () => {
+  // The warning is only useful if following its advice works. Take the τ it
+  // would print for a 30d window and check the resulting ceiling really reaches
+  // 30 days, rather than trusting the algebra twice.
+  const eps = 0.35;
+  const needTau = tauDaysForWindow(30, eps);
+  expect(needTau).toBeCloseTo(30 / 2.708, 1);
+  expect(maxBridgeableGapDays(eps, Math.ceil(needTau) * DAY)).toBeGreaterThanOrEqual(30);
+});
+
+test('tauDaysForWindow — defaults are coherent, so no advice is needed', () => {
+  // --since 14d under τ=7d: the shipped pairing must NOT trip the warning.
+  expect(maxBridgeableGapDays(0.35, 7 * DAY)).toBeGreaterThan(14);
+  expect(tauDaysForWindow(14, 0.35)).toBeLessThanOrEqual(7);
+});
+
+test('tauDaysForWindow — 0 when the ceiling is already unbounded', () => {
+  expect(tauDaysForWindow(90, 0.5)).toBe(0);
 });
