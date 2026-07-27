@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.20] — 2026-07-27
+
+### Changed
+- **The observation backlog rides on the `Embedder` line instead of claiming a row of its own.** 0.27.18 added the `Queue  2 949 waiting · 20 in flight · 678 failed` row, pushed only when the queue is non-empty — which under `top` means the whole panel below it drops a line the moment work arrives and springs back when it drains. Since `top` re-renders the entire panel on every refresh, that read as the screen jumping. The counts now render as a tail on the `Embedder` row, so the status block is a fixed height whether or not there is a backlog: `Embedder  voyage-4-lite · https://api.voyageai.com/v1/embeddings   Queue 0 waiting · 6 in flight`. Same three counts, same colours, still silent when the queue is idle. Known ceiling: below roughly 110 columns the combined row can wrap when all three states are non-zero (the endpoint alone already overflows the 60-column default).
+
 ## [0.27.19] — 2026-07-26
 
 ### Fixed

@@ -298,16 +298,6 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
       out.push(`  ${' '.repeat(10)} ${dim('↳')} ${dim(`${label}:`)} ${red(trimTitle(s.last_error, room))}`);
     }
   }
-  // Backlog. The counts were always in /stats but rendered nowhere, so 2 949
-  // observations stuck behind a dead summarizer looked exactly like idle.
-  const q = stats.observations;
-  const qFailed = q.queue_failed ?? 0;
-  if (q.queue_pending > 0 || q.queue_processing > 0 || qFailed > 0) {
-    const parts = [`${cyanBold(fmtCount(q.queue_pending))} ${dim('waiting')}`];
-    if (q.queue_processing > 0) parts.push(`${cyanBold(fmtCount(q.queue_processing))} ${dim('in flight')}`);
-    if (qFailed > 0) parts.push(`${red(fmtCount(qFailed))} ${dim('failed')}`);
-    out.push(`  ${dim('Queue'.padEnd(10))} ${parts.join(dim(' · '))}`);
-  }
   out.push('');
 
   // CORPUS + EFFICIENCY: side by side in wide mode, stacked when narrow.
@@ -474,12 +464,27 @@ function renderStatusBlock(stats: StatsResponse): string[] {
   lines.push(
     `  ${dim('Project'.padEnd(10))} ${stats.project_id}`,
     `  ${dim('Indexing'.padEnd(10))} ${statusDot(stats.indexing.status)} ${indexingText(stats.indexing)}`,
-    `  ${dim('Embedder'.padEnd(10))} ${stats.embedder.model} ${dim('·')} ${dim(stats.embedder.endpoint)}`,
+    `  ${dim('Embedder'.padEnd(10))} ${stats.embedder.model} ${dim('·')} ${dim(stats.embedder.endpoint)}`
+      + queueTail(stats.observations),
   );
   if (stats.disk) {
     lines.push(`  ${dim('Disk'.padEnd(10))} ${cyanBold(fmtBytes(stats.disk.bytes))}`);
   }
   return lines;
+}
+
+/** Observation backlog, rendered as a tail on the Embedder line instead of its
+ *  own row: under `top` the queue appears and disappears between refreshes, and
+ *  a whole extra row shoved the rest of the panel down a line each time it did.
+ *  '' when nothing is queued — the counts were always in /stats, so 2 949
+ *  observations stuck behind a dead summarizer must never look like idle. */
+function queueTail(q: StatsResponse['observations']): string {
+  const failed = q.queue_failed ?? 0;
+  if (q.queue_pending <= 0 && q.queue_processing <= 0 && failed <= 0) return '';
+  const parts = [`${cyanBold(fmtCount(q.queue_pending))} ${dim('waiting')}`];
+  if (q.queue_processing > 0) parts.push(`${cyanBold(fmtCount(q.queue_processing))} ${dim('in flight')}`);
+  if (failed > 0) parts.push(`${red(fmtCount(failed))} ${dim('failed')}`);
+  return `   ${dim('Queue')} ${parts.join(dim(' · '))}`;
 }
 
 /** Tide sub-block: the memory-lifecycle re-rank state. Meaningful even when off
