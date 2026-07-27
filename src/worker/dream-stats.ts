@@ -37,6 +37,22 @@ export interface DreamStats {
      *  surfaced alongside at least one other doc). */
     docs_covered: number;
   };
+  /** What auto-injection has actually put into context windows.
+   *
+   *  `since_epoch_ms` is derived from the data — the timestamp of the FIRST
+   *  entry carrying injected_tokens — rather than configured. The field only
+   *  began being written in 0.27.23, so every older line is silently absent
+   *  from these totals; publishing the start date alongside them is what keeps
+   *  "1.2 M tokens" from being read as an all-time figure it is not. It also
+   *  needs no migration and no hardcoded date to go stale. */
+  injected: {
+    /** Sum of injected_tokens across every entry that carries it. */
+    tokens: number;
+    /** Entries carrying the field — the denominator for a per-injection mean. */
+    injections: number;
+    /** Epoch ms of the earliest measured injection; null until the first one. */
+    since_epoch_ms: number | null;
+  };
 }
 
 interface CacheEntry {
@@ -49,6 +65,7 @@ const CACHE = new Map<string, CacheEntry>();
 interface AuditEntry {
   ts?: number;
   hits?: Array<{ doc_id?: string }>;
+  injected_tokens?: number;
 }
 
 /**
@@ -67,6 +84,7 @@ export async function getDreamStats(auditLogPath: string): Promise<DreamStats> {
     return {
       audit_log: { path: auditLogPath, bytes: 0, entries: 0, last_entry_epoch_ms: null },
       co_retrieval: { pairs: 0, docs_covered: 0 },
+      injected: { tokens: 0, injections: 0, since_epoch_ms: null },
     };
   }
 
@@ -80,6 +98,7 @@ export async function getDreamStats(auditLogPath: string): Promise<DreamStats> {
     return {
       audit_log: { path: auditLogPath, bytes, entries: 0, last_entry_epoch_ms: null },
       co_retrieval: { pairs: 0, docs_covered: 0 },
+      injected: { tokens: 0, injections: 0, since_epoch_ms: null },
     };
   }
 
@@ -87,6 +106,9 @@ export async function getDreamStats(auditLogPath: string): Promise<DreamStats> {
   let lastTs: number | null = null;
   const pairs = new Set<string>();
   const docsCovered = new Set<string>();
+  let injectedTokens = 0;
+  let injections = 0;
+  let injectedSinceTs: number | null = null;
 
   for (const rawLine of text.split('\n')) {
     if (!rawLine.trim()) continue;
@@ -98,6 +120,17 @@ export async function getDreamStats(auditLogPath: string): Promise<DreamStats> {
       continue;  // Corrupt line — skip but still counted in entries.
     }
     if (typeof entry.ts === 'number') lastTs = entry.ts;
+    // Injection cost. Guarded on the field's PRESENCE, not truthiness: a genuine
+    // 0-token injection (all hits filtered) is a real event and must still count
+    // toward the denominator. Search-path lines omit the field entirely and are
+    // correctly skipped — nothing entered a context window there.
+    if (typeof entry.injected_tokens === 'number' && Number.isFinite(entry.injected_tokens)) {
+      injectedTokens += entry.injected_tokens;
+      injections++;
+      if (injectedSinceTs === null && typeof entry.ts === 'number') {
+        injectedSinceTs = entry.ts;   // append-only log ⇒ first seen IS the earliest
+      }
+    }
     const hits = entry.hits ?? [];
     if (hits.length < 2) continue;
     const docs = Array.from(new Set(
@@ -119,6 +152,7 @@ export async function getDreamStats(auditLogPath: string): Promise<DreamStats> {
   const result: DreamStats = {
     audit_log: { path: auditLogPath, bytes, entries, last_entry_epoch_ms: lastTs },
     co_retrieval: { pairs: pairs.size, docs_covered: docsCovered.size },
+    injected: { tokens: injectedTokens, injections, since_epoch_ms: injectedSinceTs },
   };
   CACHE.set(auditLogPath, { mtimeMs, result });
   return result;

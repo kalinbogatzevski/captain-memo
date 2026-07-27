@@ -104,6 +104,13 @@ export interface DreamStatsBlock {
     pairs: number;
     docs_covered: number;
   };
+  /** Optional so an older worker (pre-0.27.23) still renders — the block just
+   *  omits the Injected line rather than showing a fabricated zero. */
+  injected?: {
+    tokens: number;
+    injections: number;
+    since_epoch_ms: number | null;
+  };
 }
 
 const DEFAULT_PANEL_WIDTH = 60;
@@ -193,6 +200,18 @@ function fmtCompact(n: number): string {
   if (n < 1_000_000) return `${(n / 1000).toFixed(1)} k`;
   if (n < 1_000_000_000) return `${(n / 1_000_000).toFixed(1)} M`;
   return `${(n / 1_000_000_000).toFixed(1)} B`;
+}
+
+/** Short absolute date for a measurement epoch: "27 Jul", or "27 Jul 2025" once
+ *  it is no longer the current year. Absolute rather than relative on purpose —
+ *  "since 27 Jul" states when a counter started; "since 3 days ago" would drift
+ *  every time the panel re-renders and reads as an age, not an origin. */
+function fmtSince(epochMs: number): string {
+  const d = new Date(epochMs);
+  const day = d.getDate();
+  const mon = d.toLocaleString('en-US', { month: 'short' });
+  const year = d.getFullYear();
+  return year === new Date().getFullYear() ? `${day} ${mon}` : `${day} ${mon} ${year}`;
 }
 
 /** "  Title ──────…" drawn to the given width. Section heads use plain
@@ -333,6 +352,22 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
         + ` ${dim('/')} ${fmtCount(total)}   ${dim(`(${rPct}%)`)}`);
       out.push(`   ${dim('Drill-in rate'.padEnd(14))}${cyanBold(`${drillRate}%`)}`
         + `   ${dim(`(${recalled_count}/${surfaced_count} recalled out of surfaced)`)}`);
+
+      // What that surfacing COST. Surfaced/Recalled say how often memory was used;
+      // without this they are half an argument — usefulness with no price beside it.
+      // The "since" is load-bearing, not decoration: injected_tokens only started
+      // being recorded in 0.27.23, so this total is NOT all-time and must never be
+      // read as one. It is derived from the first measured entry, so it needs no
+      // config and cannot go stale.
+      const inj = stats.dream?.injected;
+      if (inj && inj.injections > 0) {
+        const avg = Math.round(inj.tokens / inj.injections);
+        const since = inj.since_epoch_ms !== null ? fmtSince(inj.since_epoch_ms) : '—';
+        out.push(`   ${dim('Injected'.padEnd(14))}${cyanBold(fmtCompact(inj.tokens))} ${dim('tok')}`
+          + ` ${dim('·')} ${fmtCount(inj.injections)} ${dim('injections')}`
+          + ` ${dim('·')} ${dim(`~${fmtCount(avg)} avg`)}`
+          + `   ${dim(`since ${since}`)}`);
+      }
 
       const split = splitColumnWidths(panelWidth, 3);
       const hasSurfaced = recall.top_surfaced.length > 0;

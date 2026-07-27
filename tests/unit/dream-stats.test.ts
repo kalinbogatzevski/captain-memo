@@ -6,7 +6,7 @@
 // the mtime-keyed cache.
 
 import { test, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync, utimesSync, statSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, appendFileSync, utimesSync, statSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { getDreamStats, _resetDreamStatsCache } from '../../src/worker/dream-stats.ts';
@@ -110,4 +110,52 @@ test('getDreamStats — caches against mtime; mutation invalidates cache', async
   const refreshed = await getDreamStats(auditPath);
   expect(refreshed).not.toBe(first);
   expect(refreshed.co_retrieval.pairs).toBe(2);
+});
+
+test('injected — sums tokens and derives the start date from the data', async () => {
+  const T0 = 1_800_000_000_000;
+  writeFileSync(auditPath, [
+    // A search-path line: no injected_tokens, must not count toward either figure.
+    JSON.stringify({ ts: T0 - 5000, session_id: 'search', query: 'q', hits: [] }),
+    JSON.stringify({ ts: T0, injected_tokens: 400, hits: [] }),
+    JSON.stringify({ ts: T0 + 1000, injected_tokens: 600, hits: [] }),
+  ].join('\n') + '\n');
+  const s = await getDreamStats(auditPath);
+  expect(s.injected.tokens).toBe(1000);
+  expect(s.injected.injections).toBe(2);
+  // The EARLIER search line must not become the start date — only measured
+  // injections define when the measurement began.
+  expect(s.injected.since_epoch_ms).toBe(T0);
+});
+
+test('injected — a genuine zero-token injection still counts as one', async () => {
+  // Guarding on truthiness instead of presence would silently drop these and
+  // inflate the per-injection average.
+  writeFileSync(auditPath, JSON.stringify({ ts: 1_800_000_000_000, injected_tokens: 0, hits: [] }) + '\n');
+  const s = await getDreamStats(auditPath);
+  expect(s.injected.injections).toBe(1);
+  expect(s.injected.tokens).toBe(0);
+});
+
+test('injected — totals stay correct after the log is appended to', async () => {
+  const T0 = 1_800_000_000_000;
+  writeFileSync(auditPath, JSON.stringify({ ts: T0, injected_tokens: 100, hits: [] }) + '\n');
+  const first = await getDreamStats(auditPath);
+  expect(first.injected.tokens).toBe(100);
+  appendFileSync(auditPath, JSON.stringify({ ts: T0 + 1, injected_tokens: 250, hits: [] }) + '\n');
+  // Force a distinct mtime: this line's digest is mtime-keyed, and both writes can
+  // land inside the same millisecond, which would serve the cached pre-append result.
+  // Same technique the pair-counting cache test above uses.
+  utimesSync(auditPath, new Date(), new Date(statSync(auditPath).mtimeMs + 5000));
+  const second = await getDreamStats(auditPath);
+  expect(second.injected.tokens).toBe(350);        // 100 counted once, not twice
+  expect(second.injected.injections).toBe(2);
+  expect(second.injected.since_epoch_ms).toBe(T0); // start date survives the incremental read
+});
+
+test('injected — zeroed when the audit log does not exist', async () => {
+  const s = await getDreamStats(auditPath);
+  expect(s.injected.tokens).toBe(0);
+  expect(s.injected.injections).toBe(0);
+  expect(s.injected.since_epoch_ms).toBeNull();
 });
