@@ -5,6 +5,17 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.23] — 2026-07-27
+
+### Added
+- **Memory's cost is now measurable, per corpus and per session.** `injected_tokens` is recorded on every auto-injection and aggregated into `stats` (`Injected 12.9 k tok · 23 injections · ~562 avg   since 27 Jul`), with the new `GET /sessions/usage` breaking it out per session. The "since" travels with every total on purpose: the field only began being written in this release, so the figure is not all-time and a bare number would overstate it.
+- **`top` gained an `[m]` tab: live per-session token flow — native sessions included.** A session started by hand talks straight to the provider, so nothing on this machine meters it. But it writes a transcript, and every assistant message in it carries the **provider's own** `usage` block — the numbers were on disk all along. The join is free because the transcript filename **is** the `session_id`, the same id the recall audit records each injection against. `cache-read` is shown dim and separate rather than folded into an input total: it is the same context re-sent each turn, so a share measured against it compares a one-time write against N re-reads of itself.
+- **`Max pair age gap` on every dreaming dry-run**, plus a warning naming the exact `--tau-days` fix when `--since` is wider than that ceiling.
+
+### Fixed
+- **The snippet cap was silently overriding the token budget.** Injection advertised 4 000 tokens and spent a mean of **736** across 89 real injections — 18%. Not relevance running out: a fixed 600-character slice was applied per hit *before* the envelope, and `formatEnvelope` already enforces the budget and truncates proportionally. So the pre-filter was quietly acting as the enforcer and the two numbers had never been reconciled. The cap is now derived from the budget, floored at the old 600 so a small budget can never make recall worse than before. Same queries after the change: 1 254 and 1 521 tokens, still 5 hits — the remaining gap is content, which is the correct place for the limit to live.
+- **The dry-run reported signal weights it could not prove**, and **an age ceiling the code denied having** — see 0.27.22.
+
 ## [0.27.22] — 2026-07-27
 
 ### Fixed
