@@ -185,3 +185,57 @@ test('a plain session reports neither — absent, not empty string', async () =>
   expect(s!.agentName).toBeUndefined();
   expect(s!.ownerSession).toBeUndefined();
 });
+
+test('agent transcripts are found and attributed to the session that spawned them', async () => {
+  // A workflow's fan-out lives at <project>/<PARENT-UUID>/subagents/workflows/<wf>/agent-*.jsonl.
+  // The parent is not inferred from content — it IS the directory. That is why this beats
+  // every heuristic tried against agentName / cwd / bridgeSessionId, each of which was wrong.
+  // These files were invisible before: the UUID filename gate skips agent-<hex>.jsonl and the
+  // scan never recursed, hiding 33% of billed tokens on this machine.
+  const { mkdirSync: mk } = await import('fs');
+  writeTranscript(SID, msg(100, 20));
+  const wf = join(projectDir, SID, 'subagents', 'workflows', 'wf_abc123');
+  mk(wf, { recursive: true });
+  writeFileSync(join(wf, 'agent-a1b2c3d4.jsonl'), msg(500, 60));
+  writeFileSync(join(projectDir, SID, 'subagents', 'agent-deadbeef.jsonl'), msg(7, 3));
+  // journal.jsonl is the workflow's own bookkeeping, NOT a session — reporting it would
+  // invent a row with no tokens and no meaning.
+  writeFileSync(join(wf, 'journal.jsonl'), '{"note":"not a session"}\n');
+
+  const all = await readNativeSessionUsage();
+  const parent = all.find(s => s.session_id === SID);
+  const agents = all.filter(s => s.parentSessionId);
+
+  expect(parent!.parentSessionId).toBeUndefined();      // a top-level session has no parent
+  expect(agents).toHaveLength(2);                       // journal excluded
+  expect(agents.every(a => a.parentSessionId === SID)).toBe(true);
+
+  const inWorkflow = agents.find(a => a.session_id === 'agent-a1b2c3d4');
+  expect(inWorkflow!.workflowId).toBe('wf_abc123');
+  expect(inWorkflow!.input_tokens).toBe(500);
+  const plain = agents.find(a => a.session_id === 'agent-deadbeef');
+  expect(plain!.workflowId).toBeUndefined();            // not every agent belongs to a workflow
+
+  // The parent's own tokens stay its own — an agent's spend is NOT folded into it, so the
+  // two are never double-counted in a fleet total.
+  expect(parent!.input_tokens).toBe(100);
+});
+
+test('an idle agent falls out of the window like any other session', async () => {
+  const { mkdirSync: mk } = await import('fs');
+  writeTranscript(SID, msg(10, 2));
+  const sub = join(projectDir, SID, 'subagents');
+  mk(sub, { recursive: true });
+  const p = join(sub, 'agent-0f0f0f0f.jsonl');
+  writeFileSync(p, msg(999, 99));
+  const old = new Date(Date.now() - 3 * 60 * 60_000);
+  utimesSync(p, old, old);
+  expect((await readNativeSessionUsage()).filter(s => s.parentSessionId)).toHaveLength(0);
+});
+
+test('a session with no agents costs nothing and reports nothing extra', async () => {
+  writeTranscript(SID, msg(10, 2));
+  const all = await readNativeSessionUsage();
+  expect(all).toHaveLength(1);
+  expect(all[0]!.parentSessionId).toBeUndefined();
+});

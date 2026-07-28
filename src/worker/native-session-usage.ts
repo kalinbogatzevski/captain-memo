@@ -23,6 +23,7 @@
 // whole transcripts on a ~10s cadence is what this exists to avoid.
 
 import { stat, open, readdir } from 'fs/promises';
+import type { Dirent } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
@@ -39,6 +40,15 @@ export interface NativeSessionUsage {
   last_activity_epoch_ms: number;
   /** The session's own name, when it has one (workflow sub-task agents do). */
   agentName?: string | undefined;
+  /** The session that OWNS this one. Present ONLY for agent transcripts, where it is not
+   *  inferred at all: an agent's transcript lives at <project>/<PARENT-UUID>/subagents/...,
+   *  so the parent id IS the directory name. Deterministic, unlike every heuristic tried
+   *  against `agentName` / cwd / env, all of which were wrong. */
+  parentSessionId?: string | undefined;
+  /** The workflow that spawned it, when the path says so
+   *  (<parent>/subagents/workflows/<wf_id>/agent-*.jsonl). Lets a UI group one workflow's
+   *  fan-out together instead of scattering a dozen agents under their parent. */
+  workflowId?: string | undefined;
   /** The owning session's edge id, so a UI can group agents under their parent. */
   ownerSession?: string | undefined;
   /** Tokens whose messages were WRITTEN INSIDE the requested window, not the session's
@@ -174,6 +184,10 @@ export function transcriptsRoot(): string {
  *  cockpit as live sessions would invent sessions that never existed. */
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** An agent transcript, as Claude Code names them. Deliberately NOT `*.jsonl`: a workflow
+ *  directory also contains journal.jsonl, which is the workflow's own bookkeeping. */
+const AGENT_FILE_RE = /^agent-[0-9a-f]+\.jsonl$/i;
+
 /**
  * Read provider-reported usage for every native session active within `windowMs`.
  *
@@ -182,6 +196,102 @@ const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
  * unreadable directory or transcript is skipped, never thrown, because this feeds a
  * telemetry poll where a partial answer beats a failed one.
  */
+/** Read the appended bytes of one transcript into its accumulator and sum the buckets that
+ *  fall inside the window. Shared by the top-level session scan and the agent scan below —
+ *  one implementation, so the two can never drift on how a token is counted. */
+async function accumulate(
+  path: string, size: number, now: number, windowMs: number,
+): Promise<{ t: Totals; wFresh: number; wOut: number; wCr: number }> {
+  let t = ACC.get(path);
+  if (!t || size < t.offset) {   // unseen, or truncated/rotated ⇒ start over
+    t = fresh();
+    ACC.set(path, t);
+  }
+  if (size > t.offset) {
+    const fh = await open(path, 'r').catch(() => null);
+    if (fh) {
+      try {
+        const len = size - t.offset;
+        const buf = Buffer.allocUnsafe(len);
+        const { bytesRead } = await fh.read(buf, 0, len, t.offset);
+        t.offset += digest(buf.toString('utf8', 0, bytesRead), t);
+      } catch {
+        /* transient read failure — keep what we have, retry next poll */
+      } finally {
+        await fh.close();
+      }
+    }
+  }
+  // Sum the buckets inside the window and drop anything past the retention bound.
+  const cutoff = Math.floor((now - windowMs) / BUCKET_MS);
+  const pruneBefore = Math.floor((now - MAX_BUCKET_MS) / BUCKET_MS);
+  let wFresh = 0, wOut = 0, wCr = 0;
+  for (const [key, b] of t.buckets) {
+    if (key < pruneBefore) { t.buckets.delete(key); continue; }
+    if (key >= cutoff) { wFresh += b.fresh; wOut += b.output; wCr += b.cacheRead; }
+  }
+  return { t, wFresh, wOut, wCr };
+}
+
+/** Depth-bounded scan of one session's agent transcripts. Recurses exactly one level into
+ *  `workflows/<wf_id>/`, which is the only nesting Claude Code produces — a wider walk
+ *  would be speculative and would cost a stat per stray file. Best-effort throughout: a
+ *  session with no agents has no such directory and this returns immediately. */
+async function scanAgents(
+  dirPath: string, parentSessionId: string, workflowId: string | undefined,
+  now: number, windowMs: number, out: NativeSessionUsage[], live: Set<string>,
+): Promise<void> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(dirPath, { withFileTypes: true });
+  } catch {
+    return;   // no agents for this session — by far the common case
+  }
+  for (const e of entries) {
+    if (e.isDirectory()) {
+      // workflows/<wf_id>/agent-*.jsonl — one more level, and only for the workflows dir.
+      if (workflowId !== undefined) continue;
+      if (e.name === 'workflows') {
+        let wfs: Dirent[];
+        try { wfs = await readdir(join(dirPath, e.name), { withFileTypes: true }); } catch { continue; }
+        for (const wf of wfs) {
+          if (!wf.isDirectory()) continue;
+          await scanAgents(join(dirPath, e.name, wf.name), parentSessionId, wf.name, now, windowMs, out, live);
+        }
+      }
+      continue;
+    }
+    // agent-<hex>.jsonl ONLY. A workflow directory also holds journal.jsonl — its own
+    // bookkeeping, not a session — and reporting that as an agent invents a row with no
+    // tokens and no meaning.
+    if (!AGENT_FILE_RE.test(e.name)) continue;
+    const path = join(dirPath, e.name);
+    let size = 0, mtimeMs = 0;
+    try {
+      const st = await stat(path);
+      size = st.size; mtimeMs = st.mtimeMs;
+    } catch { continue; }
+    if (now - mtimeMs > windowMs) continue;   // idle ⇒ not live, same rule as a session
+    live.add(path);
+    const { t, wFresh, wOut, wCr } = await accumulate(path, size, now, windowMs);
+    out.push({
+      session_id: e.name.slice(0, -'.jsonl'.length),
+      window_fresh_tokens: wFresh,
+      window_output_tokens: wOut,
+      window_cache_read_tokens: wCr,
+      input_tokens: t.input,
+      output_tokens: t.output,
+      cache_creation_tokens: t.cacheCreation,
+      cache_read_tokens: t.cacheRead,
+      last_activity_epoch_ms: Math.round(mtimeMs),
+      parentSessionId,
+      ...(workflowId ? { workflowId } : {}),
+      ...(t.cwd ? { cwd: t.cwd } : {}),
+      ...(t.agentName ? { agentName: t.agentName } : {}),
+    });
+  }
+}
+
 export async function readNativeSessionUsage(
   windowMs = 30 * 60_000,
   now = Date.now(),
@@ -224,35 +334,7 @@ export async function readNativeSessionUsage(
       if (now - mtimeMs > windowMs) continue;   // idle ⇒ not a live session
       live.add(path);
 
-      let t = ACC.get(path);
-      if (!t || size < t.offset) {   // unseen, or truncated/rotated ⇒ start over
-        t = fresh();
-        ACC.set(path, t);
-      }
-      if (size > t.offset) {
-        const fh = await open(path, 'r').catch(() => null);
-        if (fh) {
-          try {
-            const len = size - t.offset;
-            const buf = Buffer.allocUnsafe(len);
-            const { bytesRead } = await fh.read(buf, 0, len, t.offset);
-            t.offset += digest(buf.toString('utf8', 0, bytesRead), t);
-          } catch {
-            /* transient read failure — keep what we have, retry next poll */
-          } finally {
-            await fh.close();
-          }
-        }
-      }
-
-      // Sum the buckets inside the window and drop anything past the retention bound.
-      const cutoff = Math.floor((now - windowMs) / BUCKET_MS);
-      const pruneBefore = Math.floor((now - MAX_BUCKET_MS) / BUCKET_MS);
-      let wFresh = 0, wOut = 0, wCr = 0;
-      for (const [key, b] of t.buckets) {
-        if (key < pruneBefore) { t.buckets.delete(key); continue; }
-        if (key >= cutoff) { wFresh += b.fresh; wOut += b.output; wCr += b.cacheRead; }
-      }
+      const { t, wFresh, wOut, wCr } = await accumulate(path, size, now, windowMs);
 
       out.push({
         session_id: sessionId,
@@ -268,6 +350,13 @@ export async function readNativeSessionUsage(
         ...(t.agentName ? { agentName: t.agentName } : {}),
         ...(t.ownerSession ? { ownerSession: t.ownerSession } : {}),
       });
+
+      // AGENT TRANSCRIPTS for this session. They live under <dir>/<sessionId>/subagents/,
+      // optionally nested one more level under workflows/<wf_id>/, and are named
+      // agent-<hex>.jsonl rather than <uuid>.jsonl — which is why the UUID gate above skips
+      // them and why 33% of billed tokens were invisible. The parent is not inferred: it is
+      // the directory this scan is already standing in.
+      await scanAgents(join(dir, sessionId, 'subagents'), sessionId, undefined, now, windowMs, out, live);
     }
   }
 
@@ -336,11 +425,18 @@ export interface NativeSessionRow {
   cwd?: string;
   /** Human name when the session has one (workflow sub-task agents do). */
   agent_name?: string;
-  /** The owning session's edge id — lets a UI group agents under their parent. */
+  /** The owning session's edge id. */
   owner_session?: string;
+  /** The session that spawned this agent — from the transcript's own directory, so exact.
+   *  Absent on a top-level session, which is what makes the two distinguishable. */
+  parent_session_id?: string;
+  /** The workflow whose fan-out this agent belongs to, when the path says so. */
+  workflow_id?: string;
 }
 
-const MAX_REPORTED_SESSIONS = 10;
+// Raised from 10: a single workflow can fan out a dozen agents, and truncating them would
+// show a parent with an arbitrary subset of its children — worse than showing none.
+const MAX_REPORTED_SESSIONS = 40;
 
 export async function nativeSessionRows(windowMs = 30 * 60_000): Promise<NativeSessionRow[]> {
   const live = await readNativeSessionUsage(windowMs).catch(() => []);
@@ -355,6 +451,8 @@ export async function nativeSessionRows(windowMs = 30 * 60_000): Promise<NativeS
     ...(s.cwd ? { cwd: s.cwd } : {}),
     ...(s.agentName ? { agent_name: s.agentName } : {}),
     ...(s.ownerSession ? { owner_session: s.ownerSession } : {}),
+    ...(s.parentSessionId ? { parent_session_id: s.parentSessionId } : {}),
+    ...(s.workflowId ? { workflow_id: s.workflowId } : {}),
   }));
 }
 
