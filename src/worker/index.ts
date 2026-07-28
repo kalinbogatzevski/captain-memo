@@ -6,6 +6,7 @@ import { MetaStore } from './meta.ts';
 import { Embedder } from './embedder.ts';
 import { embedderMaxTokens } from '../shared/embedder-limits.ts';
 import { loadWorkerEnv } from '../shared/worker-env.ts';
+import { ensureExtensionCapableSqlite } from '../shared/sqlite-extensions.ts';
 import { resolveSummarizerProvider } from '../shared/summarizer-provider.ts';
 import { loadGatewayConfig, verifyToken } from '../shared/gateway-tokens.ts';
 import { dispatchTool, TOOLS } from '../mcp-server.ts';
@@ -2641,6 +2642,9 @@ export async function runWorkerCli(): Promise<void> {
   // no-ops, since it never overwrites a set var); on Windows the Scheduled Task
   // launches `bun` with no env injection, so this is the ONLY place secrets load.
   loadWorkerEnv();
+  // BEFORE any Database is opened: setCustomSQLite is process-global and Bun ignores it
+  // once a connection exists. macOS needs it or vec0 cannot load at all.
+  ensureExtensionCapableSqlite();
 
   // Windows has no journal: a Scheduled-Task-launched worker runs detached, so its
   // console output would vanish. Tee stdout/stderr to LOGS_DIR/worker.log so doctor

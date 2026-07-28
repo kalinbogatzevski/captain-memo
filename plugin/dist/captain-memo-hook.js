@@ -487,7 +487,7 @@ var init_launchd = __esm(() => {
   init_paths();
   REPO_ROOT2 = resolve2(import.meta.dir, "../../..");
   LAUNCH_AGENTS_DIR = join5(homedir4(), "Library/LaunchAgents");
-  DEFAULT_LOG_DIR = join5(homedir4(), "Library/Logs/captain-memo");
+  DEFAULT_LOG_DIR = LOGS_DIR;
 });
 
 // src/services/service-manager/windows-scheduled-task.ts
@@ -905,7 +905,7 @@ import { join as join8 } from "path";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.27.28",
+  version: "0.27.29",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,

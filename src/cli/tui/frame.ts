@@ -9,6 +9,7 @@ import {
   bold, boldRed, cyan, cyanBold, dim, gold, green, padVisibleEnd, visibleWidth,
 } from '../../shared/ansi.ts';
 import { renderStats, renderSourceBars, type StatsResponse } from '../stats-render.ts';
+import { LOGS_DIR } from '../../shared/paths.ts';
 import type { TopState } from './state.ts';
 
 export interface RecallRowView {
@@ -127,6 +128,17 @@ export function clipFrame(lines: string[], rows: number): string[] {
 /** The prominent "data is stale" banner shown while the worker is unreachable.
  *  Pure + exported so its wording is unit-testable. `lastOkAtMs` is formatted as
  *  a wall-clock time (HH:MM:SS) so the user can see how old the on-screen data is. */
+/** Where to actually look when the worker is down — per platform, and naming a file that
+ *  EXISTS. This was hardcoded to "~/.captain-memo/logs/worker.log": wrong directory on
+ *  macOS (the LaunchAgent wrote to ~/Library/Logs), wrong filename everywhere (the daemon
+ *  writes captain-memo-worker.log), and wrong mechanism on Linux, where systemd sends the
+ *  worker's output to the journal and no such file is ever created. The first macOS user
+ *  went looking for a directory that did not exist while his real logs sat elsewhere. */
+export function workerLogHint(): string {
+  if (process.platform === 'linux') return 'see `journalctl --user -u captain-memo-worker -n 50`';
+  return `see ${LOGS_DIR}/captain-memo-worker.err.log`;
+}
+
 export function unreachableBanner(cols: number, lastOkAtMs: number | null): string[] {
   let when = '';
   if (lastOkAtMs) {
@@ -134,7 +146,7 @@ export function unreachableBanner(cols: number, lastOkAtMs: number | null): stri
     const p = (n: number) => String(n).padStart(2, '0');
     when = ` · last ok ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
   }
-  const msg = `⚠ WORKER UNREACHABLE — data below is STALE${when} · see ~/.captain-memo/logs/worker.log`;
+  const msg = `⚠ WORKER UNREACHABLE — data below is STALE${when} · ${workerLogHint()}`;
   // Pad across the panel so the colored bar spans the width and dominates the eye.
   return [boldRed(' ' + padVisibleEnd(msg, Math.max(0, cols - 2)))];
 }

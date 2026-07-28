@@ -37,10 +37,17 @@ function realHome(): string {
   return homeOf(u);
 }
 
+/** Per-user LaunchAgents (macOS). The uninstaller looked only for systemd units and
+ *  therefore reported "No Captain Memo install detected. Nothing to do." on a Mac with a
+ *  perfectly good LaunchAgent installed — reported 2026-07-28. */
+const LAUNCH_AGENTS_DIR = join(homedir(), 'Library/LaunchAgents');
+const LAUNCH_AGENTS = ['com.captainmemo.worker.plist', 'com.captainmemo.embed.plist'];
+
 function detectInstalls(): { user: boolean; system: boolean } {
   return {
     user: existsSync(join(USER_SYSTEMD_DIR, WORKER_UNIT)) ||
           existsSync(join(USER_SYSTEMD_DIR, EMBED_UNIT)) ||
+          LAUNCH_AGENTS.some(a => existsSync(join(LAUNCH_AGENTS_DIR, a))) ||
           existsSync(USER_EMBED_DIR),
     system: existsSync(join(SYS_SYSTEMD_DIR, WORKER_UNIT)) ||
             existsSync(join(SYS_SYSTEMD_DIR, EMBED_UNIT)) ||
@@ -50,6 +57,17 @@ function detectInstalls(): { user: boolean; system: boolean } {
 
 function removeUserMode(): void {
   header('Removing user-mode install');
+  // macOS: bootout unloads the job (a plain file delete leaves it running until logout),
+  // then the plist goes. Guarded on the file so a Linux box never shells out to launchctl.
+  for (const agent of LAUNCH_AGENTS) {
+    const path = join(LAUNCH_AGENTS_DIR, agent);
+    if (!existsSync(path)) continue;
+    const uid = typeof process.getuid === 'function' ? process.getuid() : 0;
+    const label = agent.replace(/\.plist$/, '');
+    spawnSync('launchctl', ['bootout', `gui/${uid}/${label}`], { stdio: 'ignore' });
+    unlinkSync(path);
+    ok(`removed ${path}`);
+  }
   for (const u of [WORKER_UNIT, EMBED_UNIT]) {
     spawnSync('systemctl', ['--user', 'stop', u], { stdio: 'ignore' });
     spawnSync('systemctl', ['--user', 'disable', u], { stdio: 'ignore' });

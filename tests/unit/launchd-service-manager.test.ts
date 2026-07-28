@@ -101,7 +101,19 @@ test('a missing logDir falls back rather than rendering an empty path', () => {
   // "Operation not permitted" that names nothing.
   const out = renderPlist(spec({ logDir: '' }), TEMPLATE);
   expect(out).not.toContain('<string>/captain-memo-worker.log</string>');
-  expect(out).toMatch(/Library\/Logs\/captain-memo\/captain-memo-worker\.log/);
+  expect(out).toMatch(/\.captain-memo\/logs\/captain-memo-worker\.log/);
+});
+
+test('the LaunchAgent logs where the tooling says it does', () => {
+  // `top` prints "WORKER UNREACHABLE — see ~/.captain-memo/logs/worker.log" and every
+  // other platform uses LOGS_DIR. The plist used to write to ~/Library/Logs/captain-memo
+  // instead, so the first macOS user was sent to a directory that did not exist while
+  // his actual logs sat somewhere nobody mentioned. One location, one message.
+  const lm = readFileSync(join(REPO_ROOT, 'src/services/service-manager/launchd.ts'), 'utf-8');
+  expect(lm).toMatch(/const DEFAULT_LOG_DIR = LOGS_DIR;/);
+  expect(lm).not.toMatch(/DEFAULT_LOG_DIR\s*=\s*join\(homedir\(\), 'Library\/Logs/);
+  const cli = readFileSync(join(REPO_ROOT, 'src/cli/commands/install.ts'), 'utf-8');
+  expect(cli).not.toMatch(/Library\/Logs\/captain-memo/);
 });
 
 test('the embed template renders too, with its own name', () => {
@@ -144,4 +156,18 @@ test('install does not stack a second launch inside the throttle window', () => 
   const macBranch = cli.slice(secStart, cli.indexOf('installWorkerService(paths, bunPath);', secStart));
   expect(secStart).toBeGreaterThan(-1);
   expect(macBranch).not.toMatch(/getServiceManager\(\)\.restart\(/);
+});
+
+test('uninstall detects and removes a LaunchAgent', () => {
+  // It looked only for systemd units, so a Mac with a perfectly good LaunchAgent got
+  // "No Captain Memo install detected. Nothing to do." — reported 2026-07-28.
+  const un = readFileSync(join(REPO_ROOT, 'src/cli/commands/uninstall.ts'), 'utf-8');
+  expect(un).toContain('Library/LaunchAgents');
+  expect(un).toMatch(/com\.captainmemo\.worker\.plist/);
+  // detection
+  const det = un.slice(un.indexOf('function detectInstalls'), un.indexOf('function removeUserMode'));
+  expect(det).toMatch(/LAUNCH_AGENTS\.some/);
+  // and removal must UNLOAD, not just delete the file — otherwise the job runs until logout
+  const rm = un.slice(un.indexOf('function removeUserMode'));
+  expect(rm).toMatch(/launchctl['"\],\s]+.*bootout/s);
 });

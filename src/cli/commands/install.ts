@@ -22,6 +22,7 @@ import { homedir } from 'os';
 import { spawnSync } from 'child_process';
 import { printMiniBanner } from '../banner.ts';
 import { isWindows, isMac, homeOf, totalMemGb, diskFreeGb, whichBun as probeBun } from '../../shared/platform.ts';
+import { ensureExtensionCapableSqlite } from '../../shared/sqlite-extensions.ts';
 import { WORKER_ENV_PATH, CONFIG_DIR, LOGS_DIR, DATA_DIR, DEFAULT_WORKER_PORT, DEFAULT_CODEX_MODEL, DEFAULT_AGY_MODEL } from '../../shared/paths.ts';
 import { getServiceManager } from '../../services/service-manager/index.ts';
 import { grantPluginToolPermissions } from './install-hooks.ts';
@@ -304,6 +305,20 @@ function preflight(opts: { wantLocalEmbedder: boolean }): PreflightResult[] {
     if (systemctl.status === 0) out.push({ name: 'systemd', status: 'OK', detail: 'systemctl on PATH' });
     else out.push({ name: 'systemd', status: 'FAIL', detail: 'systemctl not found',
                     remedy: 'install on a systemd-based distro (Debian/Ubuntu/Fedora/Arch/etc.)' });
+  }
+
+  // SQLite extension support (macOS only). Apple's libsqlite3 is built without it, and
+  // Bun links against the system library — so vec0 cannot load and the worker dies on its
+  // first vector open, over and over, while launchd faithfully relaunches it. Catch it
+  // here rather than in a crash loop.
+  if (isMac) {
+    const lib = ensureExtensionCapableSqlite();
+    if (lib) out.push({ name: 'sqlite', status: 'OK', detail: `extension-capable (${lib})` });
+    else {
+      out.push({ name: 'sqlite', status: 'FAIL', detail: 'macOS SQLite has no extension support',
+                 remedy: 'brew install sqlite  — the worker cannot open its vector index without it '
+                       + '(keyword-only installs still work, but the worker logs the failure on every start)' });
+    }
   }
 
   // Python (only relevant if installing local embedder)
@@ -983,7 +998,7 @@ function probeHealth(): void {
   const res = spawnSync('curl', ['-s', '-m', '3', 'http://127.0.0.1:39888/health'], { encoding: 'utf-8' });
   if (res.stdout.includes('"healthy":true')) ok('worker is responding on http://127.0.0.1:39888');
   else warn('worker not yet responding (initial indexing on a large corpus can take minutes — check '
-    + (isMac ? '`tail -f ~/Library/Logs/captain-memo/captain-memo-worker.err.log`'
+    + (isMac ? '`tail -f ~/.captain-memo/logs/captain-memo-worker.err.log`'
              : isWindows ? 'the log dir under %LOCALAPPDATA%\\captain-memo\\logs'
              : '`journalctl -u captain-memo-worker -f`') + ')');
 }
@@ -1396,7 +1411,7 @@ Both modes: re-running preserves existing config (flags/env override). To remove
       envFile: paths.envFile,
       autostart: true,
       restartOnFailure: true,
-      logDir: join(realUserAndGroup().home, 'Library/Logs/captain-memo'),
+      logDir: LOGS_DIR,
     });
     // NO restart() here. install() has already bootstrapped the agent, and RunAtLoad
     // started it; a further launch lands inside launchd's ThrottleInterval, where
@@ -1438,7 +1453,8 @@ Both modes: re-running preserves existing config (flags/env override). To remove
     console.log();
     info('The worker runs as a LaunchAgent:');
     info('     ~/Library/LaunchAgents/com.captainmemo.worker.plist');
-    info('     logs: ~/Library/Logs/captain-memo/');
+    info('     logs: ~/.captain-memo/logs/   (worker.log / worker.err.log)');
+    info('     state: launchctl print gui/$(id -u)/com.captainmemo.worker');
   }
   return 0;
 }

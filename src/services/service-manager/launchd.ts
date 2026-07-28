@@ -29,15 +29,20 @@ import { homedir, userInfo } from 'os';
 import { join, resolve } from 'path';
 import { spawnSync } from 'child_process';
 import type { ServiceManager, ServiceSpec, ServiceState, StopOptions } from './types.ts';
-import { DEFAULT_WORKER_PORT } from '../../shared/paths.ts';
+import { DEFAULT_WORKER_PORT, LOGS_DIR } from '../../shared/paths.ts';
 
 const REPO_ROOT = resolve(import.meta.dir, '../../..');
 
 /** Where per-user LaunchAgents live. Created on demand — a fresh account has no such dir. */
 const LAUNCH_AGENTS_DIR = join(homedir(), 'Library/LaunchAgents');
 
-/** launchd logs are plain files (there is no journal), so the daemon needs somewhere to write. */
-const DEFAULT_LOG_DIR = join(homedir(), 'Library/Logs/captain-memo');
+/** launchd logs are plain files (there is no journal), so the daemon needs somewhere to
+ *  write. Deliberately LOGS_DIR (~/.captain-memo/logs) rather than the macOS-conventional
+ *  ~/Library/Logs: every message in this codebase — including `top`'s own "WORKER
+ *  UNREACHABLE — see ~/.captain-memo/logs/worker.log" — names that path. A second,
+ *  platform-idiomatic location just sends people to a file that does not exist, which is
+ *  exactly what happened to the first macOS user 2026-07-28. One log dir, one message. */
+const DEFAULT_LOG_DIR = LOGS_DIR;
 
 /** Bare service id, with any systemd-style `.service` suffix stripped. Callers pass
  *  'captain-memo-worker' or 'captain-memo-worker.service' interchangeably because the

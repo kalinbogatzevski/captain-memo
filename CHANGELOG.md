@@ -5,6 +5,13 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.29] — 2026-07-28
+
+### Fixed
+- **macOS: the worker could not start at all — SQLite has no extension support.** Apple ships `libsqlite3` built with `SQLITE_OMIT_LOAD_EXTENSION` and Bun links against the system library, so `sqlite-vec` died with *"This build of sqlite3 does not support dynamic extension loading"* on the first vector open. launchd then relaunched it faithfully, forever, so the agent looked healthy while the worker never came up. Bun is now pointed at a Homebrew SQLite via `Database.setCustomSQLite()` before the first connection is opened (it is process-global and ignored afterwards), and the error, if it still occurs, carries the remedy — `brew install sqlite` — instead of naming `sqlite-vec`'s internals. Pre-flight probes for it too, so the wizard says so before the crash loop rather than after.
+- **The "worker unreachable" message named a file that does not exist.** `top` hardcoded `~/.captain-memo/logs/worker.log`: the wrong directory on macOS (the LaunchAgent wrote to `~/Library/Logs`), the wrong filename everywhere (the daemon writes `captain-memo-worker.log`), and the wrong mechanism on Linux, where systemd sends output to the journal and no such file is ever created. It now names the real location per platform — and the LaunchAgent writes to `LOGS_DIR` like every other platform, so there is one log directory and one message rather than two of each.
+- **`uninstall` reported "No Captain Memo install detected" on macOS.** It looked only for systemd units. It now finds LaunchAgents, and removes them with `launchctl bootout` before deleting the plist — a plain file delete leaves the job running until logout.
+
 ## [0.27.28] — 2026-07-28
 
 ### Fixed

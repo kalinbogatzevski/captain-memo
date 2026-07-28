@@ -1,4 +1,5 @@
 import { Database } from 'bun:sqlite';
+import { ensureExtensionCapableSqlite, isExtensionLoadingUnsupported, MACOS_SQLITE_REMEDY } from '../shared/sqlite-extensions.ts';
 import * as sqliteVec from 'sqlite-vec';
 
 export interface VectorStoreOptions {
@@ -38,8 +39,22 @@ export class VectorStore {
   private dimension: number;
 
   constructor(opts: VectorStoreOptions) {
+    // macOS links Bun against Apple's libsqlite3, which is built WITHOUT extension
+    // loading — so vec0 cannot load at all. Point Bun at a Homebrew SQLite first. No-op
+    // on Linux/Windows, where Bun bundles its own capable build.
+    ensureExtensionCapableSqlite();
     this.db = new Database(opts.dbPath, opts.readonly ? { readonly: true } : undefined);
-    sqliteVec.load(this.db);   // the vec0 extension is needed to READ as well as write
+    try {
+      sqliteVec.load(this.db);   // the vec0 extension is needed to READ as well as write
+    } catch (err) {
+      // Re-throw with the remedy attached. The bare message names sqlite-vec's internals
+      // and gives a user no idea that `brew install sqlite` is the whole fix — it sent the
+      // first macOS user chasing launchd instead.
+      if (isExtensionLoadingUnsupported(err)) {
+        throw new Error(`${err instanceof Error ? err.message : String(err)}\n\n${MACOS_SQLITE_REMEDY}`);
+      }
+      throw err;
+    }
     this.dimension = opts.dimension;
     if (!opts.readonly) {
       this.db.exec('PRAGMA journal_mode = WAL;');
