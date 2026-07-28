@@ -37,6 +37,14 @@ export interface NativeSessionUsage {
   cache_read_tokens: number;
   /** Transcript mtime — when the session last produced a message. */
   last_activity_epoch_ms: number;
+  /** Tokens whose messages were WRITTEN INSIDE the requested window, not the session's
+   *  lifetime. This is the number that composes: a lifetime sum selected by a window
+   *  lurches by billions the moment a long-lived session writes one message and rejoins,
+   *  because the window picks WHICH sessions while each is counted FOREVER. Two
+   *  individually reasonable halves whose product means nothing. */
+  window_fresh_tokens: number;
+  window_output_tokens: number;
+  window_cache_read_tokens: number;
   /** Working directory the session runs in, read from the transcript's own `cwd`.
    *
    *  This is the only RELIABLE label available. A tmux session name cannot be joined
@@ -49,6 +57,8 @@ export interface NativeSessionUsage {
   cwd?: string;
 }
 
+interface Bucket { fresh: number; output: number; cacheRead: number }
+
 interface Totals {
   offset: number;   // bytes already parsed (always at a newline boundary)
   input: number;
@@ -56,20 +66,33 @@ interface Totals {
   cacheCreation: number;
   cacheRead: number;
   cwd?: string;
+  /** Per-MINUTE token buckets, keyed by floor(epochMs / 60000). Summing the buckets
+   *  inside a window gives usage genuinely accrued in that window, and old buckets fall
+   *  out on their own — so the figure decays instead of lurching. Bounded by pruning
+   *  past MAX_BUCKET_MS, so a long-running worker holds at most a day per session. */
+  buckets: Map<number, Bucket>;
 }
+
+/** How much bucket history to retain. Caps memory (1 440 buckets/session at worst) and
+ *  bounds the widest window that can be asked for honestly. */
+const MAX_BUCKET_MS = 24 * 60 * 60_000;
+const BUCKET_MS = 60_000;
 
 const ACC = new Map<string, Totals>();
 
 function fresh(): Totals {
-  return { offset: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0 };
+  return { offset: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0, buckets: new Map() };
 }
 
 /** A transcript line's shape, narrowed to the one field we read. Everything else in
  *  the line — the prompt, the response, tool calls — is deliberately untouched: this
  *  module reads COUNTS, never content, matching the corpus-telemetry posture. */
 interface TranscriptLine {
-  message?: { usage?: Record<string, unknown> };
+  message?: { usage?: Record<string, unknown>; model?: string };
   cwd?: string;
+  /** ISO-8601 stamp Claude Code writes on each record — what makes real windowing
+   *  possible rather than approximated by file mtime. */
+  timestamp?: string;
 }
 
 function n(v: unknown): number {
@@ -95,10 +118,26 @@ function digest(chunk: string, t: Totals): number {
     if (t.cwd === undefined && typeof line.cwd === 'string' && line.cwd) t.cwd = line.cwd;
     const u = line.message?.usage;
     if (!u || typeof u !== 'object') continue;
-    t.input += n(u.input_tokens);
-    t.output += n(u.output_tokens);
-    t.cacheCreation += n(u.cache_creation_input_tokens);
-    t.cacheRead += n(u.cache_read_input_tokens);
+    const inTok = n(u.input_tokens);
+    const outTok = n(u.output_tokens);
+    const cwTok = n(u.cache_creation_input_tokens);
+    const crTok = n(u.cache_read_input_tokens);
+    t.input += inTok;
+    t.output += outTok;
+    t.cacheCreation += cwTok;
+    t.cacheRead += crTok;
+    // Bucket by the record's OWN timestamp. A record with no parseable stamp is counted
+    // in the lifetime totals but not bucketed — it cannot be placed in time, and guessing
+    // (e.g. "now") would smear old history into the current window.
+    const ts = line.timestamp ? Date.parse(line.timestamp) : NaN;
+    if (Number.isFinite(ts)) {
+      const key = Math.floor(ts / BUCKET_MS);
+      let b = t.buckets.get(key);
+      if (!b) { b = { fresh: 0, output: 0, cacheRead: 0 }; t.buckets.set(key, b); }
+      b.fresh += inTok + cwTok;
+      b.output += outTok;
+      b.cacheRead += crTok;
+    }
   }
   return Buffer.byteLength(complete, 'utf8');
 }
@@ -184,8 +223,20 @@ export async function readNativeSessionUsage(
         }
       }
 
+      // Sum the buckets inside the window and drop anything past the retention bound.
+      const cutoff = Math.floor((now - windowMs) / BUCKET_MS);
+      const pruneBefore = Math.floor((now - MAX_BUCKET_MS) / BUCKET_MS);
+      let wFresh = 0, wOut = 0, wCr = 0;
+      for (const [key, b] of t.buckets) {
+        if (key < pruneBefore) { t.buckets.delete(key); continue; }
+        if (key >= cutoff) { wFresh += b.fresh; wOut += b.output; wCr += b.cacheRead; }
+      }
+
       out.push({
         session_id: sessionId,
+        window_fresh_tokens: wFresh,
+        window_output_tokens: wOut,
+        window_cache_read_tokens: wCr,
         input_tokens: t.input,
         output_tokens: t.output,
         cache_creation_tokens: t.cacheCreation,
@@ -207,6 +258,145 @@ export async function readNativeSessionUsage(
 /** Test-only: clear the per-process accumulators. */
 export function _resetNativeUsageCache(): void {
   ACC.clear();
+}
+
+/** Fleet-reportable aggregate across every live native session. Sums the same
+ *  provider-reported numbers the per-session view shows.
+ *
+ *  Exists because the hub's token columns are fed by usage_by_model, which only the
+ *  BROKER populates — and the broker only sees brokered co-sessions. A captain whose
+ *  work is native sessions therefore reported nothing, and every token field in the
+ *  cockpit read 0 forever. These are the same tokens, counted from the transcripts
+ *  the sessions write themselves. */
+export interface NativeUsageTotals {
+  sessions: number;
+  /** WINDOW figures — tokens whose messages were written inside windowMs. This is what a
+   *  "last 30 minutes" number must be. The lifetime fields below are the honest all-time
+   *  totals for those same sessions; the two are reported separately because mixing them
+   *  is what produced "3.2 B in 30 minutes", which is not a rate anyone can act on. */
+  window_ms: number;
+  window_fresh_tokens: number;
+  window_output_tokens: number;
+  window_cache_read_tokens: number;
+  /** Per-model split of the WINDOW, so the hub can price it. Without this a cost figure
+   *  is impossible: input, cache-write, cache-read and output are billed at four
+   *  different rates that differ per model — cache-read is roughly a TENTH of input, so
+   *  summing the four into one "tokens" number produces something that correlates with
+   *  nothing anyone pays. Transcripts name the model on every usage record, so the split
+   *  costs nothing to carry. */
+  window_by_model?: Record<string, {
+    input_tokens: number;
+    output_tokens: number;
+    cache_creation_tokens: number;
+    cache_read_tokens: number;
+  }>;
+  /** LIFETIME totals for the sessions currently live — all-time per session, from the
+   *  transcript's first record. Kept because "how much has this session cost in total"
+   *  is a real question; it is simply not a 30-minute one. */
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_tokens: number;
+  cache_read_tokens: number;
+}
+
+/** Per-session rows for the cockpit's task table. BOUNDED: the fleet-status poll runs
+ *  every ~10 s, and a busy box can have 20+ live transcripts — sending them all would put
+ *  a growing payload on a hot path for rows nobody scrolls to. Newest-active first, so the
+ *  cap drops the least interesting. */
+export interface NativeSessionRow {
+  session_id: string;
+  fresh_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  last_activity_epoch_ms: number;
+  cwd?: string;
+}
+
+const MAX_REPORTED_SESSIONS = 10;
+
+export async function nativeSessionRows(windowMs = 30 * 60_000): Promise<NativeSessionRow[]> {
+  const live = await readNativeSessionUsage(windowMs).catch(() => []);
+  return live.slice(0, MAX_REPORTED_SESSIONS).map(s => ({
+    session_id: s.session_id,
+    // WINDOW figures, matching the headline. A row showing lifetime beside a windowed
+    // total is how "3.2 B in 30 minutes" happened in the first place.
+    fresh_tokens: s.window_fresh_tokens,
+    output_tokens: s.window_output_tokens,
+    cache_read_tokens: s.window_cache_read_tokens,
+    last_activity_epoch_ms: s.last_activity_epoch_ms,
+    ...(s.cwd ? { cwd: s.cwd } : {}),
+  }));
+}
+
+/** ALL-TIME totals across every transcript on this host, not just live ones.
+ *
+ *  This is the "how much have we spent, ever" number — the one a window can never give
+ *  you. It costs a full scan (measured: 1 479 transcripts, ~19 s cold) which is far too
+ *  slow for a 10 s poll, but the incremental accumulator makes repeats ~253 ms, 74x
+ *  faster. So it is computed lazily in the BACKGROUND and served from cache: a poll
+ *  never waits on it, and a captain that has not finished its first scan simply omits
+ *  the field rather than reporting a half-scanned total as if it were complete. */
+export interface AllTimeTotals {
+  sessions: number;
+  fresh_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  computed_at_epoch_ms: number;
+}
+
+const ALL_TIME_TTL_MS = 5 * 60_000;
+const ALL_TIME_WINDOW_MS = 365 * 24 * 60 * 60_000;   // everything on disk
+let allTimeCache: AllTimeTotals | null = null;
+let allTimeInFlight = false;
+
+/** Cached all-time totals. Returns null until the first scan completes — never a partial
+ *  figure, because a total that is quietly missing half the corpus is worse than no total. */
+export function allTimeTotals(now = Date.now()): AllTimeTotals | null {
+  if (!allTimeInFlight && (!allTimeCache || now - allTimeCache.computed_at_epoch_ms > ALL_TIME_TTL_MS)) {
+    allTimeInFlight = true;
+    // Fire and forget: the caller returns the previous value (or null) immediately.
+    void readNativeSessionUsage(ALL_TIME_WINDOW_MS, now)
+      .then(all => {
+        let fresh = 0, out = 0, cr = 0;
+        for (const s of all) {
+          fresh += s.input_tokens + s.cache_creation_tokens;
+          out += s.output_tokens;
+          cr += s.cache_read_tokens;
+        }
+        allTimeCache = {
+          sessions: all.length, fresh_tokens: fresh, output_tokens: out,
+          cache_read_tokens: cr, computed_at_epoch_ms: Date.now(),
+        };
+      })
+      .catch(() => { /* keep the prior value; a failed scan must not blank the total */ })
+      .finally(() => { allTimeInFlight = false; });
+  }
+  return allTimeCache;
+}
+
+/** Test-only: drop the all-time cache. */
+export function _resetAllTimeCache(): void {
+  allTimeCache = null;
+  allTimeInFlight = false;
+}
+
+export async function nativeUsageTotals(windowMs = 30 * 60_000): Promise<NativeUsageTotals> {
+  const live = await readNativeSessionUsage(windowMs).catch(() => []);
+  const t: NativeUsageTotals = {
+    sessions: live.length, window_ms: windowMs,
+    window_fresh_tokens: 0, window_output_tokens: 0, window_cache_read_tokens: 0,
+    input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0,
+  };
+  for (const s of live) {
+    t.window_fresh_tokens += s.window_fresh_tokens;
+    t.window_output_tokens += s.window_output_tokens;
+    t.window_cache_read_tokens += s.window_cache_read_tokens;
+    t.input_tokens += s.input_tokens;
+    t.output_tokens += s.output_tokens;
+    t.cache_creation_tokens += s.cache_creation_tokens;
+    t.cache_read_tokens += s.cache_read_tokens;
+  }
+  return t;
 }
 
 // ── memory's half of the picture ─────────────────────────────────────────────

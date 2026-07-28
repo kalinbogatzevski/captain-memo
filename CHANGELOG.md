@@ -5,6 +5,13 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.25] — 2026-07-28
+
+### Added
+- **Token usage is now windowed for real, not approximated.** Each session keeps per-minute buckets keyed off the ISO timestamp Claude Code writes on every record, so "the last 30 minutes" means tokens whose messages were *written* in those 30 minutes. Previously a window could only select *which* sessions to include while each contributed its whole lifetime — two individually reasonable halves whose product means nothing. A long-lived session writing one message would rejoin the window and drag days of accumulation with it. History is pruned past 24h, bounding memory at 1 440 buckets per session.
+- **All-time totals across every transcript on disk**, computed in the background behind a 5-minute TTL (~19 s cold over 1 479 transcripts, 253 ms warm). Reports `null` until the first scan completes, so a cold start shows "computing…" instead of a small wrong number that later jumps.
+- **A displacement proxy (`src/eval/displacement.ts`)** comparing discovery-tool use (Read/Grep/Glob) in turns that received an injection against turns that did not — **with the permutation test built into the report, not bolted on after**. Memory's *cost* is directly measurable; its *saving* requires a counterfactual that leaves no trace, so any single "saved: N" figure is invented. The first real run showed a 13% reduction at **p = 0.38** — noise, and reported as noise. Turns are split on real prompts only: the API returns tool results with role `"user"`, so a naive split counted ~10 tool round-trips as 10 turns and flattened both arms toward zero.
+
 ## [0.27.24] — 2026-07-27
 
 ### Added
