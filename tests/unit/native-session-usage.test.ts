@@ -280,3 +280,22 @@ test('liveSessionIds ignores a stale file whose process is gone', async () => {
     if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev;
   }
 });
+
+test('entrypoint is captured — the difference between a session and an automation', async () => {
+  // On a working machine automated invocations outnumber sessions a person opened by
+  // roughly 11:1 (45 sdk-py to 4 cli, measured 2026-07-28). Calling them all "sessions"
+  // hides the distinction that matters most on a fleet board, and `entrypoint` is the
+  // session's own statement of how it came into being — no inference required.
+  writeTranscript(SID, JSON.stringify({
+    type: 'assistant', entrypoint: 'sdk-py', cwd: '/w',
+    message: { role: 'assistant', usage: { input_tokens: 10, output_tokens: 2 } },
+  }) + '\n');
+  const [s] = await readNativeSessionUsage();
+  expect(s!.entrypoint).toBe('sdk-py');
+});
+
+test('a session that never states an entrypoint reports none, rather than a guess', async () => {
+  writeTranscript(SID, msg(5, 1));
+  const [s] = await readNativeSessionUsage();
+  expect(s!.entrypoint).toBeUndefined();
+});

@@ -41,6 +41,10 @@ export interface NativeSessionUsage {
   last_activity_epoch_ms: number;
   /** The session's own name, when it has one (workflow sub-task agents do). */
   agentName?: string | undefined;
+  /** How it was started: 'cli' (a person at a terminal), 'sdk-py' / 'sdk-cli' (a program).
+   *  The distinction the fleet board needs most — automation outnumbers real sessions
+   *  roughly 11:1 on a working machine. */
+  entrypoint?: string | undefined;
   /** The session that OWNS this one. Present ONLY for agent transcripts, where it is not
    *  inferred at all: an agent's transcript lives at <project>/<PARENT-UUID>/subagents/...,
    *  so the parent id IS the directory name. Deterministic, unlike every heuristic tried
@@ -89,6 +93,8 @@ interface Totals {
    *  Without it a fleet of sub-task agents reads as a dozen unrelated top-level sessions,
    *  because each one gets its own transcript with its own uuid. */
   ownerSession?: string;
+  /** 'cli' | 'sdk-py' | 'sdk-cli' — how the session was started. */
+  entrypoint?: string;
   /** Per-MINUTE token buckets, keyed by floor(epochMs / 60000). Summing the buckets
    *  inside a window gives usage genuinely accrued in that window, and old buckets fall
    *  out on their own — so the figure decays instead of lurching. Bounded by pruning
@@ -116,6 +122,7 @@ interface TranscriptLine {
   agentName?: string;
   customTitle?: string;
   bridgeSessionId?: string;
+  entrypoint?: string;
   /** ISO-8601 stamp Claude Code writes on each record — what makes real windowing
    *  possible rather than approximated by file mtime. */
   timestamp?: string;
@@ -145,6 +152,14 @@ function digest(chunk: string, t: Totals): number {
     if (t.agentName === undefined) {
       const nm = line.agentName ?? line.customTitle;
       if (typeof nm === 'string' && nm) t.agentName = nm;
+    }
+    // HOW this session came into being, which is what separates the three kinds a fleet
+    // board has to tell apart: 'cli' is a person at a terminal, 'sdk-py' / 'sdk-cli' is a
+    // programmatic invocation nobody opened. On this machine the latter outnumber the
+    // former roughly 11:1, so calling them all "sessions" hides the distinction that
+    // matters most.
+    if (t.entrypoint === undefined && typeof line.entrypoint === 'string' && line.entrypoint) {
+      t.entrypoint = line.entrypoint;
     }
     if (t.ownerSession === undefined && typeof line.bridgeSessionId === 'string' && line.bridgeSessionId) {
       t.ownerSession = line.bridgeSessionId;
@@ -289,6 +304,7 @@ async function scanAgents(
       ...(workflowId ? { workflowId } : {}),
       ...(t.cwd ? { cwd: t.cwd } : {}),
       ...(t.agentName ? { agentName: t.agentName } : {}),
+      ...(t.entrypoint ? { entrypoint: t.entrypoint } : {}),
     });
   }
 }
@@ -357,6 +373,7 @@ export async function readNativeSessionUsage(
         ...(t.cwd ? { cwd: t.cwd } : {}),
         ...(t.agentName ? { agentName: t.agentName } : {}),
         ...(t.ownerSession ? { ownerSession: t.ownerSession } : {}),
+        ...(t.entrypoint ? { entrypoint: t.entrypoint } : {}),
       });
 
       // AGENT TRANSCRIPTS for this session. They live under <dir>/<sessionId>/subagents/,
@@ -440,6 +457,9 @@ export interface NativeSessionRow {
   parent_session_id?: string;
   /** The workflow whose fan-out this agent belongs to, when the path says so. */
   workflow_id?: string;
+  /** How it was started — the cockpit uses this to separate a session someone OPENED from
+   *  a programmatic invocation nobody did. */
+  entrypoint?: string;
 }
 
 // Raised from 10: a single workflow can fan out a dozen agents, and truncating them would
@@ -496,6 +516,7 @@ export async function nativeSessionRows(
     ...(s.ownerSession ? { owner_session: s.ownerSession } : {}),
     ...(s.parentSessionId ? { parent_session_id: s.parentSessionId } : {}),
     ...(s.workflowId ? { workflow_id: s.workflowId } : {}),
+    ...(s.entrypoint ? { entrypoint: s.entrypoint } : {}),
   }));
 }
 
