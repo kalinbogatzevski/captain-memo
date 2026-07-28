@@ -153,3 +153,35 @@ test('injectedBySession — missing log yields an empty map, never throws', asyn
   _resetInjectedCache();
   expect((await injectedBySession(join(root, 'nope.jsonl'))).size).toBe(0);
 });
+
+test('a workflow sub-task agent reports its name and its owner', async () => {
+  // Workflow agents each get their OWN top-level transcript with its own uuid, so a dozen
+  // of them read as a dozen unrelated sessions — all in one project, indistinguishable by
+  // cwd. They do record who they are (agentName, from `--resume <name>`) and who launched
+  // them (bridgeSessionId), which is the only reliable way to group them.
+  const line = (extra: Record<string, unknown>) => JSON.stringify({
+    type: 'assistant', cwd: '/home/kalin/projects/thing', ...extra,
+    message: { role: 'assistant', usage: { input_tokens: 10, output_tokens: 2 } },
+  }) + '\n';
+  writeTranscript(SID, line({ agentName: 'GEOMAP-REVAMP-V1', bridgeSessionId: 'cse_01ABC' }) + line({}));
+  const [s] = await readNativeSessionUsage();
+  expect(s!.agentName).toBe('GEOMAP-REVAMP-V1');
+  expect(s!.ownerSession).toBe('cse_01ABC');
+  expect(s!.input_tokens).toBe(20);            // both lines still counted
+});
+
+test('customTitle stands in when agentName is absent', async () => {
+  writeTranscript(SID, JSON.stringify({
+    type: 'assistant', customTitle: 'CPT-TOP',
+    message: { role: 'assistant', usage: { input_tokens: 1, output_tokens: 1 } },
+  }) + '\n');
+  const [s] = await readNativeSessionUsage();
+  expect(s!.agentName).toBe('CPT-TOP');
+});
+
+test('a plain session reports neither — absent, not empty string', async () => {
+  writeTranscript(SID, msg(5, 1));
+  const [s] = await readNativeSessionUsage();
+  expect(s!.agentName).toBeUndefined();
+  expect(s!.ownerSession).toBeUndefined();
+});

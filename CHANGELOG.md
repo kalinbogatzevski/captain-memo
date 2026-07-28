@@ -5,6 +5,12 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.26] — 2026-07-28
+
+### Added
+- **`stats` now reports token spend**, window and all-time, with cache reads stated as excluded. The panel could say what memory costs to *store* but nothing about what the work costs to *run*, while `allTimeTotals()` sat in the tree with no callers. The two figures are separate lines on purpose: they differ by three orders of magnitude, and one unlabelled number invites reading a lifetime total as a rate. Cache reads bill at roughly a tenth of input and on a real corpus are 95%+ of the raw count, so folding them in produces a headline dominated by the cheapest tokens.
+- **Sessions report the name they were started under.** `claude --resume <name>` records it as `agentName`/`customTitle`, so a UI can show `CPT-TOP` rather than `f9b5463d` — eight hex characters distinguish nothing when a dozen sessions share one project. The hub bridge id each bridged session carries is reported alongside. Deliberately NOT interpreted as evidence of parentage: the name is just a name and the bridge id is on every bridged session, so reading either as "this is a sub-task agent" mislabels an operator's own named session.
+
 ## [0.27.25] — 2026-07-28
 
 ### Added

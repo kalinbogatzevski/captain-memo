@@ -1608,9 +1608,21 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           return `${dir}/recall-audit.jsonl`;
         })();
         const dream = await getDreamStats(auditLogPath).catch(() => undefined);
+        // Provider-reported token spend on THIS machine. Window and all-time are kept
+        // apart deliberately: they differ by three orders of magnitude here, and a single
+        // unlabelled figure invites reading a lifetime total as a rate. Best-effort — a
+        // machine with no transcripts simply omits the block rather than reporting zeros.
+        const nativeTokens = await (async () => {
+          try {
+            const { nativeUsageTotals, allTimeTotals } = await import('./native-session-usage.ts');
+            const w = await nativeUsageTotals();
+            return { window: w, all_time: allTimeTotals() };
+          } catch { return undefined; }
+        })();
         return {
           total_chunks,
           by_channel,
+          ...(nativeTokens ? { native_tokens: nativeTokens } : {}),
           observations: {
             total: obsTotal,
             queue_pending: queuePending,

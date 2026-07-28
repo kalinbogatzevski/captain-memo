@@ -37,6 +37,10 @@ export interface NativeSessionUsage {
   cache_read_tokens: number;
   /** Transcript mtime — when the session last produced a message. */
   last_activity_epoch_ms: number;
+  /** The session's own name, when it has one (workflow sub-task agents do). */
+  agentName?: string | undefined;
+  /** The owning session's edge id, so a UI can group agents under their parent. */
+  ownerSession?: string | undefined;
   /** Tokens whose messages were WRITTEN INSIDE the requested window, not the session's
    *  lifetime. This is the number that composes: a lifetime sum selected by a window
    *  lurches by billions the moment a long-lived session writes one message and rejoins,
@@ -66,6 +70,14 @@ interface Totals {
   cacheCreation: number;
   cacheRead: number;
   cwd?: string;
+  /** The session's own name when it has one — a workflow sub-task agent is launched with
+   *  `--resume <name>` and records it as agentName/customTitle. Far more use than eight
+   *  hex characters when a dozen of them share one project. */
+  agentName?: string;
+  /** The session that OWNS this one: a workflow agent records its parent's edge id here.
+   *  Without it a fleet of sub-task agents reads as a dozen unrelated top-level sessions,
+   *  because each one gets its own transcript with its own uuid. */
+  ownerSession?: string;
   /** Per-MINUTE token buckets, keyed by floor(epochMs / 60000). Summing the buckets
    *  inside a window gives usage genuinely accrued in that window, and old buckets fall
    *  out on their own — so the figure decays instead of lurching. Bounded by pruning
@@ -90,6 +102,9 @@ function fresh(): Totals {
 interface TranscriptLine {
   message?: { usage?: Record<string, unknown>; model?: string };
   cwd?: string;
+  agentName?: string;
+  customTitle?: string;
+  bridgeSessionId?: string;
   /** ISO-8601 stamp Claude Code writes on each record — what makes real windowing
    *  possible rather than approximated by file mtime. */
   timestamp?: string;
@@ -116,6 +131,13 @@ function digest(chunk: string, t: Totals): number {
     // First cwd wins — a session does not move, and re-reading it on every line
     // would cost a string compare per message for no gain.
     if (t.cwd === undefined && typeof line.cwd === 'string' && line.cwd) t.cwd = line.cwd;
+    if (t.agentName === undefined) {
+      const nm = line.agentName ?? line.customTitle;
+      if (typeof nm === 'string' && nm) t.agentName = nm;
+    }
+    if (t.ownerSession === undefined && typeof line.bridgeSessionId === 'string' && line.bridgeSessionId) {
+      t.ownerSession = line.bridgeSessionId;
+    }
     const u = line.message?.usage;
     if (!u || typeof u !== 'object') continue;
     const inTok = n(u.input_tokens);
@@ -243,6 +265,8 @@ export async function readNativeSessionUsage(
         cache_read_tokens: t.cacheRead,
         last_activity_epoch_ms: Math.round(mtimeMs),
         ...(t.cwd ? { cwd: t.cwd } : {}),
+        ...(t.agentName ? { agentName: t.agentName } : {}),
+        ...(t.ownerSession ? { ownerSession: t.ownerSession } : {}),
       });
     }
   }
@@ -310,6 +334,10 @@ export interface NativeSessionRow {
   cache_read_tokens: number;
   last_activity_epoch_ms: number;
   cwd?: string;
+  /** Human name when the session has one (workflow sub-task agents do). */
+  agent_name?: string;
+  /** The owning session's edge id — lets a UI group agents under their parent. */
+  owner_session?: string;
 }
 
 const MAX_REPORTED_SESSIONS = 10;
@@ -325,6 +353,8 @@ export async function nativeSessionRows(windowMs = 30 * 60_000): Promise<NativeS
     cache_read_tokens: s.window_cache_read_tokens,
     last_activity_epoch_ms: s.last_activity_epoch_ms,
     ...(s.cwd ? { cwd: s.cwd } : {}),
+    ...(s.agentName ? { agent_name: s.agentName } : {}),
+    ...(s.ownerSession ? { owner_session: s.ownerSession } : {}),
   }));
 }
 

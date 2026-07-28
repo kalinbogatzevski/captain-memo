@@ -48,6 +48,14 @@ export interface StatsResponse {
   embedder: { model: string; endpoint: string };
   disk?: { bytes: number; path: string };
   efficiency?: EfficiencyReport | undefined;
+  /** Provider-reported token spend on this machine: what the window cost, and what
+   *  every transcript on disk has cost. Absent when no transcripts exist. */
+  native_tokens?: {
+    window?: { sessions: number; window_ms: number; window_fresh_tokens: number;
+               window_output_tokens: number; window_cache_read_tokens: number } | undefined;
+    all_time?: { sessions: number; fresh_tokens: number; output_tokens: number;
+                 cache_read_tokens: number } | null | undefined;
+  } | undefined;
   recall?: {
     surfaced_count: number;
     recalled_count: number;
@@ -307,6 +315,14 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
       out.push(...efficiencyBlock);
       out.push('');
     }
+  }
+
+  // TOKENS — what this machine spent with the provider. Sits directly under Efficiency
+  // because the two answer adjacent questions: what memory costs to store, and what the
+  // work costs to run.
+  if (stats.native_tokens) {
+    out.push(...renderTokensBlock(stats.native_tokens, panelWidth));
+    out.push('');
   }
 
   // AI sources — observations per originating AI tool (codex/agy/gemini/kimi/
@@ -802,6 +818,42 @@ function renderEfficiencyBlock(
   out.push(`   ${dim('Dedup'.padEnd(14))}` + (dedup.docs_seen > 0
     ? `${cyanBold(`${dedup.skip_pct}%`)}   ${dim(`${fmtCount(dedup.skipped_unchanged)} / ${fmtCount(dedup.docs_seen)} unchanged`)}`
     : dim('— no documents indexed since worker start')));
+  return out;
+}
+
+/** Token spend: what you are CHARGED for, window and all-time, cache reads stated
+ *  apart. "Tokens" alone is meaningless when every figure here is tokens — the two
+ *  things that distinguish them are the scope and whether they bill at full rate, so
+ *  both go in the visible label. Cache reads bill at roughly a tenth of input and on a
+ *  real corpus are 95%+ of the raw count, so folding them in would produce a headline
+ *  dominated by the cheapest tokens and correlated with nothing anyone pays. */
+function renderTokensBlock(
+  nt: NonNullable<StatsResponse['native_tokens']>, blockWidth: number,
+): string[] {
+  const out: string[] = [];
+  out.push(sectionRule('Tokens', blockWidth));
+  const w = nt.window;
+  if (w && (w.window_fresh_tokens + w.window_output_tokens) > 0) {
+    const mins = Math.max(1, Math.round(w.window_ms / 60000));
+    const billed = w.window_fresh_tokens + w.window_output_tokens;
+    out.push(`   ${dim(`Last ${mins}m`.padEnd(14))}${cyanBold(`${fmtCompact(billed)} tok`.padEnd(14))}`
+      + dim(`${fmtCompact(w.window_fresh_tokens)} in + ${fmtCompact(w.window_output_tokens)} out`
+        + ` · ${Math.round(billed / mins).toLocaleString('en-US')}/min`));
+    out.push(`   ${' '.repeat(14)}${dim(`${fmtCompact(w.window_cache_read_tokens)} cache reads, not counted (~1/10 the price)`)}`);
+  } else {
+    out.push(`   ${dim('Last window'.padEnd(14))}${dim('— no session active in the window')}`);
+  }
+  const at = nt.all_time;
+  if (at) {
+    const billed = at.fresh_tokens + at.output_tokens;
+    out.push(`   ${dim('All time'.padEnd(14))}${cyanBold(`${fmtCompact(billed)} tok`.padEnd(14))}`
+      + dim(`${fmtCompact(at.fresh_tokens)} in + ${fmtCompact(at.output_tokens)} out · ${fmtCount(at.sessions)} sessions`));
+    out.push(`   ${' '.repeat(14)}${dim(`${fmtCompact(at.cache_read_tokens)} cache reads, not counted`)}`);
+  } else {
+    // Reported null until the first full scan lands, rather than a small wrong number
+    // that later jumps — a cold scan over a few thousand transcripts takes ~20s.
+    out.push(`   ${dim('All time'.padEnd(14))}${dim('computing…')}`);
+  }
   return out;
 }
 
