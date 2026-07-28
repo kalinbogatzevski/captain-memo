@@ -23,6 +23,7 @@
 // whole transcripts on a ~10s cadence is what this exists to avoid.
 
 import { stat, open, readdir } from 'fs/promises';
+import { readdirSync, readFileSync } from 'fs';
 import type { Dirent } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -295,6 +296,7 @@ async function scanAgents(
 export async function readNativeSessionUsage(
   windowMs = 30 * 60_000,
   now = Date.now(),
+  alwaysLive?: ReadonlySet<string>,
 ): Promise<NativeSessionUsage[]> {
   const root = transcriptsRoot();
   let projectDirs: string[];
@@ -331,7 +333,13 @@ export async function readNativeSessionUsage(
       } catch {
         continue;
       }
-      if (now - mtimeMs > windowMs) continue;   // idle ⇒ not a live session
+      // Transcript mtime asks "did this write recently", which is a PROXY for "does this
+      // session exist". When the captain has actually resolved the pane's process — the
+      // session file is on disk and the pid is alive — that is direct evidence and it wins.
+      // Without this a session idle for 31 minutes vanished from the fleet board while its
+      // terminal sat open in front of you, taking its name and its tokens with it and
+      // leaving a bare ambient row in their place.
+      if (now - mtimeMs > windowMs && !(alwaysLive && alwaysLive.has(sessionId))) continue;
       live.add(path);
 
       const { t, wFresh, wOut, wCr } = await accumulate(path, size, now, windowMs);
@@ -438,8 +446,43 @@ export interface NativeSessionRow {
 // show a parent with an arbitrary subset of its children — worse than showing none.
 const MAX_REPORTED_SESSIONS = 40;
 
-export async function nativeSessionRows(windowMs = 30 * 60_000): Promise<NativeSessionRow[]> {
-  const live = await readNativeSessionUsage(windowMs).catch(() => []);
+/** Session ids whose PROCESS is currently alive, from Claude Code's own runtime state.
+ *
+ *  ~/.claude/sessions/<pid>.json is written by each live session about itself. A file whose
+ *  pid is gone is a leftover, so the pid is checked — signal 0 tests existence without
+ *  touching the process.
+ *
+ *  This is DIRECT evidence that a session exists, and it beats the proxy the window uses
+ *  (did the transcript change recently). A session idle for 31 minutes used to vanish from
+ *  the fleet board while its terminal sat open in front of you, taking its name and its
+ *  tokens with it. Cheap: one readdir plus a kill(0) per entry, no tmux and no ps, and it
+ *  covers sessions that are not in a terminal multiplexer at all.
+ */
+export function liveSessionIds(): Set<string> {
+  const base = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
+  const out = new Set<string>();
+  let names: string[];
+  try { names = readdirSync(join(base, 'sessions')); } catch { return out; }
+  for (const n of names) {
+    if (!n.endsWith('.json')) continue;
+    const pid = Number(n.slice(0, -'.json'.length));
+    if (!Number.isInteger(pid) || pid <= 1) continue;
+    try { process.kill(pid, 0); } catch { continue; }   // stale file, process gone
+    try {
+      const d = JSON.parse(readFileSync(join(base, 'sessions', n), 'utf8')) as { sessionId?: unknown };
+      if (typeof d.sessionId === 'string' && d.sessionId) out.add(d.sessionId);
+    } catch { /* unreadable or malformed — skip, never throw */ }
+  }
+  return out;
+}
+
+export async function nativeSessionRows(
+  windowMs = 30 * 60_000, alwaysLive?: ReadonlySet<string>,
+): Promise<NativeSessionRow[]> {
+  // Default to the live set: a session with a running process belongs on the board whether
+  // or not it wrote a message in the last half hour.
+  const alive = alwaysLive ?? liveSessionIds();
+  const live = await readNativeSessionUsage(windowMs, Date.now(), alive).catch(() => []);
   return live.slice(0, MAX_REPORTED_SESSIONS).map(s => ({
     session_id: s.session_id,
     // WINDOW figures, matching the headline. A row showing lifetime beside a windowed

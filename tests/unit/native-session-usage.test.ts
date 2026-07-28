@@ -239,3 +239,44 @@ test('a session with no agents costs nothing and reports nothing extra', async (
   expect(all).toHaveLength(1);
   expect(all[0]!.parentSessionId).toBeUndefined();
 });
+
+test('a session whose PROCESS is alive is never aged out of the window', async () => {
+  // Transcript mtime asks "did this write recently", which is a PROXY for "does this
+  // session exist". When the runtime state says the process is alive, that is direct
+  // evidence and it wins. Reported from use: a session idle 32 minutes vanished from the
+  // fleet board while its terminal sat open, taking its name and its tokens with it.
+  const p = writeTranscript(SID, msg(100, 20));
+  const old = new Date(Date.now() - 3 * 60 * 60_000);
+  utimesSync(p, old, old);
+
+  expect(await readNativeSessionUsage(30 * 60_000)).toHaveLength(0);          // idle, no evidence
+  const alive = new Set([SID]);
+  const kept = await readNativeSessionUsage(30 * 60_000, Date.now(), alive);
+  expect(kept).toHaveLength(1);                                              // alive ⇒ kept
+  expect(kept[0]!.input_tokens).toBe(100);                                   // with its real totals
+});
+
+test('liveSessionIds ignores a stale file whose process is gone', async () => {
+  const { liveSessionIds } = await import('../../src/shared/../worker/native-session-usage.ts');
+  const { mkdirSync: mk } = await import('fs');
+  const cfg = join(root, 'claude-config');
+  mk(join(cfg, 'sessions'), { recursive: true });
+  const prev = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = cfg;
+  try {
+    // pid 1 is init: alive, but the guard rejects it as a plausible session owner.
+    writeFileSync(join(cfg, 'sessions', '1.json'), JSON.stringify({ pid: 1, sessionId: 'init-not-a-session' }));
+    // a pid that cannot exist — the file is a leftover from a dead session
+    writeFileSync(join(cfg, 'sessions', '4194300.json'), JSON.stringify({ pid: 4194300, sessionId: 'ghost' }));
+    // our own pid IS alive
+    writeFileSync(join(cfg, 'sessions', `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: 'real-one' }));
+    writeFileSync(join(cfg, 'sessions', 'garbage.json'), 'not json at all');
+
+    const ids = liveSessionIds();
+    expect(ids.has('real-one')).toBe(true);
+    expect(ids.has('ghost')).toBe(false);
+    expect(ids.has('init-not-a-session')).toBe(false);
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev;
+  }
+});
