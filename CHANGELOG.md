@@ -5,6 +5,16 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.27] — 2026-07-28
+
+### Added
+- **macOS support: the worker now runs as a launchd LaunchAgent.** A third `ServiceManager` implementation alongside systemd and Windows Scheduled Tasks, writing `~/Library/LaunchAgents/com.captainmemo.worker.plist` and driving it with the modern `launchctl` verbs (`bootstrap` / `bootout` / `kickstart`), scoped to the user's GUI domain so nothing needs root. The interface was designed for this and no command needed changing — only the factory. Where launchd differs from systemd, deliberately: `stop` is `bootout` rather than `launchctl stop`, because with `KeepAlive` set the latter is undone within seconds; `restart` is `kickstart -k`, one atomic job, so a caller dying mid-way cannot strand the worker stopped; and there is no `EnvironmentFile=` equivalent because none is needed — the worker calls `loadWorkerEnv()` itself at startup, the same arrangement Windows uses.
+
+### Fixed
+- **The installer reported success for commands that never ran.** `installWorkerService()` fired `daemon-reload`, `enable` and `restart` and checked none of their exit codes, printing "worker service enabled + started" unconditionally. On macOS all three failed with ENOENT and it still printed the green tick — *after* its own pre-flight had reported `systemctl not found`. Reported from the field 2026-07-28. Each call is now checked, and a failure says what failed. An installer that lies about what it did is worse than one that refuses to run.
+- **`getent` was assumed to exist.** It is a glibc tool; macOS has no usable one, so `getent passwd $USER` returned empty and the wizard resolved every derived path against `""`. Replaced at all four call sites with one `homeOf()` helper that shells out to nothing for the case that actually occurs — the current user — and falls back to `dscl` on macOS or `getent` on Linux only when resolving a *different* user (the sudo case). Diagnosed by the reporter, who also supplied a fix for the first of the four sites.
+- **Pre-flight and closing hints named the wrong tools for the platform.** It probed `systemctl` on a Mac, then recommended `journalctl` and `loginctl`, none of which exist there. It now probes the supervisor that will actually be used and points at `~/Library/Logs/captain-memo/`.
+
 ## [0.27.26] — 2026-07-28
 
 ### Added

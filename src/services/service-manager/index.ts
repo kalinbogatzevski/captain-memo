@@ -8,12 +8,13 @@
 
 import type { ServiceManager } from './types.ts';
 import { createSystemdServiceManager } from './systemd.ts';
+import { createLaunchdServiceManager } from './launchd.ts';
 import { createWindowsScheduledTaskServiceManager } from './windows-scheduled-task.ts';
 
 export type { ServiceManager, ServiceSpec, ServiceState, StopOptions } from './types.ts';
 
 export function getServiceManager(): ServiceManager {
-  return process.platform === 'win32'
-    ? createWindowsScheduledTaskServiceManager()
-    : createSystemdServiceManager();
+  if (process.platform === 'win32') return createWindowsScheduledTaskServiceManager();
+  if (process.platform === 'darwin') return createLaunchdServiceManager();
+  return createSystemdServiceManager();
 }

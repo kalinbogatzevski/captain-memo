@@ -325,14 +325,156 @@ var init_systemd = __esm(() => {
   USER_SYSTEMD_DIR = join4(homedir3(), ".config/systemd/user");
 });
 
+// src/services/service-manager/launchd.ts
+import { existsSync as existsSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync3, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "fs";
+import { homedir as homedir4, userInfo } from "os";
+import { join as join5, resolve as resolve2 } from "path";
+import { spawnSync as spawnSync2 } from "child_process";
+function bareName(name) {
+  return name.replace(/\.service$/, "");
+}
+function labelFor(name) {
+  return `com.captainmemo.${bareName(name).replace(/^captain-memo-/, "")}`;
+}
+function plistPath(name) {
+  return join5(LAUNCH_AGENTS_DIR, `${labelFor(name)}.plist`);
+}
+function domainTarget(name) {
+  const uid = typeof process.getuid === "function" ? process.getuid() : userInfo().uid;
+  return name ? `gui/${uid}/${labelFor(name)}` : `gui/${uid}`;
+}
+function templateFor2(name) {
+  const bare = bareName(name);
+  if (bare === "captain-memo-embed") {
+    return join5(REPO_ROOT2, "services/embed/launchd/captain-memo-embed.plist");
+  }
+  return join5(REPO_ROOT2, "services/worker/launchd/captain-memo-worker.plist");
+}
+function xmlEscape(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function programArgsXml(argv, indent = "    ") {
+  return argv.map((a) => `${indent}<string>${xmlEscape(a)}</string>`).join(`
+`);
+}
+function renderPlist(spec, template) {
+  const logDir = spec.logDir || DEFAULT_LOG_DIR;
+  return template.replaceAll("__LABEL__", xmlEscape(labelFor(spec.name))).replaceAll("__PROGRAM_ARGS__", programArgsXml(spec.exec)).replaceAll("__INSTALL_DIR__", xmlEscape(spec.workingDir)).replaceAll("__LOG_DIR__", xmlEscape(logDir)).replaceAll("__NAME__", xmlEscape(bareName(spec.name))).replaceAll("__RUN_AT_LOAD__", spec.autostart ? "<true/>" : "<false/>").replaceAll("__KEEP_ALIVE__", spec.restartOnFailure ? "<true/>" : "<false/>");
+}
+function launchctl(args) {
+  const r = spawnSync2("launchctl", args, { encoding: "utf-8", timeout: 1e4 });
+  return {
+    status: r.status,
+    stdout: r.stdout ?? "",
+    stderr: r.stderr ?? "",
+    error: r.error
+  };
+}
+function must(r, what) {
+  if (r.status === 0)
+    return;
+  const detail = r.stderr.trim() || r.stdout.trim() || r.error?.message || "no output";
+  throw new Error(`launchctl ${what} failed (status ${r.status ?? "?"}): ${detail}`);
+}
+
+class LaunchdServiceManager {
+  async install(spec) {
+    const tpl = templateFor2(spec.name);
+    if (!existsSync3(tpl))
+      throw new Error(`missing launchd plist template: ${tpl}`);
+    const plist = renderPlist(spec, readFileSync3(tpl, "utf-8"));
+    if (!existsSync3(LAUNCH_AGENTS_DIR))
+      mkdirSync3(LAUNCH_AGENTS_DIR, { recursive: true });
+    const logDir = spec.logDir || DEFAULT_LOG_DIR;
+    if (!existsSync3(logDir))
+      mkdirSync3(logDir, { recursive: true });
+    const path = plistPath(spec.name);
+    writeFileSync2(path, plist, { mode: 420 });
+    launchctl(["bootout", domainTarget(spec.name)]);
+    must(launchctl(["bootstrap", domainTarget(), path]), `bootstrap ${path}`);
+    if (spec.autostart)
+      launchctl(["enable", domainTarget(spec.name)]);
+    must(launchctl(["kickstart", domainTarget(spec.name)]), `kickstart ${labelFor(spec.name)}`);
+  }
+  async remove(name) {
+    launchctl(["bootout", domainTarget(name)]);
+    const path = plistPath(name);
+    if (existsSync3(path))
+      rmSync2(path, { force: true });
+  }
+  async start(name) {
+    if (!await this.isLoaded(name)) {
+      const path = plistPath(name);
+      if (!existsSync3(path))
+        throw new Error(`launchd plist not found: ${path} (run install first)`);
+      must(launchctl(["bootstrap", domainTarget(), path]), `bootstrap ${path}`);
+    }
+    must(launchctl(["kickstart", domainTarget(name)]), `kickstart ${labelFor(name)}`);
+  }
+  async restart(name, _opts) {
+    if (!await this.isLoaded(name))
+      return this.start(name);
+    must(launchctl(["kickstart", "-k", domainTarget(name)]), `kickstart -k ${labelFor(name)}`);
+  }
+  async stop(name, opts) {
+    if (opts?.graceful) {
+      const port = opts.port ?? DEFAULT_WORKER_PORT;
+      const ctl = new AbortController;
+      const t = setTimeout(() => ctl.abort(), 3000);
+      try {
+        await fetch(`http://127.0.0.1:${port}/shutdown`, { method: "POST", signal: ctl.signal });
+      } catch {} finally {
+        clearTimeout(t);
+      }
+    }
+    if (!await this.isLoaded(name))
+      return;
+    must(launchctl(["bootout", domainTarget(name)]), `bootout ${labelFor(name)}`);
+  }
+  async isLoaded(name) {
+    return launchctl(["print", domainTarget(name)]).status === 0;
+  }
+  async status(name) {
+    const r = launchctl(["print", domainTarget(name)]);
+    if (r.status !== 0) {
+      return existsSync3(plistPath(name)) ? "stopped" : "not-installed";
+    }
+    if (/\bstate\s*=\s*running\b/.test(r.stdout))
+      return "running";
+    const m = r.stdout.match(/\blast exit (?:code|status)\s*=\s*(\d+)/);
+    if (m && m[1] !== "0")
+      return "failed";
+    return "stopped";
+  }
+  async isActive(name) {
+    return await this.status(name) === "running";
+  }
+  async enable(name) {
+    launchctl(["enable", domainTarget(name)]);
+  }
+  async disable(name) {
+    launchctl(["disable", domainTarget(name)]);
+  }
+}
+function createLaunchdServiceManager() {
+  return new LaunchdServiceManager;
+}
+var REPO_ROOT2, LAUNCH_AGENTS_DIR, DEFAULT_LOG_DIR;
+var init_launchd = __esm(() => {
+  init_paths();
+  REPO_ROOT2 = resolve2(import.meta.dir, "../../..");
+  LAUNCH_AGENTS_DIR = join5(homedir4(), "Library/LaunchAgents");
+  DEFAULT_LOG_DIR = join5(homedir4(), "Library/Logs/captain-memo");
+});
+
 // src/services/service-manager/windows-scheduled-task.ts
-import { writeFileSync as writeFileSync2, rmSync as rmSync2 } from "fs";
+import { writeFileSync as writeFileSync3, rmSync as rmSync3 } from "fs";
 import { tmpdir } from "os";
-import { join as join5 } from "path";
+import { join as join6 } from "path";
 function psSingleQuote(value) {
   return `'${value.replaceAll("'", "''")}'`;
 }
-function xmlEscape(value) {
+function xmlEscape2(value) {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
 }
 function isoDuration(totalSeconds) {
@@ -378,20 +520,20 @@ function buildTaskXml(spec) {
   ];
   const execLines = [
     "    <Exec>",
-    `      <Command>${xmlEscape(exe)}</Command>`
+    `      <Command>${xmlEscape2(exe)}</Command>`
   ];
   if (argString.length > 0)
-    execLines.push(`      <Arguments>${xmlEscape(argString)}</Arguments>`);
-  execLines.push(`      <WorkingDirectory>${xmlEscape(spec.workingDir)}</WorkingDirectory>`);
+    execLines.push(`      <Arguments>${xmlEscape2(argString)}</Arguments>`);
+  execLines.push(`      <WorkingDirectory>${xmlEscape2(spec.workingDir)}</WorkingDirectory>`);
   execLines.push("    </Exec>");
-  const userId = xmlEscape(`${process.env.USERDOMAIN ?? process.env.COMPUTERNAME ?? ""}\\${process.env.USERNAME ?? ""}`);
+  const userId = xmlEscape2(`${process.env.USERDOMAIN ?? process.env.COMPUTERNAME ?? ""}\\${process.env.USERNAME ?? ""}`);
   const watchdogInterval = isoDuration(spec.watchdogIntervalSec ?? 300);
   const lines = [
     '<?xml version="1.0" encoding="UTF-16"?>',
     '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
     "  <RegistrationInfo>",
-    `    <Description>${xmlEscape(spec.description)}</Description>`,
-    `    <URI>\\${xmlEscape(spec.name)}</URI>`,
+    `    <Description>${xmlEscape2(spec.description)}</Description>`,
+    `    <URI>\\${xmlEscape2(spec.name)}</URI>`,
     "  </RegistrationInfo>",
     "  <Triggers>",
     "    <LogonTrigger>",
@@ -479,8 +621,8 @@ function toTaskXmlBuffer(xml) {
 class WindowsScheduledTaskServiceManager {
   async install(spec) {
     const xml = buildTaskXml(spec);
-    const xmlPath = join5(tmpdir(), `captain-memo-task-${spec.name}-${process.pid}-${Date.now()}.xml`);
-    writeFileSync2(xmlPath, toTaskXmlBuffer(xml));
+    const xmlPath = join6(tmpdir(), `captain-memo-task-${spec.name}-${process.pid}-${Date.now()}.xml`);
+    writeFileSync3(xmlPath, toTaskXmlBuffer(xml));
     try {
       const r = await runSchtasks(["/Create", "/TN", spec.name, "/XML", xmlPath, "/F"]);
       if (r.exitCode !== 0) {
@@ -488,7 +630,7 @@ class WindowsScheduledTaskServiceManager {
       }
     } finally {
       try {
-        rmSync2(xmlPath, { force: true });
+        rmSync3(xmlPath, { force: true });
       } catch {}
     }
   }
@@ -563,10 +705,15 @@ __export(exports_service_manager, {
   getServiceManager: () => getServiceManager
 });
 function getServiceManager() {
-  return process.platform === "win32" ? createWindowsScheduledTaskServiceManager() : createSystemdServiceManager();
+  if (process.platform === "win32")
+    return createWindowsScheduledTaskServiceManager();
+  if (process.platform === "darwin")
+    return createLaunchdServiceManager();
+  return createSystemdServiceManager();
 }
 var init_service_manager = __esm(() => {
   init_systemd();
+  init_launchd();
   init_windows_scheduled_task();
 });
 
@@ -580,13 +727,13 @@ async function restartWorker(sm, name, opts) {
 }
 
 // src/worker/branch.ts
-import { spawnSync as spawnSync2 } from "child_process";
-import { existsSync as existsSync3 } from "fs";
+import { spawnSync as spawnSync3 } from "child_process";
+import { existsSync as existsSync4 } from "fs";
 function detectBranchSync(cwd) {
-  if (!existsSync3(cwd))
+  if (!existsSync4(cwd))
     return null;
   try {
-    const result = spawnSync2("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf-8", timeout: 2000 });
+    const result = spawnSync3("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf-8", timeout: 2000 });
     if (result.status !== 0)
       return null;
     const out = result.stdout.trim();
@@ -596,10 +743,10 @@ function detectBranchSync(cwd) {
   }
 }
 function detectRepoRootSync(cwd) {
-  if (!existsSync3(cwd))
+  if (!existsSync4(cwd))
     return null;
   try {
-    const result = spawnSync2("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf-8", timeout: 2000 });
+    const result = spawnSync3("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf-8", timeout: 2000 });
     if (result.status !== 0)
       return null;
     const out = result.stdout.trim();
@@ -730,12 +877,12 @@ if (false) {}
 // src/hooks/session-start.ts
 init_shared();
 init_paths();
-import { mkdirSync as mkdirSync4, readFileSync as readFileSync4, statSync as statSync2, writeFileSync as writeFileSync4 } from "fs";
-import { join as join7 } from "path";
+import { mkdirSync as mkdirSync5, readFileSync as readFileSync5, statSync as statSync2, writeFileSync as writeFileSync5 } from "fs";
+import { join as join8 } from "path";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.27.26",
+  version: "0.27.27",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -809,8 +956,8 @@ var package_default = {
 var VERSION = package_default.version;
 
 // src/shared/self-update.ts
-import { mkdirSync as mkdirSync3, readFileSync as readFileSync3, writeFileSync as writeFileSync3, renameSync as renameSync2 } from "fs";
-import { join as join6 } from "path";
+import { mkdirSync as mkdirSync4, readFileSync as readFileSync4, writeFileSync as writeFileSync4, renameSync as renameSync2 } from "fs";
+import { join as join7 } from "path";
 var MARKER_FILENAME = ".install-version";
 function compareSemver(a, b) {
   const parse = (v) => v.replace(/^v/i, "").split("+")[0].split("-")[0].split(".").map((n) => parseInt(n, 10) || 0);
@@ -862,11 +1009,11 @@ function formatRollbackBanner(from, attempted, rolledBack) {
 `);
 }
 function markerPath(dataDir) {
-  return join6(dataDir, MARKER_FILENAME);
+  return join7(dataDir, MARKER_FILENAME);
 }
 function readMarker(dataDir) {
   try {
-    const raw = readFileSync3(markerPath(dataDir), "utf-8").trim();
+    const raw = readFileSync4(markerPath(dataDir), "utf-8").trim();
     return raw.length > 0 ? raw : null;
   } catch {
     return null;
@@ -874,10 +1021,10 @@ function readMarker(dataDir) {
 }
 function writeMarker(dataDir, version) {
   try {
-    mkdirSync3(dataDir, { recursive: true });
+    mkdirSync4(dataDir, { recursive: true });
     const final = markerPath(dataDir);
     const tmp = `${final}.tmp-${process.pid}`;
-    writeFileSync3(tmp, `${version}
+    writeFileSync4(tmp, `${version}
 `, "utf-8");
     renameSync2(tmp, final);
   } catch {}
@@ -1051,7 +1198,7 @@ async function ensureWorkerHealthy(deps) {
 init_worker_heal_lock();
 function readPkgField(dir, field) {
   try {
-    return JSON.parse(readFileSync4(join7(dir, "package.json"), "utf-8"))[field] ?? null;
+    return JSON.parse(readFileSync5(join8(dir, "package.json"), "utf-8"))[field] ?? null;
   } catch {
     return null;
   }
@@ -1143,7 +1290,7 @@ async function main2() {
   let autoUpdateNotice = "";
   let updatedThisSession = false;
   if (process.env.CAPTAIN_MEMO_AUTO_UPDATE === "1") {
-    const AUTO_UPDATE_LOCK = join7(DATA_DIR, ".auto-update.lock");
+    const AUTO_UPDATE_LOCK = join8(DATA_DIR, ".auto-update.lock");
     try {
       const port = {
         run: (argv, cwd, timeoutMs2) => {
@@ -1161,9 +1308,9 @@ async function main2() {
       };
       const intervalMs = Number(process.env.CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS ?? DEFAULT_UPDATE_CHECK_INTERVAL_MS);
       try {
-        mkdirSync4(DATA_DIR, { recursive: true });
+        mkdirSync5(DATA_DIR, { recursive: true });
       } catch {}
-      const stampPath = join7(DATA_DIR, ".last-update-check");
+      const stampPath = join8(DATA_DIR, ".last-update-check");
       let lastCheck = null;
       try {
         lastCheck = statSync2(stampPath).mtimeMs;
@@ -1171,7 +1318,7 @@ async function main2() {
       if (isUpdateCheckDue(lastCheck, Date.now(), intervalMs) && acquireHealLock(AUTO_UPDATE_LOCK)) {
         try {
           try {
-            writeFileSync4(stampPath, `${new Date().toISOString()}
+            writeFileSync5(stampPath, `${new Date().toISOString()}
 `);
           } catch {}
           const top = port.run(["git", "rev-parse", "--show-toplevel"], import.meta.dir);

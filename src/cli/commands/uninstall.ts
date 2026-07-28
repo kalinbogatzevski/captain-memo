@@ -8,7 +8,7 @@ import { existsSync, unlinkSync, lstatSync, rmSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { spawnSync } from 'child_process';
-import { isWindows } from '../../shared/platform.ts';
+import { isWindows, homeOf } from '../../shared/platform.ts';
 import { WORKER_ENV_PATH, CONFIG_DIR, DATA_DIR } from '../../shared/paths.ts';
 import { getServiceManager } from '../../services/service-manager/index.ts';
 import { getEmbedderInstaller } from '../../services/embedder-installer/index.ts';
@@ -34,8 +34,7 @@ function warn(s: string): void { console.log(`  \x1b[33m!\x1b[0m ${s}`); }
 function realHome(): string {
   const u = process.env.SUDO_USER ?? process.env.USER ?? '';
   if (!u) return homedir();
-  const r = spawnSync('getent', ['passwd', u], { encoding: 'utf-8' });
-  return (r.stdout.split(':')[5] ?? homedir()).trim();
+  return homeOf(u);
 }
 
 function detectInstalls(): { user: boolean; system: boolean } {

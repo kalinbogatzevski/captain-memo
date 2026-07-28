@@ -21,7 +21,7 @@ import { dirname, join, resolve } from 'path';
 import { homedir } from 'os';
 import { spawnSync } from 'child_process';
 import { printMiniBanner } from '../banner.ts';
-import { isWindows, totalMemGb, diskFreeGb, whichBun as probeBun } from '../../shared/platform.ts';
+import { isWindows, isMac, homeOf, totalMemGb, diskFreeGb, whichBun as probeBun } from '../../shared/platform.ts';
 import { WORKER_ENV_PATH, CONFIG_DIR, LOGS_DIR, DATA_DIR, DEFAULT_WORKER_PORT, DEFAULT_CODEX_MODEL, DEFAULT_AGY_MODEL } from '../../shared/paths.ts';
 import { getServiceManager } from '../../services/service-manager/index.ts';
 import { grantPluginToolPermissions } from './install-hooks.ts';
@@ -286,15 +286,25 @@ function preflight(opts: { wantLocalEmbedder: boolean }): PreflightResult[] {
   // OS
   const osRes = spawnSync('uname', ['-s'], { encoding: 'utf-8' });
   const os = osRes.stdout.trim();
-  if (os === 'Linux') out.push({ name: 'OS', status: 'OK', detail: 'Linux' });
-  else out.push({ name: 'OS', status: 'FAIL', detail: `${os} (Linux required for systemd-based install)`,
-                  remedy: 'macOS / Windows support not yet implemented' });
+  if (os === 'Linux') out.push({ name: 'OS', status: 'OK', detail: 'Linux (systemd)' });
+  else if (isMac) out.push({ name: 'OS', status: 'OK', detail: `${os} (macOS — launchd LaunchAgent)` });
+  else out.push({ name: 'OS', status: 'FAIL', detail: `${os} (unsupported)`,
+                  remedy: 'supported: Linux (systemd), macOS (launchd), Windows (Scheduled Task)' });
 
-  // systemd
-  const systemctl = spawnSync('which', ['systemctl'], { encoding: 'utf-8' });
-  if (systemctl.status === 0) out.push({ name: 'systemd', status: 'OK', detail: 'systemctl on PATH' });
-  else out.push({ name: 'systemd', status: 'FAIL', detail: 'systemctl not found',
-                  remedy: 'install on a systemd-based distro (Debian/Ubuntu/Fedora/Arch/etc.)' });
+  // Service supervisor. Which one is required depends on the OS, so probe the one that
+  // will ACTUALLY be used — reporting "systemctl not found" on a Mac is noise, and it
+  // was noise the installer then ignored to claim it had started a systemd unit.
+  if (isMac) {
+    const lc = spawnSync('which', ['launchctl'], { encoding: 'utf-8' });
+    if (lc.status === 0) out.push({ name: 'launchd', status: 'OK', detail: 'launchctl on PATH' });
+    else out.push({ name: 'launchd', status: 'FAIL', detail: 'launchctl not found',
+                    remedy: 'launchctl ships with macOS — a missing one means a broken PATH' });
+  } else {
+    const systemctl = spawnSync('which', ['systemctl'], { encoding: 'utf-8' });
+    if (systemctl.status === 0) out.push({ name: 'systemd', status: 'OK', detail: 'systemctl on PATH' });
+    else out.push({ name: 'systemd', status: 'FAIL', detail: 'systemctl not found',
+                    remedy: 'install on a systemd-based distro (Debian/Ubuntu/Fedora/Arch/etc.)' });
+  }
 
   // Python (only relevant if installing local embedder)
   if (opts.wantLocalEmbedder) {
@@ -403,8 +413,7 @@ function whichBun(): string {
   const candidates: string[] = [];
   const sudoUser = process.env.SUDO_USER;
   if (sudoUser) {
-    const userHome = (spawnSync('getent', ['passwd', sudoUser], { encoding: 'utf-8' })
-      .stdout.split(':')[5] ?? '').trim();
+    const userHome = homeOf(sudoUser);
     if (userHome) candidates.push(`${userHome}/.bun/bin/bun`);
   }
   candidates.push('/usr/local/bin/bun', '/usr/bin/bun', '/opt/bun/bin/bun');
@@ -440,7 +449,7 @@ function realUserAndGroup(): { user: string; group: string; home: string } {
   }
   const u = process.env.SUDO_USER ?? process.env.USER ?? '';
   if (!u) fail('Cannot determine the real user (SUDO_USER unset).');
-  const home = spawnSync('getent', ['passwd', u], { encoding: 'utf-8' }).stdout.split(':')[5] ?? '';
+  const home = homeOf(u);
   // group = primary group of user
   const groupId = spawnSync('id', ['-gn', u], { encoding: 'utf-8' }).stdout.trim();
   return { user: u, group: groupId || u, home: home.trim() };
@@ -832,9 +841,24 @@ function installWorkerService(paths: ModePaths, bunPath: string): void {
   if (!existsSync(paths.systemdDir)) mkdirSync(paths.systemdDir, { recursive: true });
   writeFileSync(join(paths.systemdDir, WORKER_UNIT_NAME), unit, { mode: 0o644 });
   ok(`wrote ${paths.systemdDir}/${WORKER_UNIT_NAME}`);
-  spawnSync(paths.systemctl[0]!, [...paths.systemctl.slice(1), 'daemon-reload'], { stdio: 'inherit' });
-  spawnSync(paths.systemctl[0]!, [...paths.systemctl.slice(1), 'enable', WORKER_UNIT_NAME], { stdio: 'inherit' });
-  spawnSync(paths.systemctl[0]!, [...paths.systemctl.slice(1), 'restart', WORKER_UNIT_NAME], { stdio: 'inherit' });
+  // CHECK THE EXIT CODES. These three ran unconditionally and the success line printed
+  // regardless, so on a host without systemd the installer reported "worker service
+  // enabled + started" after three ENOENTs — having already printed "systemctl not
+  // found" in its own pre-flight. An installer that lies about what it did is worse
+  // than one that refuses to run.
+  const sc = (args: string[]): ReturnType<typeof spawnSync> =>
+    spawnSync(paths.systemctl[0]!, [...paths.systemctl.slice(1), ...args], { stdio: 'inherit' });
+  const reload = sc(['daemon-reload']);
+  if (reload.error || reload.status !== 0) {
+    fail(`systemctl daemon-reload failed (${reload.error?.message ?? `status ${reload.status}`}). `
+      + 'The unit file was written but nothing is supervising it.');
+  }
+  const enabled = sc(['enable', WORKER_UNIT_NAME]);
+  if (enabled.status !== 0) warn(`systemctl enable ${WORKER_UNIT_NAME} failed — the worker will not start at boot`);
+  const started = sc(['restart', WORKER_UNIT_NAME]);
+  if (started.error || started.status !== 0) {
+    fail(`systemctl restart ${WORKER_UNIT_NAME} failed (${started.error?.message ?? `status ${started.status}`}).`);
+  }
   ok(`worker service enabled + started (${paths.mode === 'user' ? 'systemctl --user' : 'systemctl'} ${WORKER_UNIT_NAME})`);
 }
 
@@ -958,7 +982,10 @@ function wireCrossAi(opts: InstallOptions): void {
 function probeHealth(): void {
   const res = spawnSync('curl', ['-s', '-m', '3', 'http://127.0.0.1:39888/health'], { encoding: 'utf-8' });
   if (res.stdout.includes('"healthy":true')) ok('worker is responding on http://127.0.0.1:39888');
-  else warn('worker not yet responding (initial indexing on a large corpus can take minutes — check `journalctl -u captain-memo-worker -f`)');
+  else warn('worker not yet responding (initial indexing on a large corpus can take minutes — check '
+    + (isMac ? '`tail -f ~/Library/Logs/captain-memo/captain-memo-worker.err.log`'
+             : isWindows ? 'the log dir under %LOCALAPPDATA%\\captain-memo\\logs'
+             : '`journalctl -u captain-memo-worker -f`') + ')');
 }
 
 // --- Windows install (native; no systemd / no sudo) -------------------------
@@ -1357,7 +1384,25 @@ Both modes: re-running preserves existing config (flags/env override). To remove
   writeWorkerEnv(cfg, paths);
 
   header('Installing worker service');
-  installWorkerService(paths, bunPath);
+  if (isMac) {
+    // launchd, via the ServiceManager. NOT installWorkerService(): that writes a systemd
+    // unit and shells out to systemctl, which does not exist here. Doing it anyway is
+    // what produced "worker service enabled + started" on a Mac with no systemd at all.
+    await getServiceManager().install({
+      name: 'captain-memo-worker',
+      description: 'Captain Memo worker',
+      exec: [bunPath, 'src/worker/index.ts'],
+      workingDir: REPO_ROOT,
+      envFile: paths.envFile,
+      autostart: true,
+      restartOnFailure: true,
+      logDir: join(realUserAndGroup().home, 'Library/Logs/captain-memo'),
+    });
+    await getServiceManager().restart('captain-memo-worker', { graceful: true, port: DEFAULT_WORKER_PORT });
+    ok('worker LaunchAgent installed + started (~/Library/LaunchAgents/com.captainmemo.worker.plist)');
+  } else {
+    installWorkerService(paths, bunPath);
+  }
 
   header('Registering Claude Code plugin');
   registerPlugin(mode);
@@ -1381,10 +1426,16 @@ Both modes: re-running preserves existing config (flags/env override). To remove
   info('  • Check status:  captain-memo doctor');
   info('  • View config:   captain-memo config show');
   info('  • Roll back:     captain-memo uninstall' + (mode === 'system' ? ' --system' : ''));
-  if (mode === 'user') {
+  if (mode === 'user' && !isMac && !isWindows) {
     console.log();
     info('Tip: to keep services running after you log out, enable lingering ONCE:');
     info('     sudo loginctl enable-linger $USER');
+  }
+  if (isMac) {
+    console.log();
+    info('The worker runs as a LaunchAgent:');
+    info('     ~/Library/LaunchAgents/com.captainmemo.worker.plist');
+    info('     logs: ~/Library/Logs/captain-memo/');
   }
   return 0;
 }

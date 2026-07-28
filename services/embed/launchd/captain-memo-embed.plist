@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Captain Memo embedder sidecar — macOS LaunchAgent (per-user, no root).
+
+  Parity notes against the systemd unit next door:
+    Restart=always        -> KeepAlive <true/>   (relaunch on ANY exit, clean or not)
+    RestartSec=5          -> ThrottleInterval    (launchd's floor is 10s; it refuses
+                                                  to relaunch faster and logs if you try)
+    EnvironmentFile=      -> nothing. launchd has NO equivalent, and it does not need
+                             one: the worker calls loadWorkerEnv() itself at startup
+                             (src/worker/index.ts) and reads CONFIG_DIR/worker.env on
+                             every platform. Same arrangement the Windows task uses.
+    StandardOutput=journal-> StandardOutPath. macOS has no journal, so logs are files;
+                             read them with `log show` or just `tail -f`.
+
+  Placeholders are substituted by src/services/service-manager/launchd.ts.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>__LABEL__</string>
+
+  <key>ProgramArguments</key>
+  <array>
+__PROGRAM_ARGS__
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__INSTALL_DIR__</string>
+
+  <!-- Start at login, and keep it up. Deliberately unconditional KeepAlive rather than
+       {SuccessfulExit: false}: the worker exiting 0 is still an outage, exactly as
+       Restart=always treats it on Linux. Stop is `bootout`, which unloads the job
+       outright, so KeepAlive cannot resurrect a service the operator stopped. -->
+  <key>RunAtLoad</key>
+  __RUN_AT_LOAD__
+  <key>KeepAlive</key>
+  __KEEP_ALIVE__
+
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>__LOG_DIR__/__NAME__.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_DIR__/__NAME__.err.log</string>
+
+  <!-- Background: normal scheduling priority and I/O throttling appropriate for a
+       daemon. Without it launchd may treat the job as interactive. -->
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
