@@ -5,6 +5,15 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.28] — 2026-07-28
+
+### Fixed
+- **The macOS install aborted with `spawnSync launchctl ETIMEDOUT`.** Three launches were stacked into one throttle window: `bootstrap` starts the job via `RunAtLoad`, `install()` then ran `kickstart`, and the caller ran `restart()` on top. launchd refuses to respawn a job more than once per `ThrottleInterval` (ours is 10 s, which is launchd's floor) and `kickstart` **blocks** while throttled — against a spawn timeout that was also 10 s. The plist installed correctly; only the redundant third launch timed out. `install()` no longer kickstarts when `RunAtLoad` already started the job, the caller no longer restarts on top, the launchctl timeout is 90 s, and a timeout is now checked against the job's real state before it is called a failure — a stopwatch is not evidence. A test pins the timeout at ≥3× the plist's throttle interval so the collision cannot come back.
+- **`install()` now verifies the agent is actually running** before reporting success, instead of treating `bootstrap` as proof. A plist that loads but whose program cannot exec reports here, with the `launchctl print` command and the log path to look at.
+
+### Added
+- **`AssociatedBundleIdentifiers` in the LaunchAgent plists.** macOS names a background item in *Login Items & Extensions* after the code-signing identity of the program it runs — for us that is `bun`, so users were told "software by Jarred Sumner can run in the background", which is accurate and useless to someone who installed Captain Memo. This is Apple's hook for re-attributing the job. Honest limit: it fully re-labels the entry only when a bundle with that identifier is installed and signed by the same team, so without a signed Captain Memo bundle macOS may still fall back to Bun's signature.
+
 ## [0.27.27] — 2026-07-28
 
 ### Added

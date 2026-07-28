@@ -50,5 +50,21 @@ __PROGRAM_ARGS__
        daemon. Without it launchd may treat the job as interactive. -->
   <key>ProcessType</key>
   <string>Background</string>
+
+  <!-- Attribution in System Settings > General > Login Items & Extensions.
+       macOS names a background item after the CODE-SIGNING IDENTITY of the program it
+       runs. Ours is `bun`, so the notification reads "software by Jarred Sumner can run
+       in the background" — accurate, and completely unhelpful to someone who installed
+       Captain Memo (reported by a user 2026-07-28).
+
+       AssociatedBundleIdentifiers is Apple's hook for re-attributing a job to an app.
+       HONEST LIMIT: it only fully re-labels the entry when a bundle with that identifier
+       is installed AND signed by the same team; with no signed Captain Memo bundle macOS
+       may still fall back to Bun's signature. Declaring it costs nothing, is correct the
+       moment a signed bundle ships, and makes the intent explicit either way. -->
+  <key>AssociatedBundleIdentifiers</key>
+  <array>
+    <string>com.captainmemo.worker</string>
+  </array>
 </dict>
 </plist>

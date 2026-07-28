@@ -101,15 +101,26 @@ export function renderPlist(spec: ServiceSpec, template: string): string {
     .replaceAll('__KEEP_ALIVE__', spec.restartOnFailure ? '<true/>' : '<false/>');
 }
 
-interface Run { status: number | null; stdout: string; stderr: string; error?: Error | undefined }
+interface Run { status: number | null; stdout: string; stderr: string; error?: Error | undefined; timedOut: boolean }
+
+/** launchctl is not always fast. `kickstart` BLOCKS while the job is inside its
+ *  ThrottleInterval (launchd refuses to respawn more than once per interval, floor 10s),
+ *  and `print` on a busy GUI domain dumps a lot. A 10s cap was exactly the throttle
+ *  window, so an ordinary wait surfaced as `spawnSync launchctl ETIMEDOUT` and aborted
+ *  the install — reported from the field 2026-07-28. */
+const LAUNCHCTL_TIMEOUT_MS = 90_000;
 
 function launchctl(args: string[]): Run {
-  const r = spawnSync('launchctl', args, { encoding: 'utf-8', timeout: 10_000 });
+  const r = spawnSync('launchctl', args, { encoding: 'utf-8', timeout: LAUNCHCTL_TIMEOUT_MS });
   return {
     status: r.status,
     stdout: (r.stdout ?? '') as string,
     stderr: (r.stderr ?? '') as string,
     error: r.error,
+    // spawnSync reports a timeout as an ETIMEDOUT error with a null status. Distinguish
+    // it: a timeout means "no answer", NOT "the job failed", and the two need different
+    // handling — see settled() below.
+    timedOut: (r.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT',
   };
 }
 
@@ -120,6 +131,19 @@ function must(r: Run, what: string): void {
   if (r.status === 0) return;
   const detail = r.stderr.trim() || r.stdout.trim() || r.error?.message || 'no output';
   throw new Error(`launchctl ${what} failed (status ${r.status ?? '?'}): ${detail}`);
+}
+
+/** Poll until the job reaches a terminal-ish state, or give up. Used after a call that
+ *  TIMED OUT: launchd may still be mid-throttle, and the job frequently comes up a moment
+ *  later. Asking the supervisor what actually happened beats trusting a stopwatch. */
+async function settled(check: () => Promise<ServiceState>, ms = 20_000): Promise<ServiceState> {
+  const deadline = Date.now() + ms;
+  let last: ServiceState = 'stopped';
+  for (;;) {
+    last = await check();
+    if (last === 'running' || Date.now() > deadline) return last;
+    await new Promise(r => setTimeout(r, 1_000));
+  }
 }
 
 class LaunchdServiceManager implements ServiceManager {
@@ -143,9 +167,26 @@ class LaunchdServiceManager implements ServiceManager {
     launchctl(['bootout', domainTarget(spec.name)]);
     must(launchctl(['bootstrap', domainTarget(), path]), `bootstrap ${path}`);
     if (spec.autostart) launchctl(['enable', domainTarget(spec.name)]);
-    // bootstrap with RunAtLoad already started it; kickstart makes that true regardless
-    // of RunAtLoad and is idempotent on a running job.
-    must(launchctl(['kickstart', domainTarget(spec.name)]), `kickstart ${labelFor(spec.name)}`);
+
+    // NO kickstart here when RunAtLoad is set: bootstrap has already launched the job,
+    // and a second launch inside ThrottleInterval makes launchd BLOCK rather than obey.
+    // Stacking bootstrap + kickstart + a caller's restart() put three launches into one
+    // 10s window and the third one timed out, aborting the whole install.
+    if (!spec.autostart) {
+      must(launchctl(['kickstart', domainTarget(spec.name)]), `kickstart ${domainTarget(spec.name)}`);
+      return;
+    }
+    // Confirm the supervisor actually has it running, rather than assuming bootstrap
+    // implies a live process. A plist that loads but whose program cannot exec (bad bun
+    // path, unwritable log dir) reports exactly here instead of looking like success.
+    const state = await settled(() => this.status(spec.name));
+    if (state !== 'running') {
+      throw new Error(
+        `the LaunchAgent loaded but is not running (state: ${state}). `
+        + `Inspect it with: launchctl print ${domainTarget(spec.name)}`
+        + (spec.logDir ? `  ·  logs: ${spec.logDir}` : ''),
+      );
+    }
   }
 
   async remove(name: string): Promise<void> {
@@ -162,14 +203,20 @@ class LaunchdServiceManager implements ServiceManager {
       if (!existsSync(path)) throw new Error(`launchd plist not found: ${path} (run install first)`);
       must(launchctl(['bootstrap', domainTarget(), path]), `bootstrap ${path}`);
     }
-    must(launchctl(['kickstart', domainTarget(name)]), `kickstart ${labelFor(name)}`);
+    must(launchctl(['kickstart', domainTarget(name)]), `kickstart ${domainTarget(name)}`);
   }
 
   async restart(name: string, _opts?: StopOptions): Promise<void> {
     // -k kills the running instance and relaunches it as ONE launchctl job, so a caller
     // dying between the two phases cannot leave the worker stopped.
     if (!(await this.isLoaded(name))) return this.start(name);
-    must(launchctl(['kickstart', '-k', domainTarget(name)]), `kickstart -k ${labelFor(name)}`);
+    const r = launchctl(['kickstart', '-k', domainTarget(name)]);
+    if (r.status === 0) return;
+    // A timeout here usually means launchd is holding the request inside the job's
+    // ThrottleInterval — the relaunch is pending, not refused. Ask what actually
+    // happened before declaring failure.
+    if (r.timedOut && (await settled(() => this.status(name))) === 'running') return;
+    must(r, `kickstart -k ${domainTarget(name)}`);
   }
 
   async stop(name: string, opts?: StopOptions): Promise<void> {

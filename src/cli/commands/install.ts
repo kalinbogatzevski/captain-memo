@@ -1398,7 +1398,10 @@ Both modes: re-running preserves existing config (flags/env override). To remove
       restartOnFailure: true,
       logDir: join(realUserAndGroup().home, 'Library/Logs/captain-memo'),
     });
-    await getServiceManager().restart('captain-memo-worker', { graceful: true, port: DEFAULT_WORKER_PORT });
+    // NO restart() here. install() has already bootstrapped the agent, and RunAtLoad
+    // started it; a further launch lands inside launchd's ThrottleInterval, where
+    // kickstart BLOCKS instead of obeying. That third call is what timed out in the
+    // field. install() verifies the job is actually running before returning.
     ok('worker LaunchAgent installed + started (~/Library/LaunchAgents/com.captainmemo.worker.plist)');
   } else {
     installWorkerService(paths, bunPath);

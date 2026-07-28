@@ -362,12 +362,13 @@ function renderPlist(spec, template) {
   return template.replaceAll("__LABEL__", xmlEscape(labelFor(spec.name))).replaceAll("__PROGRAM_ARGS__", programArgsXml(spec.exec)).replaceAll("__INSTALL_DIR__", xmlEscape(spec.workingDir)).replaceAll("__LOG_DIR__", xmlEscape(logDir)).replaceAll("__NAME__", xmlEscape(bareName(spec.name))).replaceAll("__RUN_AT_LOAD__", spec.autostart ? "<true/>" : "<false/>").replaceAll("__KEEP_ALIVE__", spec.restartOnFailure ? "<true/>" : "<false/>");
 }
 function launchctl(args) {
-  const r = spawnSync2("launchctl", args, { encoding: "utf-8", timeout: 1e4 });
+  const r = spawnSync2("launchctl", args, { encoding: "utf-8", timeout: LAUNCHCTL_TIMEOUT_MS });
   return {
     status: r.status,
     stdout: r.stdout ?? "",
     stderr: r.stderr ?? "",
-    error: r.error
+    error: r.error,
+    timedOut: r.error?.code === "ETIMEDOUT"
   };
 }
 function must(r, what) {
@@ -375,6 +376,16 @@ function must(r, what) {
     return;
   const detail = r.stderr.trim() || r.stdout.trim() || r.error?.message || "no output";
   throw new Error(`launchctl ${what} failed (status ${r.status ?? "?"}): ${detail}`);
+}
+async function settled(check, ms = 20000) {
+  const deadline = Date.now() + ms;
+  let last = "stopped";
+  for (;; ) {
+    last = await check();
+    if (last === "running" || Date.now() > deadline)
+      return last;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
 }
 
 class LaunchdServiceManager {
@@ -394,7 +405,14 @@ class LaunchdServiceManager {
     must(launchctl(["bootstrap", domainTarget(), path]), `bootstrap ${path}`);
     if (spec.autostart)
       launchctl(["enable", domainTarget(spec.name)]);
-    must(launchctl(["kickstart", domainTarget(spec.name)]), `kickstart ${labelFor(spec.name)}`);
+    if (!spec.autostart) {
+      must(launchctl(["kickstart", domainTarget(spec.name)]), `kickstart ${domainTarget(spec.name)}`);
+      return;
+    }
+    const state = await settled(() => this.status(spec.name));
+    if (state !== "running") {
+      throw new Error(`the LaunchAgent loaded but is not running (state: ${state}). ` + `Inspect it with: launchctl print ${domainTarget(spec.name)}` + (spec.logDir ? `  \xB7  logs: ${spec.logDir}` : ""));
+    }
   }
   async remove(name) {
     launchctl(["bootout", domainTarget(name)]);
@@ -409,12 +427,17 @@ class LaunchdServiceManager {
         throw new Error(`launchd plist not found: ${path} (run install first)`);
       must(launchctl(["bootstrap", domainTarget(), path]), `bootstrap ${path}`);
     }
-    must(launchctl(["kickstart", domainTarget(name)]), `kickstart ${labelFor(name)}`);
+    must(launchctl(["kickstart", domainTarget(name)]), `kickstart ${domainTarget(name)}`);
   }
   async restart(name, _opts) {
     if (!await this.isLoaded(name))
       return this.start(name);
-    must(launchctl(["kickstart", "-k", domainTarget(name)]), `kickstart -k ${labelFor(name)}`);
+    const r = launchctl(["kickstart", "-k", domainTarget(name)]);
+    if (r.status === 0)
+      return;
+    if (r.timedOut && await settled(() => this.status(name)) === "running")
+      return;
+    must(r, `kickstart -k ${domainTarget(name)}`);
   }
   async stop(name, opts) {
     if (opts?.graceful) {
@@ -459,7 +482,7 @@ class LaunchdServiceManager {
 function createLaunchdServiceManager() {
   return new LaunchdServiceManager;
 }
-var REPO_ROOT2, LAUNCH_AGENTS_DIR, DEFAULT_LOG_DIR;
+var REPO_ROOT2, LAUNCH_AGENTS_DIR, DEFAULT_LOG_DIR, LAUNCHCTL_TIMEOUT_MS = 90000;
 var init_launchd = __esm(() => {
   init_paths();
   REPO_ROOT2 = resolve2(import.meta.dir, "../../..");
@@ -882,7 +905,7 @@ import { join as join8 } from "path";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.27.27",
+  version: "0.27.28",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,

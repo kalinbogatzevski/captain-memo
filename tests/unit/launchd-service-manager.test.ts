@@ -111,3 +111,37 @@ test('the embed template renders too, with its own name', () => {
   expect(out).toContain('captain-memo-embed.log');
   expect(out).not.toMatch(/__[A-Z_]+__/);
 });
+
+test('the launchctl timeout outlasts the plist ThrottleInterval', () => {
+  // The field failure, as an invariant. launchd refuses to respawn a job more than once
+  // per ThrottleInterval and `kickstart` BLOCKS while inside it. The spawn timeout was
+  // 10s and the plist's interval is 10s, so an ordinary throttle wait surfaced as
+  // "spawnSync launchctl ETIMEDOUT" and aborted the install. If someone raises the
+  // interval, or lowers the timeout, this fails before a user sees it.
+  const src = readFileSync(join(REPO_ROOT, 'src/services/service-manager/launchd.ts'), 'utf-8');
+  const timeout = Number((src.match(/LAUNCHCTL_TIMEOUT_MS\s*=\s*([0-9_]+)/)?.[1] ?? '0').replace(/_/g, ''));
+  const throttle = Number(TEMPLATE.match(/<key>ThrottleInterval<\/key>\s*<integer>(\d+)<\/integer>/)?.[1] ?? '0');
+  expect(timeout).toBeGreaterThan(0);
+  expect(throttle).toBeGreaterThan(0);
+  expect(timeout).toBeGreaterThanOrEqual(throttle * 1000 * 3);   // room for several waits
+});
+
+test('install does not stack a second launch inside the throttle window', () => {
+  // bootstrap + RunAtLoad already starts the job. The extra kickstart made it launch #2,
+  // and the caller's restart() made it #3 — all within one 10s window.
+  const src = readFileSync(join(REPO_ROOT, 'src/services/service-manager/launchd.ts'), 'utf-8');
+  const install = src.slice(src.indexOf('async install('), src.indexOf('async remove('));
+  expect(/if \(!spec\.autostart\)/.test(install)).toBe(true);   // kickstart is conditional
+  // and the caller must not add one of its own
+  const cli = readFileSync(join(REPO_ROOT, 'src/cli/commands/install.ts'), 'utf-8');
+  // Anchor on the install SECTION, not on `if (isMac) {` — that also matches the
+  // pre-flight block earlier in the file, and the resulting slice swallowed the Windows
+  // path's legitimate restart() call.
+  // lastIndexOf: the Windows path has its own "Installing worker service" header
+  // earlier in the file, and its restart() call there is correct — Scheduled Tasks are
+  // IgnoreNew, so a plain start would no-op over a running stale worker.
+  const secStart = cli.lastIndexOf("header('Installing worker service');");
+  const macBranch = cli.slice(secStart, cli.indexOf('installWorkerService(paths, bunPath);', secStart));
+  expect(secStart).toBeGreaterThan(-1);
+  expect(macBranch).not.toMatch(/getServiceManager\(\)\.restart\(/);
+});
