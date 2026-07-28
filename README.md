@@ -12,7 +12,7 @@
 
 Captain Memo is a Claude Code plugin — and a **cross-AI local-memory layer**: one local corpus shared by every MCP-speaking coding agent on your machine (Claude Code, Codex, Gemini CLI, Antigravity, Cursor, opencode, Kimi CLI), so what one tool learns, the others recall. Every session leaves a wake; Captain Memo keeps the log so the next session — in any of your AI tools — sails with what was learned in the last one.
 
-> **Platforms — Linux + native Windows (x64).** Linux runs under `systemd --user`; Windows runs natively under a per-user Scheduled Task (no WSL, no admin) — see [Windows (native)](#windows-native) below, or use the [WSL2 fallback](#wsl2-fallback). macOS support is still pending; Mac users can run the worker manually under launchd / tmux / nohup, see [issue #1](https://github.com/kalinbogatzevski/captain-memo/issues/1).
+> **Platforms — Linux, macOS and native Windows (x64).** Linux runs under `systemd --user`; **macOS runs as a per-user launchd LaunchAgent** (no root — see [macOS](#macos) below); Windows runs natively under a per-user Scheduled Task (no WSL, no admin) — see [Windows (native)](#windows-native), or the [WSL2 fallback](#wsl2-fallback). One `ServiceManager` interface, three supervisors; the CLI is identical on all three.
 
 ---
 
@@ -61,7 +61,7 @@ So I sat down to build that "something different" for myself, and ended up with 
 
 | Component | Minimum | Notes |
 |---|---|---|
-| OS | Linux (systemd) **or** Windows x64 | Windows uses a per-user Scheduled Task; `win32-arm64` and macOS not yet supported |
+| OS | Linux (systemd), macOS, **or** Windows x64 | macOS uses a per-user launchd LaunchAgent and needs `brew install sqlite` (Apple's SQLite cannot load the vector extension); Windows uses a per-user Scheduled Task. `win32-arm64` unsupported — run x64 Bun under emulation. |
 | Bun | ≥ 1.1.14 | https://bun.com |
 | Disk | ~50 MB | The corpus itself + worker code; grows ~1 MB per few hundred chunks |
 | Sudo | **not required** | The default install runs entirely as your user. Sudo only needed for `--system` (multi-user / always-on server). |
@@ -97,7 +97,7 @@ bun install
 ```
 
 The wizard asks ~5 questions and sets up:
-- **Worker daemon** at `~/.config/systemd/user/captain-memo-worker.service` (port 39888)
+- **Worker daemon** on port 39888, supervised by whatever your OS uses — `~/.config/systemd/user/captain-memo-worker.service` on Linux, `~/Library/LaunchAgents/com.captainmemo.worker.plist` on macOS, a per-user Scheduled Task on Windows
 - **Plugin registration** via `claude plugin marketplace add` + `claude plugin install` — your hooks, MCP server, and slash commands all auto-register
 - **Config** at `~/.config/captain-memo/worker.env`
 - **CLI shim** at `~/.local/bin/captain-memo` (`/usr/local/bin` in system mode)
@@ -170,6 +170,45 @@ Use the **fully-qualified id** (`captain-memo@captain-memo`). The simplest upgra
 **Auto-updates.** Install the plugin from the **GitHub marketplace** (`claude plugin marketplace add kalinbogatzevski/captain-memo`) and Claude Code re-fetches new versions on its own — **no git required**. When a newer version goes live, Captain Memo's SessionStart hook self-heals the worker to it and shows a one-time **`⚓ Captain Memo self-upgraded: vX → vY`** banner. It only ever touches the plugin + worker process — **never** your `worker.env`, config, or corpus. Opt out of the auto worker-restart with `CAPTAIN_MEMO_DISABLE_SELF_HEAL=1`. (The local-clone full install is a `directory`-source snapshot Claude Code doesn't auto-refetch, so there you upgrade by re-running `captain-memo install`.)
 
 **Auto-updates for a git-clone install (opt-in).** A local `git clone` install isn't refreshed by Claude Code, so it normally stays put until you `git pull`. Set **`CAPTAIN_MEMO_AUTO_UPDATE=1`** and Captain Memo will, on session start, **fast-forward your checkout to the newest stable `vX.Y.Z` tag** on its own `origin`, run `bun install`, restart the worker, and show a **`⚓ Captain Memo auto-updated: vX → vY`** banner. Safety rails: it **only** fast-forwards (never a merge/rebase), **refuses a dirty work-tree or detached HEAD** (never clobbers local edits), ignores pre-release tags, and is throttled to one `git fetch` per 6h (`CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS`). Opt-in only — off by default, because auto-pulling a developer's checkout should be a choice. It never runs on a marketplace install (those already self-update above).
+
+### macOS
+
+Captain Memo runs on macOS as a **per-user launchd LaunchAgent** — no root, no `sudo`, nothing in `/Library`.
+
+```bash
+git clone https://github.com/kalinbogatzevski/captain-memo
+cd captain-memo
+bun install
+brew install sqlite          # required — see below
+./bin/captain-memo install
+```
+
+**`brew install sqlite` is not optional.** Apple ships `libsqlite3` built with `SQLITE_OMIT_LOAD_EXTENSION`, and Bun links against the system library — so the `vec0` vector extension cannot load and the worker exits on its first vector open. Captain Memo points Bun at the Homebrew build via `Database.setCustomSQLite()`, but the Homebrew build has to exist. The install wizard's pre-flight checks for it and tells you if it's missing.
+
+What the install puts on your Mac:
+
+| What | Where |
+|---|---|
+| LaunchAgent | `~/Library/LaunchAgents/com.captainmemo.worker.plist` |
+| Worker logs | `~/.captain-memo/logs/captain-memo-worker.log` (+ `.err.log`) |
+| Config | `~/.config/captain-memo/worker.env` |
+| Corpus | `~/.captain-memo/` |
+
+Managing it by hand, if you want to:
+
+```bash
+launchctl print gui/$(id -u)/com.captainmemo.worker     # full state, last exit status
+launchctl kickstart -k gui/$(id -u)/com.captainmemo.worker   # restart
+launchctl bootout gui/$(id -u)/com.captainmemo.worker        # stop (unload)
+captain-memo doctor                                     # or just ask the CLI
+```
+
+Two macOS behaviours worth knowing:
+
+- **launchd throttles restarts.** It refuses to relaunch a job more than once per `ThrottleInterval` (10s is its floor) and `launchctl kickstart` *blocks* while throttled — so a restart can legitimately take a few seconds. Captain Memo waits it out rather than reporting a failure.
+- **Login Items names Bun, not us.** macOS attributes a background item to the code-signing identity of the program it runs, and ours is `bun` — so you may see *"software by Jarred Sumner can run in the background"*. That's Bun's author. The plist declares `AssociatedBundleIdentifiers` to re-attribute it, which takes full effect once a signed Captain Memo bundle ships.
+
+macOS support landed in **0.27.27–0.27.29**, built and shipped from three field reports in one afternoon — thanks to the Mac users who reported them.
 
 ### Windows (native)
 
