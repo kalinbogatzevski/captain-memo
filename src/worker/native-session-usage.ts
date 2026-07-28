@@ -41,6 +41,10 @@ export interface NativeSessionUsage {
   last_activity_epoch_ms: number;
   /** The session's own name, when it has one (workflow sub-task agents do). */
   agentName?: string | undefined;
+  /** Set when the transcript declares itself an agent (teammates do, at top level). */
+  agentSetting?: string | undefined;
+  /** The team this teammate belongs to, shared across its members. */
+  teamName?: string | undefined;
   /** How it was started: 'cli' (a person at a terminal), 'sdk-py' / 'sdk-cli' (a program).
    *  The distinction the fleet board needs most — automation outnumbers real sessions
    *  roughly 11:1 on a working machine. */
@@ -95,6 +99,16 @@ interface Totals {
   ownerSession?: string;
   /** 'cli' | 'sdk-py' | 'sdk-cli' — how the session was started. */
   entrypoint?: string;
+  /** Present when the transcript opens with a `type: agent-setting` record — the marker
+   *  that this session IS an agent, whatever its file location. Teammates get a TOP-LEVEL
+   *  transcript rather than one under <parent>/subagents/, so location alone missed them
+   *  and they rendered as ordinary sessions. */
+  agentSetting?: string;
+  /** The team a teammate belongs to, shared by every member ('session-<8hex>'). Groups a
+   *  team into one block. NOT treated as a parent pointer on its own: of three teams
+   *  sampled, one named a session with no transcript and no live process, so resolving it
+   *  is best-effort and the grouping has to stand without it. */
+  teamName?: string;
   /** Per-MINUTE token buckets, keyed by floor(epochMs / 60000). Summing the buckets
    *  inside a window gives usage genuinely accrued in that window, and old buckets fall
    *  out on their own — so the figure decays instead of lurching. Bounded by pruning
@@ -119,10 +133,13 @@ function fresh(): Totals {
 interface TranscriptLine {
   message?: { usage?: Record<string, unknown>; model?: string };
   cwd?: string;
+  type?: string;
   agentName?: string;
   customTitle?: string;
   bridgeSessionId?: string;
   entrypoint?: string;
+  agentSetting?: string;
+  teamName?: string;
   /** ISO-8601 stamp Claude Code writes on each record — what makes real windowing
    *  possible rather than approximated by file mtime. */
   timestamp?: string;
@@ -160,6 +177,14 @@ function digest(chunk: string, t: Totals): number {
     // matters most.
     if (t.entrypoint === undefined && typeof line.entrypoint === 'string' && line.entrypoint) {
       t.entrypoint = line.entrypoint;
+    }
+    // The agent-setting record is the FIRST line of a teammate's transcript — the marker
+    // that this session IS an agent regardless of where its file lives.
+    if (t.agentSetting === undefined && line.type === 'agent-setting' && typeof line.agentSetting === 'string') {
+      t.agentSetting = line.agentSetting;
+    }
+    if (t.teamName === undefined && typeof line.teamName === 'string' && line.teamName) {
+      t.teamName = line.teamName;
     }
     if (t.ownerSession === undefined && typeof line.bridgeSessionId === 'string' && line.bridgeSessionId) {
       t.ownerSession = line.bridgeSessionId;
@@ -374,6 +399,8 @@ export async function readNativeSessionUsage(
         ...(t.agentName ? { agentName: t.agentName } : {}),
         ...(t.ownerSession ? { ownerSession: t.ownerSession } : {}),
         ...(t.entrypoint ? { entrypoint: t.entrypoint } : {}),
+        ...(t.agentSetting ? { agentSetting: t.agentSetting } : {}),
+        ...(t.teamName ? { teamName: t.teamName } : {}),
       });
 
       // AGENT TRANSCRIPTS for this session. They live under <dir>/<sessionId>/subagents/,
@@ -460,6 +487,10 @@ export interface NativeSessionRow {
   /** How it was started — the cockpit uses this to separate a session someone OPENED from
    *  a programmatic invocation nobody did. */
   entrypoint?: string;
+  /** Set when the session declares itself an agent (a teammate does, at top level). */
+  agent_setting?: string;
+  /** The team a teammate belongs to — groups its members together. */
+  team_name?: string;
 }
 
 // Raised from 10: a single workflow can fan out a dozen agents, and truncating them would
@@ -517,6 +548,8 @@ export async function nativeSessionRows(
     ...(s.parentSessionId ? { parent_session_id: s.parentSessionId } : {}),
     ...(s.workflowId ? { workflow_id: s.workflowId } : {}),
     ...(s.entrypoint ? { entrypoint: s.entrypoint } : {}),
+    ...(s.agentSetting ? { agent_setting: s.agentSetting } : {}),
+    ...(s.teamName ? { team_name: s.teamName } : {}),
   }));
 }
 
