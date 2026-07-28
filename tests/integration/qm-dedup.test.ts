@@ -169,11 +169,23 @@ test('auto-dedup fold — cosine-gated, survivor keeps higher count, control sta
   await injectVectorAsync(chunkIdsFor(dup), VEC_A2);
   await injectVectorAsync(chunkIdsFor(control), VEC_FAR);
 
-  // Poll up to ~3s for a dedup slice to fold the pair.
+  // Poll up to ~3s for a dedup slice to fold the pair AND record its run row.
+  //
+  // Both conditions, not just the fold: a slice writes the archived flag DURING its walk
+  // and its qm_runs row at the END, so waiting only on `archived` races ahead of the row
+  // the assertion below reads. Observed failing exactly that way - the expect() error
+  // printed before the slice's own "[qm-dedup] folded 1 member(s)" line.
+  //
+  // The search window is wide for the same reason it has to be: DEDUP_INTERVAL_MS is 50ms
+  // here, so slices land ~20x/second and a fixed "latest 5" window is buried by zero-merge
+  // runs within a quarter second of the one we care about. Scan the recent history and
+  // stop the moment the row appears, rather than sampling a window after the fact.
   let folded = false;
-  for (let i = 0; i < 60 && !folded; i++) {
+  let dedupRun: { job: string; merges: number; aborted_for_ingest: number } | undefined;
+  for (let i = 0; i < 60 && !(folded && dedupRun); i++) {
     await new Promise(r => setTimeout(r, 50));
     folded = archivedFlagOf(dup).archived === 1;
+    dedupRun = latestQmRunsRows(200).find(r => r.job === 'dedup' && r.merges >= 1);
   }
 
   expect(folded).toBe(true);                                   // dup folded
@@ -181,9 +193,7 @@ test('auto-dedup fold — cosine-gated, survivor keeps higher count, control sta
   expect(archivedFlagOf(survivor).archived).toBe(0);           // survivor stays live
   expect(archivedFlagOf(control).archived).toBe(0);            // control NOT folded (cosine gate)
 
-  const runs = latestQmRunsRows(5);
-  const dedupRun = runs.find(r => r.job === 'dedup' && r.merges >= 1);
-  expect(dedupRun).toBeDefined();                              // a dedup run recorded ≥1 merge
+  expect(dedupRun).toBeDefined();                              // a dedup run recorded a merge
 
   // QM block surfaces on /stats.
   const stats = await (await fetch(`http://localhost:${port}/stats`)).json() as

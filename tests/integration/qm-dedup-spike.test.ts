@@ -187,4 +187,14 @@ test('dedup under ingest spike — heartbeat stays fresh, a slice aborts for ing
   const runs = qmRuns();
   expect(runs.length).toBeGreaterThan(0);                          // slices did run
   expect(runs.some(r => r.aborted_for_ingest === 1)).toBe(true);   // ≥1 slice yielded to ingest
-});
+// 30s, not Bun's 5000ms default. This body BOOTS A REAL WORKER (startWorker inside the
+// test, not a hook) and then drives ~170 sequential HTTP enqueues to build a candidate
+// window big enough for a slice to abort mid-walk. That is ~5.0s of honest work against a
+// 5.0s budget — a margin of roughly zero, so the result tracked ambient machine state
+// rather than the code under test. Measured repeatedly at 5.7-5.9s for the file.
+// Matches the convention every other worker-booting integration test here already uses
+// (backup 20s, release-gate 30s, worker-threaded 40s, reader-pool 60s); this was the only
+// one that inherited the default. The timeout is a ceiling, not a target: it does not slow
+// a passing run by a millisecond, it just stops a slow machine from being reported as a
+// broken one.
+}, 30_000);
