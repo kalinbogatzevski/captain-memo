@@ -221,6 +221,86 @@ test('agent transcripts are found and attributed to the session that spawned the
   expect(parent!.input_tokens).toBe(100);
 });
 
+/** The record Claude Code writes when it dispatches an agent. It is the ONLY place the
+ *  human-readable label exists: the agent's own transcript carries `agentId` and
+ *  `attributionAgent` (the TYPE, e.g. "general-purpose") but never the description. */
+const dispatch = (agentId: string, description: string) => JSON.stringify({
+  type: 'user',
+  toolUseResult: { agentId, description, status: 'async_launched', isAsync: true },
+}) + '\n';
+
+test('an agent is named by the record that dispatched it', async () => {
+  // Agents used to render as a bare hex id — "a3bfc79e" tells you nothing about what is
+  // burning 250k tokens. The name is in the PARENT's dispatch record, and the parent is
+  // already read on the same poll, so this costs no extra I/O.
+  const { mkdirSync: mk } = await import('fs');
+  writeTranscript(SID, msg(100, 20) + dispatch('a1b2c3d4', 'QA 35-point review'));
+  const sub = join(projectDir, SID, 'subagents');
+  mk(sub, { recursive: true });
+  writeFileSync(join(sub, 'agent-a1b2c3d4.jsonl'), msg(500, 60));
+
+  const agent = (await readNativeSessionUsage()).find(s => s.parentSessionId);
+  expect(agent!.agentName).toBe('QA 35-point review');
+});
+
+test('a dispatch record never renames the session that issued it', async () => {
+  // The hazard in harvesting a name from the parent's own lines: the description belongs to
+  // the AGENT. Folding it into the parent would silently rename a live session on the board.
+  writeTranscript(SID, JSON.stringify({ type: 'assistant', customTitle: 'CPT-TOP' }) + '\n'
+    + msg(10, 2) + dispatch('a1b2c3d4', 'Security vulnerability analysis'));
+  const parent = (await readNativeSessionUsage()).find(s => s.session_id === SID);
+  expect(parent!.agentName).toBe('CPT-TOP');
+});
+
+test('a workflow agent is named by the workflow that ran it', async () => {
+  // A workflow's fan-out is dispatched by the Workflow tool, NOT the Agent tool, so no
+  // dispatch record exists and the journal keys on a hash. Three such agents rendered as
+  // "ad43ff7e / a4c61a9a / ab6d5912" — three anonymous hex ids burning 1M tokens between
+  // them, with nothing on screen saying they were one workflow. The name IS on disk: the
+  // Workflow tool persists its script as <meta.name>-<wf id>.js.
+  const { mkdirSync: mk } = await import('fs');
+  writeTranscript(SID, msg(100, 20));
+  const wf = join(projectDir, SID, 'subagents', 'workflows', 'wf_2eca1a5b-9d5');
+  mk(wf, { recursive: true });
+  writeFileSync(join(wf, 'agent-ad43ff7e.jsonl'), msg(370, 43));
+  const scripts = join(projectDir, SID, 'workflows', 'scripts');
+  mk(scripts, { recursive: true });
+  writeFileSync(join(scripts, 'geomap-netline-parity-wf_2eca1a5b-9d5.js'), '// the script\n');
+
+  const agent = (await readNativeSessionUsage()).find(s => s.workflowId);
+  expect(agent!.workflowName).toBe('geomap-netline-parity');
+});
+
+test('a workflow with no persisted script leaves the agent unnamed, not mislabelled', async () => {
+  // Never borrow a neighbouring workflow's name: two workflows under one session would then
+  // both claim the first one's, which reads as fact and is false.
+  const { mkdirSync: mk } = await import('fs');
+  writeTranscript(SID, msg(100, 20));
+  const wf = join(projectDir, SID, 'subagents', 'workflows', 'wf_unknown-001');
+  mk(wf, { recursive: true });
+  writeFileSync(join(wf, 'agent-ad43ff7e.jsonl'), msg(9, 1));
+  const scripts = join(projectDir, SID, 'workflows', 'scripts');
+  mk(scripts, { recursive: true });
+  writeFileSync(join(scripts, 'some-other-run-wf_2eca1a5b-9d5.js'), '// a DIFFERENT workflow\n');
+
+  const agent = (await readNativeSessionUsage()).find(s => s.workflowId);
+  expect(agent!.workflowName).toBeUndefined();
+});
+
+test('an agent with no dispatch record is left unnamed rather than invented', async () => {
+  // Measured: 19 of 682 agent transcripts on this machine have no dispatch record — a
+  // workflow fan-out, or a parent whose record predates the transcript. Unnamed is honest;
+  // a made-up label is not.
+  const { mkdirSync: mk } = await import('fs');
+  writeTranscript(SID, msg(100, 20));
+  const sub = join(projectDir, SID, 'subagents');
+  mk(sub, { recursive: true });
+  writeFileSync(join(sub, 'agent-deadbeef.jsonl'), msg(7, 3));
+
+  const agent = (await readNativeSessionUsage()).find(s => s.parentSessionId);
+  expect(agent!.agentName).toBeUndefined();
+});
+
 test('an idle agent falls out of the window like any other session', async () => {
   const { mkdirSync: mk } = await import('fs');
   writeTranscript(SID, msg(10, 2));

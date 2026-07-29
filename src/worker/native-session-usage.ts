@@ -25,7 +25,7 @@
 import { stat, open, readdir } from 'fs/promises';
 import { readdirSync, readFileSync } from 'fs';
 import type { Dirent } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { homedir } from 'os';
 
 /** Provider-reported usage for one native session, summed over its transcript. */
@@ -58,6 +58,11 @@ export interface NativeSessionUsage {
    *  (<parent>/subagents/workflows/<wf_id>/agent-*.jsonl). Lets a UI group one workflow's
    *  fan-out together instead of scattering a dozen agents under their parent. */
   workflowId?: string | undefined;
+  /** The workflow's own name ("geomap-netline-parity"). A workflow's fan-out is dispatched
+   *  by the Workflow tool rather than the Agent tool, so it has no dispatch record to name
+   *  it — three of them rendered as anonymous hex while burning a million tokens between
+   *  them. Absent when the script is not on disk; never borrowed from a sibling run. */
+  workflowName?: string | undefined;
   /** The owning session's edge id, so a UI can group agents under their parent. */
   ownerSession?: string | undefined;
   /** Tokens whose messages were WRITTEN INSIDE the requested window, not the session's
@@ -109,6 +114,12 @@ interface Totals {
    *  sampled, one named a session with no transcript and no live process, so resolving it
    *  is best-effort and the grouping has to stand without it. */
   teamName?: string;
+  /** agentId → the label the operator wrote when dispatching that agent ("QA 35-point
+   *  review"). Harvested from THIS session's lines because the dispatch record is the only
+   *  place it exists — an agent's own transcript carries its id and its TYPE
+   *  (`attributionAgent: general-purpose`) but never the description. Created lazily: most
+   *  sessions dispatch nothing and should not pay for a Map. */
+  dispatched?: Map<string, string>;
   /** Per-MINUTE token buckets, keyed by floor(epochMs / 60000). Summing the buckets
    *  inside a window gives usage genuinely accrued in that window, and old buckets fall
    *  out on their own — so the figure decays instead of lurching. Bounded by pruning
@@ -137,6 +148,10 @@ interface TranscriptLine {
   agentName?: string;
   customTitle?: string;
   bridgeSessionId?: string;
+  /** Written when an agent is DISPATCHED (`status: 'async_launched'`), minutes before it
+   *  finishes — so the name is available while the agent is still running, which is the
+   *  only time a fleet board cares. */
+  toolUseResult?: { agentId?: unknown; description?: unknown };
   entrypoint?: string;
   agentSetting?: string;
   teamName?: string;
@@ -188,6 +203,13 @@ function digest(chunk: string, t: Totals): number {
     }
     if (t.ownerSession === undefined && typeof line.bridgeSessionId === 'string' && line.bridgeSessionId) {
       t.ownerSession = line.bridgeSessionId;
+    }
+    // An agent DISPATCH: record the label against the agent's id. Deliberately NOT folded
+    // into t.agentName — the description names the agent, and assigning it here would
+    // rename the live session that issued it.
+    const disp = line.toolUseResult;
+    if (disp && typeof disp.agentId === 'string' && typeof disp.description === 'string' && disp.description) {
+      (t.dispatched ??= new Map()).set(disp.agentId, disp.description);
     }
     const u = line.message?.usage;
     if (!u || typeof u !== 'object') continue;
@@ -274,6 +296,26 @@ async function accumulate(
   return { t, wFresh, wOut, wCr };
 }
 
+/** wf id → the workflow's own name, read from the script the Workflow tool persists at
+ *  `<session>/workflows/scripts/<meta.name>-<wf id>.js`. That filename is the ONLY place a
+ *  workflow run is named: its journal keys on a content hash, and each agent's meta.json
+ *  says just `"agentType": "workflow-subagent"`. Matched on the exact wf id so two runs
+ *  under one session can never inherit each other's name. */
+async function workflowNames(subagentsDir: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  let files: string[];
+  try {
+    files = await readdir(join(dirname(subagentsDir), 'workflows', 'scripts'));
+  } catch {
+    return out;   // no persisted scripts — the agents stay unnamed, which is honest
+  }
+  for (const f of files) {
+    const m = /^(.+)-(wf_[A-Za-z0-9-]+)\.js$/.exec(f);
+    if (m) out.set(m[2]!, m[1]!);
+  }
+  return out;
+}
+
 /** Depth-bounded scan of one session's agent transcripts. Recurses exactly one level into
  *  `workflows/<wf_id>/`, which is the only nesting Claude Code produces — a wider walk
  *  would be speculative and would cost a stat per stray file. Best-effort throughout: a
@@ -281,6 +323,7 @@ async function accumulate(
 async function scanAgents(
   dirPath: string, parentSessionId: string, workflowId: string | undefined,
   now: number, windowMs: number, out: NativeSessionUsage[], live: Set<string>,
+  names?: ReadonlyMap<string, string>, workflowName?: string,
 ): Promise<void> {
   let entries: Dirent[];
   try {
@@ -295,9 +338,11 @@ async function scanAgents(
       if (e.name === 'workflows') {
         let wfs: Dirent[];
         try { wfs = await readdir(join(dirPath, e.name), { withFileTypes: true }); } catch { continue; }
+        // One readdir for the whole session, and only for a session that ran a workflow.
+        const wfNames = await workflowNames(dirPath);
         for (const wf of wfs) {
           if (!wf.isDirectory()) continue;
-          await scanAgents(join(dirPath, e.name, wf.name), parentSessionId, wf.name, now, windowMs, out, live);
+          await scanAgents(join(dirPath, e.name, wf.name), parentSessionId, wf.name, now, windowMs, out, live, names, wfNames.get(wf.name));
         }
       }
       continue;
@@ -315,6 +360,8 @@ async function scanAgents(
     if (now - mtimeMs > windowMs) continue;   // idle ⇒ not live, same rule as a session
     live.add(path);
     const { t, wFresh, wOut, wCr } = await accumulate(path, size, now, windowMs);
+    // agent-<hex>.jsonl — the id the parent's dispatch record keys on is the bare hex.
+    const dispatchedAs = names?.get(e.name.slice('agent-'.length, -'.jsonl'.length));
     out.push({
       session_id: e.name.slice(0, -'.jsonl'.length),
       window_fresh_tokens: wFresh,
@@ -327,8 +374,11 @@ async function scanAgents(
       last_activity_epoch_ms: Math.round(mtimeMs),
       parentSessionId,
       ...(workflowId ? { workflowId } : {}),
+      ...(workflowName ? { workflowName } : {}),
       ...(t.cwd ? { cwd: t.cwd } : {}),
-      ...(t.agentName ? { agentName: t.agentName } : {}),
+      // Its own name first (a workflow agent resumed with `--resume <name>` declares one),
+      // then the label the parent gave it. Bare hex only when neither exists.
+      ...((t.agentName ?? dispatchedAs) ? { agentName: t.agentName ?? dispatchedAs } : {}),
       ...(t.entrypoint ? { entrypoint: t.entrypoint } : {}),
     });
   }
@@ -408,7 +458,7 @@ export async function readNativeSessionUsage(
       // agent-<hex>.jsonl rather than <uuid>.jsonl — which is why the UUID gate above skips
       // them and why 33% of billed tokens were invisible. The parent is not inferred: it is
       // the directory this scan is already standing in.
-      await scanAgents(join(dir, sessionId, 'subagents'), sessionId, undefined, now, windowMs, out, live);
+      await scanAgents(join(dir, sessionId, 'subagents'), sessionId, undefined, now, windowMs, out, live, t.dispatched);
     }
   }
 
@@ -484,6 +534,9 @@ export interface NativeSessionRow {
   parent_session_id?: string;
   /** The workflow whose fan-out this agent belongs to, when the path says so. */
   workflow_id?: string;
+  /** That workflow's NAME, so the board can say "geomap-netline-parity" instead of listing
+   *  its fan-out as anonymous hex ids. */
+  workflow_name?: string;
   /** How it was started — the cockpit uses this to separate a session someone OPENED from
    *  a programmatic invocation nobody did. */
   entrypoint?: string;
@@ -547,6 +600,7 @@ export async function nativeSessionRows(
     ...(s.ownerSession ? { owner_session: s.ownerSession } : {}),
     ...(s.parentSessionId ? { parent_session_id: s.parentSessionId } : {}),
     ...(s.workflowId ? { workflow_id: s.workflowId } : {}),
+    ...(s.workflowName ? { workflow_name: s.workflowName } : {}),
     ...(s.entrypoint ? { entrypoint: s.entrypoint } : {}),
     ...(s.agentSetting ? { agent_setting: s.agentSetting } : {}),
     ...(s.teamName ? { team_name: s.teamName } : {}),

@@ -5,6 +5,12 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.30] — 2026-07-29
+
+### Added
+- **Agent sessions now report a name instead of a bare hex id.** `/sessions/usage` returned agents as `agent-a3bfc79ec25585f22` — eight characters that say nothing about what is spending 250k tokens. The name already existed: when an agent is dispatched, the parent transcript records the operator's description (`"QA 35-point review"`) against the agent's id, at **spawn** time (`status: async_launched`), minutes before the agent finishes — so it is available while the agent is still running, which is the only time it is useful. Rows now carry `agentName`. It costs no extra I/O: the parent transcript is already read on the same poll for its token counts, so the map is harvested during that pass. On this machine the dispatch record covers 663 of 682 agent transcripts.
+- **A workflow's fan-out is named by the workflow that ran it (`workflowName`).** Workflow agents are dispatched by the Workflow tool rather than the Agent tool, so no dispatch record exists for them — their parent transcript does not contain their id at all, the workflow journal keys on a content hash, and their own metadata says only `"agentType": "workflow-subagent"`. Seven of them ran as anonymous hex while burning roughly a million tokens between them. The run *is* named, in the script the Workflow tool persists as `workflows/scripts/<name>-<wf id>.js`; that filename is now matched on the exact workflow id, so two runs under one session can never inherit each other's name. A workflow with no persisted script leaves the agent unnamed rather than borrowing a sibling's.
+
 ## [0.27.29] — 2026-07-28
 
 ### Fixed
