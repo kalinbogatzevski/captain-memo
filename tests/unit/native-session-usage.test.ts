@@ -271,6 +271,45 @@ test('a workflow agent is named by the workflow that ran it', async () => {
   expect(agent!.workflowName).toBe('geomap-netline-parity');
 });
 
+test('a workflow reports what it is FOR, not just its name', async () => {
+  // Three members repeating "geomap-settings-ui-lock · <hex>" spend a whole row each saying
+  // the same thing. The run's own description is the information a board actually lacks, and
+  // the Workflow tool REQUIRES meta to be a pure literal, so it can be read without evaluating
+  // anything. Per-agent labels are deliberately NOT taken: they exist only in the running
+  // process (absent from every transcript, the journal keys on a content hash), so any mapping
+  // would be a guess.
+  const { mkdirSync: mk } = await import('fs');
+  writeTranscript(SID, msg(100, 20));
+  const wf = join(projectDir, SID, 'subagents', 'workflows', 'wf_7224dc7e-848');
+  mk(wf, { recursive: true });
+  writeFileSync(join(wf, 'agent-a4985ecf.jsonl'), msg(405, 11));
+  const scripts = join(projectDir, SID, 'workflows', 'scripts');
+  mk(scripts, { recursive: true });
+  writeFileSync(join(scripts, 'geomap-settings-ui-lock-wf_7224dc7e-848.js'),
+    "export const meta = {\n  name: 'geomap-settings-ui-lock',\n"
+    + "  description: 'Admin UI for the four geo_filter_* tables, plus a system-row lock',\n"
+    + "  phases: [\n    { title: 'Investigate', detail: 'x' },\n    { title: 'Verify', detail: 'y' },\n  ],\n}\n");
+
+  const agent = (await readNativeSessionUsage()).find(s => s.workflowId);
+  expect(agent!.workflowName).toBe('geomap-settings-ui-lock');
+  expect(agent!.workflowDescription).toBe('Admin UI for the four geo_filter_* tables, plus a system-row lock');
+});
+
+test('a script with no description yields a name and nothing invented', async () => {
+  const { mkdirSync: mk } = await import('fs');
+  writeTranscript(SID, msg(100, 20));
+  const wf = join(projectDir, SID, 'subagents', 'workflows', 'wf_bare-001');
+  mk(wf, { recursive: true });
+  writeFileSync(join(wf, 'agent-a4985ecf.jsonl'), msg(9, 1));
+  const scripts = join(projectDir, SID, 'workflows', 'scripts');
+  mk(scripts, { recursive: true });
+  writeFileSync(join(scripts, 'bare-run-wf_bare-001.js'), "export const meta = { name: 'bare-run' }\n");
+
+  const agent = (await readNativeSessionUsage()).find(s => s.workflowId);
+  expect(agent!.workflowName).toBe('bare-run');
+  expect(agent!.workflowDescription).toBeUndefined();
+});
+
 test('a workflow with no persisted script leaves the agent unnamed, not mislabelled', async () => {
   // Never borrow a neighbouring workflow's name: two workflows under one session would then
   // both claim the first one's, which reads as fact and is false.

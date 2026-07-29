@@ -5,6 +5,14 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.31] — 2026-07-29
+
+### Added
+- **A workflow reports what it is FOR, not only its name (`workflowDescription`).** Read from `meta.description` in the script the Workflow tool persists — which that tool requires to be a pure literal, so it needs no evaluation. Scoped to the `meta` block deliberately: workflow scripts routinely define JSON schemas whose properties carry their own `description:` keys, and an unscoped match would return one of those as the run's purpose. Cached per script path, which never changes once written. Per-agent labels are deliberately NOT reported: they exist only in the process running the workflow (absent from every transcript, and the journal keys on a content hash), so any mapping would be a guess.
+
+### Fixed
+- **0.27.30 shipped with mismatched version manifests.** `package.json` was bumped without `plugin.json`, `marketplace.json`, or a rebuild of the committed `plugin/dist/` bundle — so the plugin manifests and the bundle still declared 0.27.29 while the release called itself 0.27.30. This repo has guards for exactly that (`tests/unit/plugin-manifest.test.ts`) and they caught it; the bump had simply been made after the last full run. All four now move together.
+
 ## [0.27.30] — 2026-07-29
 
 ### Added

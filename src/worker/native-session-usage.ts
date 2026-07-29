@@ -22,7 +22,7 @@
 // byte offset already parsed, and each poll reads only what was appended. Re-reading
 // whole transcripts on a ~10s cadence is what this exists to avoid.
 
-import { stat, open, readdir } from 'fs/promises';
+import { stat, open, readdir, readFile } from 'fs/promises';
 import { readdirSync, readFileSync } from 'fs';
 import type { Dirent } from 'fs';
 import { join, dirname } from 'path';
@@ -63,6 +63,9 @@ export interface NativeSessionUsage {
    *  it — three of them rendered as anonymous hex while burning a million tokens between
    *  them. Absent when the script is not on disk; never borrowed from a sibling run. */
   workflowName?: string | undefined;
+  /** What the run is FOR, from `meta.description`. The board shows it once on the workflow
+   *  row rather than repeating the name on every member. */
+  workflowDescription?: string | undefined;
   /** The owning session's edge id, so a UI can group agents under their parent. */
   ownerSession?: string | undefined;
   /** Tokens whose messages were WRITTEN INSIDE the requested window, not the session's
@@ -301,19 +304,49 @@ async function accumulate(
  *  workflow run is named: its journal keys on a content hash, and each agent's meta.json
  *  says just `"agentType": "workflow-subagent"`. Matched on the exact wf id so two runs
  *  under one session can never inherit each other's name. */
-async function workflowNames(subagentsDir: string): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
+async function workflowNames(subagentsDir: string): Promise<Map<string, { name: string; path: string }>> {
+  const out = new Map<string, { name: string; path: string }>();
+  const dir = join(dirname(subagentsDir), 'workflows', 'scripts');
   let files: string[];
   try {
-    files = await readdir(join(dirname(subagentsDir), 'workflows', 'scripts'));
+    files = await readdir(dir);
   } catch {
     return out;   // no persisted scripts — the agents stay unnamed, which is honest
   }
   for (const f of files) {
     const m = /^(.+)-(wf_[A-Za-z0-9-]+)\.js$/.exec(f);
-    if (m) out.set(m[2]!, m[1]!);
+    if (m) out.set(m[2]!, { name: m[1]!, path: join(dir, f) });
   }
   return out;
+}
+
+/** What the run is FOR, from `meta.description` in its script. Three members repeating the
+ *  same name spend a row each saying one thing; the description is what a board actually
+ *  lacks. Cached by path — a persisted script never changes, so this reads each one once.
+ *
+ *  Scoped to the `meta` literal deliberately: workflow scripts routinely define JSON schemas
+ *  whose properties carry their own `description:` keys, and an unscoped match would happily
+ *  return one of those as the workflow's purpose. The Workflow tool REQUIRES meta to be a
+ *  pure literal, so reading it needs no evaluation. */
+const WF_DESC = new Map<string, string | undefined>();
+async function workflowDescription(path: string): Promise<string | undefined> {
+  const hit = WF_DESC.get(path);
+  if (hit !== undefined || WF_DESC.has(path)) return hit;
+  let desc: string | undefined;
+  try {
+    const src = await readFile(path, 'utf8');
+    const start = src.indexOf('export const meta');
+    if (start >= 0) {
+      const close = src.indexOf('\n}', start);
+      const block = src.slice(start, close < 0 ? start + 4000 : close);
+      const m = /\bdescription:\s*(['"`])((?:\\.|(?!\1)[^\\])*)\1/.exec(block);
+      if (m) desc = m[2]!.replace(/\\(['"`\\])/g, '$1').trim() || undefined;
+    }
+  } catch {
+    /* unreadable script — a name without a description, never a fabricated one */
+  }
+  WF_DESC.set(path, desc);
+  return desc;
 }
 
 /** Depth-bounded scan of one session's agent transcripts. Recurses exactly one level into
@@ -323,7 +356,9 @@ async function workflowNames(subagentsDir: string): Promise<Map<string, string>>
 async function scanAgents(
   dirPath: string, parentSessionId: string, workflowId: string | undefined,
   now: number, windowMs: number, out: NativeSessionUsage[], live: Set<string>,
-  names?: ReadonlyMap<string, string>, workflowName?: string,
+  // NOT `workflowDescription` — that is the module-level function this body calls a few lines
+  // down, and a parameter of the same name shadows it into `undefined is not a function`.
+  names?: ReadonlyMap<string, string>, workflowName?: string, wfDesc?: string,
 ): Promise<void> {
   let entries: Dirent[];
   try {
@@ -342,7 +377,11 @@ async function scanAgents(
         const wfNames = await workflowNames(dirPath);
         for (const wf of wfs) {
           if (!wf.isDirectory()) continue;
-          await scanAgents(join(dirPath, e.name, wf.name), parentSessionId, wf.name, now, windowMs, out, live, names, wfNames.get(wf.name));
+          // Read the description only for a workflow actually being scanned, not for every
+          // script the session ever persisted (ten of them in one session here).
+          const script = wfNames.get(wf.name);
+          const desc = script ? await workflowDescription(script.path) : undefined;
+          await scanAgents(join(dirPath, e.name, wf.name), parentSessionId, wf.name, now, windowMs, out, live, names, script?.name, desc);
         }
       }
       continue;
@@ -375,6 +414,7 @@ async function scanAgents(
       parentSessionId,
       ...(workflowId ? { workflowId } : {}),
       ...(workflowName ? { workflowName } : {}),
+      ...(wfDesc ? { workflowDescription: wfDesc } : {}),
       ...(t.cwd ? { cwd: t.cwd } : {}),
       // Its own name first (a workflow agent resumed with `--resume <name>` declares one),
       // then the label the parent gave it. Bare hex only when neither exists.
@@ -537,6 +577,9 @@ export interface NativeSessionRow {
   /** That workflow's NAME, so the board can say "geomap-netline-parity" instead of listing
    *  its fan-out as anonymous hex ids. */
   workflow_name?: string;
+  /** And what it is FOR, shown once on the workflow row instead of repeating the name on
+   *  every member. */
+  workflow_description?: string;
   /** How it was started — the cockpit uses this to separate a session someone OPENED from
    *  a programmatic invocation nobody did. */
   entrypoint?: string;
@@ -601,6 +644,7 @@ export async function nativeSessionRows(
     ...(s.parentSessionId ? { parent_session_id: s.parentSessionId } : {}),
     ...(s.workflowId ? { workflow_id: s.workflowId } : {}),
     ...(s.workflowName ? { workflow_name: s.workflowName } : {}),
+    ...(s.workflowDescription ? { workflow_description: s.workflowDescription } : {}),
     ...(s.entrypoint ? { entrypoint: s.entrypoint } : {}),
     ...(s.agentSetting ? { agent_setting: s.agentSetting } : {}),
     ...(s.teamName ? { team_name: s.teamName } : {}),
