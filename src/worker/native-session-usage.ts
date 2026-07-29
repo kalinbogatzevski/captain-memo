@@ -66,6 +66,12 @@ export interface NativeSessionUsage {
   /** What the run is FOR, from `meta.description`. The board shows it once on the workflow
    *  row rather than repeating the name on every member. */
   workflowDescription?: string | undefined;
+  /** The FULL session id of the team's lead, from `~/.claude/teams/<team>/config.json`.
+   *  `teamName` carries only 'session-<8hex>', so without this a teammate's parent had to be
+   *  guessed by prefix-matching the sessions that happened to be on the board — which fails
+   *  whenever the parent is off-window, and is outright wrong for two sessions sharing eight
+   *  hex characters. Claude Code records the answer; 19 of 19 teams here carry it. */
+  teamLeadSession?: string | undefined;
   /** The owning session's edge id, so a UI can group agents under their parent. */
   ownerSession?: string | undefined;
   /** Tokens whose messages were WRITTEN INSIDE the requested window, not the session's
@@ -349,6 +355,24 @@ async function workflowDescription(path: string): Promise<string | undefined> {
   return desc;
 }
 
+/** The team's lead session id, read from the config Claude Code writes per team. Cached by
+ *  team name: a team's lead is fixed for its lifetime. Returns undefined when there is no
+ *  config — an unresolved parent is honest, a guessed one is not. */
+const TEAM_LEAD = new Map<string, string | undefined>();
+function teamLeadSession(teamName: string): string | undefined {
+  if (TEAM_LEAD.has(teamName)) return TEAM_LEAD.get(teamName);
+  let lead: string | undefined;
+  try {
+    const base = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
+    const cfg = JSON.parse(readFileSync(join(base, 'teams', teamName, 'config.json'), 'utf8')) as { leadSessionId?: unknown };
+    if (typeof cfg.leadSessionId === 'string' && cfg.leadSessionId) lead = cfg.leadSessionId;
+  } catch {
+    /* no config for this team — report no lead rather than inventing one */
+  }
+  TEAM_LEAD.set(teamName, lead);
+  return lead;
+}
+
 /** Depth-bounded scan of one session's agent transcripts. Recurses exactly one level into
  *  `workflows/<wf_id>/`, which is the only nesting Claude Code produces — a wider walk
  *  would be speculative and would cost a stat per stray file. Best-effort throughout: a
@@ -491,6 +515,7 @@ export async function readNativeSessionUsage(
         ...(t.entrypoint ? { entrypoint: t.entrypoint } : {}),
         ...(t.agentSetting ? { agentSetting: t.agentSetting } : {}),
         ...(t.teamName ? { teamName: t.teamName } : {}),
+        ...(t.teamName && teamLeadSession(t.teamName) ? { teamLeadSession: teamLeadSession(t.teamName) } : {}),
       });
 
       // AGENT TRANSCRIPTS for this session. They live under <dir>/<sessionId>/subagents/,
@@ -587,6 +612,9 @@ export interface NativeSessionRow {
   agent_setting?: string;
   /** The team a teammate belongs to — groups its members together. */
   team_name?: string;
+  /** The team lead's FULL session id, so the board nests a teammate on an exact match
+   *  instead of guessing from the 8 hex characters in team_name. */
+  team_lead_session?: string;
 }
 
 // Raised from 10: a single workflow can fan out a dozen agents, and truncating them would
@@ -645,6 +673,7 @@ export async function nativeSessionRows(
     ...(s.workflowId ? { workflow_id: s.workflowId } : {}),
     ...(s.workflowName ? { workflow_name: s.workflowName } : {}),
     ...(s.workflowDescription ? { workflow_description: s.workflowDescription } : {}),
+    ...(s.teamLeadSession ? { team_lead_session: s.teamLeadSession } : {}),
     ...(s.entrypoint ? { entrypoint: s.entrypoint } : {}),
     ...(s.agentSetting ? { agent_setting: s.agentSetting } : {}),
     ...(s.teamName ? { team_name: s.teamName } : {}),

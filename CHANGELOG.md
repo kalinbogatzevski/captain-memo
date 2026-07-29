@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.32] — 2026-07-29
+
+### Added
+- **A teammate reports the full session id of its team lead (`teamLeadSession`).** `teamName` carries only `session-<8hex>`, so a teammate's parent had to be resolved by matching those eight characters against whatever sessions happened to be listed — a guess that silently fails when the parent is outside the activity window, and that would nest under the wrong session entirely if two shared a prefix. Claude Code records the answer: `~/.claude/teams/<team>/config.json` holds `leadSessionId`, the parent's full uuid. **19 of 19 teams on this machine carry it.** Reported as-is; a team with no config on disk reports no lead rather than a guessed one.
+
 ## [0.27.31] — 2026-07-29
 
 ### Added

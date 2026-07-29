@@ -229,6 +229,49 @@ const dispatch = (agentId: string, description: string) => JSON.stringify({
   toolUseResult: { agentId, description, status: 'async_launched', isAsync: true },
 }) + '\n';
 
+test('a teammate reports the FULL session id of the team it belongs to', async () => {
+  // teamName is only 'session-<8hex>', so the cockpit resolved a teammate's parent by
+  // matching that prefix against sessions that happened to be on the board — a guess that
+  // fails whenever the parent is off-window, and one that two sessions sharing eight hex
+  // characters would get wrong outright. Claude Code records the answer: every team dir
+  // carries config.json with leadSessionId, the parent's full uuid. 19 of 19 teams on this
+  // machine have it.
+  const { mkdirSync: mk } = await import('fs');
+  const cfgDir = mkdtempSync(join(tmpdir(), 'cm-cfg-'));
+  const prev = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = cfgDir;
+  try {
+    const team = join(cfgDir, 'teams', 'session-88efc704');
+    mk(team, { recursive: true });
+    writeFileSync(join(team, 'config.json'), JSON.stringify({
+      name: 'session-88efc704', leadSessionId: '88efc704-177b-46ee-8451-acf9c38b8fea',
+    }));
+    writeTranscript(SID, JSON.stringify({ type: 'agent-setting', agentSetting: 'general-purpose', teamName: 'session-88efc704' }) + '\n' + msg(10, 2));
+
+    const [s] = await readNativeSessionUsage();
+    expect(s!.teamName).toBe('session-88efc704');
+    expect(s!.teamLeadSession).toBe('88efc704-177b-46ee-8451-acf9c38b8fea');
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev;
+    rmSync(cfgDir, { recursive: true, force: true });
+  }
+});
+
+test('a team with no config on disk reports no lead, rather than a guessed one', async () => {
+  const cfgDir = mkdtempSync(join(tmpdir(), 'cm-cfg-'));
+  const prev = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = cfgDir;
+  try {
+    writeTranscript(SID, JSON.stringify({ type: 'agent-setting', agentSetting: 'general-purpose', teamName: 'session-deadbeef' }) + '\n' + msg(10, 2));
+    const [s] = await readNativeSessionUsage();
+    expect(s!.teamName).toBe('session-deadbeef');
+    expect(s!.teamLeadSession).toBeUndefined();
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev;
+    rmSync(cfgDir, { recursive: true, force: true });
+  }
+});
+
 test('an agent is named by the record that dispatched it', async () => {
   // Agents used to render as a bare hex id — "a3bfc79e" tells you nothing about what is
   // burning 250k tokens. The name is in the PARENT's dispatch record, and the parent is
