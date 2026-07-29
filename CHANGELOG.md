@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.38] — 2026-07-29
+
+### Fixed
+- **A failed embed reported a count and never a cause.** The pending-embed queue stored `retries` and `next_retry_at_epoch` but not WHY a chunk failed, so the cockpit showed "19 failed" and an operator had to open `worker.log` to discover a Voyage free-tier rate limit — HTTP 429, *"you have not yet added your payment method … 3 RPM"*. Nothing was lost and nothing was broken: the queue had been retrying with per-row exponential backoff the whole time. But a self-healing configuration state rendered as damage. The queue now records the error text (clamped to 400 chars — it is an upstream body headed for a dashboard) and classifies it, because the remedies differ: `rate_limited` needs nothing at all, `auth` will never recover without action, `unreachable` is transient, `other` is shown verbatim rather than guessed at. `/stats` carries `embed_pending`, `embed_error`, `embed_error_class` and a timestamp beside the count.
+
 ## [0.27.37] — 2026-07-29
 
 ### Fixed

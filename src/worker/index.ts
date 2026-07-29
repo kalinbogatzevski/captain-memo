@@ -1160,12 +1160,15 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           pendingEmbed.markEmbedded([badRow.id]);
           const remainingIds = liveRows.filter((_, i) => i !== err.inputIndex).map(r => r.id);
           if (remainingIds.length > 0) {
-            pendingEmbed.markRetried(remainingIds);
+            pendingEmbed.markRetried(remainingIds, (err as Error).message);
           }
           return { retried: due.length, embedded: 0 };
         }
       }
-      pendingEmbed.markRetried(liveRows.map(r => r.id));
+      // Record WHY. A bare retry count rendered as "19 failed" in the cockpit and the
+        // operator had to read worker.log to learn it was a Voyage free-tier rate limit —
+        // a setting they could change, not a defect. The queue was working the whole time.
+        pendingEmbed.markRetried(liveRows.map(r => r.id), (err as Error).message);
       return { retried: due.length, embedded: 0 };
     }
   }
@@ -1631,6 +1634,21 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             // Dead-lettered rows. Without this the only "failed" signal was a log line,
             // so exhausted retries were indistinguishable from never-enqueued.
             queue_failed: queueFailed,
+              // …and WHY, not just how many. "19 failed" with no cause sent an operator into
+              // worker.log to discover a Voyage free-tier 429 — a setting they could change,
+              // and one where nothing was actually lost, because the queue keeps retrying.
+              // A count without a cause reads as damage; the cause reads as a to-do.
+              ...(pendingEmbed ? (() => {
+                const f = pendingEmbed.failureState();
+                return f.last_error
+                  ? {
+                      embed_pending: f.pending,
+                      embed_error: f.last_error,
+                      embed_error_class: f.error_class,
+                      embed_error_at_epoch: f.last_error_at_epoch,
+                    }
+                  : { embed_pending: f.pending };
+              })() : {}),
             // Per-AI-source breakdown for the "AI sources" chart (stats + top).
             by_origin: obsStore ? obsStore.countByOrigin() : {},
           },

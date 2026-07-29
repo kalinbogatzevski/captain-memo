@@ -12,6 +12,22 @@ export function embedRetryDelayMs(retries: number, jitter?: () => number): numbe
   return computeBackoffMs(retries + 1, 0, { baseMs: 30_000, capMs: 600_000, ...(jitter && { jitter }) });
 }
 
+/** Which KIND of failure, because the remedy differs and the operator needs the remedy.
+ *  rate_limited — the embedder is throttling (a free tier without billing is the common
+ *                 case); the queue drains on its own, just slowly. Nothing is lost.
+ *  auth         — a bad or missing key. Retrying forever will never fix it.
+ *  unreachable  — 5xx / network. Transient; backoff is the right answer.
+ *  other        — unclassified; show the text verbatim rather than guess. */
+export type EmbedErrorClass = 'rate_limited' | 'auth' | 'unreachable' | 'other';
+
+export function classifyEmbedError(msg: string): EmbedErrorClass {
+  const m = String(msg || '');
+  if (/\b429\b|rate.?limit|too many requests/i.test(m)) return 'rate_limited';
+  if (/\b40[13]\b|unauthor|invalid api key|forbidden/i.test(m)) return 'auth';
+  if (/\b(5\d\d)\b|fetch failed|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|socket|network/i.test(m)) return 'unreachable';
+  return 'other';
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS pending_embed (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -21,7 +37,12 @@ CREATE TABLE IF NOT EXISTS pending_embed (
   channel TEXT NOT NULL,
   retries INTEGER NOT NULL DEFAULT 0,
   next_retry_at_epoch INTEGER NOT NULL,
-  enqueued_at_epoch INTEGER NOT NULL
+  enqueued_at_epoch INTEGER NOT NULL,
+  -- WHY it failed, not just that it did. A bare count rendered as "19 failed" in the
+  -- cockpit and the operator had to read worker.log to discover it was a Voyage free-tier
+  -- rate limit -- a configuration state they could fix, not a defect.
+  last_error TEXT,
+  last_error_at_epoch INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_pe_due ON pending_embed(next_retry_at_epoch);
 `;
@@ -83,8 +104,11 @@ export class PendingEmbedQueue {
       .all(now, limit) as PendingEmbedRow[];
   }
 
-  markRetried(ids: number[]): void {
+  markRetried(ids: number[], lastError?: string): void {
     if (ids.length === 0) return;
+    // Clamp: this is an upstream error body and ends up on a dashboard.
+    const err = lastError ? String(lastError).slice(0, 400) : null;
+    const errAt = Math.floor(Date.now() / 1000);
     // Per-row exponential backoff keyed off each row's own retry count, so a chunk
     // that keeps failing (Voyage overloaded/down) backs off instead of retrying on a
     // fixed tick. A transient blip still recovers fast (first retry ~15-30s).
@@ -97,12 +121,38 @@ export class PendingEmbedQueue {
         if (!row) continue;
         const nextRetries = row.retries + 1;
         const next = nowSec + Math.ceil(embedRetryDelayMs(row.retries) / 1000);
-        this.db
-          .query('UPDATE pending_embed SET retries = ?, next_retry_at_epoch = ? WHERE id = ?')
-          .run(nextRetries, next, id);
+        if (err !== null) {
+          this.db
+            .query('UPDATE pending_embed SET retries = ?, next_retry_at_epoch = ?, last_error = ?, last_error_at_epoch = ? WHERE id = ?')
+            .run(nextRetries, next, err, errAt, id);
+        } else {
+          this.db
+            .query('UPDATE pending_embed SET retries = ?, next_retry_at_epoch = ? WHERE id = ?')
+            .run(nextRetries, next, id);
+        }
       }
     });
     tx();
+  }
+
+  /** What is stuck, and WHY — the shape a dashboard can render without a log file.
+   *  Reports the most RECENT failure: with one embedder, a backlog shares one cause, and
+   *  showing five variants of the same 429 helps nobody. */
+  failureState(): { pending: number; last_error: string | null; error_class: EmbedErrorClass | null; last_error_at_epoch: number | null } {
+    const row = this.db
+      .query(`SELECT COUNT(*) AS pending,
+                     (SELECT last_error FROM pending_embed WHERE last_error IS NOT NULL
+                       ORDER BY last_error_at_epoch DESC LIMIT 1) AS last_error,
+                     (SELECT last_error_at_epoch FROM pending_embed WHERE last_error IS NOT NULL
+                       ORDER BY last_error_at_epoch DESC LIMIT 1) AS last_error_at_epoch
+                FROM pending_embed`)
+      .get() as { pending: number; last_error: string | null; last_error_at_epoch: number | null };
+    return {
+      pending: row?.pending ?? 0,
+      last_error: row?.last_error ?? null,
+      error_class: row?.last_error ? classifyEmbedError(row.last_error) : null,
+      last_error_at_epoch: row?.last_error_at_epoch ?? null,
+    };
   }
 
   markEmbedded(ids: number[]): void {
