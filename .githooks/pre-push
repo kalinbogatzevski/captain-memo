@@ -13,6 +13,11 @@ while read -r local_ref local_sha _remote_ref remote_sha; do
   [ "$local_sha" = "$ZERO" ] && continue                       # branch deletion
   case "$local_ref" in
     */federation) echo "✗ BLOCKED: refusing to push the federation branch to github ($remote_url)."; exit 1 ;;
+    # A fed-v tag POINTS AT a federation commit, so pushing the tag publishes that code
+    # even though the branch ref never moves. It also slips the content check below: a new
+    # tag has no remote_sha, so the diff range is a bare sha and finds nothing to compare.
+    refs/tags/fed-v*)
+      echo "✗ BLOCKED: refusing to push the fed release tag ${local_ref#refs/tags/} to github ($remote_url) — it points at federation commits."; exit 1 ;;
   esac
   if [ "$remote_sha" = "$ZERO" ]; then range="$local_sha"; else range="$remote_sha..$local_sha"; fi
   if git diff --name-only "$range" 2>/dev/null | grep -q '^src/worker/federation/'; then
