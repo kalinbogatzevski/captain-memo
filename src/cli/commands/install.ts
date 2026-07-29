@@ -981,7 +981,22 @@ function wireCrossAi(opts: InstallOptions): void {
   try {
     const mcpCommand = ['bun', join(REPO_ROOT, 'plugin/dist/mcp-server.js')];
     const skillSource = join(REPO_ROOT, 'skills/captain-memo/SKILL.md');
-    const results = connectCrossAi({ mcpCommand, skillSource });
+    // Say what is about to happen, then narrate each tool BEFORE probing it. Every line this
+    // step used to print came after the work finished, so a slow probe left nothing on screen
+    // but the section header — and an operator, reasonably, killed the installer. Whatever
+    // line is last now names the tool it is on.
+    // Say how long this can take, honestly. Detection is instant (19ms for eight probes);
+    // WIRING runs each tool's own CLI, and `gemini mcp add` alone measured ~5s — which is
+    // what the silent pause actually was.
+    info('Looking for other AI CLIs, then registering the shared worker with each.');
+    info('Detection is instant; wiring a tool runs its own CLI and can take a few seconds.');
+    const results = connectCrossAi({
+      mcpCommand, skillSource,
+      onProbe: (tool, phase) => {
+        process.stdout.write(phase === 'detect' ? `  · checking ${tool}…\r` : `  · wiring ${tool}…\n`);
+      },
+    });
+    process.stdout.write('  ' + ' '.repeat(40) + '\r');   // clear the last in-place probe line
     if (results.length === 0) {
       info('No other AI tools detected (Codex, Gemini, opencode, …) — only Claude Code wired.');
     } else {

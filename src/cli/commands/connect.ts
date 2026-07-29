@@ -121,7 +121,17 @@ export async function connectCommand(args: string[]): Promise<number> {
 
   // No tool named: detect + wire all installed tools.
   header('Wiring installed AI tools to the shared worker');
-  const results = connectCrossAi({ mcpCommand, skillSource, ...(localProvider ? { localProvider } : {}) });
+  // Narrate BEFORE each probe, exactly as the installer does — this is the command an
+  // operator is told to re-run after a stall, so it must not stall silently in turn.
+  info('Looking for other AI CLIs, then registering the shared worker with each.');
+  info('Detection is instant; wiring a tool runs its own CLI and can take a few seconds.');
+  const results = connectCrossAi({
+    mcpCommand, skillSource, ...(localProvider ? { localProvider } : {}),
+    onProbe: (tool, phase) => {
+      process.stdout.write(phase === 'detect' ? `  · checking ${tool}…\r` : `  · wiring ${tool}…\n`);
+    },
+  });
+  process.stdout.write('  ' + ' '.repeat(40) + '\r');
   printConnectReport(results);
   if (results.length > 0) {
     console.log();

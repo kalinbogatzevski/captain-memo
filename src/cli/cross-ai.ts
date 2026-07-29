@@ -35,10 +35,27 @@ export interface RunResult {
   stderr?: string;
   error?: Error;
 }
-export type Runner = (cmd: string, args: string[]) => RunResult;
+export type Runner = (cmd: string, args: string[], timeoutMs?: number) => RunResult;
 
-const defaultRunner: Runner = (cmd, args) => {
-  const r = spawnSync(cmd, args, { encoding: 'utf-8' });
+/** TWO ceilings, because the two kinds of call are nothing alike.
+ *
+ *  DETECTION is `which <cli>` — measured at 19ms for EIGHT probes on this machine, so a probe
+ *  that takes seconds is a stuck PATH entry (a network mount, a stale automount), not work.
+ *  Cut it short and read it as "not installed", which is what a null status already means.
+ *
+ *  WIRING runs the tool's own CLI to register the MCP server, and that is real work: `gemini
+ *  mcp add` measured at 5,031ms here — the single slowest thing in the whole step, and 91% of
+ *  its total. One shared 5s ceiling would have killed it right at the boundary and broken
+ *  Gemini wiring intermittently, which is why these are separate numbers rather than one.
+ *
+ *  Reported from a real upgrade: the installer sat on its last section header long enough
+ *  that the operator killed it. Nothing was hung and nothing was indexing — this step was
+ *  simply slow and silent. */
+const PROBE_TIMEOUT_MS = 5_000;
+const WIRE_TIMEOUT_MS = 60_000;
+
+const defaultRunner: Runner = (cmd, args, timeoutMs) => {
+  const r = spawnSync(cmd, args, { encoding: 'utf-8', timeout: timeoutMs ?? WIRE_TIMEOUT_MS });
   return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '', ...(r.error ? { error: r.error } : {}) };
 };
 
@@ -77,7 +94,8 @@ export interface ToolAdapter {
 
 // `which <id>` — tool CLI on PATH? Pulled out so adapters share one probe.
 function cliOnPath(run: Runner, id: string): boolean {
-  const r = run('which', [id]);
+  // Short ceiling: a `which` that takes seconds is a stuck PATH entry, not a slow answer.
+  const r = run('which', [id], PROBE_TIMEOUT_MS);
   return r.status === 0 && (r.stdout ?? '').trim().length > 0;
 }
 
@@ -637,6 +655,9 @@ export function connectCrossAi(opts: {
   home?: string;
   run?: Runner;
   localProvider?: string;   // opencode-only: which local runtime to configure (ollama | vllm | lmstudio)
+  /** Called BEFORE each probe and each write, so a stall names the tool it is stuck on
+   *  rather than leaving a bare section header on screen. */
+  onProbe?: (tool: string, phase: 'detect' | 'connect') => void;
 }): ConnectResult[] {
   const home = opts.home ?? homedir();
   const run = opts.run ?? defaultRunner;
@@ -657,9 +678,19 @@ export function connectCrossAi(opts: {
   }
 
   // Auto-detect: connect every installed tool.
+  //
+  // ANNOUNCE BEFORE ACTING, never after. detect() shells out to `which <cli>`, which walks
+  // every PATH entry — one network mount or stale automount in PATH and it blocks. Reported
+  // from a real upgrade: the installer printed the section header and then went silent long
+  // enough that the operator killed it, with nothing on screen naming what it was doing. The
+  // probe timeout bounds the hang; this makes the last line on screen say which tool caused
+  // it. Printing after the fact only ever tells you about the steps that already finished.
   const results: ConnectResult[] = [];
   for (const adapter of ADAPTERS) {
-    if (adapter.detect({ home, run })) results.push(adapter.connect(ctx));
+    opts.onProbe?.(adapter.id, 'detect');
+    if (!adapter.detect({ home, run })) continue;
+    opts.onProbe?.(adapter.id, 'connect');
+    results.push(adapter.connect(ctx));
   }
   return results;
 }

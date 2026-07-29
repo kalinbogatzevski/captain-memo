@@ -305,14 +305,29 @@ async function accumulate(
     t = fresh();
     ACC.set(path, t);
   }
-  if (size > t.offset) {
+  // Capture the read position BEFORE any await, and make the write idempotent.
+  //
+  // t.offset used to be read after `await open` and advanced with `+=` after `await read`,
+  // on an accumulator shared by every scan of this path. The worker fires allTimeTotals()
+  // unawaited — a 365-day scan — while the ~10s fleet poll keeps running, so two scans over
+  // one transcript is routine rather than theoretical. Both computed the same range and each
+  // ADDED it, leaving the offset ahead of the bytes actually digested; everything later
+  // written into that phantom gap was then skipped PERMANENTLY, because the `size < offset`
+  // self-heal never fires once the file grows past it. Silently MISSING tokens — not
+  // double-counted ones, since the per-message dedupe already makes a re-read idempotent.
+  //
+  // Both racers now start from the same `from` and digest the same contiguous bytes, so
+  // taking the MAX keeps the longer read's real progress and discards the duplicate advance.
+  // No lock needed, and an accumulator replaced by a concurrent fresh() is simply orphaned.
+  const from = t.offset;
+  if (size > from) {
     const fh = await open(path, 'r').catch(() => null);
     if (fh) {
       try {
-        const len = size - t.offset;
+        const len = size - from;
         const buf = Buffer.allocUnsafe(len);
-        const { bytesRead } = await fh.read(buf, 0, len, t.offset);
-        t.offset += digest(buf.toString('utf8', 0, bytesRead), t);
+        const { bytesRead } = await fh.read(buf, 0, len, from);
+        t.offset = Math.max(t.offset, from + digest(buf.toString('utf8', 0, bytesRead), t));
       } catch {
         /* transient read failure — keep what we have, retry next poll */
       } finally {
@@ -331,23 +346,77 @@ async function accumulate(
   return { t, wFresh, wOut, wCr };
 }
 
+/** The agent ids a workflow's journal reports as FINISHED.
+ *
+ *  Liveness elsewhere is transcript-mtime inside the activity window, which is right for a
+ *  session — a person idles between prompts — and wrong for an agent, which is a one-shot
+ *  task that either writes or is done. A completed 12-agent workflow therefore sat on the
+ *  board reading ACTIVE for the rest of the window, with its tokens counting toward "what is
+ *  running now". The journal answers it exactly: one `result` line per finished agent.
+ *
+ *  NOT cached: this file grows while the workflow runs, and caching it would freeze the
+ *  answer at whatever was true on first sight. Re-read per poll — one small file per live
+ *  workflow. An unreadable journal yields an EMPTY set, so every agent stays reported:
+ *  absence of evidence is not evidence of completion, and hiding live work is the worse
+ *  error. */
+async function finishedAgents(wfDir: string): Promise<Set<string>> {
+  const done = new Set<string>();
+  let raw: string;
+  try {
+    raw = await readFile(join(wfDir, 'journal.jsonl'), 'utf8');
+  } catch {
+    return done;
+  }
+  for (const line of raw.split('\n')) {
+    if (!line || line.indexOf('"result"') < 0) continue;
+    try {
+      const rec = JSON.parse(line) as { type?: unknown; agentId?: unknown };
+      if (rec.type === 'result' && typeof rec.agentId === 'string' && rec.agentId) done.add(rec.agentId);
+    } catch {
+      /* a partial line mid-write — the next poll sees it whole */
+    }
+  }
+  return done;
+}
+
 /** wf id → the workflow's own name, read from the script the Workflow tool persists at
  *  `<session>/workflows/scripts/<meta.name>-<wf id>.js`. That filename is the ONLY place a
  *  workflow run is named: its journal keys on a content hash, and each agent's meta.json
  *  says just `"agentType": "workflow-subagent"`. Matched on the exact wf id so two runs
  *  under one session can never inherit each other's name. */
-async function workflowNames(subagentsDir: string): Promise<Map<string, { name: string; path: string }>> {
+async function workflowNames(subagentsDir: string, sessionId: string): Promise<Map<string, { name: string; path: string }>> {
   const out = new Map<string, { name: string; path: string }>();
-  const dir = join(dirname(subagentsDir), 'workflows', 'scripts');
-  let files: string[];
+  const collect = async (dir: string): Promise<void> => {
+    let files: string[];
+    try {
+      files = await readdir(dir);
+    } catch {
+      return;   // no scripts here — the agents stay unnamed, which is honest
+    }
+    for (const f of files) {
+      const m = /^(.+)-(wf_[A-Za-z0-9-]+)\.js$/.exec(f);
+      if (m && !out.has(m[2]!)) out.set(m[2]!, { name: m[1]!, path: join(dir, f) });
+    }
+  };
+  // Beside the agents first — the common case, and one readdir.
+  await collect(join(dirname(subagentsDir), 'workflows', 'scripts'));
+
+  // Then the SAME SESSION under every other project directory. A session whose cwd differs
+  // when it launches a workflow persists the script under THAT project's dir while its agents
+  // stay filed under the project the session belongs to: one session id, two directories.
+  // Observed live — both of this session's own workflows landed that way and showed as bare
+  // wf_ ids. Only reached when the local directory did not already answer.
   try {
-    files = await readdir(dir);
+    const root = transcriptsRoot();
+    const projects = await readdir(root, { withFileTypes: true });
+    for (const p of projects) {
+      if (!p.isDirectory()) continue;
+      const alt = join(root, p.name, sessionId, 'workflows', 'scripts');
+      if (alt === join(dirname(subagentsDir), 'workflows', 'scripts')) continue;
+      await collect(alt);
+    }
   } catch {
-    return out;   // no persisted scripts — the agents stay unnamed, which is honest
-  }
-  for (const f of files) {
-    const m = /^(.+)-(wf_[A-Za-z0-9-]+)\.js$/.exec(f);
-    if (m) out.set(m[2]!, { name: m[1]!, path: join(dir, f) });
+    /* unreadable projects root — keep whatever the local directory gave us */
   }
   return out;
 }
@@ -410,6 +479,9 @@ async function scanAgents(
   // down, and a parameter of the same name shadows it into `undefined is not a function`.
   names?: ReadonlyMap<string, string>, workflowName?: string, wfDesc?: string,
 ): Promise<void> {
+  // Inside a workflow directory, the journal says which agents have already FINISHED. They
+  // are dropped below rather than reported as running until the window happens to expire.
+  const done = workflowId !== undefined ? await finishedAgents(dirPath) : new Set<string>();
   let entries: Dirent[];
   try {
     entries = await readdir(dirPath, { withFileTypes: true });
@@ -424,7 +496,7 @@ async function scanAgents(
         let wfs: Dirent[];
         try { wfs = await readdir(join(dirPath, e.name), { withFileTypes: true }); } catch { continue; }
         // One readdir for the whole session, and only for a session that ran a workflow.
-        const wfNames = await workflowNames(dirPath);
+        const wfNames = await workflowNames(dirPath, parentSessionId);
         for (const wf of wfs) {
           if (!wf.isDirectory()) continue;
           // Read the description only for a workflow actually being scanned, not for every
@@ -440,6 +512,8 @@ async function scanAgents(
     // bookkeeping, not a session — and reporting that as an agent invents a row with no
     // tokens and no meaning.
     if (!AGENT_FILE_RE.test(e.name)) continue;
+    // Its own journal reported a result for this one: it is finished, not idle.
+    if (done.has(e.name.slice('agent-'.length, -'.jsonl'.length))) continue;
     const path = join(dirPath, e.name);
     let size = 0, mtimeMs = 0;
     try {

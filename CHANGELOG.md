@@ -5,6 +5,15 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.34] — 2026-07-29
+
+### Fixed
+- **`install` looked hung during "Wiring other AI tools", and an operator killed it.** Every line that step printed came *after* its work finished, so a slow tool left nothing on screen but the section header. Measured: detection is 19 ms for eight `which` probes, while wiring runs each tool's own CLI and **`gemini mcp add` alone takes ~5 s — 91% of the step**. It now announces what it is about to do and names each tool *before* probing or wiring it, so whatever line is last on screen says what it is waiting on. `connect` narrates identically, since that is the command an operator is told to re-run after a stall. Nothing was ever at risk here: wiring is the last step, and indexing runs asynchronously inside the worker service, not in the installer.
+- **A stuck `PATH` entry could hang the installer indefinitely.** Detection shells out to `which`, which walks every `PATH` entry — one network mount or stale automount and it blocks with no ceiling. Detection now has a 5 s ceiling and reads a timeout as "not installed" (a timed-out probe returns `status: null`, which detection already treated that way). Wiring gets its own, far longer ceiling: a single shared 5 s limit would have killed `gemini mcp add` at 5,031 ms, right at the boundary, breaking Gemini wiring intermittently.
+- **A workflow's finished agents lingered on the fleet board as ACTIVE.** Liveness is transcript mtime inside the activity window — correct for a session, where a person idles between prompts, and wrong for an agent, which is a one-shot task that either writes or is done. A completed 12-agent workflow stayed listed for the rest of the window with its tokens counting toward "what is running now". The workflow journal records a `result` line per finished agent, so those are dropped; the journal is re-read per poll rather than cached (it grows while the workflow runs), and a missing journal reports every agent, because absence of evidence is not evidence of completion.
+- **Concurrent scans could silently LOSE tokens.** `accumulate()` computed its read range and advanced the shared offset *after* two awaits, so a foreground poll overlapping the unawaited 365-day scan left the offset ahead of the bytes actually digested — and everything later written into that gap was skipped permanently, since the truncation self-heal never fires once the file grows past it. The read position is captured before the awaits and the write is now a max, so a duplicated read is harmless.
+- **A workflow's name went unread when its script was filed under a different project directory.** A session whose cwd differs when it launches a workflow persists the script under *that* project's dir while its agents stay under the session's own — one session id, two directories. Both of this machine's own workflows hit it and rendered as bare `wf_` ids.
+
 ## [0.27.33] — 2026-07-29
 
 ### Fixed

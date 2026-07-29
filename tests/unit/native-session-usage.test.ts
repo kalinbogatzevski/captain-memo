@@ -6,7 +6,7 @@
 // activity window that decides what counts as "live".
 
 import { test, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, appendFileSync, utimesSync } from 'fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, appendFileSync, utimesSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -107,6 +107,38 @@ test('the same message id is counted once even when split across incremental rea
   appendFileSync(p, msgId('msg_A', 100, 20) + msgId('msg_C', 5, 1));
   const second = await readNativeSessionUsage();
   expect(second[0]!.input_tokens).toBe(105);   // not 205
+});
+
+test('concurrent scans never advance the offset past what was actually digested', async () => {
+  // accumulate() computed its read range and advanced t.offset AFTER two awaits, with no
+  // guard on the shared accumulator. The worker fires allTimeTotals() unawaited (a 365-day
+  // scan) while the ~10s fleet poll keeps running, so two scans reading one transcript is
+  // routine. Both read the SAME byte range and each advanced the offset by it, so the offset
+  // ran ahead of the bytes consumed — and everything written into that phantom gap was
+  // skipped PERMANENTLY, because the `size < offset` self-heal never fires once the file
+  // grows past it. The symptom is silently MISSING tokens, not double-counted ones: the
+  // per-message dedupe already makes a re-read idempotent.
+  const p = writeTranscript(SID, msgId('msg_1', 100, 10));
+  await readNativeSessionUsage();                       // warm the accumulator
+
+  appendFileSync(p, msgId('msg_2', 100, 10));
+  await Promise.all([readNativeSessionUsage(365 * 24 * 60 * 60_000), readNativeSessionUsage()]);
+
+  appendFileSync(p, msgId('msg_3', 100, 10) + msgId('msg_4', 100, 10));
+  const [s] = await readNativeSessionUsage();
+  expect(s!.input_tokens).toBe(400);      // all four messages — none lost to a phantom offset
+
+  // HONESTY NOTE: the assertion above exercises the concurrent path but does NOT prove the
+  // race — the interleaving is not deterministic at this level, and it passed before the fix
+  // as well. What the fix guarantees is a property of the CODE, so that is what is asserted
+  // here: the read position is captured before any await, and the write is a max rather than
+  // an unconditional advance. Both are what make a duplicated read harmless.
+  const src = readFileSync(join(import.meta.dir, '../../src/worker/native-session-usage.ts'), 'utf8');
+  const acc = src.slice(src.indexOf('async function accumulate'), src.indexOf('// Sum the buckets'));
+  expect(acc).toMatch(/const from = t\.offset;/);          // captured before the awaits
+  expect(acc).toMatch(/fh\.read\(buf, 0, len, from\)/);    // and used for the read itself
+  expect(acc).toMatch(/t\.offset = Math\.max\(t\.offset,/); // idempotent write
+  expect(acc).not.toMatch(/t\.offset \+=/);                 // never a blind advance
 });
 
 test('sums provider-reported usage across a transcript', async () => {
@@ -409,6 +441,29 @@ test('a script with no description yields a name and nothing invented', async ()
   expect(agent!.workflowDescription).toBeUndefined();
 });
 
+test('a workflow script filed under a different PROJECT dir is still found', async () => {
+  // Observed live: a session whose cwd differs when it launches a workflow persists the
+  // script under THAT project's directory, while the agents stay filed under the project the
+  // session belongs to. Same session id, two project dirs — so looking only beside the agents
+  // left the run showing as a bare wf_ id. Both of this session's own workflows hit it.
+  const { mkdirSync: mk } = await import('fs');
+  writeTranscript(SID, msg(100, 20));
+  const wf = join(projectDir, SID, 'subagents', 'workflows', 'wf_70ad7cf8-268');
+  mk(wf, { recursive: true });
+  writeFileSync(join(wf, 'agent-a237ad11.jsonl'), msg(73, 4));
+
+  // the script lands under a DIFFERENT project dir, same session id
+  const otherProject = join(root, '-home-kalin-somewhere-else');
+  const scripts = join(otherProject, SID, 'workflows', 'scripts');
+  mk(scripts, { recursive: true });
+  writeFileSync(join(scripts, 'audit-second-pass-wf_70ad7cf8-268.js'),
+    "export const meta = {\n  name: 'audit-second-pass',\n  description: 'Verify the dropped findings',\n}\n");
+
+  const agent = (await readNativeSessionUsage()).find(s => s.workflowId);
+  expect(agent!.workflowName).toBe('audit-second-pass');
+  expect(agent!.workflowDescription).toBe('Verify the dropped findings');
+});
+
 test('a workflow with no persisted script leaves the agent unnamed, not mislabelled', async () => {
   // Never borrow a neighbouring workflow's name: two workflows under one session would then
   // both claim the first one's, which reads as fact and is false.
@@ -437,6 +492,39 @@ test('an agent with no dispatch record is left unnamed rather than invented', as
 
   const agent = (await readNativeSessionUsage()).find(s => s.parentSessionId);
   expect(agent!.agentName).toBeUndefined();
+});
+
+test('a workflow agent the journal says FINISHED is not reported as running', async () => {
+  // Liveness was transcript-mtime inside a 30-minute window — right for a session, where a
+  // person idles between prompts, and wrong for an agent, which is a one-shot task that
+  // either writes or is done. A 12-agent workflow that had completed sat on the board reading
+  // ACTIVE for another ~20 minutes, and its tokens kept counting toward "what is running".
+  // No heuristic is needed: the workflow journal records a `result` line per finished agent.
+  const { mkdirSync: mk } = await import('fs');
+  writeTranscript(SID, msg(100, 20));
+  const wf = join(projectDir, SID, 'subagents', 'workflows', 'wf_70ad7cf8-268');
+  mk(wf, { recursive: true });
+  writeFileSync(join(wf, 'agent-a237ad11.jsonl'), msg(83, 1));   // finished
+  writeFileSync(join(wf, 'agent-abbbbbbb.jsonl'), msg(50, 2));   // still running
+  writeFileSync(join(wf, 'journal.jsonl'),
+    JSON.stringify({ type: 'started', key: 'v2:x', agentId: 'a237ad11' }) + '\n'
+    + JSON.stringify({ type: 'started', key: 'v2:y', agentId: 'abbbbbbb' }) + '\n'
+    + JSON.stringify({ type: 'result', key: 'v2:x', agentId: 'a237ad11', result: 'done' }) + '\n');
+
+  const agents = (await readNativeSessionUsage()).filter(s => s.workflowId);
+  expect(agents.map(a => a.session_id)).toEqual(['agent-abbbbbbb']);   // the finished one is gone
+});
+
+test('a workflow with no journal reports every agent, rather than none', async () => {
+  // Absence of evidence is not evidence of completion: if the journal is missing or
+  // unreadable, every agent stays reported. Hiding live work is worse than showing stale.
+  const { mkdirSync: mk } = await import('fs');
+  writeTranscript(SID, msg(100, 20));
+  const wf = join(projectDir, SID, 'subagents', 'workflows', 'wf_nojournal');
+  mk(wf, { recursive: true });
+  writeFileSync(join(wf, 'agent-a237ad11.jsonl'), msg(83, 1));
+  const agents = (await readNativeSessionUsage()).filter(s => s.workflowId);
+  expect(agents).toHaveLength(1);
 });
 
 test('an idle agent falls out of the window like any other session', async () => {

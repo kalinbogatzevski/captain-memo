@@ -259,3 +259,39 @@ test('connectCrossAi — only:[kimi] with NO local models writes NOTHING and say
   expect(existsSync(join(home, '.kimi', 'config.toml'))).toBe(false);
   expect(r[0]!.detail).toContain('no local Ollama models found');
 });
+
+// ---- probe must not be able to hang the installer ------------------------------------
+// Reported from a real upgrade: the installer printed "Wiring other AI tools (shared
+// memory)" and then sat silent long enough that the operator killed it. Nothing was being
+// indexed — wiring is the LAST step, and the worker indexes asynchronously inside its own
+// service — but the step spawns `which <cli>` once per supported tool, and `which` walks
+// every PATH entry. One network mount or stale automount in PATH and the probe blocks with
+// no ceiling and no output.
+
+test('the CLI probe is bounded — a spawn that never returns cannot stall the install', () => {
+  const src = readFileSync(join(import.meta.dir, '../../src/cli/cross-ai.ts'), 'utf-8');
+  const runner = src.slice(src.indexOf('const defaultRunner'), src.indexOf('export interface ConnectCtx'));
+  expect(runner).toMatch(/timeout:/);              // spawnSync is given a ceiling
+  expect(runner).toMatch(/WIRE_TIMEOUT_MS/);       // named, not a magic number
+  expect(src).toMatch(/const PROBE_TIMEOUT_MS/);
+  // TWO ceilings, deliberately. Detection is `which` (19ms for eight probes here); wiring
+  // runs the tool's own CLI and `gemini mcp add` measured 5,031ms. A single 5s ceiling would
+  // have killed that at the boundary and broken Gemini wiring intermittently.
+  const probeCeiling = /const PROBE_TIMEOUT_MS = ([0-9_]+)/.exec(src)?.[1]?.replace(/_/g, '');
+  const wireCeiling = /const WIRE_TIMEOUT_MS = ([0-9_]+)/.exec(src)?.[1]?.replace(/_/g, '');
+  expect(Number(wireCeiling)).toBeGreaterThan(Number(probeCeiling));
+  expect(src).toMatch(/run\('which', \[id\], PROBE_TIMEOUT_MS\)/);   // detection uses the SHORT one
+});
+
+test('a probe that times out reports the tool absent instead of throwing', () => {
+  // spawnSync returns status null on timeout. Detection must read that as "not installed"
+  // and carry on — a slow PATH entry must not fail the whole wiring step.
+  const timedOut: Runner = () => ({ status: null as unknown as number, stdout: '', stderr: '', error: new Error('ETIMEDOUT') });
+  const home = mkdtempSync(join(tmpdir(), 'cm-probe-'));
+  try {
+    const results = connectCrossAi({ mcpCommand: ['bun', '/x/mcp.js'], skillSource: '/x/SKILL.md', home, run: timedOut });
+    expect(Array.isArray(results)).toBe(true);     // returned, did not throw
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
