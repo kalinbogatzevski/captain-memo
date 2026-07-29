@@ -139,7 +139,9 @@ interface Totals {
    *  Lives on the accumulator, not the chunk: the transcript is read in appended slices, so
    *  copies of one message routinely land in different reads. Bounded like the buckets — the
    *  whole accumulator is dropped when its session falls out of the window. */
-  seenMsgIds: Set<string>;
+  /** message id → the LARGEST usage seen for it. A Map, not a Set, because a repeat is not
+   *  always a copy: agent transcripts stream partial usage under one id with growing output. */
+  seenMsgIds: Map<string, { i: number; o: number; w: number; r: number }>;
   /** Per-MINUTE token buckets, keyed by floor(epochMs / 60000). Summing the buckets
    *  inside a window gives usage genuinely accrued in that window, and old buckets fall
    *  out on their own — so the figure decays instead of lurching. Bounded by pruning
@@ -155,7 +157,7 @@ const BUCKET_MS = 60_000;
 const ACC = new Map<string, Totals>();
 
 function fresh(): Totals {
-  return { offset: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0, seenMsgIds: new Set(), buckets: new Map() };
+  return { offset: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0, seenMsgIds: new Map(), buckets: new Map() };
 }
 
 /** A transcript line's shape, narrowed to the one field we read. Everything else in
@@ -243,15 +245,30 @@ function digest(chunk: string, t: Totals): number {
     //
     // A record with no id cannot be deduped and is counted: a silent drop is the same class
     // of error in the other direction.
+    // …and a repeat is not always a COPY. Agent transcripts stream PARTIAL usage: the same
+    // id reappears with identical input/cache_read and a GROWING output_tokens. Measured on
+    // this host: 9,859 duplicated ids in sessions with ZERO differing, versus 3,762 in agents
+    // of which 3,112 differ — so skipping the repeat under-counted agent output by ~30x.
+    // Keep the LARGEST value seen per id and add only the increment, which is a no-op for a
+    // true copy and cannot walk a total backwards if a smaller copy arrives late.
     const mid = line.message?.id;
+    let inTok = n(u.input_tokens);
+    let outTok = n(u.output_tokens);
+    let cwTok = n(u.cache_creation_input_tokens);
+    let crTok = n(u.cache_read_input_tokens);
     if (typeof mid === 'string' && mid) {
-      if (t.seenMsgIds.has(mid)) continue;
-      t.seenMsgIds.add(mid);
+      const prev = t.seenMsgIds.get(mid);
+      if (prev) {
+        const dIn = Math.max(0, inTok - prev.i), dOut = Math.max(0, outTok - prev.o);
+        const dCw = Math.max(0, cwTok - prev.w), dCr = Math.max(0, crTok - prev.r);
+        if (dIn === 0 && dOut === 0 && dCw === 0 && dCr === 0) continue;   // a true copy
+        prev.i = Math.max(prev.i, inTok); prev.o = Math.max(prev.o, outTok);
+        prev.w = Math.max(prev.w, cwTok); prev.r = Math.max(prev.r, crTok);
+        inTok = dIn; outTok = dOut; cwTok = dCw; crTok = dCr;   // count only the increment
+      } else {
+        t.seenMsgIds.set(mid, { i: inTok, o: outTok, w: cwTok, r: crTok });
+      }
     }
-    const inTok = n(u.input_tokens);
-    const outTok = n(u.output_tokens);
-    const cwTok = n(u.cache_creation_input_tokens);
-    const crTok = n(u.cache_read_input_tokens);
     t.input += inTok;
     t.output += outTok;
     t.cacheCreation += cwTok;
@@ -478,10 +495,11 @@ async function scanAgents(
   // NOT `workflowDescription` — that is the module-level function this body calls a few lines
   // down, and a parameter of the same name shadows it into `undefined is not a function`.
   names?: ReadonlyMap<string, string>, workflowName?: string, wfDesc?: string,
+  includeFinished = false,
 ): Promise<void> {
   // Inside a workflow directory, the journal says which agents have already FINISHED. They
   // are dropped below rather than reported as running until the window happens to expire.
-  const done = workflowId !== undefined ? await finishedAgents(dirPath) : new Set<string>();
+  const done = (workflowId !== undefined && !includeFinished) ? await finishedAgents(dirPath) : new Set<string>();
   let entries: Dirent[];
   try {
     entries = await readdir(dirPath, { withFileTypes: true });
@@ -503,7 +521,7 @@ async function scanAgents(
           // script the session ever persisted (ten of them in one session here).
           const script = wfNames.get(wf.name);
           const desc = script ? await workflowDescription(script.path) : undefined;
-          await scanAgents(join(dirPath, e.name, wf.name), parentSessionId, wf.name, now, windowMs, out, live, names, script?.name, desc);
+          await scanAgents(join(dirPath, e.name, wf.name), parentSessionId, wf.name, now, windowMs, out, live, names, script?.name, desc, includeFinished);
         }
       }
       continue;
@@ -552,6 +570,10 @@ export async function readNativeSessionUsage(
   windowMs = 30 * 60_000,
   now = Date.now(),
   alwaysLive?: ReadonlySet<string>,
+  /** LIFETIME scans must count agents that have already finished; a LIVE board must not show
+   *  them as running. One rule for both silently dropped 2,634 finished agent transcripts —
+   *  188.9M billed tokens, 27% of the all-time total — the moment the liveness fix landed. */
+  opts?: { includeFinished?: boolean },
 ): Promise<NativeSessionUsage[]> {
   const root = transcriptsRoot();
   let projectDirs: string[];
@@ -623,7 +645,7 @@ export async function readNativeSessionUsage(
       // agent-<hex>.jsonl rather than <uuid>.jsonl — which is why the UUID gate above skips
       // them and why 33% of billed tokens were invisible. The parent is not inferred: it is
       // the directory this scan is already standing in.
-      await scanAgents(join(dir, sessionId, 'subagents'), sessionId, undefined, now, windowMs, out, live, t.dispatched);
+      await scanAgents(join(dir, sessionId, 'subagents'), sessionId, undefined, now, windowMs, out, live, t.dispatched, undefined, undefined, !!opts?.includeFinished);
     }
   }
 
@@ -789,7 +811,16 @@ export async function nativeSessionRows(
  *  never waits on it, and a captain that has not finished its first scan simply omits
  *  the field rather than reporting a half-scanned total as if it were complete. */
 export interface AllTimeTotals {
+  /** SESSIONS only — top-level transcripts. This used to be every row, so a fleet of agents
+   *  was reported as sessions: 1,549 sessions and 3,635 agents read as "5,183 sessions". */
   sessions: number;
+  /** Agent transcripts, counted apart rather than folded into the above. */
+  agents: number;
+  /** Start of the OLDEST transcript still on disk. "All time" can only honestly mean "as far
+   *  back as the transcripts reach" — here about five weeks, because Claude Code's own
+   *  history goes no further. A lifetime total that cannot say how far it sees claims more
+   *  than it knows. */
+  oldest_epoch_ms: number;
   fresh_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
@@ -807,7 +838,7 @@ export function allTimeTotals(now = Date.now()): AllTimeTotals | null {
   if (!allTimeInFlight && (!allTimeCache || now - allTimeCache.computed_at_epoch_ms > ALL_TIME_TTL_MS)) {
     allTimeInFlight = true;
     // Fire and forget: the caller returns the previous value (or null) immediately.
-    void readNativeSessionUsage(ALL_TIME_WINDOW_MS, now)
+    void readNativeSessionUsage(ALL_TIME_WINDOW_MS, now, undefined, { includeFinished: true })
       .then(all => {
         let fresh = 0, out = 0, cr = 0;
         for (const s of all) {
@@ -816,7 +847,12 @@ export function allTimeTotals(now = Date.now()): AllTimeTotals | null {
           cr += s.cache_read_tokens;
         }
         allTimeCache = {
-          sessions: all.length, fresh_tokens: fresh, output_tokens: out,
+          // Count sessions and agents APART. This was `all.length`, so 1,549 sessions and
+            // 3,635 agents were reported as "5,183 sessions" — 70% of that label was wrong.
+            sessions: all.filter(s2 => !s2.parentSessionId).length,
+            agents: all.filter(s2 => !!s2.parentSessionId).length,
+            oldest_epoch_ms: all.reduce((m, s2) => (s2.last_activity_epoch_ms > 0 && (m === 0 || s2.last_activity_epoch_ms < m) ? s2.last_activity_epoch_ms : m), 0),
+            fresh_tokens: fresh, output_tokens: out,
           cache_read_tokens: cr, computed_at_epoch_ms: Date.now(),
         };
       })

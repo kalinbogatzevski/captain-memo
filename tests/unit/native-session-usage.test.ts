@@ -90,6 +90,30 @@ test('a message whose FIRST record carries no usage is still counted', async () 
   expect(s!.output_tokens).toBe(20);
 });
 
+test('a STREAMING message keeps its largest usage, not its first', async () => {
+  // Agent transcripts stream PARTIAL usage: the same message id is written repeatedly with
+  // identical input/cache_read and a GROWING output_tokens. Sessions never do this — measured
+  // on this host, 9,859 duplicated ids in sessions with ZERO differing, against 3,762 in
+  // agents of which 3,112 (83%) differ. First-copy-wins is therefore exact for sessions and
+  // under-counts agent output by ~30x (142,777 reported vs 4,694,491 real, in a 400-file
+  // sample). The earlier "zero of 7,276 differ" measurement sampled only the four largest
+  // transcripts — all of them sessions — and generalised from it.
+  writeTranscript(SID,
+    msgId('msg_S', 100, 39) + msgId('msg_S', 100, 197) + msgId('msg_S', 100, 2742));
+  const [s] = await readNativeSessionUsage();
+  expect(s!.output_tokens).toBe(2742);    // the completed message, not the first partial
+  expect(s!.input_tokens).toBe(100);      // input is identical across copies — counted ONCE
+});
+
+test('a shrinking or equal repeat never subtracts from the total', async () => {
+  // Guard the direction: taking the max must never let a late, smaller copy walk the number
+  // backwards, and an identical repeat must remain a no-op.
+  writeTranscript(SID, msgId('msg_S', 100, 500) + msgId('msg_S', 100, 200) + msgId('msg_S', 100, 500));
+  const [s] = await readNativeSessionUsage();
+  expect(s!.output_tokens).toBe(500);
+  expect(s!.input_tokens).toBe(100);
+});
+
 test('a usage record with no message id is still counted', async () => {
   // Dedupe must never become a silent drop: without an id there is nothing to dedupe on, so
   // the record counts. Undercounting is as wrong as double-counting.
@@ -513,6 +537,31 @@ test('a workflow agent the journal says FINISHED is not reported as running', as
 
   const agents = (await readNativeSessionUsage()).filter(s => s.workflowId);
   expect(agents.map(a => a.session_id)).toEqual(['agent-abbbbbbb']);   // the finished one is gone
+});
+
+test('a LIFETIME scan counts finished workflow agents; a live scan still hides them', async () => {
+  // Retiring finished agents is right for "what is running now" and WRONG for "what has this
+  // ever cost". Applying one rule to both silently removed 2,634 agent transcripts worth
+  // 188.9M billed tokens from the all-time total on this machine — a 27% understatement,
+  // introduced by the liveness fix itself. The two questions need different answers from the
+  // same scan.
+  const { mkdirSync: mk } = await import('fs');
+  writeTranscript(SID, msg(100, 20));
+  const wf = join(projectDir, SID, 'subagents', 'workflows', 'wf_done-001');
+  mk(wf, { recursive: true });
+  writeFileSync(join(wf, 'agent-a237ad11.jsonl'), msg(500, 60));   // finished
+  writeFileSync(join(wf, 'journal.jsonl'),
+    JSON.stringify({ type: 'started', key: 'v2:x', agentId: 'a237ad11' }) + '\n'
+    + JSON.stringify({ type: 'result', key: 'v2:x', agentId: 'a237ad11', result: 'done' }) + '\n');
+
+  const live = (await readNativeSessionUsage()).filter(s => s.workflowId);
+  expect(live).toHaveLength(0);                       // the board must not show it as running
+
+  _resetNativeUsageCache();
+  const lifetime = (await readNativeSessionUsage(30 * 60_000, Date.now(), undefined, { includeFinished: true }))
+    .filter(s => s.workflowId);
+  expect(lifetime).toHaveLength(1);                   // but its spend is real and must be counted
+  expect(lifetime[0]!.input_tokens).toBe(500);
 });
 
 test('a workflow with no journal reports every agent, rather than none', async () => {

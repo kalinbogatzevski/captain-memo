@@ -5,6 +5,16 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.37] — 2026-07-29
+
+### Fixed
+- **Agent output tokens were under-counted ~30x: a repeat is not always a copy.** The per-message dedupe added in 0.27.33 keeps the first copy of a usage block, which is exact for session transcripts and wrong for agents — agents stream PARTIAL usage, rewriting one message id with identical input and a growing `output_tokens` (`39 → 197 → 2742`). Measured across a 400-file sample of each: sessions had 9,684 duplicated ids with **zero** differing, agents had 3,762 of which **3,112 (83%) differed**, and agent output read 142,777 against a true 4,694,491. The earlier "exact, not a heuristic" claim was measured on the four largest transcripts — all of them sessions — and generalised. Usage is now accumulated as the **largest value seen per id**, adding only the increment: a no-op for a true copy, and it cannot walk a total backwards if a smaller copy arrives late. Fleet-wide token totals barely move (output is small against cache reads); what changes is attribution — agents' share of all output goes from ~2.5% to ~36%.
+
+## [0.27.36] — 2026-07-29
+
+### Fixed
+- **The all-time token total was understated by 27%.** Retiring finished workflow agents (0.27.34) is right for "what is running now" and wrong for "what has this ever cost" — but one rule served both, so the lifetime scan silently dropped every agent whose workflow journal recorded a result. On this machine that was **2,634 agent transcripts holding 188.9M billed tokens**; the host's all-time figure went from 700.1M to 886.3M once the two questions were separated. `readNativeSessionUsage` now takes `{ includeFinished }`, which `allTimeTotals()` sets and the live board does not.
+
 ## [0.27.35] — 2026-07-29
 
 ### Fixed
