@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.33] — 2026-07-29
+
+### Fixed
+- **Every reported token figure was 2.4x-3.2x too high.** `digest()` summed `message.usage` once per JSONL record, but Claude Code writes ONE assistant response as several records — thinking, tool_use, text — and each carries an identical copy of the same usage block, because the usage describes the *message*, not the record. Measured on four large real transcripts: 43.8M fresh tokens reported against 13.9M actually billed (3.15x), 56.1M against 19.7M (2.84x), 77.7M against 32.8M (2.36x). Usage is now counted once per `message.id`. This is exact rather than a heuristic: across **7,276 message ids appearing more than once, not one carried differing usage**. The id is claimed only *after* the usage check — a message's leading records (a thinking block) carry no usage at all, and claiming the id on one of those made it swallow the id so the record holding the real numbers was skipped, reporting zero. Dedupe state lives on the accumulator, not the chunk, because the transcript is read in appended slices and copies of one message routinely land in different reads.
+
 ## [0.27.32] — 2026-07-29
 
 ### Added

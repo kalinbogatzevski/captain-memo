@@ -53,6 +53,62 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
+/** One assistant message as Claude Code ACTUALLY writes it: several records — thinking,
+ *  tool_use, text — each carrying an identical copy of the SAME usage block, because the
+ *  usage describes the message, not the record. */
+const msgId = (id: string, input: number, output: number) => JSON.stringify({
+  type: 'assistant',
+  message: {
+    id, role: 'assistant',
+    content: [{ type: 'text', text: 'irrelevant' }],
+    usage: { input_tokens: input, output_tokens: output, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+  },
+}) + '\n';
+
+test('a usage block repeated across records of ONE message is counted once', async () => {
+  // Measured on four large real transcripts: 7,276 message ids appeared more than once and
+  // NOT ONE of them carried differing usage — the same block is simply re-emitted per content
+  // record. Summing per record therefore inflated every figure on the board by 2.5x-3.2x.
+  // Counting the first copy per id is exact, not a heuristic, because the copies are equal.
+  writeTranscript(SID, msgId('msg_A', 100, 20) + msgId('msg_A', 100, 20) + msgId('msg_A', 100, 20)
+    + msgId('msg_B', 7, 3));
+  const [s] = await readNativeSessionUsage();
+  expect(s!.input_tokens).toBe(107);     // 100 once + 7, NOT 300 + 7
+  expect(s!.output_tokens).toBe(23);
+});
+
+test('a message whose FIRST record carries no usage is still counted', async () => {
+  // The dedupe must key on usage-BEARING records only. Marking the id seen on any record
+  // with that id meant a leading usage-less record (a thinking block) consumed the id and
+  // the record actually carrying the usage was skipped — every session reported 0 input.
+  // The synthetic fixtures could not catch this because they put usage on every record;
+  // only running it against real transcripts did.
+  const noUsage = JSON.stringify({ type: 'assistant', message: { id: 'msg_A', role: 'assistant', content: [{ type: 'thinking' }] } }) + '\n';
+  writeTranscript(SID, noUsage + msgId('msg_A', 100, 20) + msgId('msg_A', 100, 20));
+  const [s] = await readNativeSessionUsage();
+  expect(s!.input_tokens).toBe(100);     // counted once — not 0, not 200
+  expect(s!.output_tokens).toBe(20);
+});
+
+test('a usage record with no message id is still counted', async () => {
+  // Dedupe must never become a silent drop: without an id there is nothing to dedupe on, so
+  // the record counts. Undercounting is as wrong as double-counting.
+  writeTranscript(SID, msg(50, 10) + msg(50, 10));
+  const [s] = await readNativeSessionUsage();
+  expect(s!.input_tokens).toBe(100);
+});
+
+test('the same message id is counted once even when split across incremental reads', async () => {
+  // The transcript is read in appended chunks across polls, so the copies of one message can
+  // land in DIFFERENT reads. Dedupe state has to live with the accumulator, not the chunk.
+  const p = writeTranscript(SID, msgId('msg_A', 100, 20));
+  const first = await readNativeSessionUsage();
+  expect(first[0]!.input_tokens).toBe(100);
+  appendFileSync(p, msgId('msg_A', 100, 20) + msgId('msg_C', 5, 1));
+  const second = await readNativeSessionUsage();
+  expect(second[0]!.input_tokens).toBe(105);   // not 205
+});
+
 test('sums provider-reported usage across a transcript', async () => {
   writeTranscript(SID, msg(100, 20, 500, 900) + msg(50, 10, 0, 300));
   const [s] = await readNativeSessionUsage();

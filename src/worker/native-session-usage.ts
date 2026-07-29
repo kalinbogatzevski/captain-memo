@@ -129,6 +129,17 @@ interface Totals {
    *  (`attributionAgent: general-purpose`) but never the description. Created lazily: most
    *  sessions dispatch nothing and should not pay for a Map. */
   dispatched?: Map<string, string>;
+  /** Message ids already counted. Claude Code writes ONE assistant response as several
+   *  records — thinking, tool_use, text — and each carries an identical copy of the same
+   *  usage block, because the usage describes the MESSAGE, not the record. Summing per
+   *  record inflated every reported figure by 2.5x-3.2x on real transcripts. Measured
+   *  across four large ones: of 7,276 ids appearing more than once, NOT ONE carried
+   *  differing usage — so counting the first copy is exact, not a heuristic.
+   *
+   *  Lives on the accumulator, not the chunk: the transcript is read in appended slices, so
+   *  copies of one message routinely land in different reads. Bounded like the buckets — the
+   *  whole accumulator is dropped when its session falls out of the window. */
+  seenMsgIds: Set<string>;
   /** Per-MINUTE token buckets, keyed by floor(epochMs / 60000). Summing the buckets
    *  inside a window gives usage genuinely accrued in that window, and old buckets fall
    *  out on their own — so the figure decays instead of lurching. Bounded by pruning
@@ -144,14 +155,14 @@ const BUCKET_MS = 60_000;
 const ACC = new Map<string, Totals>();
 
 function fresh(): Totals {
-  return { offset: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0, buckets: new Map() };
+  return { offset: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0, seenMsgIds: new Set(), buckets: new Map() };
 }
 
 /** A transcript line's shape, narrowed to the one field we read. Everything else in
  *  the line — the prompt, the response, tool calls — is deliberately untouched: this
  *  module reads COUNTS, never content, matching the corpus-telemetry posture. */
 interface TranscriptLine {
-  message?: { usage?: Record<string, unknown>; model?: string };
+  message?: { usage?: Record<string, unknown>; model?: string; id?: string };
   cwd?: string;
   type?: string;
   agentName?: string;
@@ -222,6 +233,21 @@ function digest(chunk: string, t: Totals): number {
     }
     const u = line.message?.usage;
     if (!u || typeof u !== 'object') continue;
+    // ONE message, MANY records. The usage block describes the message and is re-emitted on
+    // each record that has one, so counting per record double- (or triple-) counts it.
+    //
+    // The id is claimed AFTER the usage check, never before: a message's leading records
+    // (a thinking block) carry no usage at all, and marking the id seen on one of those let
+    // it swallow the id so the record actually carrying the usage was skipped — every
+    // session then reported ZERO input. Dedupe only among usage-bearing records.
+    //
+    // A record with no id cannot be deduped and is counted: a silent drop is the same class
+    // of error in the other direction.
+    const mid = line.message?.id;
+    if (typeof mid === 'string' && mid) {
+      if (t.seenMsgIds.has(mid)) continue;
+      t.seenMsgIds.add(mid);
+    }
     const inTok = n(u.input_tokens);
     const outTok = n(u.output_tokens);
     const cwTok = n(u.cache_creation_input_tokens);
