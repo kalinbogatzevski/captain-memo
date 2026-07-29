@@ -2,7 +2,7 @@ import { test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { mergeCursorMcpConfig, mergeKimiConfig, parseOllamaList, connectCrossAi, type Runner } from '../../src/cli/cross-ai.ts';
+import { mergeCursorMcpConfig, mergeKimiConfig, mergeVibeMcpConfig, parseOllamaList, connectCrossAi, type Runner } from '../../src/cli/cross-ai.ts';
 
 const MCP_PATH = '/repo/plugin/dist/mcp-server.js';
 
@@ -295,3 +295,43 @@ test('a probe that times out reports the tool absent instead of throwing', () =>
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+// ---- vibe TOML merge ------------------------------------------------------------------
+// OSS ships the vibe adapter and mergeVibeMcpConfig but had NO tests for either — the
+// coverage lived only on the federation line. Ported back: a test that exists on one of
+// two mirrored lines protects neither.
+test('mergeVibeMcpConfig — null config gets a [[mcp_servers]] captain-memo (stdio) block', () => {
+  const out = mergeVibeMcpConfig(null, MCP_PATH);
+  expect(out).toContain('[[mcp_servers]]');
+  expect(out).toContain('name = "captain-memo"');
+  expect(out).toContain('transport = "stdio"');
+  expect(out).toContain('args = ["' + MCP_PATH + '"]');
+});
+
+
+test('mergeVibeMcpConfig — appends to existing TOML, preserving it; idempotent on the managed marker', () => {
+  const existing = '[[mcp_servers]]\nname = "other"\ntransport = "stdio"\ncommand = "node"\nargs = ["/y.js"]\n';
+  const once = mergeVibeMcpConfig(existing, MCP_PATH);
+  expect(once).toContain('name = "other"');            // foreign block untouched
+  expect(once).toContain('name = "captain-memo"');     // ours appended
+  const twice = mergeVibeMcpConfig(once, MCP_PATH);
+  expect(twice).toBe(once);                            // idempotent — no duplicate captain-memo block
+  expect(twice.match(/name = "captain-memo"/g)!.length).toBe(1);
+});
+
+test('connectCrossAi — only:[vibe] writes ~/.vibe/config.toml + copies the skill (added; idempotent → present)', () => {
+  const first = connectCrossAi({ only: ['vibe'], mcpCommand: ['bun', MCP_PATH], skillSource, home, run: noopRunner });
+  expect(first[0]!.tool).toBe('vibe');
+  expect(first[0]!.mcp).toBe('added');
+  expect(first[0]!.skill).toBe('installed');
+  const cfg = readFileSync(join(home, '.vibe', 'config.toml'), 'utf-8');
+  expect(cfg).toContain('name = "captain-memo"');
+  expect(existsSync(join(home, '.vibe', 'skills', 'captain-memo', 'SKILL.md'))).toBe(true);
+  const second = connectCrossAi({ only: ['vibe'], mcpCommand: ['bun', MCP_PATH], skillSource, home, run: noopRunner });
+  expect(second[0]!.mcp).toBe('present');   // re-run reports present, no dupe
+});
+
+// ---- mergeKimiConfig / parseOllamaList — `connect kimi` must leave the captain LAUNCHABLE -------------
+// Without [providers.*] + [models.<alias>] + a root default_model in ~/.kimi/config.toml, bare `kimi` (the
+// adapter's verified launch form) has nothing to route to and ai-capacity reports logged_in:false ⇒
+// cosession_spawn(cli:'kimi') is refused with cli_unavailable. `connect kimi` used to write NONE of it.

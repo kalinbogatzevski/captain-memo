@@ -5,6 +5,11 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.35] — 2026-07-29
+
+### Fixed
+- **The vibe adapter and `mergeVibeMcpConfig` shipped with no tests.** Both are in this line, but their coverage existed only on the federation branch — so the TOML merge and the `connect vibe` path were untested here. Ported back (3 tests). A test that exists on one of two mirrored lines protects neither.
+
 ## [0.27.34] — 2026-07-29
 
 ### Fixed
