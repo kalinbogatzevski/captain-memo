@@ -1,3 +1,4 @@
+import { Database } from 'bun:sqlite';
 import { test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
@@ -90,4 +91,40 @@ test('a queue with nothing failing reports no error at all', () => {
   expect(st.pending).toBe(0);
   expect(st.last_error).toBeNull();
   expect(st.error_class).toBeNull();
+});
+
+test('a database created BEFORE the error columns existed is migrated, not broken', () => {
+  // CREATE TABLE IF NOT EXISTS does NOT add columns to a table that already exists. Adding
+  // last_error/last_error_at_epoch to the schema therefore did nothing on every install that
+  // already had the table — and failureState() then queried a column that was not there, so
+  // /stats returned 500 and the cockpit reported the captain unreachable. Shipped, and it
+  // took two operators reporting it to surface. New columns need a migration, every time.
+  const dir = mkdtempSync(join(tmpdir(), 'cm-pe-mig-'));
+  const path = join(dir, 'pending_embed.db');
+  try {
+    // Build the OLD table exactly as it shipped, then open the queue over it.
+    const old = new Database(path);
+    old.exec(`CREATE TABLE pending_embed (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chunk_id TEXT NOT NULL UNIQUE,
+      source_path TEXT NOT NULL,
+      sha TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      retries INTEGER NOT NULL DEFAULT 0,
+      next_retry_at_epoch INTEGER NOT NULL,
+      enqueued_at_epoch INTEGER NOT NULL
+    );`);
+    old.close();
+
+    const q = new PendingEmbedQueue(path);
+    q.enqueue({ chunk_id: 'c1', source_path: '/p', sha: 'a', channel: 'observation' });
+    const due = q.listDue(10);
+    q.markRetried(due.map(r => r.id), 'Embedder HTTP 429: rate limit');
+    const st = q.failureState();            // this threw "no such column: last_error"
+    expect(st.pending).toBe(1);
+    expect(st.error_class).toBe('rate_limited');
+    q.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

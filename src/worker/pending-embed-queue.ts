@@ -68,6 +68,26 @@ export class PendingEmbedQueue {
     this.db = new Database(path);
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec(SCHEMA);
+    this.migrate();
+  }
+
+  /** Bring an EXISTING table up to the current schema.
+   *
+   *  `CREATE TABLE IF NOT EXISTS` is a no-op when the table is already there, so adding a
+   *  column to SCHEMA changes nothing on any install that has run before — and the first
+   *  query touching that column then throws `no such column`. That is exactly how
+   *  last_error/last_error_at_epoch shipped: every existing captain's `/stats` returned 500,
+   *  the cockpit reported the captain unreachable, and it took two operators noticing before
+   *  it surfaced. A new column needs a migration every time, not just a schema edit.
+   *
+   *  Additive and idempotent: read the live column list, add only what is missing. */
+  private migrate(): void {
+    const cols = new Set(
+      (this.db.query('PRAGMA table_info(pending_embed)').all() as Array<{ name: string }>)
+        .map(r => r.name),
+    );
+    if (!cols.has('last_error')) this.db.exec('ALTER TABLE pending_embed ADD COLUMN last_error TEXT');
+    if (!cols.has('last_error_at_epoch')) this.db.exec('ALTER TABLE pending_embed ADD COLUMN last_error_at_epoch INTEGER');
   }
 
   enqueue(input: PendingEmbedInput): void {

@@ -5,6 +5,12 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.39] — 2026-07-30
+
+### Fixed
+- **HOTFIX: `/stats` returned 500 on every existing install — *"no such column: last_error"*.** The previous release added `last_error` and `last_error_at_epoch` to the `pending_embed` schema, but `CREATE TABLE IF NOT EXISTS` is a no-op on a table that already exists, so those columns were never added to any database that had run before. The first query touching them threw, `/stats` 500'd, and because `/health` does not touch that table it stayed green — so the cockpit reported the captain **unreachable** rather than one endpoint broken. A fresh install worked perfectly, which is exactly why the tests passed: every one of them built the database from scratch, leaving the entire upgrade path unrepresented. The queue now migrates additively on open (read `PRAGMA table_info`, add only what is missing), and the regression test creates the OLD table explicitly before opening the queue over it.
+- **The team-lead and workflow-name lookup caches survived a test reset.** Both are module-level and keyed by a name rather than by the config directory they were resolved under, so a test running earlier under a different `CLAUDE_CONFIG_DIR` left a cached MISS that a later test inherited — the team-lead test passed alone and failed in the suite. `_resetNativeUsageCache()` clears them now. Same class as the render-loop bugs fixed earlier: state that outlives the scope it was computed for.
+
 ## [0.27.38] — 2026-07-29
 
 ### Fixed

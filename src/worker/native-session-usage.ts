@@ -660,6 +660,12 @@ export async function readNativeSessionUsage(
 /** Test-only: clear the per-process accumulators. */
 export function _resetNativeUsageCache(): void {
   ACC.clear();
+  // The lookup caches too. Both are module-level and keyed by a name, NOT by the config dir
+  // they were resolved under — so a test that ran earlier under a different
+  // CLAUDE_CONFIG_DIR left a cached MISS that a later test inherited, and the team-lead test
+  // passed alone while failing in the suite. Anything cached across a reset has to be reset.
+  TEAM_LEAD.clear();
+  WF_DESC.clear();
 }
 
 /** Fleet-reportable aggregate across every live native session. Sums the same
