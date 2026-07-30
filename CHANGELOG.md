@@ -5,6 +5,22 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.45] — 2026-07-30
+
+### Added
+
+- **`captain-memo queue dedupe`** — a repair tool for installs that accumulated duplicates before the
+  capture fix in 0.27.44. That release stopped the amplification but could not undo it: an affected
+  queue still holds re-summarisations of turns the corpus already has, and each one is a real LLM call.
+  One live install sat at 30,564 pending. Dry-run by default; `--apply` removes.
+
+  Identity is `(session_id, prompt_number)` — stable across re-extracts of an append-only log, and
+  deliberately not the whole payload (a session without timestamps gets a `ts_epoch` seeded from
+  `now()`, which drifts between extracts of the same turn). Exactly two classes are removed: a pending
+  turn already marked `done`, and pending rows duplicating an earlier pending row (earliest kept). Rows
+  in `processing` are never touched, nor used to justify removing a sibling, so a row being summarised
+  cannot vanish under the worker. Safe to run with the worker up.
+
 ## [0.27.44] — 2026-07-30
 
 ### Fixed
