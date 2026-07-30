@@ -5,6 +5,41 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.41] — 2026-07-30
+
+### Fixed — doctor
+
+- Schema health is judged by **evidence, not by a claim**. doctor counted rows in `schema_versions`,
+  but a migration that aborted partway was still recorded as applied — so it reported "20/20 applied"
+  while the column it was supposed to add did not exist and every query touching it threw. It now
+  builds the canonical schema by running the real store constructors into `:memory:` and diffs
+  `PRAGMA table_info` against the live file, so there is no hand-maintained column list to rot: the
+  migrations stay the single source of truth and a new one automatically extends what is verified.
+  `pending_embed.db` is included because it has no `schema_versions` at all — which is exactly why the
+  missing `last_error` column broke every existing install with nothing to catch it.
+- The migration report now reaches the PASS/WARN/FAIL list. It printed as loose text outside the
+  verdict, so a captain with pending migrations still ended on "All systems go" and exit 0.
+- `/health` green + `/stats` broken is a FAIL with a remedy, not a remedy-less WARN and exit 0. That
+  combination means the worker cannot serve a single read — the cockpit shows the captain as
+  unreachable — and it is what a schema change that outran its migration looks like from outside.
+- A hosted embedder endpoint is no longer PASSed on sight. The default install IS hosted, so the one
+  backend everybody runs was the one never checked; a 429-throttled queue with stuck observations
+  reported clean. doctor now judges it by what the worker says its embed queue is doing, and
+  distinguishes a rate limit (drains on its own, remedy optional) from an auth failure (retrying never
+  fixes a bad key).
+
+### Fixed — metering, storage
+
+- `injectedBySession` advanced a shared read cursor across an `await`; with no per-message dedupe on
+  that path, an overlapping read genuinely double-counted and then left the offset past what it had
+  consumed, which never self-heals.
+- Window totals counted agents as sessions under a field named `sessions` (the mislabel already fixed
+  on the all-time figure), and dropped finished workflow agents from what is a spend figure, not a
+  liveness one.
+- `busy_timeout = 5000` on `observations.db`. It was SQLite's default 0 — a locked database throws
+  `SQLITE_BUSY` instantly rather than waiting, which with WAL and several processes on one file turns
+  routine contention into hard errors, and is precisely what leaves a migration half-applied.
+
 ## [0.27.40] — 2026-07-30
 
 ### Fixed
