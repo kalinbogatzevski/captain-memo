@@ -5,6 +5,27 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.43] — 2026-07-30
+
+### Changed
+
+- **The recall audit log is ON by default, so Dreaming works out of the box.** It was opt-in on privacy
+  grounds and Dreaming reads it, so the feature shipped dead — the stats page reported it disabled and
+  pointed at a setting. The privacy rationale does not survive contact with the filesystem: the log
+  never leaves the machine (nothing indexes it into the searchable corpus, nothing relays it to a peer
+  or hub — every reader is local), the raw prompts are already in the Claude transcript on that same
+  disk, and the memory snippets are already in `observations.db` on that same disk. Set
+  `CAPTAIN_MEMO_RECALL_AUDIT=0` to opt out.
+- **The audit log is now bounded.** One live host reached 24.7 MB with nothing to stop it; default-on
+  without a bound fills a disk. Past 32 MB (`CAPTAIN_MEMO_RECALL_AUDIT_MAX_BYTES`) it rotates to
+  `recall-audit.jsonl.1`, keeping one generation.
+
+### Fixed
+
+- An empty audit log no longer renders as a red **"— off"** with a "set this env var" hint. It is on by
+  default now, so an empty log means "nothing retrieved yet" — the old wording read as a fault on a
+  fresh install and sent people looking for a setting that was already enabled.
+
 ## [0.27.42] — 2026-07-30
 
 ### Fixed
