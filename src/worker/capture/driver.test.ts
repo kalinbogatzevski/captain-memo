@@ -78,7 +78,11 @@ test('a source that becomes available only on a LATER tick seeds its cutoff then
   expect(enq.map((e) => e.session_id)).toEqual(['new']);
 });
 
-test('a grown session (changed marker) is re-ingested', () => {
+// CONTRACT CHANGED (deliberately): a changed marker means the file is RE-EXAMINED, not that its whole
+// contents are re-enqueued. This fake source returns the same single event both times — the marker moved
+// but no new turn exists — so the correct outcome is now zero new events. Re-enqueuing on every marker
+// change is what made a growing session cost N(N+1)/2 summarizer calls.
+test('a changed marker re-examines the session but enqueues only genuinely new events', () => {
   const state = tmpState();
   state.ensureCutoff('codex', 100);
   const enq: RawObservationEvent[] = [];
@@ -86,8 +90,55 @@ test('a grown session (changed marker) is re-ingested', () => {
     sources: [fakeSource([{ sessionId: 's3', path: '/x', marker, mtimeEpoch: 150 }])],
     state, enqueue: (e) => enq.push(e), now: () => 200_000,
   });
-  expect(run('m1').ingested).toBe(1);
-  expect(run('m1').ingested).toBe(0); // unchanged
-  expect(run('m2').ingested).toBe(1); // grew → re-ingested
-  expect(enq).toHaveLength(2);
+  expect(run('m1').ingested).toBe(1);  // first sight: the one event is new
+  expect(run('m1').ingested).toBe(0);  // marker unchanged → not even opened
+  expect(run('m2').ingested).toBe(0);  // marker moved, but the file still holds that one event
+  expect(enq).toHaveLength(1);         // …so it is enqueued exactly once, not once per tick
+});
+
+// QUADRATIC RE-INGEST. `marker` is `mtime:size`, so it changes on every append to a live session, and
+// extract() has no cursor — it returns the WHOLE session each time. A session that grows to N turns
+// therefore enqueues 1+2+…+N = N(N+1)/2 events instead of N, and every one of those is a summarizer LLM
+// call. Observed on a light OSS user: codex alone at 8 950 observations (97.8% of the corpus) with
+// 30 564 more queued and 12.1 M tokens distilled.
+function growingSource(turnsByTick: number[]): { src: CaptureSource; tick: () => void } {
+  let i = 0;
+  const src: CaptureSource = {
+    id: 'codex',
+    available: () => true,
+    enabled: () => true,
+    describe: () => '/x',
+    // marker changes every tick, exactly as mtime:size does when the file grows
+    discover: () => [{ sessionId: 's1', path: '/x/s1.jsonl', marker: `m${i}`, mtimeEpoch: 1000 + i }],
+    extract: () => Array.from({ length: turnsByTick[i]! }, () => ev('s1')),   // the WHOLE session, every time
+  };
+  return { src, tick: () => { i++; } };
+}
+
+test('a growing session enqueues only its NEW turns, not the whole file again', () => {
+  const state = tmpState();
+  state.ensureCutoff('codex', 0);            // capture already enabled — no backfill guard
+  const enqueued: RawObservationEvent[] = [];
+  const { src, tick } = growingSource([2, 3, 5, 8]);
+
+  for (let t = 0; t < 4; t++) {
+    runCaptureTick({ sources: [src], state, enqueue: (e) => enqueued.push(e), log: () => {} });
+    tick();
+  }
+
+  // 8 real turns ⇒ 8 events. The old behaviour enqueued 2+3+5+8 = 18.
+  expect(enqueued.length).toBe(8);
+});
+
+test('a session REWRITTEN shorter re-ingests from scratch rather than silently skipping', () => {
+  const state = tmpState();
+  state.ensureCutoff('codex', 0);
+  const enqueued: RawObservationEvent[] = [];
+  const { src, tick } = growingSource([5, 2]);   // truncated/rotated between ticks
+
+  runCaptureTick({ sources: [src], state, enqueue: (e) => enqueued.push(e), log: () => {} });
+  expect(enqueued.length).toBe(5);
+  tick();
+  runCaptureTick({ sources: [src], state, enqueue: (e) => enqueued.push(e), log: () => {} });
+  expect(enqueued.length).toBe(7);   // 5 + the 2 from the rewritten file, not 0
 });

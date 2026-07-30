@@ -595,13 +595,41 @@ function renderSummarizerLines(
  *  a whole extra row shoved the rest of the panel down a line each time it did.
  *  '' when nothing is queued — the counts were always in /stats, so 2 949
  *  observations stuck behind a dead summarizer must never look like idle. */
-function queueTail(q: StatsResponse['observations']): string {
+export interface SummarizerState {
+  /** Is a summarizer wired at all? Without one the drain is a no-op (worker index.ts:736) and the
+   *  queue can only grow. */
+  available: boolean;
+  /** Last summarizer failure, already carried on /stats and never rendered until now. */
+  last_error: string | null;
+  /** Milliseconds until the backoff expires; 0 when not in cooldown. */
+  cooldown_ms: number;
+}
+
+/** The queue line, WITH the reason it is not draining.
+ *
+ *  The old comment here said "2 949 observations stuck behind a dead summarizer must never look like
+ *  idle", and showing the count achieved half of that. A user looking at 30,000 waiting still could not
+ *  tell a backlog being worked through from a queue that will never move — and /stats has carried
+ *  summarizer.last_error the whole time with nothing rendering it. A number without its cause reads as
+ *  damage; with the cause it reads as a to-do, or as nothing to do at all. */
+export function queueTailFor(q: StatsResponse['observations'], sum: SummarizerState): string {
   const failed = q.queue_failed ?? 0;
   if (q.queue_pending <= 0 && q.queue_processing <= 0 && failed <= 0) return '';
   const parts = [`${cyanBold(fmtCount(q.queue_pending))} ${dim('waiting')}`];
   if (q.queue_processing > 0) parts.push(`${cyanBold(fmtCount(q.queue_processing))} ${dim('in flight')}`);
   if (failed > 0) parts.push(`${red(fmtCount(failed))} ${dim('failed')}`);
-  return `   ${dim('Queue')} ${parts.join(dim(' · '))}`;
+  let why = '';
+  if (!sum.available) {
+    why = `   ${red('stalled')} ${dim('— no summarizer configured, so nothing can process this')}`;
+  } else if (sum.cooldown_ms > 0) {
+    const secs = Math.max(1, Math.round(sum.cooldown_ms / 1000));
+    why = `   ${dim(`retry in ${secs}s`)}${sum.last_error ? dim(` — ${sum.last_error.slice(0, 80)}`) : ''}`;
+  }
+  return `   ${dim('Queue')} ${parts.join(dim(' · '))}${why}`;
+}
+
+function queueTail(q: StatsResponse['observations']): string {
+  return queueTailFor(q, { available: true, last_error: null, cooldown_ms: 0 });
 }
 
 /** Tide sub-block: the memory-lifecycle re-rank state. Meaningful even when off
