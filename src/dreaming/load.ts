@@ -51,7 +51,7 @@ function dataDir(): string {
  *   3. Stream recall-audit.jsonl, for each entry compute pairs of co-surfaced
  *      observation_ids and increment the co-occurrence counter.
  *
- * If the audit log doesn't exist (CAPTAIN_MEMO_RECALL_AUDIT was never on),
+ * If the audit log doesn't exist (no retrievals yet, or CAPTAIN_MEMO_RECALL_AUDIT=0),
  * we return observations + an empty co-occurrence map. Clustering then falls
  * back to temporal-only — degraded but useful.
  */

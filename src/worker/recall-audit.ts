@@ -1,4 +1,4 @@
-import { appendFile } from 'fs/promises';
+import { appendFile, rename, stat } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
 
@@ -44,19 +44,45 @@ export interface RecallAuditEntry {
   injected_tokens?: number;
 }
 
+/** Bound for the audit log; past it, one generation is kept as `.1` and a fresh file started.
+ *  Default-ON without a bound is how you fill a customer's disk — one live host reached 24.7 MB with
+ *  nothing to stop it. dream-stats already handles the reset: its accumulator rebuilds when the file
+ *  is smaller than its cached offset, which is exactly what rotation produces. */
+const DEFAULT_MAX_BYTES = 32 * 1024 * 1024;
+async function rotateIfOversized(path: string): Promise<void> {
+  // One stat() per write. A retrieval happens at most once per prompt, so batching the check bought
+  // nothing measurable and made the overshoot unbounded in a short-lived process.
+  const max = Number(process.env.CAPTAIN_MEMO_RECALL_AUDIT_MAX_BYTES) || DEFAULT_MAX_BYTES;
+  try {
+    const { size } = await stat(path);
+    if (size < max) return;
+    await rename(path, path + '.1');   // replaces any previous .1 — exactly one generation kept
+  } catch { /* missing file / racing writer: nothing to rotate */ }
+}
+
 /**
  * Append one JSON line to the recall audit log.
  *
- * Default-off: writes only when CAPTAIN_MEMO_RECALL_AUDIT=1 is explicitly set.
- * Privacy-first — opt-in because prompts can contain sensitive content.
+ * Default-ON. It was opt-in on privacy grounds, but `dream` reads this log, so default-off shipped a
+ * dead feature: the stats page said dream was disabled and gave no hint why. The privacy argument does
+ * not survive contact with the filesystem — the log never leaves the machine (never indexed into the
+ * corpus, never relayed to a peer or hub; every reader is local), the raw prompts are already in the
+ * Claude transcript on the same disk, and the memory snippets are already in observations.db on the
+ * same disk. It duplicates what the machine already holds.
+ *
+ * Opt OUT with CAPTAIN_MEMO_RECALL_AUDIT=0. Bounded by rotation, because a default-on log that grows
+ * without limit is a real problem where the privacy one was not.
+ *
  * Failure-safe: a write error is logged to stderr but never propagates.
  */
 export async function writeRecallAuditLine(entry: RecallAuditEntry): Promise<void> {
-  if (process.env.CAPTAIN_MEMO_RECALL_AUDIT !== '1') return;
+  if (process.env.CAPTAIN_MEMO_RECALL_AUDIT === '0') return;
 
+  const path = recallAuditPath();
   const line = JSON.stringify(entry) + '\n';
   try {
-    await appendFile(recallAuditPath(), line, 'utf8');
+    await rotateIfOversized(path);
+    await appendFile(path, line, 'utf8');
   } catch (err) {
     console.error('[recall-audit] write failed:', (err as Error).message);
   }

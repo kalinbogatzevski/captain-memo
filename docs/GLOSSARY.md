@@ -89,7 +89,7 @@ This section shows the **inputs** that pass would read — not its output.
 
 | Term | Meaning |
 |---|---|
-| **Audit log** | The `recall-audit.jsonl` write log — records each surfacing event. It feeds co-retrieval; `off` until you set `CAPTAIN_MEMO_RECALL_AUDIT=1` in `worker.env`. |
+| **Audit log** | The `recall-audit.jsonl` write log — records each surfacing event. It feeds co-retrieval, and is **on by default** (set `CAPTAIN_MEMO_RECALL_AUDIT=0` in `worker.env` to disable). Bounded: past 32 MB it rotates to `.1`, keeping one generation. |
 | **Co-retrieval** | Count of observation **pairs that co-occur** in the same retrievals, plus how many observations that covers. This is the raw signal the Dreams pipeline mines for connections. |
 
 ---

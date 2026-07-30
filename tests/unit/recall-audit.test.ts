@@ -93,8 +93,22 @@ describe('writeRecallAuditLine', () => {
     expect(parsed.hits[1].boosts).toBeUndefined();
   });
 
-  test('default-off: env var unset → no file created', async () => {
-    // CAPTAIN_MEMO_RECALL_AUDIT is not set (deleted in beforeEach) — audit must be skipped.
+  // CONTRACT CHANGED (deliberately): the audit is now default-ON, because Dreaming reads it and
+  // default-off shipped a dead feature — the stats page said "off" and pointed at a setting. The
+  // privacy rationale for opt-in did not hold up: the log never leaves the machine, and both the raw
+  // prompts (Claude transcript) and the memory snippets (observations.db) already sit on the same disk.
+  // Opting OUT is now the explicit action.
+  test('default-ON: env var unset → the line IS written (dream works out of the box)', async () => {
+    const auditPath = join(testDir, 'recall-audit.jsonl');
+    const { writeRecallAuditLine } = await import('../../src/worker/recall-audit.ts');
+
+    await writeRecallAuditLine({ ...SAMPLE_ENTRY });
+
+    expect(existsSync(auditPath)).toBe(true);
+  });
+
+  test('explicit opt-out: CAPTAIN_MEMO_RECALL_AUDIT=0 → no file created', async () => {
+    process.env.CAPTAIN_MEMO_RECALL_AUDIT = '0';
     const auditPath = join(testDir, 'recall-audit.jsonl');
     const { writeRecallAuditLine } = await import('../../src/worker/recall-audit.ts');
 

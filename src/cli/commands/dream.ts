@@ -29,7 +29,7 @@ Options:
 
 Notes:
   - Reads observations.db, meta.sqlite3, and recall-audit.jsonl directly.
-  - Co-retrieval signal requires CAPTAIN_MEMO_RECALL_AUDIT=1 to have been on
+  - Co-retrieval signal comes from the recall audit log (on by default; CAPTAIN_MEMO_RECALL_AUDIT=0 disables it)
     during the look-back window.
   - No DB writes. No Haiku calls. No worker contact. Safe to run anytime.
 `;

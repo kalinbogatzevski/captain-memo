@@ -481,8 +481,11 @@ function renderDreamBlock(
   const d = dream;
 
   if (d.audit_log.bytes === 0 && d.audit_log.entries === 0) {
-    out.push(`   ${dim('Audit log'.padEnd(14))}${red('— off')}`
-      + `   ${dim('(set CAPTAIN_MEMO_RECALL_AUDIT=1 in worker.env)')}`);
+    // NOT red "— off" any more: the audit is on by default, so an empty log means "nothing has been
+    // retrieved yet", not "you forgot to switch it on". Red on a fresh install read as a fault and sent
+    // people looking for a setting to change.
+    out.push(`   ${dim('Audit log'.padEnd(14))}${dim('— no retrievals yet')}`
+      + `   ${dim('(fills as memory is surfaced; CAPTAIN_MEMO_RECALL_AUDIT=0 disables it)')}`);
   } else {
     const ageStr = d.audit_log.last_entry_epoch_ms !== null
       ? fmtAgo(Math.floor((Date.now() - d.audit_log.last_entry_epoch_ms) / 1000))

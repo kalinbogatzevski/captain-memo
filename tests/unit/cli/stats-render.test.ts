@@ -269,8 +269,10 @@ test('renderStats — DREAM section shows OFF state when audit log absent', () =
   };
   const text = renderStats(stats).map(stripAnsi).join('\n');
   expect(text).toContain('Dream');
-  expect(text).toContain('— off');
-  expect(text).toContain('CAPTAIN_MEMO_RECALL_AUDIT=1');
+  // An empty audit is "nothing retrieved yet", NOT "switched off" — it is on by default now, and the
+  // old red "— off" plus a set-this-env-var hint sent people hunting for a setting that was already on.
+  expect(text).toContain('— no retrievals yet');
+  expect(text).not.toContain('CAPTAIN_MEMO_RECALL_AUDIT=1');
 });
 
 test('renderStats — wide mode places Corpus and Efficiency side by side', () => {

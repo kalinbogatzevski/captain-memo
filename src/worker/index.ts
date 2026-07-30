@@ -2170,7 +2170,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           degradation_flags: flags,
         });
 
-        // Fire-and-forget recall audit (default-off; enable via CAPTAIN_MEMO_RECALL_AUDIT=1).
+        // Fire-and-forget recall audit (default-ON; disable via CAPTAIN_MEMO_RECALL_AUDIT=0).
         // fused already carries .boosts from applyBoosts (BoostedItem); build a
         // lookup so we can attach provenance to each hit without a second scan.
         {
