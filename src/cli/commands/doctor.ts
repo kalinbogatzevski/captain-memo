@@ -9,8 +9,9 @@ import { homedir } from 'os';
 import { spawnSync } from 'child_process';
 import { Database } from 'bun:sqlite';
 import { getAppliedVersions } from '../../worker/migrations.ts';
-import { OBSERVATIONS_STORE_MIGRATIONS } from '../../worker/observations-store.ts';
-import { OBSERVATION_QUEUE_MIGRATIONS } from '../../worker/observation-queue.ts';
+import { OBSERVATIONS_STORE_MIGRATIONS, ObservationsStore } from '../../worker/observations-store.ts';
+import { OBSERVATION_QUEUE_MIGRATIONS, ObservationQueue } from '../../worker/observation-queue.ts';
+import { PendingEmbedQueue } from '../../worker/pending-embed-queue.ts';
 import { getServiceManager } from '../../services/service-manager/index.ts';
 import { workerEnvPaths } from '../../shared/worker-env.ts';
 import {
@@ -71,6 +72,44 @@ async function fetchJson(url: string, timeoutMs = 3000): Promise<{ ok: boolean; 
   }
 }
 
+/** The worker's own report on whether embedding is WORKING — fetched by checkWorker
+ *  (which runs first), judged by checkEmbedder. null until fetched / if it failed. */
+let lastStats: Record<string, unknown> | null = null;
+
+/** A hosted endpoint used to PASS on sight — doctor never asked whether it worked.
+ *  The default install IS hosted, so the one backend everybody runs was the one
+ *  never checked: a 429-throttled queue with 19 stuck observations reported clean,
+ *  and the operator only found out by reading worker.log.
+ *
+ *  We cannot probe the provider without spending the user's key, so we ask the worker
+ *  what its embed queue is doing — which is the thing we actually care about. */
+export function embedderVerdict(
+  endpoint: string,
+  stats: { embed_pending?: number; embed_error?: string; embed_error_class?: string } | null,
+): Check {
+  const host = endpoint.replace(/^https?:\/\//, '').split('/')[0] || '?';
+  const name = 'embedder backend';
+  if (!stats) {
+    return { name, status: 'WARN', detail: `external endpoint @ ${host} — unverified (worker did not answer)`,
+             remedy: 'start the worker, then re-run captain-memo doctor' };
+  }
+  const pending = stats.embed_pending ?? 0;
+  if (!stats.embed_error) return { name, status: 'PASS', detail: `external endpoint @ ${host} · queue clear` };
+  const err = String(stats.embed_error).slice(0, 120);
+  if (stats.embed_error_class === 'auth') {
+    // Retrying forever will never fix a bad key — this one needs a human.
+    return { name, status: 'FAIL', detail: `${host}: ${pending} chunk(s) blocked on auth — ${err}`,
+             remedy: 'check the API key in worker.env, then: captain-memo restart' };
+  }
+  if (stats.embed_error_class === 'rate_limited') {
+    // Drains on its own; the remedy is optional. Say so, or the count reads as damage.
+    return { name, status: 'WARN', detail: `${host}: ${pending} chunk(s) queued behind a rate limit — ${err}`,
+             remedy: 'nothing required — the queue retries with backoff. To go faster, add billing / raise the tier at the provider.' };
+  }
+  return { name, status: 'WARN', detail: `${host}: ${pending} chunk(s) retrying — ${err}`,
+           remedy: 'run doctor again in a minute; if it persists, check worker.log' };
+}
+
 async function checkEmbedder(): Promise<void> {
   // Read worker.env to figure out what backend the user actually picked.
   // Hosted Voyage / OpenAI / aelita endpoints are normal — not warnings.
@@ -78,8 +117,7 @@ async function checkEmbedder(): Promise<void> {
   const isLocal = endpoint.startsWith('http://127.0.0.1:8124')
                || endpoint.startsWith('http://localhost:8124');
   if (!isLocal) {
-    const host = endpoint.replace(/^https?:\/\//, '').split('/')[0] || '?';
-    record({ name: 'embedder backend', status: 'PASS', detail: `external endpoint @ ${host}` });
+    record(embedderVerdict(endpoint, lastStats as Parameters<typeof embedderVerdict>[1]));
     return;
   }
   // Local sidecar: the HTTP /health probe is authoritative for liveness; the
@@ -99,6 +137,46 @@ async function checkEmbedder(): Promise<void> {
            remedy: 'captain-memo install   (pick "local sidecar"), or change CAPTAIN_MEMO_EMBEDDER_ENDPOINT to a hosted backend' });
 }
 
+/** What the two worker probes MEAN, apart from how they are fetched — so the
+ *  "/health green, /stats broken" case can be tested without a live worker.
+ *
+ *  That case used to be one WARN with no remedy and exit 0. It is a worker that
+ *  cannot serve a single read: the cockpit renders the captain as unreachable and
+ *  every recall path is down. `healthy` only proves the process is listening. */
+export function workerVerdict(p: {
+  healthy: boolean;
+  statsOk: boolean;
+  statsError?: string | undefined;
+  chunks?: number | undefined;
+  observations?: number | undefined;
+  project?: string | undefined;
+  indexing?: { status?: string; done?: number; total?: number; percent?: number } | undefined;
+}): Check {
+  const at = `:${DEFAULT_WORKER_PORT}`;
+  if (!p.statsOk) {
+    const why = p.statsError ? ` — ${p.statsError}` : '';
+    return {
+      name: 'worker service', status: 'FAIL',
+      detail: `${at} healthy but /stats failed${why}`,
+      // This is what a schema change that outran its migration looks like from
+      // outside, and the upgrade+restart is what repairs it.
+      remedy: 'captain-memo upgrade && captain-memo restart   (a "no such column" here means the DB is behind the code)',
+    };
+  }
+  const idx = p.indexing;
+  if (idx?.status === 'indexing') {
+    return { name: 'worker service', status: 'PASS',
+             detail: `${at} ready · indexing ${idx.done}/${idx.total} (${idx.percent}%) · ${p.chunks} chunks so far` };
+  }
+  if (idx?.status === 'error') {
+    return { name: 'worker service', status: 'WARN',
+             detail: `${at} reachable but indexing reported error (chunks=${p.chunks})`,
+             remedy: isWindows ? 'Get-ScheduledTaskInfo captain-memo-worker' : 'journalctl -u captain-memo-worker -n 30 --no-pager' };
+  }
+  return { name: 'worker service', status: 'PASS',
+           detail: `${at} healthy · ${p.chunks} chunks · ${p.observations ?? 0} observations · project=${p.project}` };
+}
+
 async function checkWorker(): Promise<void> {
   // The HTTP /health probe is the AUTHORITATIVE liveness signal — lead with it.
   // The Windows Scheduled-Task state has no 'failed' notion, so /health (not the
@@ -107,27 +185,19 @@ async function checkWorker(): Promise<void> {
   const h = await fetchJson(`${base}/health`);
   if (h.ok && (h.body as { healthy?: boolean }).healthy) {
     const s = await fetchJson(`${base}/stats`);
-    if (s.ok) {
-      const b = s.body as {
-        total_chunks?: number; project_id?: string;
-        indexing?: { status?: string; done?: number; total?: number; percent?: number; errors?: number };
-        observations?: { total?: number };
-      };
-      const idx = b.indexing;
-      if (idx?.status === 'indexing') {
-        record({ name: 'worker service', status: 'PASS',
-                 detail: `:${DEFAULT_WORKER_PORT} ready · indexing ${idx.done}/${idx.total} (${idx.percent}%) · ${b.total_chunks} chunks so far` });
-      } else if (idx?.status === 'error') {
-        record({ name: 'worker service', status: 'WARN',
-                 detail: `:${DEFAULT_WORKER_PORT} reachable but indexing reported error (chunks=${b.total_chunks})`,
-                 remedy: isWindows ? 'Get-ScheduledTaskInfo captain-memo-worker' : 'journalctl -u captain-memo-worker -n 30 --no-pager' });
-      } else {
-        record({ name: 'worker service', status: 'PASS',
-                 detail: `:${DEFAULT_WORKER_PORT} healthy · ${b.total_chunks} chunks · ${b.observations?.total ?? 0} observations · project=${b.project_id}` });
-      }
-    } else {
-      record({ name: 'worker service', status: 'WARN', detail: `:${DEFAULT_WORKER_PORT} healthy but /stats failed` });
-    }
+    const b = (s.body ?? {}) as {
+      total_chunks?: number; project_id?: string; error?: string;
+      indexing?: { status?: string; done?: number; total?: number; percent?: number; errors?: number };
+      observations?: { total?: number };
+    };
+    record(workerVerdict({
+      healthy: true, statsOk: s.ok, ...(b.error && { statsError: b.error }),
+      chunks: b.total_chunks, observations: b.observations?.total, project: b.project_id,
+      ...(b.indexing && { indexing: b.indexing }),
+    }));
+    // Kept for checkEmbedder: a hosted backend is judged by what its queue is doing,
+    // and this is the only place that already paid for the fetch.
+    lastStats = s.ok ? (b as Record<string, unknown>) : null;
     return;
   }
   // /health did not answer. Use the service-manager state to explain why:
@@ -570,42 +640,129 @@ function renderMigrationReport(reports: MigrationDbReport[]): void {
   }
 }
 
+/** The underlying handle of a store, which keeps `db` private. Doctor builds the canonical
+ *  schema by constructing the real store against :memory:, so it needs to read that handle. */
+function rawDb(store: object): Database {
+  return (store as { db: Database }).db;
+}
+
+/** Every table→column the DB actually has. */
+function tableColumns(db: Database): Map<string, Set<string>> {
+  const tables = db
+    .query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+    .all() as Array<{ name: string }>;
+  const out = new Map<string, Set<string>>();
+  for (const t of tables) {
+    const cols = db.query(`PRAGMA table_info("${t.name}")`).all() as Array<{ name: string }>;
+    out.set(t.name, new Set(cols.map(c => c.name)));
+  }
+  return out;
+}
+
+/** What the canonical schema HAS that the live DB does NOT — the evidence doctor was missing.
+ *
+ *  Counting rows in schema_versions only proves what the DB CLAIMS. A migration that aborted
+ *  partway was still recorded as applied, so doctor printed "20/20 applied ✓" while the column
+ *  it was supposed to add did not exist and every query touching it threw. Here we compare
+ *  against a canonical DB built by running the real migrations into :memory:, so there is no
+ *  hand-maintained column list to rot — the migrations stay the single source of truth.
+ *
+ *  One-directional on purpose: extra local tables/columns are not drift. */
+export function schemaDrift(live: Database, canonical: Database): string[] {
+  const l = tableColumns(live);
+  const out: string[] = [];
+  for (const [table, cols] of tableColumns(canonical)) {
+    const have = l.get(table);
+    if (!have) { out.push(`${table} (table missing)`); continue; }
+    for (const col of cols) if (!have.has(col)) out.push(`${table}.${col}`);
+  }
+  return out;
+}
+
+export interface MigrationHealth { label: string; applied: number; total: number; drift: string[] }
+
+/** Put schema state INTO the PASS/WARN/FAIL list. It used to print as loose text outside
+ *  `checks`, so a captain with pending migrations — or with drift — still ended the run on
+ *  "All systems go" and exit 0. Drift outranks pending: pending self-heals on the next worker
+ *  start, drift never does. */
+export function migrationVerdict(reports: MigrationHealth[]): Check {
+  const drifted = reports.filter(r => r.drift.length > 0);
+  if (drifted.length > 0) {
+    const what = drifted.map(r => `${r.label}: ${r.drift.join(', ')}`).join(' · ');
+    return { name: 'schema migrations', status: 'FAIL', detail: `recorded as applied but MISSING — ${what}`,
+             remedy: 'captain-memo upgrade && captain-memo restart; if it persists the DB half-applied a migration — report this with the line above' };
+  }
+  const pending = reports.reduce((n, r) => n + (r.total - r.applied), 0);
+  if (pending > 0) {
+    return { name: 'schema migrations', status: 'WARN', detail: `${pending} migration(s) pending`,
+             remedy: 'start the worker — it applies them on boot: captain-memo restart' };
+  }
+  const total = reports.reduce((n, r) => n + r.total, 0);
+  return { name: 'schema migrations', status: 'PASS', detail: `${total}/${total} applied · schema verified` };
+}
+
 function checkMigrations(dataDir: string): void {
   const OBSERVATIONS_DB = join(dataDir, 'observations.db');
   const QUEUE_DB = join(dataDir, 'queue.db');
 
+  // pending_embed.db has NO schema_versions at all — its table is migrated in the
+  // constructor. Nothing tracked it, which is why `last_error` could go missing on every
+  // existing install and no check anywhere noticed. Drift is the only signal it has.
+  const PENDING_EMBED_DB = join(dataDir, 'pending_embed.db');
+
   const reports: MigrationDbReport[] = [];
+  const health: MigrationHealth[] = [];
+
+  // Canonical schema = whatever the REAL constructors produce in :memory:. No column list
+  // to maintain, and it cannot drift from the migrations because it IS the migrations.
+  const canonicalOf: Record<string, () => Database> = {
+    'observations.db': () => rawDb(new ObservationsStore(':memory:')),
+    'queue.db':        () => rawDb(new ObservationQueue(':memory:')),
+    'pending_embed.db': () => rawDb(new PendingEmbedQueue(':memory:')),
+  };
 
   for (const { label, dbPath, migrations } of [
     { label: 'observations.db',       dbPath: OBSERVATIONS_DB, migrations: OBSERVATIONS_STORE_MIGRATIONS },
     { label: 'queue.db',               dbPath: QUEUE_DB,        migrations: OBSERVATION_QUEUE_MIGRATIONS },
+    { label: 'pending_embed.db',       dbPath: PENDING_EMBED_DB, migrations: [] },
   ]) {
     if (!existsSync(dbPath)) {
-      reports.push({ label, dbPath, totalNeeded: migrations.length, applied: [] });
+      // Not created yet is not a fault — the worker builds it on first run.
+      if (migrations.length > 0) reports.push({ label, dbPath, totalNeeded: migrations.length, applied: [] });
       continue;
     }
     let db: Database | null = null;
+    let canon: Database | null = null;
     try {
       db = new Database(dbPath, { readonly: true });
-      const applied = getAppliedVersions(db);
-      reports.push({ label, dbPath, totalNeeded: migrations.length, applied });
+      const applied = migrations.length > 0 ? getAppliedVersions(db) : [];
+      if (migrations.length > 0) reports.push({ label, dbPath, totalNeeded: migrations.length, applied });
+      canon = canonicalOf[label]?.() ?? null;
+      health.push({ label, applied: applied.length, total: migrations.length,
+                    drift: canon ? schemaDrift(db, canon) : [] });
     } catch (err) {
       const msg = (err instanceof Error ? err.message : String(err));
-      reports.push({ label, dbPath, totalNeeded: migrations.length, applied: [] });
+      if (migrations.length > 0) reports.push({ label, dbPath, totalNeeded: migrations.length, applied: [] });
       console.warn(`    [migrations] could not read ${label}: ${msg}`);
     } finally {
       db?.close();
+      canon?.close();
     }
   }
 
   renderMigrationReport(reports);
+  // …and land it in the verdict, not just in the printout above.
+  if (health.length > 0) record(migrationVerdict(health));
 }
 
 export async function doctorCommand(_args: string[]): Promise<number> {
   console.log('\n\x1b[1;36mCaptain Memo doctor\x1b[0m\n───────────────────');
 
-  await checkEmbedder();
+  // Worker FIRST: it fetches /stats, and checkEmbedder judges a hosted backend by what
+  // that report says the embed queue is doing. Reversed, the hosted path sees no stats and
+  // can only say "unverified".
   await checkWorker();
+  await checkEmbedder();
   await checkWorkerVersion();
   await checkVectorDim();
   await checkCapture();

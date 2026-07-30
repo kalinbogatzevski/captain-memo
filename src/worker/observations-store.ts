@@ -538,6 +538,12 @@ export class ObservationsStore {
   constructor(path: string, opts?: { readonly?: boolean; tideConfig?: TideConfig }) {
     this.db = new Database(path, opts?.readonly ? { readonly: true } : undefined);
     this.tideConfig = opts?.tideConfig ?? null;
+    // SQLite's default busy_timeout is 0: a locked DB throws SQLITE_BUSY instantly rather
+    // than waiting. With WAL and several processes (worker, CLI, doctor, hooks) on one file
+    // that turns routine contention into hard errors — and it made the half-applied-migration
+    // case likelier, since a migration aborting mid-way is exactly what SQLITE_BUSY causes.
+    // Readers need it too: a checkpoint can lock them out just as easily.
+    this.db.exec('PRAGMA busy_timeout = 5000;');
     if (!opts?.readonly) {
       this.db.exec('PRAGMA journal_mode = WAL;');
       this.db.exec(SCHEMA);

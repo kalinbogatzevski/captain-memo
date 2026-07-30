@@ -760,7 +760,11 @@ export function _resetNativeUsageCache(): void {
  *  cockpit read 0 forever. These are the same tokens, counted from the transcripts
  *  the sessions write themselves. */
 export interface NativeUsageTotals {
+  /** SESSIONS only — top-level transcripts. This once carried sessions PLUS agents under a
+   *  field named `sessions`, the same mislabel the all-time figure had. */
   sessions: number;
+  /** Agent transcripts in the window, counted apart. */
+  agents: number;
   /** WINDOW figures — tokens whose messages were written inside windowMs. This is what a
    *  "last 30 minutes" number must be. The lifetime fields below are the honest all-time
    *  totals for those same sessions; the two are reported separately because mixing them
@@ -958,9 +962,18 @@ export function _resetAllTimeCache(): void {
 }
 
 export async function nativeUsageTotals(windowMs = 30 * 60_000): Promise<NativeUsageTotals> {
-  const live = await readNativeSessionUsage(windowMs).catch(() => []);
+  // includeFinished, because this is a SPEND figure, not a liveness one. Retiring an agent the
+  // moment its workflow journal records a result is right for "what is running now" and wrong
+  // for "what did this window cost" — the same conflation that understated the all-time total
+  // by 27%, still present here in the window path.
+  const live = await readNativeSessionUsage(windowMs, Date.now(), undefined, { includeFinished: true }).catch(() => []);
   const t: NativeUsageTotals = {
-    sessions: live.length, window_ms: windowMs,
+    // SESSIONS only. This was live.length — sessions plus agents — under a field named
+    // `sessions`, the same mislabel that reported 3,635 agents as sessions on the all-time
+    // figure. Agents are counted apart.
+    sessions: live.filter(s => !s.parentSessionId).length,
+    agents: live.filter(s => !!s.parentSessionId).length,
+    window_ms: windowMs,
     window_fresh_tokens: 0, window_output_tokens: 0, window_cache_read_tokens: 0,
     input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0,
   };
@@ -1009,9 +1022,15 @@ export async function injectedBySession(auditLogPath: string): Promise<Map<strin
     const fh = await open(auditLogPath, 'r').catch(() => null);
     if (fh) {
       try {
-        const len = size - acc.offset;
+        // Capture the position BEFORE the awaits, and only advance if it has not moved. This
+        // is the THIRD instance of one shape in this codebase — a shared cursor read before an
+        // await and written after — and here, as in dream-stats, there is no per-message
+        // dedupe to make a duplicated read harmless: it counts the same injections twice and
+        // then leaves the offset past what was consumed, which never self-heals.
+        const from = acc.offset;
+        const len = size - from;
         const buf = Buffer.allocUnsafe(len);
-        const { bytesRead } = await fh.read(buf, 0, len, acc.offset);
+        const { bytesRead } = await fh.read(buf, 0, len, from);
         const chunk = buf.toString('utf8', 0, bytesRead);
         const lastNl = chunk.lastIndexOf('\n');
         if (lastNl >= 0) {
@@ -1033,7 +1052,7 @@ export async function injectedBySession(auditLogPath: string): Promise<Map<strin
             e.injections++;
             acc.by.set(id, e);
           }
-          acc.offset += Buffer.byteLength(chunk.slice(0, lastNl + 1), 'utf8');
+          if (acc.offset === from) acc.offset = from + Buffer.byteLength(chunk.slice(0, lastNl + 1), 'utf8');
         }
       } catch {
         /* transient — keep what we have */
