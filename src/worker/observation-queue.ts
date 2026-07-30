@@ -99,6 +99,62 @@ export class ObservationQueue {
     return rows;
   }
 
+  /** Drop pending rows that are re-enqueued copies of a turn this queue already holds.
+   *
+   *  Repair tool for the capture amplification bug: a growing session's marker (mtime:size) changed on
+   *  every append while extract() had no cursor, so the whole file was re-enqueued each tick. An
+   *  affected install carries tens of thousands of pending rows that re-summarise turns it already has,
+   *  and each one is a real LLM call — draining them costs money to produce nothing.
+   *
+   *  Identity is (session_id, prompt_number): "1-based index within the session", stable across
+   *  re-extracts of an append-only log. Deliberately NOT the whole payload — codex-source seeds its
+   *  clock from now() when a session carries no timestamps, so ts_epoch can differ between extracts of
+   *  the same turn and payload equality would miss real duplicates.
+   *
+   *  Two classes are removed, and nothing else:
+   *    1. a pending row whose turn is already `done` — it has been summarised; re-doing it is waste;
+   *    2. pending rows duplicating another pending row — the lowest id is kept.
+   *  Rows in `processing` are never touched, and never used to justify deleting a sibling: a row being
+   *  summarised right now must not have its only twin removed out from under the worker.
+   *
+   *  `apply: false` (the default) reports what it WOULD do and changes nothing. */
+  dedupePending(opts: { apply?: boolean } = {}): {
+    duplicate_of_done: number; duplicate_pending: number; pending_before: number; applied: boolean;
+  } {
+    const apply = opts.apply === true;
+    const key = "json_extract(payload,'$.session_id') || '|' || json_extract(payload,'$.prompt_number')";
+    const pendingBefore = this.pendingCount();
+
+    const ofDone = this.db.query(
+      `SELECT id FROM observation_queue WHERE status = 'pending' AND ${key} IN
+         (SELECT ${key} FROM observation_queue WHERE status = 'done')`,
+    ).all() as Array<{ id: number }>;
+
+    const dupPending = this.db.query(
+      `SELECT id FROM observation_queue WHERE status = 'pending'
+         AND id NOT IN (SELECT MIN(id) FROM observation_queue WHERE status = 'pending' GROUP BY ${key})
+         AND id NOT IN (${ofDone.map(r => r.id).join(',') || '-1'})`,
+    ).all() as Array<{ id: number }>;
+
+    if (apply) {
+      const ids = [...ofDone, ...dupPending].map(r => r.id);
+      const tx = this.db.transaction(() => {
+        for (let i = 0; i < ids.length; i += 500) {
+          const slice = ids.slice(i, i + 500);
+          this.db.query(`DELETE FROM observation_queue WHERE id IN (${slice.map(() => '?').join(',')})`)
+            .run(...slice);
+        }
+      });
+      tx();
+    }
+    return {
+      duplicate_of_done: ofDone.length,
+      duplicate_pending: dupPending.length,
+      pending_before: pendingBefore,
+      applied: apply,
+    };
+  }
+
   markDone(ids: number[]): void {
     if (ids.length === 0) return;
     const placeholders = ids.map(() => '?').join(',');
