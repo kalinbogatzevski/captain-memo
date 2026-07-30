@@ -42,7 +42,22 @@ export function applyMigrations(db: Database, migrations: Migration[]): void {
 
     let idempotent = false;
     try {
-      migration.up(db);
+      // ONE TRANSACTION PER MIGRATION. Run bare, a multi-statement `up` that aborts partway
+      // (crash, OOM, a restart during an upgrade, SQLITE_BUSY) leaves half its statements
+      // committed. The retry then hits "duplicate column" on statement 1, which the catch
+      // below reads as idempotent-recovery and RECORDS the migration as applied — so the rest
+      // of it never runs, ever.
+      //
+      // Verified with a kill sweep, not argued: every offset in a ~400ms window left all four
+      // v5 ALTERs committed and the backfill rolled back, and the next boot marked v5 applied
+      // and silently discarded 200,000 rows of retrieval history. The harder variant leaves
+      // later migrations throwing `no such column` on every boot forever, while doctor still
+      // reports "20/20 applied".
+      //
+      // SQLite DDL is transactional and no current migration runs a tx-hostile statement
+      // (VACUUM, PRAGMA journal_mode), so this is safe; a future one needing to opt out must
+      // do so deliberately rather than by accident.
+      db.transaction(migration.up)(db);
     } catch (err) {
       const msg = (err instanceof Error ? err.message : String(err));
       if (/duplicate column/i.test(msg)) {

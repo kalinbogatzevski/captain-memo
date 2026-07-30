@@ -654,3 +654,72 @@ test('a session that never states an entrypoint reports none, rather than a gues
   const [s] = await readNativeSessionUsage();
   expect(s!.entrypoint).toBeUndefined();
 });
+
+test('a narrow poll does not evict what a wide scan just built', () => {
+  // THE THRASH. The prune keeps only what THIS call saw live, so the 10s poll (4 live
+  // transcripts) evicted everything the 5-minute 365-day scan had accumulated — and that scan
+  // then re-read 2.4 GB from scratch every cycle: 32.9s cold against 1.6s warm, ~30s of CPU
+  // every five minutes, which starved the search thread and timed out inbound RPCs. Two
+  // windows sharing one cache, where the narrow one wins.
+  const src = readFileSync(join(import.meta.dir, '../../src/worker/native-session-usage.ts'), 'utf8');
+  // The prune must not be keyed on this call's live set alone.
+  expect(src).not.toMatch(/for \(const path of ACC\.keys\(\)\) if \(!live\.has\(path\)\) ACC\.delete\(path\);/);
+  // It must be keyed on staleness instead — an accumulator nobody has touched for a while.
+  expect(src).toMatch(/lastTouchedMs/);
+});
+
+test('a SECOND workflow in the same session is still named', async () => {
+  // The cache is keyed on sessionId but holds "the wf ids that existed the first time this
+  // session was scanned". A session runs many workflows — ten in one session on this host — so
+  // caching that set permanently blanked the name and description of every workflow launched
+  // after the first scan, for the life of the worker. That is the exact bug the naming feature
+  // was built to fix, reintroduced six hours later by its own performance optimisation.
+  const { mkdirSync: mk } = await import('fs');
+  writeTranscript(SID, msg(100, 20));
+  const scripts = join(projectDir, SID, 'workflows', 'scripts');
+  mk(scripts, { recursive: true });
+
+  const addWf = (wfid: string, name: string, agentHex: string) => {
+    const d = join(projectDir, SID, 'subagents', 'workflows', wfid);
+    mk(d, { recursive: true });
+    // agent-<hex>.jsonl only — AGENT_FILE_RE rejects anything else, deliberately, so that a
+    // workflow's own journal.jsonl is never mistaken for an agent.
+    writeFileSync(join(d, `agent-${agentHex}.jsonl`), msg(50, 5));
+    writeFileSync(join(scripts, `${name}-${wfid}.js`), `export const meta = { name: '${name}' }\n`);
+  };
+
+  addWf('wf_aaaa-001', 'first-run', 'a1a1a1a1');
+  let rows = (await readNativeSessionUsage()).filter(s => s.workflowId === 'wf_aaaa-001');
+  expect(rows[0]!.workflowName).toBe('first-run');
+
+  // SAME session, a second workflow launched later — the cache must not hide it.
+  addWf('wf_bbbb-002', 'second-run', 'b2b2b2b2');
+  rows = (await readNativeSessionUsage()).filter(s => s.workflowId === 'wf_bbbb-002');
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.workflowName).toBe('second-run');
+});
+
+test('an idle transcript that resumes is read INCREMENTALLY, never re-read whole', async () => {
+  // Releasing the id map for an idle transcript bounded memory but moved the cost the whole
+  // change existed to remove onto the hot path: the all-time scan seals essentially every
+  // transcript, so a session you resume after lunch made the next 10-second poll re-read the
+  // entire file. That is the rhythm of an ordinary working day, not an edge case.
+  //
+  // A BOUNDED RING of recent ids fixes it without the rebuild: the duplicate records of one
+  // message are adjacent in the file, so a few hundred ids preserve dedupe across an append at
+  // a fixed, tiny cost — and with no rebuild branch there is no window in which a concurrent
+  // scan can digest into an emptied map and double-count.
+  const p = writeTranscript(SID, msgId('msg_1', 100, 10) + msgId('msg_1', 100, 10));
+  await readNativeSessionUsage();
+
+  // Make it look long-idle, then scan wide (the path that seals).
+  const old = new Date(Date.now() - 3 * 60 * 60_000);
+  utimesSync(p, old, old);
+  await readNativeSessionUsage(365 * 24 * 60 * 60_000, Date.now(), undefined, { includeFinished: true });
+
+  // It resumes: one appended message, plus a repeat of the LAST one already counted.
+  appendFileSync(p, msgId('msg_1', 100, 10) + msgId('msg_2', 7, 3));
+  const [s] = await readNativeSessionUsage(365 * 24 * 60 * 60_000, Date.now(), undefined, { includeFinished: true });
+  expect(s!.input_tokens).toBe(107);      // 100 once + 7 — the repeat must NOT be recounted
+  expect(s!.output_tokens).toBe(13);
+});

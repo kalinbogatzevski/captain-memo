@@ -5,6 +5,13 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.40] — 2026-07-30
+
+### Fixed
+- **A migration that aborts partway was permanently marked applied, silently discarding data.** Each migration ran bare, so a multi-statement `up` interrupted by a crash, OOM, restart-during-upgrade or `SQLITE_BUSY` left half its statements committed. The retry then hit *"duplicate column"* on statement 1 — which the runner reads as idempotent-recovery — and **recorded the migration as applied**, so the rest never ran. Proven with a kill sweep, not argued: every offset in a ~400 ms window left all four v5 `ALTER`s committed and the backfill rolled back, and the next boot marked v5 applied and **discarded 200,000 rows of retrieval history with no error raised**. The harsher variant leaves later migrations throwing `no such column` on every boot forever while `doctor` still reports "20/20 applied ✓". Six existing migrations are multi-statement. Each now runs in one transaction, so a partial `up` rolls back whole and the retry re-runs it cleanly.
+- **The workflow-name cache blanked every workflow after a session's first.** Keyed on `sessionId`, it held *the set of workflow ids that existed when that session was first scanned* — and a session runs many workflows (ten in one session here). Every later workflow rendered as anonymous `wf_` hex with no description, for the life of the worker: the exact failure the naming feature exists to prevent, reintroduced by its own performance optimisation hours later. A miss now invalidates and re-reads, which leaves the measured 490 ms saving intact because a hit is every poll and a miss is a new workflow.
+- **Releasing a transcript's message-id map moved a full re-read onto the 10-second poll.** Sealing an idle transcript bounded memory, but the all-time scan seals essentially everything — so resuming a session after a break made the next live poll re-read the entire file, and the release could land between a concurrent scan's read and its digest, doubling those bytes. Replaced with a bounded ring of recent ids: no sealing, no rebuild branch, no race window. Measured while tuning it, because the obvious theory was wrong — varying the ring 32x moved RSS by less than run-to-run GC noise, so the id map is not the dominant memory and there is nothing to tune.
+
 ## [0.27.39] — 2026-07-30
 
 ### Fixed

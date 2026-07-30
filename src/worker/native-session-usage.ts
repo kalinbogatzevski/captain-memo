@@ -142,6 +142,15 @@ interface Totals {
   /** message id → the LARGEST usage seen for it. A Map, not a Set, because a repeat is not
    *  always a copy: agent transcripts stream partial usage under one id with growing output. */
   seenMsgIds: Map<string, { i: number; o: number; w: number; r: number }>;
+  /** When this accumulator was last used by ANY scan. Pruning keys on this rather than on
+   *  "was it live in the call that just ran": the 10s poll sees 4 transcripts and the 5-minute
+   *  365-day scan sees 5,254, so keying on the caller's live set let the narrow scan evict
+   *  everything the wide one had built — 32.9s cold against 1.6s warm, every five minutes. */
+  lastTouchedMs: number;
+  /** Byte size at which seenMsgIds was released. An idle, fully-read transcript does not need
+   *  its per-message id map, which is the bulk of the memory; but if the file GROWS again we
+   *  can no longer dedupe against what we already counted, so the accumulator is rebuilt from
+   *  scratch for that one file. Correct, and bounded. */
   /** Per-MINUTE token buckets, keyed by floor(epochMs / 60000). Summing the buckets
    *  inside a window gives usage genuinely accrued in that window, and old buckets fall
    *  out on their own — so the figure decays instead of lurching. Bounded by pruning
@@ -149,6 +158,20 @@ interface Totals {
   buckets: Map<number, Bucket>;
 }
 
+/** How long an untouched accumulator survives. Must exceed the widest scan's TTL (the
+ *  all-time scan re-runs every 5 minutes) or that scan evicts its own work between runs. */
+const ACC_IDLE_MS = 20 * 60_000;
+/** How many recent message ids each transcript remembers, for deduping the repeated usage
+ *  blocks of one message. Bounds the memory of keeping accumulators alive; 512 is far more
+ *  than the handful of records one message occupies.
+ *
+ *  Measured, because the obvious theory was wrong: varying this 32x (16 -> 512) moved RSS by
+ *  less than the run-to-run GC noise, so the id map is NOT the dominant memory and there is no
+ *  point tuning it further. It costs ~150-300 ms on a 5-minute scan versus releasing the map
+ *  entirely, and buys back a full re-read of any resumed transcript on the 10-second poll plus
+ *  a latent double-count where a release could land between a concurrent scan's read and its
+ *  digest. */
+const MSG_ID_MEMORY = 64;
 /** How much bucket history to retain. Caps memory (1 440 buckets/session at worst) and
  *  bounds the widest window that can be asked for honestly. */
 const MAX_BUCKET_MS = 24 * 60 * 60_000;
@@ -157,7 +180,8 @@ const BUCKET_MS = 60_000;
 const ACC = new Map<string, Totals>();
 
 function fresh(): Totals {
-  return { offset: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0, seenMsgIds: new Map(), buckets: new Map() };
+  return { offset: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0, seenMsgIds: new Map(),
+           lastTouchedMs: 0, buckets: new Map() };
 }
 
 /** A transcript line's shape, narrowed to the one field we read. Everything else in
@@ -267,6 +291,22 @@ function digest(chunk: string, t: Totals): number {
         inTok = dIn; outTok = dOut; cwTok = dCw; crTok = dCr;   // count only the increment
       } else {
         t.seenMsgIds.set(mid, { i: inTok, o: outTok, w: cwTok, r: crTok });
+        // BOUNDED, evicting oldest-first (a Map iterates in insertion order). This map is the
+        // memory cost of keeping accumulators alive across polls — one entry per message, over
+        // every transcript on disk. Releasing it entirely for idle files was the alternative,
+        // and it was worse twice over: the next append re-read the WHOLE transcript on the 10s
+        // poll (the rhythm of resuming a session after lunch), and the release could land
+        // between a concurrent scan's read and its digest, so those bytes were counted into an
+        // emptied map and doubled.
+        //
+        // ponytail: a plain cap, because the copies of one message are ADJACENT in the file —
+        // dedupe only ever needs the recent past. An id evicted and then genuinely repeated
+        // more than MSG_ID_MEMORY messages later would be counted twice; that would require a
+        // streamed message spanning hundreds of others, which the format does not produce.
+        if (t.seenMsgIds.size > MSG_ID_MEMORY) {
+          const oldest = t.seenMsgIds.keys().next().value;
+          if (oldest !== undefined) t.seenMsgIds.delete(oldest);
+        }
       }
     }
     t.input += inTok;
@@ -315,13 +355,18 @@ const AGENT_FILE_RE = /^agent-[0-9a-f]+\.jsonl$/i;
  *  fall inside the window. Shared by the top-level session scan and the agent scan below —
  *  one implementation, so the two can never drift on how a token is counted. */
 async function accumulate(
-  path: string, size: number, now: number, windowMs: number,
+  path: string, size: number, now: number, windowMs: number, mtimeMs = 0,
 ): Promise<{ t: Totals; wFresh: number; wOut: number; wCr: number }> {
+  // Start this file over when it is unseen, when it was truncated/rotated (size < offset), or
+  // when a transcript we had SEALED grew again: sealing released its id map, so the appended
+  // records can no longer be deduped against what was already counted, and re-reading one file
+  // beats risking a streamed message counted twice.
   let t = ACC.get(path);
   if (!t || size < t.offset) {   // unseen, or truncated/rotated ⇒ start over
     t = fresh();
     ACC.set(path, t);
   }
+  t.lastTouchedMs = now;
   // Capture the read position BEFORE any await, and make the write idempotent.
   //
   // t.offset used to be read after `await open` and advanced with `+=` after `await read`,
@@ -352,7 +397,7 @@ async function accumulate(
       }
     }
   }
-  // Sum the buckets inside the window and drop anything past the retention bound.
+// Sum the buckets inside the window and drop anything past the retention bound.
   const cutoff = Math.floor((now - windowMs) / BUCKET_MS);
   const pruneBefore = Math.floor((now - MAX_BUCKET_MS) / BUCKET_MS);
   let wFresh = 0, wOut = 0, wCr = 0;
@@ -363,6 +408,11 @@ async function accumulate(
   return { t, wFresh, wOut, wCr };
 }
 
+/** wfDir → { key, done }. The journal only grows, so a re-read is only needed when its size
+ *  or mtime changes — measured at 219 ms per scan across 183 journals (16 MB) when re-read
+ *  unconditionally. Keyed on both so a rewrite in place is still caught. */
+const WF_DONE = new Map<string, { key: string; done: Set<string> }>();
+
 /** The agent ids a workflow's journal reports as FINISHED.
  *
  *  Liveness elsewhere is transcript-mtime inside the activity window, which is right for a
@@ -371,16 +421,24 @@ async function accumulate(
  *  board reading ACTIVE for the rest of the window, with its tokens counting toward "what is
  *  running now". The journal answers it exactly: one `result` line per finished agent.
  *
- *  NOT cached: this file grows while the workflow runs, and caching it would freeze the
- *  answer at whatever was true on first sight. Re-read per poll — one small file per live
- *  workflow. An unreadable journal yields an EMPTY set, so every agent stays reported:
+ *  Cached on the journal's size:mtime, NEVER on first sight: the file grows while the workflow
+ *  runs, so freezing the answer would strand finished agents on the board reading ACTIVE. Each
+ *  new `result` line moves both size and mtime, so a cache hit can only ever be a journal that
+ *  has not changed. An unreadable journal yields an EMPTY set, so every agent stays reported:
  *  absence of evidence is not evidence of completion, and hiding live work is the worse
  *  error. */
 async function finishedAgents(wfDir: string): Promise<Set<string>> {
+  const jpath = join(wfDir, 'journal.jsonl');
+  const st = await stat(jpath).catch(() => null);
+  if (!st) return new Set<string>();   // no journal ⇒ report every agent, as before
+  const key = st.size + ':' + Math.round(st.mtimeMs);
+  const hit = WF_DONE.get(wfDir);
+  if (hit && hit.key === key) return hit.done;
+
   const done = new Set<string>();
   let raw: string;
   try {
-    raw = await readFile(join(wfDir, 'journal.jsonl'), 'utf8');
+    raw = await readFile(jpath, 'utf8');
   } catch {
     return done;
   }
@@ -393,8 +451,15 @@ async function finishedAgents(wfDir: string): Promise<Set<string>> {
       /* a partial line mid-write — the next poll sees it whole */
     }
   }
+  WF_DONE.set(wfDir, { key, done });
   return done;
 }
+
+/** sessionId → the wf-id map, cached. The cross-project sweep below costs 65 readdir
+ *  attempts per session that owns a workflow — measured at 490 ms across 4,550 attempts on
+ *  this host, of which ~4,480 fail. A session's scripts do not move, so this is worth doing
+ *  once rather than every scan. */
+const WF_NAMES = new Map<string, Map<string, { name: string; path: string }>>();
 
 /** wf id → the workflow's own name, read from the script the Workflow tool persists at
  *  `<session>/workflows/scripts/<meta.name>-<wf id>.js`. That filename is the ONLY place a
@@ -402,6 +467,8 @@ async function finishedAgents(wfDir: string): Promise<Set<string>> {
  *  says just `"agentType": "workflow-subagent"`. Matched on the exact wf id so two runs
  *  under one session can never inherit each other's name. */
 async function workflowNames(subagentsDir: string, sessionId: string): Promise<Map<string, { name: string; path: string }>> {
+  const cached = WF_NAMES.get(sessionId);
+  if (cached) return cached;
   const out = new Map<string, { name: string; path: string }>();
   const collect = async (dir: string): Promise<void> => {
     let files: string[];
@@ -435,6 +502,7 @@ async function workflowNames(subagentsDir: string, sessionId: string): Promise<M
   } catch {
     /* unreadable projects root — keep whatever the local directory gave us */
   }
+  WF_NAMES.set(sessionId, out);
   return out;
 }
 
@@ -491,7 +559,7 @@ function teamLeadSession(teamName: string): string | undefined {
  *  session with no agents has no such directory and this returns immediately. */
 async function scanAgents(
   dirPath: string, parentSessionId: string, workflowId: string | undefined,
-  now: number, windowMs: number, out: NativeSessionUsage[], live: Set<string>,
+  now: number, windowMs: number, out: NativeSessionUsage[],
   // NOT `workflowDescription` — that is the module-level function this body calls a few lines
   // down, and a parameter of the same name shadows it into `undefined is not a function`.
   names?: ReadonlyMap<string, string>, workflowName?: string, wfDesc?: string,
@@ -519,9 +587,18 @@ async function scanAgents(
           if (!wf.isDirectory()) continue;
           // Read the description only for a workflow actually being scanned, not for every
           // script the session ever persisted (ten of them in one session here).
-          const script = wfNames.get(wf.name);
+          // A MISS invalidates and re-reads. The cache holds "the wf ids this session had when
+          // first scanned", and a session runs many workflows over its life — caching that set
+          // permanently blanked the name of every later workflow, which is the exact failure the
+          // naming feature exists to prevent. A miss is rare (a new workflow); a hit is every
+          // poll, so the 490 ms saving is untouched.
+          let script = wfNames.get(wf.name);
+          if (!script) {
+            WF_NAMES.delete(parentSessionId);
+            script = (await workflowNames(dirPath, parentSessionId)).get(wf.name);
+          }
           const desc = script ? await workflowDescription(script.path) : undefined;
-          await scanAgents(join(dirPath, e.name, wf.name), parentSessionId, wf.name, now, windowMs, out, live, names, script?.name, desc, includeFinished);
+          await scanAgents(join(dirPath, e.name, wf.name), parentSessionId, wf.name, now, windowMs, out, names, script?.name, desc, includeFinished);
         }
       }
       continue;
@@ -539,8 +616,7 @@ async function scanAgents(
       size = st.size; mtimeMs = st.mtimeMs;
     } catch { continue; }
     if (now - mtimeMs > windowMs) continue;   // idle ⇒ not live, same rule as a session
-    live.add(path);
-    const { t, wFresh, wOut, wCr } = await accumulate(path, size, now, windowMs);
+    const { t, wFresh, wOut, wCr } = await accumulate(path, size, now, windowMs, mtimeMs);
     // agent-<hex>.jsonl — the id the parent's dispatch record keys on is the bare hex.
     const dispatchedAs = names?.get(e.name.slice('agent-'.length, -'.jsonl'.length));
     out.push({
@@ -586,7 +662,6 @@ export async function readNativeSessionUsage(
   }
 
   const out: NativeSessionUsage[] = [];
-  const live = new Set<string>();
 
   for (const dir of projectDirs) {
     let names: string[];
@@ -617,9 +692,8 @@ export async function readNativeSessionUsage(
       // terminal sat open in front of you, taking its name and its tokens with it and
       // leaving a bare ambient row in their place.
       if (now - mtimeMs > windowMs && !(alwaysLive && alwaysLive.has(sessionId))) continue;
-      live.add(path);
 
-      const { t, wFresh, wOut, wCr } = await accumulate(path, size, now, windowMs);
+      const { t, wFresh, wOut, wCr } = await accumulate(path, size, now, windowMs, mtimeMs);
 
       out.push({
         session_id: sessionId,
@@ -645,13 +719,20 @@ export async function readNativeSessionUsage(
       // agent-<hex>.jsonl rather than <uuid>.jsonl — which is why the UUID gate above skips
       // them and why 33% of billed tokens were invisible. The parent is not inferred: it is
       // the directory this scan is already standing in.
-      await scanAgents(join(dir, sessionId, 'subagents'), sessionId, undefined, now, windowMs, out, live, t.dispatched, undefined, undefined, !!opts?.includeFinished);
+      await scanAgents(join(dir, sessionId, 'subagents'), sessionId, undefined, now, windowMs, out, t.dispatched, undefined, undefined, !!opts?.includeFinished);
     }
   }
 
-  // Drop accumulators for transcripts that fell out of the window, so a long-running
-  // worker's memory tracks LIVE sessions rather than every session ever seen.
-  for (const path of ACC.keys()) if (!live.has(path)) ACC.delete(path);
+  // Drop accumulators nobody has touched in a while, so a long-running worker's memory tracks
+  // the sessions still in play rather than every session ever seen.
+  //
+  // Prune by STALENESS, NEVER by the set of transcripts the call that just ran saw live: that
+  // set is only ever as wide as THIS window — 4 transcripts for the 10s poll, 5,254 for the
+  // 365-day scan — so keying on it let the narrow scan evict everything the wide one had
+  // accumulated, and the wide scan then re-read 2.4 GB from scratch every five minutes: 32.9s
+  // cold against 1.6s warm. ACC_IDLE_MS exceeds the widest scan's TTL, so a scan can never
+  // evict its own work.
+  for (const [path, t] of ACC) if (now - t.lastTouchedMs > ACC_IDLE_MS) ACC.delete(path);
 
   out.sort((a, b) => b.last_activity_epoch_ms - a.last_activity_epoch_ms);
   return out;
@@ -666,6 +747,8 @@ export function _resetNativeUsageCache(): void {
   // passed alone while failing in the suite. Anything cached across a reset has to be reset.
   TEAM_LEAD.clear();
   WF_DESC.clear();
+  WF_NAMES.clear();
+  WF_DONE.clear();
 }
 
 /** Fleet-reportable aggregate across every live native session. Sums the same
