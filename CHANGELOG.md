@@ -5,6 +5,30 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.47] — 2026-07-31
+
+### Changed
+
+- **Memory tiering (Tide phase 2) is now ON by default.** It had been built, tested and left
+  switched off, so it had never moved a row. The reason was misread as "the flag is off"; measuring
+  showed the real cause is that `ageFloorDays` is 90 and the oldest observation on the heaviest known
+  install is 83 days old — nothing has ever been *eligible* to ebb. On that 123,166-row corpus the
+  first sweep moves **zero** rows, and a brand-new install stays inert for its first ~109 days.
+
+  Ebbing is non-destructive. A sunk observation is dropped only from the **auto-injected context
+  envelope**; it stays fully searchable, is merely down-ranked by buoyancy, and a single recall
+  re-floats it. Nothing is deleted, no vector is removed, and rows that came from a drill or are
+  anchored are excluded from the sweep entirely.
+
+  Turn it off with `CAPTAIN_MEMO_TIDE_TIERING=0`. (The env read was previously `=== '1'`, which
+  ignored the shipped default outright — it is now `!== '0'`, matching how `CAPTAIN_MEMO_TIDE_ENABLED`
+  already behaved.)
+
+### Fixed
+
+- Corrected a source comment that blamed a measured test-suite slowdown on the code, when the cause
+  was concurrent test processes on the machine doing the measuring.
+
 ## [0.27.46] — 2026-07-30
 
 ### Added
