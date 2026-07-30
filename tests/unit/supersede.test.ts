@@ -56,7 +56,9 @@ test('runQmSupersedeSlice — links a high-cosine pair', async () => {
 });
 
 test('runQmSupersedeSlice — skips below the cosine threshold (different facts)', async () => {
-  const { deps, links } = makeDeps([cand(1, 2)], new Map([[1, vecAt(0)], [2, vecAt(20)]])); // cos≈0.94 < 0.98
+  // 30° ⇒ cos≈0.866, below the supersede confirm (0.93). The old pair sat at 20° (cos≈0.94), chosen to
+  // be below the shared 0.98 — with supersede on its own lower threshold that pair now legitimately passes.
+  const { deps, links } = makeDeps([cand(1, 2)], new Map([[1, vecAt(0)], [2, vecAt(30)]])); // cos≈0.87 < 0.93
   const r = await runQmSupersedeSlice(deps);
   expect(r.linked).toBe(0);
   expect(links).toHaveLength(0);

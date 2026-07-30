@@ -14,6 +14,7 @@ import { connectCommand } from './commands/connect.ts';
 import { uninstallCommand } from './commands/uninstall.ts';
 import { doctorCommand } from './commands/doctor.ts';
 import { queueCommand } from './commands/queue.ts';
+import { maintenanceCommand } from './commands/maintenance.ts';
 import { inspectClaudeMemCommand } from './commands/inspect-claude-mem.ts';
 import { migrateFromClaudeMemCommand } from './commands/migrate-from-claude-mem.ts';
 import { dreamCommand } from './commands/dream.ts';
@@ -147,6 +148,9 @@ export async function main(args: string[]): Promise<void> {
       break;
     case 'uninstall':
       exit = await uninstallCommand(args.slice(1));
+      break;
+    case 'maintenance':
+      exit = await maintenanceCommand(args.slice(1));
       break;
     case 'queue':
       exit = await queueCommand(args.slice(1));

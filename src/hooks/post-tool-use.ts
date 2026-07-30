@@ -19,13 +19,30 @@ interface PostToolUsePayload {
 // localhost POST + sqlite append, and is overridable via env.
 const HOOK_TIMEOUT_MS = Number(process.env.CAPTAIN_MEMO_POST_TOOL_USE_TIMEOUT_MS ?? 1000);
 
-function extractFiles(input: unknown, response: unknown): { read: string[]; modified: string[] } {
+/** Tools that CHANGE a file. Classification is by tool NAME because the name is authoritative and
+ *  already in the payload — the previous version inferred it from the tool RESPONSE, asking whether it
+ *  carried a `success` key. Claude Code's Edit/Write responses do not, so every file-touching tool was
+ *  recorded as a read: `files_modified` was empty on all 122,885 observations of a live corpus while
+ *  `files_read` was populated on half the events.
+ *
+ *  That mattered beyond tidiness. "Did this change something, or only look at something?" is the
+ *  strongest ingest-time signal for whether an observation is worth keeping, and it is what separates
+ *  "Fixed the race in dream-stats" from "Located SendMessage tool in captain-hub". Losing it left no
+ *  usable basis for that judgement at all. */
+const WRITING_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+
+export function extractFiles(
+  toolName: string,
+  input: unknown,
+  _response: unknown,
+): { read: string[]; modified: string[] } {
   const read: string[] = [];
   const modified: string[] = [];
   const ip = (input ?? {}) as Record<string, unknown>;
-  const rp = (response ?? {}) as Record<string, unknown>;
   if (typeof ip.file_path === 'string') {
-    if (rp && typeof rp === 'object' && 'success' in rp) modified.push(ip.file_path);
+    // Unknown tools degrade to READ: a false "modified" would overstate what happened, and this field
+    // is meant to become a signal that decides what is kept.
+    if (WRITING_TOOLS.has(toolName)) modified.push(ip.file_path);
     else read.push(ip.file_path);
   }
   if (typeof ip.notebook_path === 'string') modified.push(ip.notebook_path);
@@ -37,7 +54,7 @@ export async function main(): Promise<void> {
   try { payload = await readStdinJson<PostToolUsePayload>(); } catch (err) { logHookError('PostToolUse', err); return; }
 
   if (!payload.tool_name) return;
-  const { read, modified } = extractFiles(payload.tool_input, payload.tool_response);
+  const { read, modified } = extractFiles(payload.tool_name, payload.tool_input, payload.tool_response);
 
   const event: RawObservationEvent = {
     session_id: payload.session_id ?? 'unknown',

@@ -25,8 +25,22 @@ export interface QmConfig {
   /** Title-similarity (Jaccard) threshold for two rows to be merge candidates. */
   dedupTitleThreshold: number;
   /** Embedding cosine threshold — both this AND the title threshold must clear
-   *  before two rows are merged. */
+   *  before two rows are merged.
+   *
+   *  MEASURED on a 122,647-observation corpus: 400 pairs sharing an IDENTICAL title (definitionally the
+   *  same knowledge) scored median 0.9467, p95 0.9779, max 0.9896 — only 3.5% reached the old 0.98.
+   *  Unrelated same-project pairs sit near 0.50 (p95 0.755). 0.98 was above what two phrasings of one
+   *  fact can produce in this space, so dedup merged 5 rows after examining 16,679 candidate groups
+   *  across 1,204 runs. It was never blocked by the merge guard or the partitioning — one unsatisfiable
+   *  constant. The title gate still has to pass first; this is the confirm, not the whole test. */
   dedupCosineThreshold: number;
+  /** Cosine confirm for SUPERSESSION, deliberately separate from dedup's.
+   *
+   *  The two guard actions of very different destructiveness: dedup ARCHIVES a row; supersede applies a
+   *  reversible 0.5x score demotion that `captain-memo supersede undo` reverses. Sharing one constant
+   *  made the safe action inherit the dangerous one's paranoia. Version-supersede pairs measure median
+   *  0.932, max 0.986 — 0.98 admitted 1 of 292. */
+  supersedeCosineThreshold: number;
   /** Max rows compared per dedup sweep. */
   dedupWindow: number;
 }
@@ -38,7 +52,8 @@ export const DEFAULT_QM_CONFIG: QmConfig = {
   sliceMs: 150,
   dedupIntervalMs: 3_600_000,
   dedupTitleThreshold: DEFAULT_SIMILARITY_THRESHOLD,
-  dedupCosineThreshold: 0.98,
+  dedupCosineThreshold: 0.95,
+  supersedeCosineThreshold: 0.93,
   dedupWindow: 500,
 };
 
@@ -59,6 +74,7 @@ export function loadQmConfig(env: Record<string, string | undefined>): QmConfig 
     dedupIntervalMs: num(env.CAPTAIN_MEMO_QM_DEDUP_INTERVAL_MS, D.dedupIntervalMs),
     dedupTitleThreshold: num(env.CAPTAIN_MEMO_QM_DEDUP_TITLE, D.dedupTitleThreshold),
     dedupCosineThreshold: num(env.CAPTAIN_MEMO_QM_DEDUP_COSINE, D.dedupCosineThreshold),
+    supersedeCosineThreshold: num(env.CAPTAIN_MEMO_QM_SUPERSEDE_COSINE, D.supersedeCosineThreshold),
     dedupWindow: num(env.CAPTAIN_MEMO_QM_DEDUP_WINDOW, D.dedupWindow),
   };
 }

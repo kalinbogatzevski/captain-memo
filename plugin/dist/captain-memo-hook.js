@@ -905,7 +905,7 @@ import { join as join8 } from "path";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.27.45",
+  version: "0.27.46",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -1540,13 +1540,13 @@ function detectOriginAgent(env = process.env) {
 
 // src/hooks/post-tool-use.ts
 var HOOK_TIMEOUT_MS3 = Number(process.env.CAPTAIN_MEMO_POST_TOOL_USE_TIMEOUT_MS ?? 1000);
-function extractFiles(input, response) {
+var WRITING_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
+function extractFiles(toolName, input, _response) {
   const read = [];
   const modified = [];
   const ip = input ?? {};
-  const rp = response ?? {};
   if (typeof ip.file_path === "string") {
-    if (rp && typeof rp === "object" && "success" in rp)
+    if (WRITING_TOOLS.has(toolName))
       modified.push(ip.file_path);
     else
       read.push(ip.file_path);
@@ -1565,7 +1565,7 @@ async function main4() {
   }
   if (!payload.tool_name)
     return;
-  const { read, modified } = extractFiles(payload.tool_input, payload.tool_response);
+  const { read, modified } = extractFiles(payload.tool_name, payload.tool_input, payload.tool_response);
   const event = {
     session_id: payload.session_id ?? "unknown",
     project_id: resolveProjectId(payload.cwd),

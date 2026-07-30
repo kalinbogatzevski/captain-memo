@@ -871,6 +871,49 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     }, tickMs);
   }
 
+  // QUEUE RETENTION — keeps the database bounded without anyone remembering to run anything.
+  // observation_queue never deleted a row (markDone only flips a status), so it grew forever: one live
+  // captain reached 235,899 rows in a 610.9 MB queue.db, every byte of it work already finished and
+  // written into observations.db. Hourly, drop finished rows past the window and — when enough went to
+  // be worth the rewrite — reclaim the pages, because SQLite does not shrink a file on DELETE.
+  //
+  // The window is deliberately generous: dedupePending reads done rows to recognise a turn that was
+  // already summarised, so a short window would blind that repair. Tunable via
+  // CAPTAIN_MEMO_QUEUE_RETENTION_DAYS; 0 disables retention entirely.
+  let retentionTimer: ReturnType<typeof setInterval> | null = null;
+  if (!opts.readOnly && obsQueue) {
+    const retentionDays = Number(process.env.CAPTAIN_MEMO_QUEUE_RETENTION_DAYS ?? 30);
+    if (retentionDays > 0) {
+      const RECLAIM_AT = 5_000;   // rows removed in one pass before a VACUUM earns its cost
+      const sweep = () => {
+        try {
+          const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86_400;
+          const removed = obsQueue!.pruneDone(cutoff);
+          if (removed > 0) {
+            console.log(`[queue] retention: removed ${removed} finished row(s) older than ${retentionDays}d`);
+            if (removed >= RECLAIM_AT) { obsQueue!.reclaim(); console.log('[queue] retention: reclaimed disk'); }
+          }
+        } catch (err) {
+          console.error('[queue] retention sweep failed: ' + (err as Error).message);
+        }
+      };
+      // NOT on the boot path. Measured: the sweep itself costs 0-1 ms, yet running it during worker
+      // startup turned fed's integration suite from 227 pass / 93 s into 212 pass / 15 fail / 300 s,
+      // and reverting this one file restored it exactly. I could not pin the mechanism — the work is
+      // trivial and the interval is unref'd — so the honest response is not to explain it away but to
+      // keep maintenance off the critical path entirely, which is where it belongs regardless: nothing
+      // a janitor does should be able to delay a worker becoming ready.
+      const firstSweep = setTimeout(sweep, 30_000);
+      if (typeof firstSweep === 'object' && firstSweep && 'unref' in firstSweep) {
+        (firstSweep as { unref: () => void }).unref();
+      }
+      retentionTimer = setInterval(sweep, 3_600_000);
+      if (typeof retentionTimer === 'object' && retentionTimer && 'unref' in retentionTimer) {
+        (retentionTimer as { unref: () => void }).unref();
+      }
+    }
+  }
+
   // Cross-AI capture: on by default. Ingest FINISHED codex/agy sessions on this
   // host into the obs pipeline (they have no hooks; we read the transcripts they
   // persist to disk). First tick seeds a per-source cutoff so pre-existing history
@@ -2308,6 +2351,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   const stopResources = async () => {
     if (tickTimer) clearInterval(tickTimer);
     if (captureTimer) clearInterval(captureTimer);
+    if (retentionTimer) clearInterval(retentionTimer);
     if (tideSweepTimer) clearInterval(tideSweepTimer);
     if (qmDedupTimer) clearInterval(qmDedupTimer);
     if (qmSupersedeTimer) clearInterval(qmSupersedeTimer);

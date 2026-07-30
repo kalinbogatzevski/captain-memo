@@ -50,7 +50,7 @@ export async function runQmSupersedeSlice(deps: QmSupersedeDeps): Promise<QmSupe
     const oVec = deps.representativeVector(cand.older.id);
     const nVec = deps.representativeVector(cand.newer.id);
     if (!oVec || !nVec) { res.skippedNoVector++; continue; } // fail-closed
-    if (cosine(oVec, nVec) < deps.cfg.dedupCosineThreshold) continue; // confirm same subject
+    if (cosine(oVec, nVec) < deps.cfg.supersedeCosineThreshold) continue; // confirm same subject
     deps.linkSupersede(cand.older.id, cand.newer.id, {
       entityKey: cand.entityKey,
       olderVersion: cand.older.version,

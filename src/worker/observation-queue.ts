@@ -155,6 +155,49 @@ export class ObservationQueue {
     };
   }
 
+  /** How many finished rows are being retained. */
+  doneCount(): number {
+    return (this.db.query("SELECT COUNT(*) AS n FROM observation_queue WHERE status = 'done'")
+      .get() as { n: number }).n;
+  }
+
+  /** Test seam: backdate a row's completion so retention can be exercised deterministically. */
+  _setProcessedAt(id: number, epochSeconds: number): void {
+    this.db.query('UPDATE observation_queue SET processed_at_epoch = ? WHERE id = ?').run(epochSeconds, id);
+  }
+
+  /** Drop finished rows completed before `olderThanEpoch`. Returns how many went.
+   *
+   *  Nothing deleted from this table, ever — markDone only flips a status — so it grew without bound on
+   *  every install. One live captain reached 235,899 rows in a 610.9 MB queue.db, all of it work already
+   *  done and long since written into observations.db.
+   *
+   *  ONLY `done` rows are eligible. pending/processing/failed are live or actionable state: a failed row
+   *  is a thing an operator may still want to see, and deleting a processing row would pull work out from
+   *  under the worker mid-flight.
+   *
+   *  The trade to know about: dedupePending reads done rows to recognise "this turn was already
+   *  summarised", so a shorter window makes that repair blind to older work. It still catches
+   *  duplicate-of-pending either way, and the amplification that made the repair necessary is fixed —
+   *  but this is why the default window is generous rather than a day or two. */
+  pruneDone(olderThanEpoch: number): number {
+    const r = this.db
+      .query("DELETE FROM observation_queue WHERE status = 'done' AND processed_at_epoch < ?")
+      .run(olderThanEpoch);
+    return Number(r.changes ?? 0);
+  }
+
+  /** Return freed pages to the filesystem. SQLite does NOT shrink a file on DELETE — the pages go on the
+   *  free list and the 610 MB stays 610 MB — so a prune without this reclaims nothing an operator can
+   *  see. VACUUM rewrites the file and needs room for a copy, which is why it is a separate, deliberate
+   *  call rather than something folded into every prune. */
+  reclaim(): void {
+    this.db.exec('VACUUM');
+    // …and CHECKPOINT, or in WAL mode the rewrite lands in the -wal file and the main database is
+    // exactly as large as before. Measured: VACUUM alone left a 2.8 MB test file at 2.8 MB.
+    this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  }
+
   markDone(ids: number[]): void {
     if (ids.length === 0) return;
     const placeholders = ids.map(() => '?').join(',');

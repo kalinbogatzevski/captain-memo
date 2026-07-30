@@ -5,6 +5,43 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.46] — 2026-07-30
+
+### Added
+
+- **`captain-memo maintenance [--apply] [--retention-days N]`** and an hourly automatic sweep in the
+  worker (plus one at boot, so an upgrade repairs immediately). Nothing ever deleted from
+  `observation_queue` — `markDone` only flipped a status — and nothing ever removed embeddings whose
+  chunk had gone. One live install carried 235,899 finished queue rows in a 610.9 MB `queue.db` and
+  57,373 orphaned vectors (29.3%) in an 807.9 MB store. Applying it reclaimed **357 MB**.
+  `CAPTAIN_MEMO_QUEUE_RETENTION_DAYS` tunes the window (0 disables).
+
+  Two details that decide whether this works at all: `VACUUM` alone does not shrink a WAL database — the
+  rewrite lands in the `-wal` sidecar, so the checkpoint is what returns the pages. And the orphan
+  cleanup refuses to run without the `sqlite-vec` extension loaded, because `vec_chunk_meta` is an
+  ordinary table that deletes fine without it while the index does not: a half-clean would strand every
+  embedding in the opposite direction, invisible to the check that found it.
+
+### Fixed
+
+- **Dedup could never fire.** `dedupCosineThreshold` shipped at 0.98, above what two phrasings of one
+  fact reach in this embedding space. Measured on 122,647 observations: 400 pairs with *identical*
+  titles scored median 0.9467, p95 0.9779, max 0.9896 — only 3.5% reached 0.98, while unrelated pairs
+  sit near 0.50. Dedup merged 5 rows after examining 16,679 candidate groups across 1,204 runs. It was
+  never blocked by the merge guard or the partitioning; one unsatisfiable constant. Now 0.95, with
+  supersede split onto its own `supersedeCosineThreshold` (0.93) since it applies a reversible demotion
+  where dedup archives a row.
+- **Supersession could never see a pair.** Its candidate window reused the surfaced-rows query — 11.7%
+  of the corpus — and required both halves inside one 500-row recency slice, while real version chains
+  span months. Of 294 version pairs present corpus-wide, the live window contained 0. It now scans all
+  live rows (~450 ms hourly; only ~2% of titles parse a version), and requires creation order to agree
+  with version order so a calendar-style version like `2026.0512.24` cannot mark a *newer* note stale.
+- **`files_modified` was empty on every observation.** The hook decided "was this a modification?" by
+  sniffing the tool *response* for a `success` key, which Claude Code's Edit/Write responses do not
+  carry — so every file-touching tool was recorded as a read (198 of 400 sampled events had
+  `files_read`, zero had `files_modified`). Classification is by tool name now; an unknown tool degrades
+  to "read" rather than claiming a false modification.
+
 ## [0.27.45] — 2026-07-30
 
 ### Added

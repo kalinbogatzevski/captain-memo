@@ -1293,8 +1293,29 @@ export class ObservationsStore {
    * version-mismatched pairs the merge guard keeps OUT of dedup. The cosine confirm
    * (in runQmSupersedeSlice) is what guards against same-entityKey-but-different facts.
    */
+  /** Rows eligible for VERSION supersession — every live row, not just the surfaced ones.
+   *
+   *  This deliberately does NOT reuse surfacedWindowRows. Dedup targets surfaced rows because those are
+   *  the duplicates bloating the surface; supersession wants the opposite population — a stale fact that
+   *  has never surfaced is exactly the one that ambushes you the day it finally does. On a real corpus
+   *  the surfaced filter left 11.7% of rows reachable, and requiring both halves of a pair inside one
+   *  500-row recency slice left 0 of 294 real version pairs visible.
+   *
+   *  Affordable because the population is tiny: only ~2% of titles parse a version at all, so the scan
+   *  is ~450 ms on 122k rows, once an hour. `windowLimit` still caps how many PAIRS are emitted. */
+  private versionCandidateRows(): Array<{ id: number; title: string; project_id: string; branch: string | null; created_at_epoch: number }> {
+    return this.db
+      .query(
+        `SELECT id, title, project_id, branch, created_at_epoch
+           FROM observations
+          WHERE archived = 0
+          ORDER BY created_at_epoch DESC`,
+      )
+      .all() as Array<{ id: number; title: string; project_id: string; branch: string | null; created_at_epoch: number }>;
+  }
+
   supersedeCandidateWindow(windowLimit: number): SupersedeCandidate[] {
-    const rows = this.surfacedWindowRows(windowLimit);
+    const rows = this.versionCandidateRows();
     const partitions = new Map<string, typeof rows>();
     for (const r of rows) {
       const key = JSON.stringify([r.project_id, r.branch]);
@@ -1304,13 +1325,14 @@ export class ObservationsStore {
     }
     const out: SupersedeCandidate[] = [];
     for (const bucket of partitions.values()) {
-      const byEntity = new Map<string, Array<{ id: number; version: import('./version-parse.ts').SemVer }>>();
+      const byEntity = new Map<string, Array<{ id: number; version: import('./version-parse.ts').SemVer; created_at_epoch: number }>>();
       for (const r of bucket) {
         const pv = parseVersion(r.title);
         if (!pv) continue;
         const arr = byEntity.get(pv.entityKey);
-        if (arr) arr.push({ id: r.id, version: pv.version });
-        else byEntity.set(pv.entityKey, [{ id: r.id, version: pv.version }]);
+        const item = { id: r.id, version: pv.version, created_at_epoch: r.created_at_epoch };
+        if (arr) arr.push(item);
+        else byEntity.set(pv.entityKey, [item]);
       }
       for (const [entityKey, items] of byEntity) {
         if (items.length < 2) continue;
@@ -1321,6 +1343,17 @@ export class ObservationsStore {
         }
         for (const it of items) {
           if (it.id === head.id) continue;
+          // CREATION ORDER MUST AGREE. A calendar-style version parses as semver — ERP's
+          // "2026.0512.24" reads as 2026.512.24 and dominates a real "v3.12" — so version order alone
+          // would mark the NEWER note stale, the one outcome this feature must never produce. Two rows
+          // whose version and creation order disagree are exactly where the machine should stay out.
+          // Reject only a STRICT inversion. Rows written in the same second are the common case — a
+          // session emits many observations per second — and `>=` rejected every one of them, which
+          // disabled supersession for exactly the pairs it should catch. When the timestamps tie, the
+          // monotonic id says which row was actually written first.
+          const inverted = it.created_at_epoch > head.created_at_epoch
+            || (it.created_at_epoch === head.created_at_epoch && it.id > head.id);
+          if (inverted) continue;
           if (compareVersion(it.version, head.version) < 0) {
             out.push({
               older: { id: it.id, version: it.version.raw },
