@@ -35,8 +35,9 @@ export interface TideConfig {
   stabilityGain: number;
   /** Saturation knob: fS = cap / (cap + S). Hot rows plateau, can't starve corpus. */
   stabilityCapDays: number;
-  /** Tiering (Phase 2) — opt-in lifecycle state transitions. Default OFF; the MVP
-   *  re-rank (`enabled`) is independent and stays on regardless. */
+  /** Tiering (Phase 2) — lifecycle state transitions. Default ON; set
+   *  CAPTAIN_MEMO_TIDE_TIERING=0 to keep everything active. The MVP re-rank
+   *  (`enabled`) is independent, and tiering rides on it (see tide-sweep.ts). */
   tieringEnabled: boolean;
   /** Hysteresis band. Ebb (active→dormant) below ebbThreshold; surface
    *  (dormant/archived→active) above surfaceThreshold — that rail is recall-driven,
@@ -64,7 +65,14 @@ export const DEFAULT_TIDE_CONFIG: TideConfig = {
   src: { auto: 0.5, search: 1.0, drill: 1.5 },
   stabilityGain: 0.5,
   stabilityCapDays: 365,
-  tieringEnabled: false,
+  // ON by default. It was built, tested and then left off, so it had never moved a row in
+  // production — the reason being misread as "the flag is off" when the real reason is that
+  // ageFloorDays is 90 and the oldest observation on the heaviest install is 83 days old. On that
+  // corpus (123,166 rows) the first sweep flips ZERO rows and the first real movement is ~4,768
+  // (3.9%) a month out, so this is inert on existing installs for weeks and on a new install for
+  // its first ~109 days. Ebbing is non-destructive: a sunk row only leaves the AUTO-INJECT envelope,
+  // stays fully searchable, and one recall re-floats it. Off switch: CAPTAIN_MEMO_TIDE_TIERING=0.
+  tieringEnabled: true,
   ebbThreshold: 0.30,
   surfaceThreshold: 0.70,
   archiveThreshold: 0.05,
@@ -98,7 +106,7 @@ export function loadTideConfig(env: Record<string, string | undefined>): TideCon
     },
     stabilityGain: num(env.CAPTAIN_MEMO_TIDE_STAB_GAIN, D.stabilityGain),
     stabilityCapDays: num(env.CAPTAIN_MEMO_TIDE_STAB_CAP_DAYS, D.stabilityCapDays),
-    tieringEnabled: env.CAPTAIN_MEMO_TIDE_TIERING === '1',
+    tieringEnabled: env.CAPTAIN_MEMO_TIDE_TIERING !== '0',
     ebbThreshold: num(env.CAPTAIN_MEMO_TIDE_EBB_THRESHOLD, D.ebbThreshold),
     surfaceThreshold: num(env.CAPTAIN_MEMO_TIDE_SURFACE_THRESHOLD, D.surfaceThreshold),
     archiveThreshold: num(env.CAPTAIN_MEMO_TIDE_ARCHIVE_THRESHOLD, D.archiveThreshold),

@@ -115,9 +115,24 @@ test('channelS0 — per-channel initial stability', () => {
 });
 
 // ── tiering config (Phase 2) ───────────────────────────────────────────────
-test('loadTideConfig — tiering is opt-in (default off), env flips + threshold overrides', () => {
-  expect(loadTideConfig({}).tieringEnabled).toBe(false);
+// DEFAULT ON. Measured before flipping it: nothing ebbs until a row is past ageFloorDays (90) AND
+// below ebbThreshold, which at the seed stability of 7 days means ~109 days idle. On the heaviest
+// known corpus (123,166 observations spanning 83 days, oldest 2026-05-08) the first sweep moves ZERO
+// rows, and the first real movement is ~4,768 rows (3.9%) a month out. So this default is inert on
+// every existing install for months, and inert on a NEW install for its first 109 days.
+//
+// It is also non-destructive: ebbing only drops a row from the AUTO-INJECT envelope
+// (dropSunkForAutoInject). Sunk rows stay fully searchable, down-ranked by buoyancy, and ONE recall
+// re-floats them via bumpRetrieval. Nothing is deleted and no vector is removed.
+test('loadTideConfig — tiering defaults ON; CAPTAIN_MEMO_TIDE_TIERING=0 is the off switch', () => {
+  expect(DEFAULT_TIDE_CONFIG.tieringEnabled).toBe(true);
+  expect(loadTideConfig({}).tieringEnabled).toBe(true);
+  expect(loadTideConfig({ CAPTAIN_MEMO_TIDE_TIERING: '0' }).tieringEnabled).toBe(false);
   expect(loadTideConfig({ CAPTAIN_MEMO_TIDE_TIERING: '1' }).tieringEnabled).toBe(true);
+  // Tiering rides on the MVP re-rank: surfacing-on-recall lives in the `enabled` branch of
+  // bumpRetrieval, so turning the re-rank off must also stop the sweep (tide-sweep.ts:46) —
+  // otherwise rows would ebb with nothing able to re-float them.
+  expect(loadTideConfig({ CAPTAIN_MEMO_TIDE_ENABLED: '0' }).enabled).toBe(false);
   expect(loadTideConfig({ CAPTAIN_MEMO_TIDE_EBB_THRESHOLD: '0.4' }).ebbThreshold).toBe(0.4);
   expect(loadTideConfig({ CAPTAIN_MEMO_TIDE_AGE_FLOOR_DAYS: '30' }).ageFloorDays).toBe(30);
   expect(loadTideConfig({ CAPTAIN_MEMO_TIDE_ARCHIVE_AGE_DAYS: '365' }).archiveAgeDays).toBe(365);
