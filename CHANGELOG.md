@@ -5,6 +5,22 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.42] — 2026-07-30
+
+### Fixed
+
+- **`doctor` honours `CAPTAIN_MEMO_WORKER_PORT`.** mcp-server, restart and upgrade all read it; doctor
+  alone hardcoded the default, so on a captain moved to another port every probe hit an empty port and
+  doctor reported the worker down while it was serving fine — a diagnostic tool confidently
+  misdiagnosing the one thing it exists to check.
+- **Stats labels name what they actually count.** The all-time total bills sessions AND agents but was
+  labelled with the session count alone, so the reader divided a two-population total by one
+  population; it also dropped `oldest_epoch_ms`, leaving "all time" with no start date. Dream
+  co-retrieval counted doc_ids from every channel while calling them "observations" and dividing by
+  the observation count, which both misnames the set and lets the percentage exceed 100%. And "since
+  worker start" appeared only in the zero-data branches, so the qualifier vanished exactly when there
+  were numbers to misread as lifetime totals.
+
 ## [0.27.41] — 2026-07-30
 
 ### Fixed — doctor
