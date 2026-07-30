@@ -53,7 +53,8 @@ export interface StatsResponse {
   native_tokens?: {
     window?: { sessions: number; window_ms: number; window_fresh_tokens: number;
                window_output_tokens: number; window_cache_read_tokens: number } | undefined;
-    all_time?: { sessions: number; fresh_tokens: number; output_tokens: number;
+    all_time?: { sessions: number; agents?: number; oldest_epoch_ms?: number;
+                 fresh_tokens: number; output_tokens: number;
                  cache_read_tokens: number } | null | undefined;
   } | undefined;
   recall?: {
@@ -495,8 +496,11 @@ function renderDreamBlock(
     out.push(`   ${dim('Co-retrieval'.padEnd(14))}${dim('0 pairs')}`
       + `   ${dim('— no co-occurring observations yet')}`);
   } else {
+    // docs_covered counts doc_ids from EVERY channel (memory, skill, observation, remote) — it was
+    // labelled "observations" and divided by the OBSERVATION count alone, which both misnames the set and
+    // lets the percentage exceed 100%. Clamp: the denominator is a floor, not an exact corpus size.
     const pct = corpusTotal > 0
-      ? ((d.co_retrieval.docs_covered / corpusTotal) * 100).toFixed(1)
+      ? Math.min(100, (d.co_retrieval.docs_covered / corpusTotal) * 100).toFixed(1)
       : '0.0';
     out.push(`   ${dim('Co-retrieval'.padEnd(14))}`
       + `${cyanBold(fmtCount(d.co_retrieval.pairs))} pairs`
@@ -812,12 +816,14 @@ function renderEfficiencyBlock(
     out.push(`   ${' '.repeat(14)}${dim(`distilled ${fmtCompact(corpus.work_tokens)} → ${fmtCompact(corpus.stored_tokens)} tok`
       + ` · ${fmtCompact(corpus.coverage.with_data)}/${fmtCompact(corpus.coverage.total)} obs`)}`);
   }
-  out.push(`   ${dim('Embedder'.padEnd(14))}` + (embedder.calls > 0
-    ? `${cyanBold(String(embedder.calls))} calls ${dim('·')} ~${embedder.avg_latency_ms} ms ${dim('·')} ${fmtCount(embedder.tokens_per_s)} tok/s`
-    : dim('— no embeds since worker start')));
-  out.push(`   ${dim('Dedup'.padEnd(14))}` + (dedup.docs_seen > 0
-    ? `${cyanBold(`${dedup.skip_pct}%`)}   ${dim(`${fmtCount(dedup.skipped_unchanged)} / ${fmtCount(dedup.docs_seen)} unchanged`)}`
-    : dim('— no documents indexed since worker start')));
+    // "since worker start" belongs on BOTH branches. It appeared only when the counter was zero, so
+    // the moment there was data to read the window silently vanished and the numbers read as lifetime.
+    out.push(`   ${dim('Embedder'.padEnd(14))}` + (embedder.calls > 0
+      ? `${cyanBold(String(embedder.calls))} calls ${dim('·')} ~${embedder.avg_latency_ms} ms ${dim('·')} ${fmtCount(embedder.tokens_per_s)} tok/s ${dim('since worker start')}`
+      : dim('— no embeds since worker start')));
+    out.push(`   ${dim('Dedup'.padEnd(14))}` + (dedup.docs_seen > 0
+      ? `${cyanBold(`${dedup.skip_pct}%`)}   ${dim(`${fmtCount(dedup.skipped_unchanged)} / ${fmtCount(dedup.docs_seen)} unchanged since worker start`)}`
+      : dim('— no documents indexed since worker start')));
   return out;
 }
 
@@ -847,7 +853,12 @@ function renderTokensBlock(
   if (at) {
     const billed = at.fresh_tokens + at.output_tokens;
     out.push(`   ${dim('All time'.padEnd(14))}${cyanBold(`${fmtCompact(billed)} tok`.padEnd(14))}`
-      + dim(`${fmtCompact(at.fresh_tokens)} in + ${fmtCompact(at.output_tokens)} out · ${fmtCount(at.sessions)} sessions`));
+      // Name BOTH producers. The total bills sessions AND agents, but the label said "N sessions"
+      // only — so the reader divided a two-population total by one population. And say WHEN "all
+      // time" starts: without it the figure has no denominator in time either.
+      + dim(`${fmtCompact(at.fresh_tokens)} in + ${fmtCompact(at.output_tokens)} out · ${fmtCount(at.sessions)} sessions`
+        + (at.agents ? ` + ${fmtCount(at.agents)} agents` : '')
+        + (at.oldest_epoch_ms ? ` since ${new Date(at.oldest_epoch_ms).toISOString().slice(0, 10)}` : '')));
     out.push(`   ${' '.repeat(14)}${dim(`${fmtCompact(at.cache_read_tokens)} cache reads, not counted`)}`);
   } else {
     // Reported null until the first full scan lands, rather than a small wrong number

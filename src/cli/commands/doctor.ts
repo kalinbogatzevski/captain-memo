@@ -45,6 +45,12 @@ export interface Check {
   remedy?: string;
 }
 
+/** The port this captain's worker ACTUALLY runs on. mcp-server.ts, restart.ts and upgrade.ts all read
+ *  CAPTAIN_MEMO_WORKER_PORT; doctor alone hardcoded the default, so on a captain moved to another port
+ *  every probe hit an empty port and doctor reported the worker down while it was serving fine — a
+ *  diagnostic tool confidently misdiagnosing the one thing it exists to check. */
+const WORKER_PORT = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
+
 const checks: Check[] = [];
 
 function record(c: Check): void { checks.push(c); }
@@ -152,7 +158,7 @@ export function workerVerdict(p: {
   project?: string | undefined;
   indexing?: { status?: string; done?: number; total?: number; percent?: number } | undefined;
 }): Check {
-  const at = `:${DEFAULT_WORKER_PORT}`;
+  const at = `:${WORKER_PORT}`;
   if (!p.statsOk) {
     const why = p.statsError ? ` — ${p.statsError}` : '';
     return {
@@ -181,7 +187,7 @@ async function checkWorker(): Promise<void> {
   // The HTTP /health probe is the AUTHORITATIVE liveness signal — lead with it.
   // The Windows Scheduled-Task state has no 'failed' notion, so /health (not the
   // supervisor) decides whether the worker is truly up.
-  const base = `http://127.0.0.1:${DEFAULT_WORKER_PORT}`;
+  const base = `http://127.0.0.1:${WORKER_PORT}`;
   const h = await fetchJson(`${base}/health`);
   if (h.ok && (h.body as { healthy?: boolean }).healthy) {
     const s = await fetchJson(`${base}/stats`);
@@ -215,7 +221,7 @@ async function checkWorkerVersion(): Promise<void> {
   // Check A — does the RUNNING worker match the INSTALLED code? The banner reads the running
   // worker's /stats version, so a stale worker (reinstall that didn't actually restart it) shows
   // here as running < installed.
-  const s = await fetchJson(`http://127.0.0.1:${DEFAULT_WORKER_PORT}/stats`);
+  const s = await fetchJson(`http://127.0.0.1:${WORKER_PORT}/stats`);
   const raw = (s.ok && s.body && typeof (s.body as { version?: unknown }).version === 'string')
     ? (s.body as { version: string }).version
     : null;
@@ -229,7 +235,7 @@ async function checkVectorDim(): Promise<void> {
   // was built at M dims. Every write (remember) throws at vector.add() and vector
   // search silently falls back to keyword-only — reads "work" while writes are dead.
   // The worker measures the embedder's real dim at boot and reports both in /stats.
-  const s = await fetchJson(`http://127.0.0.1:${DEFAULT_WORKER_PORT}/stats`);
+  const s = await fetchJson(`http://127.0.0.1:${WORKER_PORT}/stats`);
   if (!s.ok) return; // worker unreachable — the `worker service` check owns that
   const b = s.body as { embedder?: { dim?: number | null }; vector_store?: { dim?: number } };
   const embDim = b.embedder?.dim ?? null;
@@ -247,7 +253,7 @@ async function checkVectorDim(): Promise<void> {
 }
 
 async function checkCapture(): Promise<void> {
-  const s = await fetchJson(`http://127.0.0.1:${DEFAULT_WORKER_PORT}/stats`);
+  const s = await fetchJson(`http://127.0.0.1:${WORKER_PORT}/stats`);
   if (!s.ok) return; // worker unreachable — the `worker service` check owns that
   const b = s.body as {
     capture?: { sources?: string[] };
