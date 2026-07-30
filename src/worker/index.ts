@@ -897,12 +897,17 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           console.error('[queue] retention sweep failed: ' + (err as Error).message);
         }
       };
-      // NOT on the boot path. Measured: the sweep itself costs 0-1 ms, yet running it during worker
-      // startup turned fed's integration suite from 227 pass / 93 s into 212 pass / 15 fail / 300 s,
-      // and reverting this one file restored it exactly. I could not pin the mechanism — the work is
-      // trivial and the interval is unref'd — so the honest response is not to explain it away but to
-      // keep maintenance off the critical path entirely, which is where it belongs regardless: nothing
-      // a janitor does should be able to delay a worker becoming ready.
+      // NOT on the boot path — on design grounds, not because of a measured defect.
+      //
+      // A retention sweep is housekeeping. Nothing a janitor does should be able to delay a worker
+      // becoming ready, because readiness is what other things wait on with deadlines. The sweep costs
+      // 0-1 ms today; that is a property of the current query and the current data, not a guarantee,
+      // and the cost of being wrong lands on every consumer of startup.
+      //
+      // (Honest history: a boot-path version was blamed for a 227->212 pass, 93s->300s integration
+      // regression. That was misattributed — the same code passes cleanly when the machine is not
+      // loaded, verified across a no-op / delete-only / full-sweep experiment series. The failures were
+      // real but environmental. The deferral stayed because it is right, not because it fixed that.)
       const firstSweep = setTimeout(sweep, 30_000);
       if (typeof firstSweep === 'object' && firstSweep && 'unref' in firstSweep) {
         (firstSweep as { unref: () => void }).unref();
