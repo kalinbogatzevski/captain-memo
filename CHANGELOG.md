@@ -5,6 +5,24 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.44] — 2026-07-30
+
+### Fixed
+
+- **Cross-AI capture re-enqueued a growing session's whole history on every tick.** The dedup key is
+  the session file's `mtime:size`, which changes on every append, and `extract()` has no cursor — it
+  returns the entire file each time. A session growing to N turns therefore cost **N(N+1)/2** enqueues
+  instead of N (a 50-turn codex session: 1,275 items instead of 50), and every one of those is a
+  summarizer LLM call. Seen on a light install: codex at 8,950 observations — 97.8% of the corpus —
+  with 30,564 more queued and 12.1 M tokens distilled. `capture_ingested` now carries an event cursor
+  and only the new tail is enqueued; a file that comes back *shorter* was rotated, so it is re-ingested
+  whole rather than silently skipped.
+  *This stops further amplification but does not shrink a queue that already contains duplicates.*
+- **The queue line now says why it is not draining.** Showing the count was half the job — 30,000
+  waiting looks the same whether it is a backlog being worked through or a queue nothing will ever
+  process. `/stats` has carried `summarizer.last_error` since it was added with nothing rendering it.
+  It now reads `stalled — no summarizer configured` or `retry in 45s — <error>`.
+
 ## [0.27.43] — 2026-07-30
 
 ### Changed
