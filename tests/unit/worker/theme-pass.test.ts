@@ -5,9 +5,10 @@ import type { ThemeCluster } from '../../../src/worker/theme-cluster.ts';
 const cluster = (ids: number[]): ThemeCluster => ({
   members: ids.map(id => ({
     id, type: 'discovery', title: `t${id}`, session_id: `s${id}`,
-    created_at_epoch: 1000 + id, from_auto: 1, from_search: 0, from_drill: 0,
+    created_at_epoch: 1000 + id, project_id: 'p', branch: null,
+    from_auto: 1, from_search: 0, from_drill: 0,
   })),
-  sessionCount: ids.length,
+  sessionCount: ids.length, project_id: 'p', branch: null,
 });
 const draft = { title: 'a durable fact', narrative: '', facts: [], concepts: [] };
 const base = {
@@ -75,6 +76,32 @@ describe('runThemePass', () => {
     });
     expect(r).toEqual({ clustersConsidered: 0, themesWritten: 0, declined: 0, failed: 0, aborted: false });
     expect(judged).toBe(0);
+  });
+
+  // FOUND BY ADVERSARIAL REVIEW. createTheme is a raw INSERT — it writes no chunks, no vectors
+  // and no meta document — while archiving its members, which ARE dropped from every search and
+  // auto-inject surface. Without indexing the theme, the pass removed N observations from
+  // retrieval and put nothing reachable in their place. The writer is therefore async, and its
+  // failure must count as failed rather than reporting a theme nobody can find.
+  test('awaits the writer, so an indexing failure is not reported as a success', async () => {
+    const r = await runThemePass({
+      ...base,
+      clusters: () => [cluster([1, 2, 3])],
+      createTheme: async () => { throw new Error('embedder offline'); },
+    });
+    expect(r.themesWritten).toBe(0);
+    expect(r.failed).toBe(1);
+  });
+
+  test('hands the writer the cluster scope, never a worker-wide default', async () => {
+    const seen: Array<{ project_id: string; branch: string | null }> = [];
+    const c = cluster([1, 2, 3]);
+    c.project_id = 'erp-platform'; c.branch = 'master';
+    await runThemePass({
+      ...base, clusters: () => [c],
+      createTheme: (_d, _ids, scope) => { seen.push(scope); return 1; },
+    });
+    expect(seen).toEqual([{ project_id: 'erp-platform', branch: 'master' }]);
   });
 
   test('yields between clusters so the heartbeat keeps beating', async () => {

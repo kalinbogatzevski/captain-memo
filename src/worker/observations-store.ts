@@ -283,6 +283,21 @@ export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
     name: 'add_paired_tokens_index',
     up: (db) => db.exec('CREATE INDEX IF NOT EXISTS idx_obs_paired_tokens ON observations(work_tokens, stored_tokens) WHERE work_tokens IS NOT NULL'),
   },
+  {
+    // v21 — bring stability back under its own cap. nextStability multiplied without a ceiling,
+    // so `stabilityCapDays` named a bound the code never enforced: on the reference corpus a
+    // 45-day-old row reached 11,730 days (32 years) off 81 searches, and 500 recalls reach
+    // 132,764. Both the JS and the SQL now clamp, but rows written BEFORE that keep their
+    // inflated value until their next recall — and a row that stable may never be recalled
+    // again in a way that would fix it. Clamping here makes the correction immediate.
+    //
+    // Hard-coded 365 rather than read from config on purpose: a migration must produce the same
+    // database on every machine, and CAPTAIN_MEMO_TIDE_STAB_CAP_DAYS differs per install. An
+    // operator running a larger cap simply sees their rows grow back to it.
+    version: 21,
+    name: 'clamp_runaway_stability',
+    up: (db) => db.exec('UPDATE observations SET stability_days = 365 WHERE stability_days > 365'),
+  },
 ];
 
 export type NewObservation = Omit<
@@ -1478,11 +1493,13 @@ export class ObservationsStore {
    */
   themeCandidateRows(limit: number): Array<{
     id: number; type: string; title: string; session_id: string; created_at_epoch: number;
+    project_id: string; branch: string | null;
     from_auto: number; from_search: number; from_drill: number;
   }> {
     return this.db
       .query(
-        `SELECT id, type, title, session_id, created_at_epoch, from_auto, from_search, from_drill
+        `SELECT id, type, title, session_id, created_at_epoch, project_id, branch,
+                from_auto, from_search, from_drill
            FROM observations
           WHERE archived = 0 AND (from_auto + from_search + from_drill) > 0
             AND session_id != 'theme'
@@ -1491,6 +1508,7 @@ export class ObservationsStore {
       )
       .all(limit) as Array<{
         id: number; type: string; title: string; session_id: string; created_at_epoch: number;
+        project_id: string; branch: string | null;
         from_auto: number; from_search: number; from_drill: number;
       }>;
   }
@@ -1779,13 +1797,14 @@ export class ObservationsStore {
               SET ${col} = ${col} + 1,
                   last_surfaced_at = ?,
                   last_surfaced_source = ?,
-                  stability_days = COALESCE(stability_days, ?)
-                    * (1 + ? * ? * (? * 1.0 / (? + COALESCE(stability_days, ?)))),
+                  stability_days = MIN(?, COALESCE(stability_days, ?)
+                    * (1 + ? * ? * (? * 1.0 / (? + COALESCE(stability_days, ?))))),
                   tide_state = 'active',
                   tide_state_changed_at = CASE WHEN tide_state != 'active' THEN ? ELSE tide_state_changed_at END
             WHERE id IN (${placeholders})`,
         )
-        .run(atEpoch, source, S0, tide.stabilityGain, g, tide.stabilityCapDays, tide.stabilityCapDays, S0, atEpoch, ...ids);
+        .run(atEpoch, source, tide.stabilityCapDays, S0, tide.stabilityGain, g,
+          tide.stabilityCapDays, tide.stabilityCapDays, S0, atEpoch, ...ids);
       return;
     }
     this.db

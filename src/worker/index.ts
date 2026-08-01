@@ -1202,7 +1202,13 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     const themeStore = obsStore;
     const judge = buildThemeJudge(opts.summarizerTransport);
     themeTimer = setInterval(() => {
-      if (themePromise || semanticPromise) return;   // never race the fold pass over one corpus
+      // Only a theme run blocks a theme run. Gating on semanticPromise as well starved this
+      // pass outright: both timers share semanticCheckIntervalMs, the semantic one is registered
+      // first and assigns its promise synchronously, so every tick where folding had ANY work to
+      // do skipped themes entirely. They read the same corpus but write disjoint rows — a fold
+      // archives into an existing survivor, a theme mints a new row — and both take their own
+      // transactions, so concurrency is safe.
+      if (themePromise) return;
       const nowS = Math.floor(Date.now() / 1000);
       const lastActivity = themeStore.lastActivityEpoch();
       const idle = isIdle({
@@ -1224,9 +1230,26 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           isProtected: (id) => themeStore.isProtected(id),
         }),
         judge,
-        createTheme: (draft, memberIds) => themeStore.createTheme(draft, memberIds, {
-          project_id: opts.projectId, branch: null, atEpoch: Math.floor(Date.now() / 1000),
-        }),
+        // Files the theme in the CLUSTER's own (project_id, branch), not the worker's — every
+        // member shares that scope by construction. Passing opts.projectId with branch:null
+        // filed cross-project themes under whatever the worker happened to run as.
+        //
+        // Then INDEXES it. createTheme is a raw INSERT: without this the theme has no chunks,
+        // no vectors and no meta document, so it is invisible to /search, to /inject/context
+        // and to repVec — while its members are archived and therefore dropped from those same
+        // surfaces. The pass would have removed N observations from retrieval and put nothing
+        // reachable in their place. Indexing failure re-throws so runThemePass counts it as
+        // failed rather than reporting a theme nobody can find.
+        createTheme: async (draft, memberIds, scope) => {
+          const themeId = themeStore.createTheme(draft, memberIds, {
+            project_id: scope.project_id, branch: scope.branch,
+            atEpoch: Math.floor(Date.now() / 1000),
+          });
+          const row = themeStore.findById(themeId);
+          if (row) await ingestObservation(row);
+          return themeId;
+        },
+
         shouldAbort: () => processBatchPromise != null || (obsQueue?.pendingCount() ?? 0) > 0,
         yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
       })
@@ -1946,7 +1969,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         const sp = url.searchParams;
         const oneOf = <T extends string>(v: string | null, allowed: readonly T[], def: T): T =>
           (v !== null && (allowed as readonly string[]).includes(v)) ? v as T : def;
-        const view = oneOf<RecallView>(sp.get('view'), ['surfaced', 'recalled', 'recent'], 'surfaced');
+        const view = oneOf<RecallView>(sp.get('view'), ['surfaced', 'recalled', 'recent', 'themes'], 'surfaced');
         const sort = oneOf<RecallSort>(sp.get('sort'), ['total', 'auto', 'search', 'drill', 'recency'], 'total');
         const limit = Math.max(1, Math.min(500, Number(sp.get('limit') ?? 50) || 50));
         const offset = Math.max(0, Number(sp.get('offset') ?? 0) || 0);

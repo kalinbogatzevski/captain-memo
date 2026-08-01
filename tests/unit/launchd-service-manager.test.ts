@@ -101,7 +101,10 @@ test('a missing logDir falls back rather than rendering an empty path', () => {
   // "Operation not permitted" that names nothing.
   const out = renderPlist(spec({ logDir: '' }), TEMPLATE);
   expect(out).not.toContain('<string>/captain-memo-worker.log</string>');
-  expect(out).toMatch(/\.captain-memo\/logs\/captain-memo-worker\.log/);
+  // Separator-agnostic: LOGS_DIR is platform-derived, so on Windows this renders
+  // ...\.captain-memo\logs\... The assertion is that the FALLBACK fired, not which
+  // slash the host uses — pinning '/' failed the Windows CI leg for months.
+  expect(out).toMatch(/\.captain-memo[\\/]logs[\\/]captain-memo-worker\.log/);
 });
 
 test('the LaunchAgent logs where the tooling says it does', () => {

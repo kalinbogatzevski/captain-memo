@@ -10,9 +10,10 @@ import type { ThemeCluster } from '../../../src/worker/theme-cluster.ts';
 const cluster = (ids: number[]): ThemeCluster => ({
   members: ids.map(id => ({
     id, type: 'discovery', title: `title ${id}`, session_id: `s${id}`,
-    created_at_epoch: 1000 + id, from_auto: 1, from_search: 0, from_drill: 0,
+    created_at_epoch: 1000 + id, project_id: 'p', branch: null,
+    from_auto: 1, from_search: 0, from_drill: 0,
   })),
-  sessionCount: ids.length,
+  sessionCount: ids.length, project_id: 'p', branch: null,
 });
 const reply = (obj: unknown) => async () => ({ content: [{ type: 'text' as const, text: JSON.stringify(obj) }] });
 const good = {
@@ -35,7 +36,7 @@ describe('buildThemeJudge', () => {
   test('never calls the model on an empty cluster', async () => {
     let called = false;
     const j = buildThemeJudge((async () => { called = true; return { content: [] }; }) as never);
-    expect(await j({ members: [], sessionCount: 0 })).toBeNull();
+    expect(await j({ members: [], sessionCount: 0, project_id: 'p', branch: null })).toBeNull();
     expect(called).toBe(false);
   });
 

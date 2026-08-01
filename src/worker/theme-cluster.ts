@@ -28,6 +28,8 @@ export interface ThemeRow {
   title: string;
   session_id: string;
   created_at_epoch: number;
+  project_id: string;
+  branch: string | null;
   from_auto: number;
   from_search: number;
   from_drill: number;
@@ -38,6 +40,9 @@ export interface ThemeCluster {
   members: ThemeRow[];
   /** Distinct sessions represented. Always >= 2 — that is what makes it a theme. */
   sessionCount: number;
+  /** The single (project_id, branch) every member shares. The theme is filed here. */
+  project_id: string;
+  branch: string | null;
 }
 
 export interface ThemeClusterDeps {
@@ -69,7 +74,36 @@ const total = (r: ThemeRow): number => r.from_auto + r.from_search + r.from_dril
 export function findThemeClusters(deps: ThemeClusterDeps): ThemeCluster[] {
   const isBlocked = deps.blocked ?? mergeBlocked;
   const eligible = deps.rows.filter(r => !deps.isProtected(r.id));
-  const sorted = [...eligible].sort((a, b) => total(b) - total(a) || a.id - b.id);
+
+  // PARTITION BY (project_id, branch) first — the same scoping mergeDuplicateGroup enforces and
+  // groupSurfacedRows applies for folds. Without it, three unrelated projects that phrase a bug
+  // the same way ("Fix the login redirect loop") cluster on cosine alone, get archived together,
+  // and the surviving theme is filed under whichever project_id the worker happens to run as.
+  // Measured on the live corpus before this fix: ALL 5 clusters the next pass would have judged
+  // crossed a scope boundary, 4 of 5 crossed project_id itself.
+  const partitions = new Map<string, ThemeRow[]>();
+  for (const r of eligible) {
+    const k = JSON.stringify([r.project_id, r.branch]);
+    const b = partitions.get(k);
+    if (b) b.push(r); else partitions.set(k, [r]);
+  }
+
+  const out: ThemeCluster[] = [];
+  for (const bucket of partitions.values()) {
+    if (out.length >= deps.maxClusters) break;
+    out.push(...clusterOnePartition(bucket, deps, isBlocked, deps.maxClusters - out.length));
+  }
+  return out.slice(0, deps.maxClusters);
+}
+
+/** Cluster within ONE (project_id, branch) partition. Every member shares the scope by construction. */
+function clusterOnePartition(
+  rows0: ThemeRow[],
+  deps: ThemeClusterDeps,
+  isBlocked: (a: string, b: string) => boolean,
+  budget: number,
+): ThemeCluster[] {
+  const sorted = [...rows0].sort((a, b) => total(b) - total(a) || a.id - b.id);
 
   const vecs = new Map<number, Float32Array>();
   for (const r of sorted) {
@@ -80,7 +114,7 @@ export function findThemeClusters(deps: ThemeClusterDeps): ThemeCluster[] {
   const out: ThemeCluster[] = [];
   const claimed = new Set<number>();
   for (const seed of sorted) {
-    if (out.length >= deps.maxClusters) break;
+    if (out.length >= budget) break;
     if (claimed.has(seed.id)) continue;
     const sv = vecs.get(seed.id);
     if (!sv) continue;                                   // fail-closed
@@ -100,7 +134,10 @@ export function findThemeClusters(deps: ThemeClusterDeps): ThemeCluster[] {
     if (sessions.size < 2) continue;                     // same-session ⇒ stage 1's job
 
     for (const m of members) claimed.add(m.id);
-    out.push({ members, sessionCount: sessions.size });
+    out.push({
+      members, sessionCount: sessions.size,
+      project_id: seed.project_id, branch: seed.branch,   // shared by construction
+    });
   }
   return out;
 }

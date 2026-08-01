@@ -29,6 +29,7 @@ test('dry run reports what it WOULD delete and changes nothing', () => {
   const r = queue.dedupePending({ apply: false });
   expect(r.duplicate_pending).toBe(1);
   expect(queue.pendingCount()).toBe(before);   // untouched
+  queue.close();   // Windows cannot unlink an open file; POSIX can, which hid this
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -38,6 +39,7 @@ test('keeps ONE pending row per (session, prompt) and drops the rest', () => {
   queue.enqueue(ev('s1', 2));
   queue.dedupePending({ apply: true });
   expect(queue.pendingCount()).toBe(2);        // turn 1 once, turn 2 once
+  queue.close();   // Windows cannot unlink an open file; POSIX can, which hid this
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -50,6 +52,7 @@ test('drops a pending row whose turn was ALREADY summarised (status done)', () =
   const r = queue.dedupePending({ apply: true });
   expect(r.duplicate_of_done).toBe(1);
   expect(queue.pendingCount()).toBe(1);        // only the new turn survives
+  queue.close();   // Windows cannot unlink an open file; POSIX can, which hid this
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -61,6 +64,7 @@ test('NEVER touches rows that are in flight', () => {
   // the in-flight row is untouched and its pending twin is left alone too — a row being summarised
   // right now must not have its only sibling deleted out from under the worker.
   expect(queue.pendingCount()).toBe(1);
+  queue.close();   // Windows cannot unlink an open file; POSIX can, which hid this
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -70,5 +74,6 @@ test('a queue with no duplicates is left entirely alone', () => {
   const r = queue.dedupePending({ apply: true });
   expect(r.duplicate_pending + r.duplicate_of_done).toBe(0);
   expect(queue.pendingCount()).toBe(3);
+  queue.close();   // Windows cannot unlink an open file; POSIX can, which hid this
   rmSync(dir, { recursive: true, force: true });
 });

@@ -14,8 +14,10 @@ import { findThemeClusters, type ThemeRow } from '../../../src/worker/theme-clus
 const at = (deg: number) => Float32Array.from([
   Math.cos((deg * Math.PI) / 180), Math.sin((deg * Math.PI) / 180), 0,
 ]);
-const row = (id: number, title: string, session: string, total = 1): ThemeRow => ({
+const row = (id: number, title: string, session: string, total = 1,
+             project = 'p', branch: string | null = null): ThemeRow => ({
   id, type: 'discovery', title, session_id: session, created_at_epoch: 1000 + id,
+  project_id: project, branch,
   from_auto: total, from_search: 0, from_drill: 0,
 });
 const vecs = (m: Record<number, Float32Array>) => (id: number) => m[id] ?? null;
@@ -96,6 +98,60 @@ describe('findThemeClusters', () => {
     const cs = findThemeClusters({ ...base, rows, representativeVector: vecs(vm) });
     const all = cs.flatMap(c => c.members.map(m => m.id));
     expect(new Set(all).size).toBe(all.length);
+  });
+
+  // FOUND BY ADVERSARIAL REVIEW, verified against the live corpus: before partitioning, ALL 5
+  // clusters the next pass would have judged crossed a scope boundary and 4 of 5 crossed
+  // project_id. Three unrelated repos phrasing a bug the same way would have been archived
+  // together beneath one theme filed under whichever project the worker happened to run as.
+  describe('scope', () => {
+    test('never clusters across project_id', () => {
+      const rows = [
+        row(1, 'Fix the login redirect loop', 's1', 3, 'erp-platform'),
+        row(2, 'Fix the login redirect loop', 's2', 2, 'captain-hub'),
+        row(3, 'Fix the login redirect loop', 's3', 1, '123net_aelita'),
+      ];
+      expect(findThemeClusters({
+        ...base, rows, representativeVector: vecs({ 1: at(0), 2: at(1), 3: at(2) }),
+      })).toEqual([]);
+    });
+
+    test('never clusters across branch within one project', () => {
+      const rows = [
+        row(1, 'same words', 's1', 3, 'p', 'master'),
+        row(2, 'same words', 's2', 2, 'p', 'feature/x'),
+        row(3, 'same words', 's3', 1, 'p', 'master'),
+      ];
+      expect(findThemeClusters({
+        ...base, rows, representativeVector: vecs({ 1: at(0), 2: at(1), 3: at(2) }),
+      })).toEqual([]);   // only 2 in master ⇒ under minMembers
+    });
+
+    test('a cluster reports the scope it is filed under', () => {
+      const rows = [
+        row(1, 'a', 's1', 3, 'erp-platform', 'master'),
+        row(2, 'b', 's2', 2, 'erp-platform', 'master'),
+        row(3, 'c', 's3', 1, 'erp-platform', 'master'),
+      ];
+      const cs = findThemeClusters({
+        ...base, rows, representativeVector: vecs({ 1: at(0), 2: at(2), 3: at(4) }),
+      });
+      expect(cs.length).toBe(1);
+      expect(cs[0]!.project_id).toBe('erp-platform');
+      expect(cs[0]!.branch).toBe('master');
+    });
+
+    test('two projects each get their own theme rather than one merged cluster', () => {
+      const rows = [
+        row(1, 'a', 's1', 6, 'A'), row(2, 'a', 's2', 5, 'A'), row(3, 'a', 's3', 4, 'A'),
+        row(4, 'a', 's4', 3, 'B'), row(5, 'a', 's5', 2, 'B'), row(6, 'a', 's6', 1, 'B'),
+      ];
+      const vm = { 1: at(0), 2: at(1), 3: at(2), 4: at(0), 5: at(1), 6: at(2) };
+      const cs = findThemeClusters({ ...base, rows, representativeVector: vecs(vm) });
+      expect(cs.length).toBe(2);
+      expect(cs.map(c => c.project_id).sort()).toEqual(['A', 'B']);
+      for (const c of cs) expect(new Set(c.members.map(m => m.project_id)).size).toBe(1);
+    });
   });
 
   test('maxClusters caps the work', () => {

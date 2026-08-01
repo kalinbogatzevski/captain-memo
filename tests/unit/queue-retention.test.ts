@@ -37,6 +37,7 @@ test('prunes done rows older than the window, keeps recent ones', () => {
   const removed = queue.pruneDone(now - 14 * DAY);
   expect(removed).toBe(1);
   expect(queue.doneCount()).toBe(1);
+  queue.close();   // Windows cannot unlink an open file; POSIX can, which hid this
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -49,6 +50,7 @@ test('NEVER prunes pending, processing, or failed work', () => {
   expect(queue.pruneDone(now + DAY)).toBe(0);       // window covers everything, yet nothing goes
   expect(queue.pendingCount()).toBeGreaterThan(0);
   expect(inflight).toBeGreaterThan(0);
+  queue.close();   // Windows cannot unlink an open file; POSIX can, which hid this
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -67,5 +69,6 @@ test('reclaims disk — a DELETE alone leaves the file just as large', () => {
 
   expect(queue.doneCount()).toBe(0);
   expect(after).toBeLessThan(before / 2);   // the file actually shrank, not just the row count
+  queue.close();   // Windows cannot unlink an open file; POSIX can, which hid this
   rmSync(dir, { recursive: true, force: true });
 });

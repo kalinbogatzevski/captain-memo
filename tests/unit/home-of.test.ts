@@ -10,6 +10,7 @@
 
 import { test, expect } from 'bun:test';
 import { homedir, userInfo } from 'os';
+import { isAbsolute } from 'path';
 import { homeOf } from '../../src/shared/platform.ts';
 
 test('no argument resolves the current user, with no subprocess', () => {
@@ -32,7 +33,10 @@ test('an empty username is treated as "me", never as a lookup', () => {
 test('an unknown user yields a conventional path, never an empty string', () => {
   // Whatever the platform answers, the contract is that the result is usable: an empty
   // string is the one return value that corrupts callers instead of failing them.
+  // Asserted as isAbsolute rather than startsWith('/'): the contract is "a usable absolute
+  // path", and on Windows that is C:\\Users\\name. The old check encoded the author's platform
+  // rather than the stated contract, and failed the Windows CI leg for months.
   const h = homeOf('definitely-not-a-real-user-9f3a2b');
   expect(h.length).toBeGreaterThan(1);
-  expect(h.startsWith('/')).toBe(true);
+  expect(isAbsolute(h)).toBe(true);
 });

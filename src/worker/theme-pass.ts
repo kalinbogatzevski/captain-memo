@@ -19,8 +19,13 @@ export interface ThemePassDeps {
   clusters: () => ThemeCluster[];
   /** Haiku wrapper. Returns null to decline — never throws (see theme-judge.ts). */
   judge: (cluster: ThemeCluster) => Promise<ThemeDraft | null>;
-  /** Insert the theme and archive its members beneath it. Returns the new theme's id. */
-  createTheme: (draft: ThemeDraft, memberIds: number[]) => number;
+  /** Insert the theme, archive its members beneath it, and INDEX it so it is retrievable.
+   *  Async because indexing embeds. Receives the cluster's scope so the theme is filed where
+   *  its members live rather than wherever the worker happens to be pointed. */
+  createTheme: (
+    draft: ThemeDraft, memberIds: number[],
+    scope: { project_id: string; branch: string | null },
+  ) => Promise<number> | number;
   /** True when ingest/embedding work arrived — stop before spending another model call. */
   shouldAbort: () => boolean;
   yieldToLoop: () => Promise<void>;
@@ -47,7 +52,8 @@ export async function runThemePass(deps: ThemePassDeps): Promise<ThemePassResult
     const draft = await deps.judge(cluster);
     if (!draft) { res.declined++; await deps.yieldToLoop(); continue; }
     try {
-      deps.createTheme(draft, cluster.members.map(m => m.id));
+      await deps.createTheme(draft, cluster.members.map(m => m.id),
+        { project_id: cluster.project_id, branch: cluster.branch });
       res.themesWritten++;
     } catch {
       // A failed write leaves the cluster exactly as it was (createTheme is transactional), so

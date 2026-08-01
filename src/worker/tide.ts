@@ -202,5 +202,11 @@ export function nextStability(
   const S = currentS ?? channelS0(channel, cfg);
   const g = cfg.src[source];
   const fS = cfg.stabilityCapDays / (cfg.stabilityCapDays + S);
-  return S * (1 + cfg.stabilityGain * g * fS);
+  // CLAMPED. fS alone only SLOWS growth — S * (1 + k*fS) is strictly increasing and unbounded,
+  // so "cap" named something the code never enforced. On a real corpus one row reached 11,730
+  // days (32 years) off 81 searches while being 45 days old, and 500 recalls reach 132,764.
+  // A row that stable can never ebb: it is permanently anchored without anyone anchoring it,
+  // which is precisely the outcome tiering exists to prevent. The saturation term still shapes
+  // the approach; this makes the ceiling real.
+  return Math.min(cfg.stabilityCapDays, S * (1 + cfg.stabilityGain * g * fS));
 }
