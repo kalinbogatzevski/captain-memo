@@ -21,7 +21,12 @@ const row = (id: number, title: string, session: string, total = 1,
   from_auto: total, from_search: 0, from_drill: 0,
 });
 const vecs = (m: Record<number, Float32Array>) => (id: number) => m[id] ?? null;
-const base = { cosineThreshold: 0.93, minMembers: 3, maxClusters: 10, isProtected: () => false };
+// Co-retrieval defaults to "always co-recalled" in most tests so the older cases keep asserting
+// what they were written to assert; the dedicated block below drives it directly.
+const base = {
+  cosineThreshold: 0.93, minMembers: 3, maxClusters: 10, isProtected: () => false,
+  coRetrieval: () => 1,
+};
 
 describe('findThemeClusters', () => {
   test('clusters three cross-session restatements of one standing fact', () => {
@@ -151,6 +156,51 @@ describe('findThemeClusters', () => {
       expect(cs.length).toBe(2);
       expect(cs.map(c => c.project_id).sort()).toEqual(['A', 'B']);
       for (const c of cs) expect(new Set(c.members.map(m => m.project_id)).size).toBe(1);
+    });
+  });
+
+  // THE PAGE'S ACTUAL PROMISE: "grouped by what you recall together — not merely by what shares
+  // vocabulary". Cosine alone groups things that READ alike, which is the weaker claim. Requiring
+  // co-retrieval evidence means a theme only forms over observations the user has genuinely
+  // pulled up in the same breath. 355,315 such pairs exist on the reference corpus.
+  describe('co-retrieval', () => {
+    const rows = [
+      row(1, 'the same conclusion, phrasing one', 's1', 3),
+      row(2, 'the same conclusion, phrasing two', 's2', 2),
+      row(3, 'the same conclusion, phrasing three', 's3', 1),
+    ];
+    const vm = { 1: at(0), 2: at(2), 3: at(4) };   // all well above the cosine threshold
+
+    test('refuses a cluster whose members have never been recalled together', () => {
+      expect(findThemeClusters({
+        ...base, rows, representativeVector: vecs(vm), coRetrieval: () => 0,
+      })).toEqual([]);
+    });
+
+    test('forms the cluster when the recall evidence is there', () => {
+      const cs = findThemeClusters({
+        ...base, rows, representativeVector: vecs(vm), coRetrieval: () => 0.5,
+      });
+      expect(cs.length).toBe(1);
+      expect(cs[0]!.members.length).toBe(3);
+    });
+
+    test('drops the member that shares words but was never recalled alongside', () => {
+      const cs = findThemeClusters({
+        ...base,
+        rows: [...rows, row(4, 'the same conclusion, phrasing four', 's4', 1)],
+        representativeVector: vecs({ ...vm, 4: at(6) }),
+        coRetrieval: (a, b) => (a === 4 || b === 4 ? 0 : 1),
+      });
+      expect(cs.length).toBe(1);
+      expect(cs[0]!.members.map(m => m.id).sort()).toEqual([1, 2, 3]);   // 4 excluded
+    });
+
+    test('honours the threshold, not merely non-zero evidence', () => {
+      expect(findThemeClusters({
+        ...base, rows, representativeVector: vecs(vm),
+        coRetrieval: () => 0.01, coRetrievalThreshold: 0.1,
+      })).toEqual([]);
     });
   });
 

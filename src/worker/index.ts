@@ -33,6 +33,8 @@ import { findSemanticGroups } from './semantic-candidates.ts';
 import { findThemeClusters } from './theme-cluster.ts';
 import { buildThemeJudge } from './theme-judge.ts';
 import { runThemePass } from './theme-pass.ts';
+import { loadDreamInputs, pairKey } from '../dreaming/load.ts';
+import { coRetrievalSimilarity } from '../dreaming/distance.ts';
 import { isIdle } from './idle.ts';
 import { runQmSupersedeSlice, applySupersedeDemotion } from './supersede.ts';
 import { setWorkNote, listLocalActive, clearWorkNote, overlapsAgainst, repoOverlapsAgainst, groupRepoContention, repoActiveHolders, type SetWorkNoteInput } from './work-notes.ts';
@@ -1220,7 +1222,21 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       if (!idle) return;
 
       const startedAt = nowS;
-      themePromise = runThemePass({
+      // Load the co-retrieval evidence ONCE per pass. This is the signal that makes a theme a
+      // theme rather than a vocabulary match: two observations the user keeps pulling up in the
+      // same breath are one topic whatever words they use. It comes from the recall audit log,
+      // which has been accumulating since long before this pass existed — 355k pairs over 20k
+      // observations on the reference corpus. Reading it costs I/O, but the pass is rare and
+      // already does a whole-corpus scan.
+      themePromise = (async () => {
+        const dream = await loadDreamInputs(0, opts.projectId).catch(() => null);
+        const surfaces = themeStore.surfaceCounts();
+        const coRetrieval = (a: number, b: number): number => {
+          if (!dream) return 0;                       // no audit log ⇒ no evidence ⇒ no themes
+          const n = dream.coOccurrence.get(pairKey(a, b)) ?? 0;
+          return n === 0 ? 0 : coRetrievalSimilarity(n, surfaces.get(a) ?? 0, surfaces.get(b) ?? 0);
+        };
+        return runThemePass({
         clusters: () => findThemeClusters({
           rows: themeStore.themeCandidateRows(qmConfig.dedupWindow),
           representativeVector: repVec,
@@ -1228,6 +1244,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           minMembers: qmConfig.themeMinMembers,
           maxClusters: qmConfig.themeMaxClusters,
           isProtected: (id) => themeStore.isProtected(id),
+          coRetrieval,
         }),
         judge,
         // Files the theme in the CLUSTER's own (project_id, branch), not the worker's — every
@@ -1249,10 +1266,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           if (row) await ingestObservation(row);
           return themeId;
         },
-
         shouldAbort: () => processBatchPromise != null || (obsQueue?.pendingCount() ?? 0) > 0,
         yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
-      })
+        });
+      })()
         .then(r => {
           themeStore.recordQmRun({ job: 'theme', startedAt, finishedAt: Math.floor(Date.now() / 1000),
             rowsScanned: r.clustersConsidered, merges: r.themesWritten, skippedNoVector: r.declined,

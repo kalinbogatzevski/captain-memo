@@ -1622,6 +1622,17 @@ export class ObservationsStore {
     }));
   }
 
+  /** id → total times surfaced, for the co-retrieval ratio. The denominator in
+   *  coRetrievalSimilarity is each side's own surfacing count, so a row that appears everywhere
+   *  cannot dominate a pair simply by being popular. */
+  surfaceCounts(): Map<number, number> {
+    const rows = this.db
+      .query(`SELECT id, from_auto + from_search + from_drill AS n FROM observations
+               WHERE archived = 0 AND (from_auto + from_search + from_drill) > 0`)
+      .all() as Array<{ id: number; n: number }>;
+    return new Map(rows.map(r => [r.id, r.n]));
+  }
+
   /** Pin a row so the Tide/Quartermaster never ebbs or folds it. */
   markAnchored(id: number): void {
     this.db.query('UPDATE observations SET is_anchored = 1 WHERE id = ?').run(id);

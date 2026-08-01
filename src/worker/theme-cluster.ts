@@ -58,8 +58,19 @@ export interface ThemeClusterDeps {
   maxClusters: number;
   /** Drilled or anchored ⇒ the machine never touches it, same rule as the fold path. */
   isProtected: (obsId: number) => boolean;
+  /** How often these two were surfaced TOGETHER, as a Jaccard-style ratio in [0,1]
+   *  (see dreaming/distance.ts coRetrievalSimilarity). This is the signal that makes a theme a
+   *  theme rather than a vocabulary match: two observations the user keeps pulling up in the
+   *  same breath are one topic, whatever words they happen to use. */
+  coRetrieval: (a: number, b: number) => number;
+  /** Minimum co-retrieval evidence to join a cluster. */
+  coRetrievalThreshold?: number;
   blocked?: (titleA: string, titleB: string) => boolean;
 }
+
+/** Any shared surfacing at all is evidence; the ratio is naturally small because it is divided by
+ *  every appearance of BOTH rows. Measured pairs on the reference corpus cluster well under 0.1. */
+const DEFAULT_CO_RETRIEVAL_MIN = 0.02;
 
 const total = (r: ThemeRow): number => r.from_auto + r.from_search + r.from_drill;
 
@@ -104,6 +115,7 @@ function clusterOnePartition(
   budget: number,
 ): ThemeCluster[] {
   const sorted = [...rows0].sort((a, b) => total(b) - total(a) || a.id - b.id);
+  const coRetMin = deps.coRetrievalThreshold ?? DEFAULT_CO_RETRIEVAL_MIN;
 
   const vecs = new Map<number, Float32Array>();
   for (const r of sorted) {
@@ -125,6 +137,11 @@ function clusterOnePartition(
       const cv = vecs.get(cand.id);
       if (!cv) continue;                                 // fail-closed
       if (cosine(sv, cv) < deps.cosineThreshold) continue;
+      // BOTH signals required. Cosine says these READ alike; co-retrieval says you have actually
+      // used them as one thing. Similarity alone groups every observation that shares a
+      // vocabulary — which on a real corpus is most of a project — and that is the failure the
+      // whole design exists to avoid.
+      if (deps.coRetrieval(seed.id, cand.id) < coRetMin) continue;
       if (isBlocked(seed.title, cand.title)) continue;
       members.push(cand);
     }
