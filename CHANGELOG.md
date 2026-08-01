@@ -5,6 +5,15 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.28.1] — 2026-08-01
+
+### Fixed
+
+- The last of the Windows CI failures. `reclaims disk` was timing out rather than failing: it
+  inserted 2,000 rows and then vacuumed, which the runner's disk could not finish inside the
+  30-second limit. 600 rows proves the same behaviour decisively (876 KB down to 24 KB) and runs
+  in about a second. With this the Windows leg is green for the first time in months.
+
 ## [0.28.0] — 2026-08-01
 
 **The Captain now consolidates its own memory.** Everything below shipped in one day as a run of
