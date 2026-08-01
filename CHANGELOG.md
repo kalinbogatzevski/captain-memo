@@ -5,6 +5,50 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.28.0] — 2026-08-01
+
+**The Captain now consolidates its own memory.** Everything below shipped in one day as a run of
+patch releases; this is the version that names what they add up to.
+
+Until now the corpus only ever grew. Duplicates piled up, the same fact got re-learned in session
+after session, and nothing ever tidied it. The housekeeping passes existed but were opt-in, which
+in practice meant nobody had them — on the heaviest known install, version-supersede had recorded
+**zero runs in two months**. Consolidation is now on by default, runs only when your machine is
+idle, and every single thing it does is reversible.
+
+### Added
+
+- **Semantic folding.** Two observations that describe the same event in different words are now
+  found and folded. Previously dedup gated on *title* similarity and only then confirmed with
+  embeddings, which measured on a 124k-row corpus meant the embedding check never fired once — the
+  title gate filtered everything first. Cosine now finds; every existing guard still applies.
+
+- **Themes.** When the same standing fact is learned again in a *different* session weeks later,
+  folding it would erase the evidence that it never stuck. Instead the Captain writes one theme
+  stating the durable fact, with the originals archived beneath it and restorable. Clusters form
+  only where semantic similarity **and** co-retrieval evidence agree — grouping by what you
+  actually recall together, not merely by what shares vocabulary.
+
+- **An idle scheduler.** The heavy passes wait for a genuinely quiet machine: nothing queued, no
+  assistant mid-session, nothing recalled for thirty minutes. A busy week simply defers them.
+
+- **`captain-memo theme list | show <id> | undo <id>`**, a **Themes view in `top`** (uppercase
+  `T`), a **Housekeeping section** in `captain-memo stats`, and a **countdown** telling you when
+  the next pass will start — or what is holding it back.
+
+### Fixed
+
+- The merge guard was inert on exactly the titles it existed for: dotted versions leaked their
+  component digits, so any two version bumps sharing a `0` or a `1` looked like duplicates. Ten
+  distinct releases sat in one group, one command away from collapsing into a single row.
+- `captain-memo dedup --apply` folded rows the automatic sweep protects — the manual tool was
+  more destructive than the automatic one.
+- The supersede sweep never converged, re-proposing finished work every hour forever.
+- Memory stability grew without a ceiling: a 45-day-old row had reached the equivalent of 32
+  years, making it permanently un-forgettable. A migration brings existing rows back into range.
+- "Top recalled" printed a number it was not sorted by.
+- The Windows CI leg, red for months.
+
 ## [0.27.55] — 2026-08-01
 
 ### Changed
