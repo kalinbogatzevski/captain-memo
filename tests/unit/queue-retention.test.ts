@@ -58,7 +58,10 @@ test('reclaims disk — a DELETE alone leaves the file just as large', () => {
   const { queue, dir, path } = q();
   const now = Math.floor(Date.now() / 1000);
   const ids: number[] = [];
-  for (let i = 0; i < 2000; i++) ids.push(queue.enqueue(ev('s' + i, 1)));
+  // 600 rather than 2000: the point is that VACUUM+checkpoint actually shrinks the file, and
+  // 600 proves it decisively (876 KB -> 24 KB, ratio 0.028). 2000 pushed the Windows CI runner
+  // past the 30s test timeout on I/O alone — a slow disk, not a broken reclaim.
+  for (let i = 0; i < 600; i++) ids.push(queue.enqueue(ev('s' + i, 1)));
   queue.takeBatch(5000); queue.markDone(ids);
   for (const id of ids) queue._setProcessedAt(id, now - 30 * DAY);
   const before = statSync(path).size;
