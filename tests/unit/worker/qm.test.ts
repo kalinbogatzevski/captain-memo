@@ -38,10 +38,10 @@ test('semantic opt-OUT via env, and its knobs are tunable', () => {
   expect(loadQmConfig({ CAPTAIN_MEMO_QM_SEMANTIC_MIN_IDLE_S: '600' }).semanticMinIdleSeconds).toBe(600);
   expect(loadQmConfig({ CAPTAIN_MEMO_QM_SEMANTIC_COSINE: 'nonsense' }).semanticCosineThreshold).toBe(0.95);
 });
-test('theme defaults: ON, wider cosine than the fold, 3-member minimum', () => {
+test('theme defaults: ON, wider cosine than the fold, 2-member minimum', () => {
   expect(DEFAULT_QM_CONFIG.themeEnabled).toBe(true);
   expect(DEFAULT_QM_CONFIG.themeCosineThreshold).toBe(0.93);
-  expect(DEFAULT_QM_CONFIG.themeMinMembers).toBe(3);
+  expect(DEFAULT_QM_CONFIG.themeMinMembers).toBe(2);   // a pair IS the phenomenon for themes
   expect(DEFAULT_QM_CONFIG.themeMaxClusters).toBe(5);
 });
 // A theme is additive and reversible where a fold archives a row into another's identity, and

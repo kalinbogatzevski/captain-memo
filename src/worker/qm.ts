@@ -75,7 +75,18 @@ export interface QmConfig {
    *  afford a wider net — and the judge is a second, semantic gate the fold path has no
    *  equivalent of. 312 unblocked pairs sit in the 0.93 band on the reference corpus. */
   themeCosineThreshold: number;
-  /** Minimum rows for a theme. Two is a pair, not a theme. */
+  /** Minimum rows for a theme.
+   *
+   *  Was 3, set by analogy to the fold path — "two is a pair, and summarising it costs a model
+   *  call to restate what the higher-count row already says". That reasoning does not transfer.
+   *  In a FOLD the survivor already states the fact, so a pair is redundant. A theme is about the
+   *  opposite thing: the same standing fact learned in session A and AGAIN in session B weeks
+   *  later. Two separate learning events is the phenomenon, not a weak version of it.
+   *
+   *  Measured on a 13,826-row surfaced corpus: minMembers 3 yields 4 candidate clusters, 2 yields
+   *  10. The cross-session requirement is what makes the signal rare; this threshold was quietly
+   *  discarding more than half of it. The judge remains the real gate and declines most of what
+   *  it is shown, so the cost of looking is bounded. */
   themeMinMembers: number;
   /** Max clusters judged per pass — each one is a model call. */
   themeMaxClusters: number;
@@ -132,7 +143,7 @@ export const DEFAULT_QM_CONFIG: QmConfig = {
   semanticMinIdleSeconds: 1_800,      // 30 min quiet before anything starts
   themeEnabled: true,
   themeCosineThreshold: 0.93,
-  themeMinMembers: 3,
+  themeMinMembers: 2,
   themeMaxClusters: 5,                // 5 model calls per idle pass; themes accrue slowly
   forcedTickMs: 30_000,               // while forcing: every 30s, not every 10 min
 };

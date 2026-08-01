@@ -214,7 +214,7 @@ export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
   },
   {
     // v13 — C1 vendor provenance: tag each observation with the AI agent that
-    // authored it, mirroring how the fleet tags origin_peer at the captain
+    // authored it, mirroring how federation tags origin_peer at the captain
     // layer. Nullable with NO default: pre-v13 rows stay NULL (rendered
     // 'unknown' to consumers), and a hook that sends no agent signal also
     // stores NULL. Purely additive — the live recall path never filters on
@@ -1493,6 +1493,13 @@ export class ObservationsStore {
    *
    * Themes themselves (session_id 'theme') are excluded: a theme of themes would compound
    * generated text on generated text, drifting further from anything actually observed.
+   *
+   * KNOWN CEILING — this sees the SURFACED ninth of the corpus, not the corpus. On the reference
+   * install that is 13,835 of 124,799 live rows (11.1%). The filter is wrong in principle for
+   * themes for exactly the reason versionCandidateRows documents (a fact LEARNED repeatedly is
+   * not a fact RETRIEVED repeatedly), but it is load-bearing in practice: all-pairs over the full
+   * corpus is 1.34 BILLION in-partition comparisons, ~48 minutes per pass. The real fix is k-NN
+   * against the vector index instead of brute force — see docs/specs/2026-08-02-theme-reach.md.
    */
   themeCandidateRows(limit: number): Array<{
     id: number; type: string; title: string; session_id: string; created_at_epoch: number;
