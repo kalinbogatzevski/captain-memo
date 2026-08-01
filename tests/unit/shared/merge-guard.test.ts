@@ -72,4 +72,71 @@ describe('mergeBlocked', () => {
   test('does not block when both sides share a contraction (same polarity)', () => {
     expect(mergeBlocked("reindex isn't resumable", "reindex isn't resumable yet")).toBe(false);
   });
+
+  // --- Rule 2: a dotted version must not leak its own components as bare numbers ---
+  // identifierSet ran /\b\d+\b/ over the raw title, so "0.10.1" contributed 0, 10 and 1 on top of
+  // the dotted identifier itself. Any two version bumps then shared a component — nearly always
+  // "0" or "1" — and rule 2 reads ONE shared identifier as "not blocked". The guard was therefore
+  // inert on exactly the titles it matters most for.
+  //
+  // Found on a live corpus: this group was one merge away from collapsing ten distinct release
+  // events into one row. Version facts are supersede's job (older gets demoted, both survive),
+  // never dedup's (the member is archived and the history is gone).
+  describe('dotted versions', () => {
+    test('blocks two different version bumps that merely share a component digit', () => {
+      expect(mergeBlocked(
+        'Bump captain-memo version from 0.10.1 to 0.12.0',
+        'Bump captain-memo version from 0.7.0 to 0.7.1',
+      )).toBe(true);
+    });
+
+    test('blocks 0.5.3 -> 0.5.4 against 0.12.1 (shares 0 and 1)', () => {
+      expect(mergeBlocked(
+        'Bump captain-memo version 0.5.3 → 0.5.4',
+        'Bump captain-memo plugin version to 0.12.1',
+      )).toBe(true);
+    });
+
+    test('still merges two phrasings of the SAME bump', () => {
+      expect(mergeBlocked(
+        'Bump captain-memo version to 0.5.4',
+        'Bumped captain-memo to version 0.5.4',
+      )).toBe(false);
+    });
+
+    // A bare number that is genuinely bare must keep working as a shared identifier.
+    test('does not block when the shared identifier is a real bare number', () => {
+      expect(mergeBlocked('Retry the request 3 times', 'Retries the request 3 times')).toBe(false);
+    });
+
+    // Consecutive bumps CHAIN: the "to" of one is the "from" of the next, so they legitimately
+    // share a version and rule 2 reads any shared identifier as permission to merge. Two adjacent
+    // releases are still two events. A differing version SET is decisive on its own.
+    test('blocks a chained bump that shares its boundary version', () => {
+      expect(mergeBlocked(
+        'Bump erp-calendar.css import version from 3.11 to 3.12',
+        'Bump erp-calendar.css import version from 3.12 to 3.13',
+      )).toBe(true);
+    });
+
+    test('blocks when one side names a version the other does not', () => {
+      expect(mergeBlocked(
+        'Merge OSS 0.10.1 into federation branch and push',
+        'Merge OSS 0.10.0 into federation branch, FF live worktree',
+      )).toBe(true);
+    });
+
+    // Identical version sets = the same release event described twice. Must still merge.
+    test('still merges two phrasings carrying the SAME version set', () => {
+      expect(mergeBlocked(
+        'Bump erp-calendar.css from 3.11 to 3.12',
+        'Bumped erp-calendar.css 3.11 → 3.12',
+      )).toBe(false);
+    });
+
+    // Only ONE side carries a version ⇒ rule 3 has nothing to compare; fall through to rule 2.
+    test('does not fire when only one side carries a version', () => {
+      expect(mergeBlocked('Deploy the calendar stylesheet', 'Deploy the calendar stylesheet v3.12')).toBe(false);
+    });
+  });
 });

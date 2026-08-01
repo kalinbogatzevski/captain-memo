@@ -48,6 +48,13 @@ function hasNegation(norm: string): boolean {
 // final set comparison is order-independent.
 function identifierSet(raw: string): Set<string> {
   const out = new Set<string>();
+  // Ordered most-specific first. Each pattern BLANKS the spans it consumes before the next runs,
+  // so a broad pattern can never re-match inside a specific one's territory.
+  //
+  // Without that, the bare-number rule read the components of a dotted version: "0.10.1" yielded
+  // 0, 10 and 1 alongside the version itself. Rule 2 treats ONE shared identifier as grounds to
+  // allow the merge, and any two versions share a "0" or a "1" — so the guard was inert on exactly
+  // the titles it exists for, and ten distinct release events grouped as one duplicate cluster.
   const patterns: RegExp[] = [
     /\b[\w-]+(?:\/[\w-]+)*\.[a-z][a-z0-9]{1,4}\b/gi, // file.ext, a/b/c.ts, foo.json
     /#\d+\b/g,                                        // #123
@@ -57,8 +64,19 @@ function identifierSet(raw: string): Set<string> {
     /\b[A-Z]{2,}\b/g,                                 // ALL-CAPS entity: API, DINX
     /\b[A-Z]\b/g,                                     // uppercase single-letter tag: tenant A
   ];
+  // split('') gives UTF-16 code units, which is the same unit RegExp match indices use — so a
+  // title carrying an emoji cannot shift the blanking off by one.
+  let rest = raw;
   for (const re of patterns) {
-    for (const m of raw.matchAll(re)) out.add(m[0].toLowerCase());
+    const spans: Array<[number, number]> = [];
+    for (const m of rest.matchAll(re)) {
+      out.add(m[0].toLowerCase());
+      spans.push([m.index, m.index + m[0].length]);
+    }
+    if (spans.length === 0) continue;
+    const chars = rest.split('');
+    for (const [start, end] of spans) for (let i = start; i < end; i++) chars[i] = ' ';
+    rest = chars.join('');
   }
   return out;
 }
@@ -68,12 +86,32 @@ function identifierSet(raw: string): Set<string> {
  * Symmetric by construction: both rules are computed from per-title sets and
  * compared symmetrically.
  */
+/** Dotted versions in a title, e.g. "3.11 to 3.12" → {"3.11","3.12"}. */
+function versionSet(raw: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of raw.matchAll(/\b\d+(?:\.\d+)+\b/g)) out.add(m[0]);
+  return out;
+}
+
 export function mergeBlocked(titleA: string, titleB: string): boolean {
   const na = normalizeTitle(titleA);
   const nb = normalizeTitle(titleB);
 
   // Rule 1 — negation polarity mismatch (exactly one side asserts absence).
   if (hasNegation(na) !== hasNegation(nb)) return true;
+
+  // Rule 3 — both sides name dotted versions, and not the SAME ones. Checked before rule 2
+  // because rule 2 is satisfied by a single shared identifier, and consecutive releases chain:
+  // the "to" of one bump is the "from" of the next, so "3.11 → 3.12" and "3.12 → 3.13" really do
+  // share 3.12 while being two distinct events. Version facts are supersede's job — it demotes the
+  // older and BOTH rows survive — never dedup's, which archives the member and loses the history.
+  // Only fires when both sides carry a version; one-sided means there is nothing to compare.
+  const va = versionSet(titleA);
+  const vb = versionSet(titleB);
+  if (va.size > 0 && vb.size > 0) {
+    if (va.size !== vb.size) return true;
+    for (const v of va) if (!vb.has(v)) return true;
+  }
 
   // Rule 2 — both sides carry identifiers, but they overlap in none.
   const ia = identifierSet(titleA);
