@@ -5,6 +5,28 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.29.0] — 2026-08-01
+
+### Added
+
+- **`captain-memo consolidate` — run the passes now, or force them for a window.** Consolidation
+  waits for a quiet machine, which on a machine in daily use can mean hours. This is the lever for
+  when you want to watch it happen, verify a change, or clear a backlog before a demo.
+
+  ```
+  captain-memo consolidate               # both passes, now
+  captain-memo consolidate --themes      # one pass
+  captain-memo consolidate --for 30m     # keep forcing for a window
+  ```
+
+  `--for` opens a window during which every scheduled tick skips the idle wait, so the backlog is
+  worked down back-to-back rather than one pass and then silence. It expires by itself, is capped
+  at four hours, and the stats panel reads `forcing · every tick for the next 29m` while it holds.
+
+  This overrides **scheduling only**. Protected rows stay untouchable, project and branch scope is
+  still enforced, every similarity guard still runs, a pass still yields the moment new work
+  arrives, and a pass already running is reported rather than started twice.
+
 ## [0.28.2] — 2026-08-01
 
 ### Fixed
