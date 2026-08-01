@@ -5,6 +5,31 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.50] — 2026-08-01
+
+### Fixed
+
+- **The dedup merge guard was inert on exactly the titles it exists for.** Found by reading a real
+  dry-run before applying it: ten distinct captain-memo release events sat in one duplicate group,
+  a single `--apply` away from collapsing the version history into one row.
+
+  Rule 2 treats a single shared identifier as grounds to allow a merge, and two holes fed it:
+
+  1. **A dotted version leaked its own components.** The bare-number pattern ran over the raw title,
+     so `0.10.1` contributed `0`, `10` and `1` alongside the version itself. Any two versions then
+     shared a `0` or a `1`. Patterns now blank the spans they consume before the next, broader
+     pattern runs, so a specific match can no longer be re-read as its parts.
+  2. **Consecutive bumps chain.** The "to" of one release is the "from" of the next, so
+     `3.11 → 3.12` and `3.12 → 3.13` genuinely share `3.12` while being two events. A new rule
+     decides on the version *set*: both sides carrying dotted versions that are not the same set
+     blocks on its own.
+
+  Version facts belong to the supersede pass, which demotes the older and leaves **both** rows
+  intact — never to dedup, which archives the member and takes the history with it.
+
+  On a 124k-row corpus the dry-run archivable count moves 850 → 846 (protected rows spared) → 828
+  (hole 1) → 819 (hole 2), and folds of differing version sets drop from 7 to **zero**.
+
 ## [0.27.49] — 2026-08-01
 
 ### Fixed
