@@ -391,26 +391,27 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
       const hasRecalled = recall.top_recalled.length > 0;
 
       if (wide && hasSurfaced && hasRecalled) {
-        const left = renderTopList('Top surfaced', recall.top_surfaced, split.left);
-        const right = renderTopList('Top recalled', recall.top_recalled, split.right);
+        const left = renderTopList('Top surfaced', recall.top_surfaced, split.left, totalRank);
+        const right = renderTopList('Top recalled', recall.top_recalled, split.right, drillRank);
         out.push('');
         out.push(...twoColumn(left, right, panelWidth));
       } else if (wide && (hasSurfaced || hasRecalled)) {
         const heading = hasSurfaced ? 'Top surfaced' : 'Top recalled';
         const entries = hasSurfaced ? recall.top_surfaced : recall.top_recalled;
+        const rank = hasSurfaced ? totalRank : drillRank;
         const mid = Math.ceil(entries.length / 2);
-        const left = renderTopList(heading, entries.slice(0, mid), split.left);
-        const right = renderTopList(' ', entries.slice(mid), split.right);
+        const left = renderTopList(heading, entries.slice(0, mid), split.left, rank);
+        const right = renderTopList(' ', entries.slice(mid), split.right, rank);
         out.push('');
         out.push(...twoColumn(left, right, panelWidth));
       } else {
         if (hasSurfaced) {
           out.push('');
-          out.push(...renderTopList('Top surfaced', recall.top_surfaced, panelWidth));
+          out.push(...renderTopList('Top surfaced', recall.top_surfaced, panelWidth, totalRank));
         }
         if (hasRecalled) {
           out.push('');
-          out.push(...renderTopList('Top recalled', recall.top_recalled, panelWidth));
+          out.push(...renderTopList('Top recalled', recall.top_recalled, panelWidth, drillRank));
         }
       }
 
@@ -899,15 +900,22 @@ function renderTokensBlock(
   return out;
 }
 
+/** The number a top-list is RANKED by, which is therefore the number it must PRINT.
+ *  Top surfaced ranks on total bumps; Top recalled ranks on drill bumps alone
+ *  (see collapseTop's totalMetric / drillMetric — these must stay in step with it). */
+const totalRank = (r: RecallTopEntry): number => r.from_auto + r.from_search + r.from_drill;
+const drillRank = (r: RecallTopEntry): number => r.from_drill;
+
 function renderTopList(
   heading: string, entries: RecallTopEntry[], colWidth: number,
+  rank: (r: RecallTopEntry) => number = totalRank,
 ): string[] {
   const out: string[] = [];
   // Heading in cyan (matches section heads), not bold — keeps the live
   // values in the entries below visually heavier.
   out.push(`   ${cyan(heading.padEnd(14))}`);
   for (const r of entries) {
-    out.push(...renderRecallEntry(r, colWidth));
+    out.push(...renderRecallEntry(r, colWidth, rank));
   }
   return out;
 }
@@ -915,9 +923,10 @@ function renderTopList(
 /** Render one top-list entry: count line + provenance breakdown line.
  *  Prefix structure (visible chars): 5 + 4 + 2 + type.length + 1 = 12 + type.
  */
-function renderRecallEntry(r: RecallTopEntry, colWidth = 64): string[] {
-  const total = r.from_auto + r.from_search + r.from_drill;
-  const count = `${total}×`.padStart(4);
+function renderRecallEntry(
+  r: RecallTopEntry, colWidth = 64, rank: (e: RecallTopEntry) => number = totalRank,
+): string[] {
+  const count = `${rank(r)}×`.padStart(4);
   // "(+N similar)" when this entry collapsed several near-duplicate rows.
   const similar = (r.variants && r.variants > 1) ? ` (+${r.variants - 1} similar)` : '';
   const prefixLen = 12 + r.type.length + 2;

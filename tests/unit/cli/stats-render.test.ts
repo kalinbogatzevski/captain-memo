@@ -142,7 +142,7 @@ test('renderStats — RECALL section shows surfaced + recalled + drill-in rate, 
   expect(text).toContain('auto: 138');
   expect(text).toContain('search: 3');
   expect(text).toContain('drill: 1');
-  expect(text).toContain('6×');                     // 0 + 1 + 5
+  expect(text).toContain('5×');                     // drill only — the metric Top recalled ranks by
   expect(text).toContain('[bugfix]');
   expect(text).not.toContain('no retrievals yet');
 });
@@ -290,6 +290,57 @@ test('renderStats — narrow mode keeps Corpus and Efficiency on their own lines
   expect(effLine).toBeDefined();
   expect(corpusLine).not.toContain('Efficiency');
   expect(effLine).not.toContain('Corpus');
+});
+
+// "Top recalled" is RANKED by from_drill, but every entry printed its auto+search+drill TOTAL as
+// the leading count. The list was correctly sorted and displayed a number it was not sorted by, so
+// on a real corpus it read as 9×, 7×, 8×, 7×, 38× — indistinguishable from an unsorted list. The
+// number in front of an ordered list has to be the number that ordered it.
+test('renderStats — Top recalled shows the drill count it is ranked by, in descending order', () => {
+  const stats: StatsResponse = {
+    ...SAMPLE,
+    recall: {
+      surfaced_count: 3, recalled_count: 3,
+      totals: { auto: 100, search: 100, drill: 6 },
+      top_surfaced: [{ id: 9, type: 'feature', title: 'S',
+        from_auto: 5, from_search: 0, from_drill: 0, last_surfaced_at: 3 }],
+      // Deliberately inverted: descending drill, ASCENDING total.
+      top_recalled: [
+        { id: 1, type: 'bugfix',    title: 'Drilled three times',
+          from_auto: 0, from_search: 0, from_drill: 3, last_surfaced_at: 3 },
+        { id: 2, type: 'discovery', title: 'Drilled twice',
+          from_auto: 5, from_search: 5, from_drill: 2, last_surfaced_at: 2 },
+        { id: 3, type: 'change',    title: 'Drilled once',
+          from_auto: 50, from_search: 50, from_drill: 1, last_surfaced_at: 1 },
+      ],
+    },
+  };
+  const lines = renderStats(stats).map(stripAnsi);
+  const recalledAt = lines.findIndex(l => l.includes('Top recalled'));
+  expect(recalledAt).toBeGreaterThanOrEqual(0);
+  const block = lines.slice(recalledAt).join('\n');
+
+  // The counts printed against the three recalled entries, in the order rendered.
+  const counts = [...block.matchAll(/(\d+)×/g)].map(m => Number(m[1])).slice(0, 3);
+  expect(counts).toEqual([3, 2, 1]);          // the drill counts, descending — not 3, 12, 101
+  // The provenance line still carries the full breakdown, so nothing is lost.
+  expect(block).toContain('auto: 50');
+  expect(block).toContain('search: 50');
+});
+
+test('renderStats — Top surfaced still shows the TOTAL it is ranked by', () => {
+  const stats: StatsResponse = {
+    ...SAMPLE,
+    recall: {
+      surfaced_count: 1, recalled_count: 0,
+      totals: { auto: 7, search: 2, drill: 1 },
+      top_surfaced: [{ id: 1, type: 'feature', title: 'Surfaced a lot',
+        from_auto: 7, from_search: 2, from_drill: 1, last_surfaced_at: 1 }],
+      top_recalled: [],
+    },
+  };
+  const text = renderStats(stats).map(stripAnsi).join('\n');
+  expect(text).toContain('10×');               // 7 + 2 + 1, the metric that ranks this list
 });
 
 test('renderStats — wide mode places Top surfaced and Top recalled side by side', () => {
