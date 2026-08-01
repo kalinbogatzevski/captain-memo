@@ -33,6 +33,8 @@ export interface SemanticRow {
   type: string;
   title: string;
   session_id: string;
+  project_id: string;
+  branch: string | null;
   from_auto: number;
   from_search: number;
   from_drill: number;
@@ -69,10 +71,15 @@ const toEntry = (r: SemanticRow): DuplicateEntry => ({
  */
 export function findSemanticGroups(deps: SemanticGroupDeps): DuplicateGroup[] {
   const isBlocked = deps.blocked ?? mergeBlocked;
+  // Keyed by (session, project, branch) — a session is NOT a scope. One real session spanned 27
+  // (project, branch) pairs across 1,564 rows, because switching repos mid-session is ordinary.
+  // Grouping on session alone emitted cross-scope groups that mergeDuplicateGroup then refused
+  // member by member, so the pass reported "10 scanned, 0 folded" indefinitely and silently.
   const bySession = new Map<string, SemanticRow[]>();
   for (const r of deps.rows) {
-    const b = bySession.get(r.session_id);
-    if (b) b.push(r); else bySession.set(r.session_id, [r]);
+    const k = JSON.stringify([r.session_id, r.project_id, r.branch]);
+    const b = bySession.get(k);
+    if (b) b.push(r); else bySession.set(k, [r]);
   }
 
   const out: DuplicateGroup[] = [];

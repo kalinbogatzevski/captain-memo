@@ -11,8 +11,9 @@ import { findSemanticGroups, type SemanticRow } from '../../../src/worker/semant
 // fold — and the middle bands hold build progressions that no threshold separates safely.
 
 const v = (...xs: number[]) => Float32Array.from(xs);
-const row = (id: number, title: string, session: string, total = 1): SemanticRow => ({
-  id, type: 'discovery', title, session_id: session,
+const row = (id: number, title: string, session: string, total = 1,
+             project = 'p', branch: string | null = null): SemanticRow => ({
+  id, type: 'discovery', title, session_id: session, project_id: project, branch,
   from_auto: total, from_search: 0, from_drill: 0,
 });
 
@@ -96,6 +97,47 @@ describe('findSemanticGroups', () => {
     const vm = { 1: at(0), 2: at(2), 3: at(0), 4: at(2), 5: at(0), 6: at(2) };
     expect(findSemanticGroups({ rows, representativeVector: vecs(vm), cosineThreshold: 0.95, maxGroups: 10 }).length).toBe(3);
     expect(findSemanticGroups({ rows, representativeVector: vecs(vm), cosineThreshold: 0.95, maxGroups: 2 }).length).toBe(2);
+  });
+
+  // FOUND IN PRODUCTION: the pass ran for hours reporting "10 scanned, 0 folded". A session is
+  // NOT a scope — one real session spanned 27 (project, branch) pairs across 1,564 rows, because
+  // switching repos mid-session is normal. The finder emitted cross-scope groups, mergeDuplicateGroup
+  // correctly refused every member, and the honest merge count was zero. Forever, silently.
+  describe('scope', () => {
+    test('never groups across project_id, even within one session', () => {
+      const rows = [
+        row(1, 'identical phrasing', 's1', 3, 'captain-memo'),
+        row(2, 'identical phrasing', 's1', 1, 'erp-platform'),
+      ];
+      expect(findSemanticGroups({
+        rows, representativeVector: vecs({ 1: at(0), 2: at(1) }),
+        cosineThreshold: 0.95, maxGroups: 10,
+      })).toEqual([]);
+    });
+
+    test('never groups across branch within one project', () => {
+      const rows = [
+        row(1, 'identical phrasing', 's1', 3, 'p', 'master'),
+        row(2, 'identical phrasing', 's1', 1, 'p', 'feature/x'),
+      ];
+      expect(findSemanticGroups({
+        rows, representativeVector: vecs({ 1: at(0), 2: at(1) }),
+        cosineThreshold: 0.95, maxGroups: 10,
+      })).toEqual([]);
+    });
+
+    test('still groups when session AND scope both match', () => {
+      const rows = [
+        row(1, 'a', 's1', 3, 'captain-memo', 'master'),
+        row(2, 'b', 's1', 1, 'captain-memo', 'master'),
+      ];
+      const g = findSemanticGroups({
+        rows, representativeVector: vecs({ 1: at(0), 2: at(2) }),
+        cosineThreshold: 0.95, maxGroups: 10,
+      });
+      expect(g.length).toBe(1);
+      expect(g[0]!.members.map(m => m.id)).toEqual([2]);
+    });
   });
 
   test('a session with one row produces nothing', () => {

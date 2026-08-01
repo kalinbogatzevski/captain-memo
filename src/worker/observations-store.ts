@@ -1441,11 +1441,13 @@ export class ObservationsStore {
    */
   sameSessionCandidateRows(limit: number): Array<{
     id: number; type: string; title: string; session_id: string;
+    project_id: string; branch: string | null;
     from_auto: number; from_search: number; from_drill: number;
   }> {
     return this.db
       .query(
-        `SELECT id, type, title, session_id, from_auto, from_search, from_drill
+        `SELECT id, type, title, session_id, project_id, branch,
+                from_auto, from_search, from_drill
            FROM observations
           WHERE archived = 0 AND (from_auto + from_search + from_drill) > 0
             AND session_id IN (
@@ -1458,6 +1460,7 @@ export class ObservationsStore {
       )
       .all(limit) as Array<{
         id: number; type: string; title: string; session_id: string;
+        project_id: string; branch: string | null;
         from_auto: number; from_search: number; from_drill: number;
       }>;
   }
