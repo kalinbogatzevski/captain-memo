@@ -5,6 +5,40 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.52] — 2026-08-01
+
+### Added
+
+- **The Captain now writes a theme when it keeps re-learning the same thing.** Stage 2 of
+  semantic consolidation, completing a goal the dreaming spec set out and never built — its
+  schema columns have been in the database, unwritten, since migration v6.
+
+  Stage 1 folds restatements *within* one session. This handles the other population: the same
+  standing fact learned again in *different* sessions, weeks apart.
+
+  ```
+  [2026-05-09] update-status skill available in erp-platform
+  [2026-05-12] update-status skill command verified and available
+  [2026-07-21] Confirmed update-status skill availability in erp-platform
+  ```
+
+  Three separate learning events across 74 days. Folding one into another would claim a
+  continuity that never happened and hide that the knowledge failed to stick. Instead one
+  generated observation states the durable fact, the originals are archived beneath it, and
+  `captain-memo theme undo <id>` restores them.
+
+  Cross-session is the *definition*, not a filter — a single-session cluster is stage 1's work
+  and never reaches the model. Minimum three members, because two is a pair.
+
+  This is the only part of the system that **generates** text, so every ambiguous outcome writes
+  nothing: a transport error, an unparseable reply, or an explicit refusal all leave the cluster
+  exactly as it was. Declining is expected and correct — the finder groups things that *sound*
+  alike, and only a reader can tell whether they *say* the same thing.
+
+- **`captain-memo theme list | show <id> | undo <id>`** — read what the Captain wrote and reverse
+  any of it. Generated text you cannot inspect or undo would not be acceptable, so the command
+  ships with the pass rather than after it.
+
 ## [0.27.51] — 2026-08-01
 
 ### Added
