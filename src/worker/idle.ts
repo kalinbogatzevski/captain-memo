@@ -34,8 +34,20 @@ export interface IdleConfig {
  * where every instantaneous signal reads clear and starting a long scan is still wrong.
  */
 export function isIdle(s: IdleSignals, cfg: IdleConfig): boolean {
-  if (s.ingestActive) return false;
-  if (s.queuePending > 0) return false;
-  if (s.activeSessions > 0) return false;
-  return s.secondsSinceLastActivity >= cfg.minIdleSeconds;
+  return blockingSignals(s).length === 0 && s.secondsSinceLastActivity >= cfg.minIdleSeconds;
+}
+
+/**
+ * The live signals holding a pass back RIGHT NOW, for display. Deliberately excludes the idle
+ * floor: that one is a countdown, not a blocker, and conflating them would either show a timer
+ * that cannot reach zero or hide a real reason behind one.
+ *
+ * Shares its list with isIdle so the countdown can never disagree with the gate it describes.
+ */
+export function blockingSignals(s: IdleSignals): string[] {
+  const out: string[] = [];
+  if (s.ingestActive) out.push('summarizing');
+  if (s.queuePending > 0) out.push('queue');
+  if (s.activeSessions > 0) out.push('co-session');
+  return out;
 }

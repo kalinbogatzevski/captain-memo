@@ -35,7 +35,7 @@ import { buildThemeJudge } from './theme-judge.ts';
 import { runThemePass } from './theme-pass.ts';
 import { loadDreamInputs, pairKey } from '../dreaming/load.ts';
 import { coRetrievalSimilarity } from '../dreaming/distance.ts';
-import { isIdle } from './idle.ts';
+import { isIdle, blockingSignals } from './idle.ts';
 import { runQmSupersedeSlice, applySupersedeDemotion } from './supersede.ts';
 import { setWorkNote, listLocalActive, clearWorkNote, overlapsAgainst, repoOverlapsAgainst, groupRepoContention, repoActiveHolders, type SetWorkNoteInput } from './work-notes.ts';
 import { resolveRepoClaim } from './repo-claim.ts';
@@ -1824,6 +1824,29 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           cosine_threshold: qmConfig.dedupCosineThreshold,
           last_run: obsStore?.latestQmRuns(1, 'dedup')[0] ?? null,
         };
+        // Countdown to the next idle window. Built from the SAME signals the gate uses, so the
+        // number on screen can never promise a pass the gate would refuse.
+        const idle = (() => {
+          if (!obsStore) return undefined;
+          const nowS = Math.floor(Date.now() / 1000);
+          const last = obsStore.lastActivityEpoch();
+          const sig = {
+            ingestActive: processBatchPromise != null,
+            queuePending: obsQueue?.pendingCount() ?? 0,
+            secondsSinceLastActivity: last == null ? Infinity : Math.max(0, nowS - last),
+            activeSessions: opts.activeSessionCount?.() ?? 0,
+          };
+          const cfg = { minIdleSeconds: qmConfig.semanticMinIdleSeconds };
+          return {
+            // Infinity is correct internally but not JSON — a never-active corpus reports the
+            // floor, which renders as "eligible now" and is exactly what it is.
+            seconds_since_activity: Number.isFinite(sig.secondsSinceLastActivity)
+              ? sig.secondsSinceLastActivity : cfg.minIdleSeconds,
+            min_idle_seconds: cfg.minIdleSeconds,
+            eligible: isIdle(sig, cfg),
+            blocked_by: blockingSignals(sig),
+          };
+        })();
         // Its own block: same table, different pass. An unscoped read would report whichever
         // timer fired last (see qm.last_run above for the same trap).
         const semantic = {
@@ -1912,6 +1935,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           supersede,
           semantic,
           theme,
+          idle,
           dream,
           version: VERSION,
           edition: EDITION,   // 'federation' | 'oss' — surfaced for the SessionStart banner

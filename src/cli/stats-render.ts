@@ -72,6 +72,14 @@ export interface StatsResponse {
   supersede?: { enabled?: boolean; cosine_threshold?: number; links: number; last_run?: QmRunBlock | null };
   semantic?: { enabled: boolean; cosine_threshold: number; min_idle_seconds: number; last_run: QmRunBlock | null };
   theme?: { enabled: boolean; cosine_threshold: number; min_members: number; live: number; last_run: QmRunBlock | null };
+  /** Countdown to the next idle window. Optional — pre-v0.27.56 payloads omit it. */
+  idle?: {
+    seconds_since_activity: number;
+    min_idle_seconds: number;
+    eligible: boolean;
+    /** Live signals holding the pass back right now, e.g. ['queue', 'co-session']. */
+    blocked_by: string[];
+  };
   /** Tide lifecycle snapshot. Optional — pre-v0.5.3 worker payloads omit it. */
   tide?: {
     enabled: boolean;
@@ -532,12 +540,41 @@ function renderHousekeepingBlock(stats: StatsResponse, blockWidth: number): stri
       + `${dim(`cos ${stats.theme.cosine_threshold}`)}   ${live}`
       + (stats.theme.live > 0 ? `   ${dim('→ captain-memo theme list')}` : ''));
   }
-  if (stats.semantic) {
+  // The countdown. "Runs after 30 min of no activity" states the rule but never how long is
+  // left — and because ANY recall resets the clock, the honest answer moves minute to minute.
+  // Naming a live blocker instead of counting down matters: a countdown that keeps ticking
+  // while a batch is running promises something that cannot happen.
+  if (stats.idle) {
+    const i = stats.idle;
+    let value: string;
+    if (i.blocked_by.length > 0) {
+      value = `${yellow('waiting')} ${dim('on')} ${cyanBold(i.blocked_by.join(', '))}`;
+    } else if (i.eligible) {
+      value = `${green('eligible now')} ${dim('· starts on the next check')}`;
+    } else {
+      const left = Math.max(0, i.min_idle_seconds - i.seconds_since_activity);
+      value = `in ${cyanBold(fmtLeft(left))} ${dim(`· quiet for ${fmtLeft(i.seconds_since_activity)} of ${fmtLeft(i.min_idle_seconds)}`)}`;
+    }
+    out.push(`   ${dim('Next pass'.padEnd(12))}${value}`);
+    out.push(`   ${dim('Any recall resets the clock — the passes only run when you are away.')}`);
+  } else if (stats.semantic) {
     const mins = Math.round(stats.semantic.min_idle_seconds / 60);
     out.push(`   ${dim(`Semantic and Themes run only after ${mins} min of no activity.`)}`);
   }
   return out;
 }
+
+/** Coarse duration for the countdown: minutes below an hour, then h+m. Seconds would flicker
+ *  on every refresh without telling anyone anything useful. */
+function fmtLeft(sec: number): string {
+  if (sec < 60) return '<1m';
+  const m = Math.round(sec / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  return rem === 0 ? `${h}h` : `${h}h ${rem}m`;
+}
+
 
 function renderDreamBlock(
   dream: DreamStatsBlock, corpusTotal: number, blockWidth: number,
