@@ -5,6 +5,40 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.51] — 2026-08-01
+
+### Added
+
+- **The Captain now consolidates its own knowledge while the machine is idle.** Dedup has always
+  gated candidacy on *title* similarity and only then confirmed with cosine, which measured on a
+  live 124k-observation corpus makes the confirm dead code: **zero** semantically-similar pairs
+  reach it at any threshold from 0.90 to 0.97, because nothing survives the title gate. A fact
+  restated in different words was structurally unreachable:
+
+  ```
+  cos 0.964  A: Clarify role permissions in ONU port config SOP documentation
+             B: Clarify Advanced Port Configuration access control to Admin/Super Admin only
+  ```
+
+  The new pass inverts the order — cosine *finds* — and changes nothing else. It emits the same
+  candidate shape the existing sweep consumes, so every guard still applies: the cosine confirm,
+  the drilled/anchored protection, the project/branch scoping, archive-rather-than-delete, and
+  abort-when-ingest-arrives.
+
+  **Same-session only**, which is the safety property rather than a limitation. At cos ≥ 0.95,
+  83% of surviving pairs are same-session — one event the summarizer described twice. The rest
+  are not duplicates: cross-session pairs weeks apart are the same standing fact *re-learned*
+  (those want a theme, not a fold), and the middle bands hold build progressions — three stages
+  of one feature scoring 0.971–0.979 — that no threshold separates from restatements.
+
+  **Idle-gated**, because the scan is O(n²) over the corpus (~50 s measured). It runs only when
+  ingest is quiet, the queue is empty, no co-session is live, and nothing has been written or
+  surfaced for 30 minutes. Signals rather than a clock: a fixed nightly window fires happily
+  while you are working late; a busy machine simply defers this at no cost.
+
+  Folds are recorded as `job='semantic'`, so they are distinguishable from title-found folds and
+  separately reversible. Off with `CAPTAIN_MEMO_QM_SEMANTIC=0`.
+
 ## [0.27.50] — 2026-08-01
 
 ### Fixed
