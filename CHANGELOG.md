@@ -5,6 +5,44 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.54] — 2026-08-01
+
+### Fixed
+
+- **A written theme was never indexed, so consolidation removed knowledge from search.**
+  `createTheme` inserted the generated row directly and archived its members — but archived rows
+  are dropped from every search and auto-inject surface, and the theme itself had no chunks, no
+  vectors and no document, so it was invisible to all of them. Each accepted cluster took 3+
+  observations out of retrieval and put nothing reachable in their place. Themes are now indexed
+  like any other observation, and the write is awaited so an embedding failure is reported as a
+  failure rather than as a theme nobody can find.
+
+- **Themes could span unrelated projects and branches.** Nothing in the theme path scoped by
+  `(project_id, branch)`: three separate repos phrasing a bug the same way would cluster on
+  similarity alone and be archived beneath a single theme, filed under whichever project the
+  worker happened to be running as. Measured on a live corpus before the fix, *all five* clusters
+  the next pass would have processed crossed a scope boundary. The clusterer now partitions first,
+  exactly as the fold path always did.
+
+- **The theme pass was starved.** It shared a timer interval with the semantic fold pass and
+  skipped its turn whenever folding had any work at all — which, on an active corpus, is every
+  turn.
+
+- **The `top` Themes tab showed the wrong list.** The worker's view whitelist was never extended
+  with `themes`, so it silently fell back to Surfaced and rendered those rows under a Themes
+  header.
+
+- **Memory stability grew without a ceiling.** `CAPTAIN_MEMO_TIDE_STAB_CAP_DAYS` is named a cap
+  and documented as the point where hot rows plateau, but only ever damped the growth rate. A
+  45-day-old observation had reached the equivalent of 32 years of stability from 81 searches,
+  which made it permanently un-forgettable — precisely what the tiering system exists to avoid.
+  The ceiling is now enforced, and a migration brings existing rows back into range.
+
+- **The Windows CI leg, red for months.** Every failure was in the tests rather than the product:
+  a home-directory check asserted a leading `/` when the real contract is "a usable absolute
+  path", a launchd assertion hard-coded forward slashes, and eight queue tests deleted their temp
+  directory without closing the database first — which POSIX allows and Windows does not.
+
 ## [0.27.53] — 2026-08-01
 
 ### Added
