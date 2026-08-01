@@ -1302,13 +1302,19 @@ export class ObservationsStore {
    *  500-row recency slice left 0 of 294 real version pairs visible.
    *
    *  Affordable because the population is tiny: only ~2% of titles parse a version at all, so the scan
-   *  is ~450 ms on 122k rows, once an hour. `windowLimit` still caps how many PAIRS are emitted. */
+   *  is ~450 ms on 122k rows, once an hour. `windowLimit` caps how many PAIRS are emitted.
+   *
+   *  `superseded_by IS NULL` is what makes the sweep CONVERGE. Selecting on `archived = 0` alone kept a
+   *  pair a candidate forever after it was linked: linkSupersede is idempotent so nothing corrupted, but
+   *  every hour the sweep re-proposed the same finished work and paid a vector read plus a cosine compare
+   *  per re-proposal. An already-superseded row is never the newest version of its entity, so excluding
+   *  it can never hide a head — it only stops us re-deciding what we already decided. */
   private versionCandidateRows(): Array<{ id: number; title: string; project_id: string; branch: string | null; created_at_epoch: number }> {
     return this.db
       .query(
         `SELECT id, title, project_id, branch, created_at_epoch
            FROM observations
-          WHERE archived = 0
+          WHERE archived = 0 AND superseded_by IS NULL
           ORDER BY created_at_epoch DESC`,
       )
       .all() as Array<{ id: number; title: string; project_id: string; branch: string | null; created_at_epoch: number }>;
@@ -1364,7 +1370,9 @@ export class ObservationsStore {
         }
       }
     }
-    return out;
+    // Honour the cap the doc has always claimed. Matches dedup's behaviour for the same setting:
+    // a window of 0 means no work, not unlimited work.
+    return out.slice(0, windowLimit);
   }
 
   /**
@@ -1430,14 +1438,19 @@ export class ObservationsStore {
         run.abortedForIngest ? 1 : 0, run.skippedNoVector, run.errored ? 1 : 0);
   }
 
-  /** The n most-recent Quartermaster runs (id desc), rehydrated to QmRun objects. */
-  latestQmRuns(n: number): QmRun[] {
+  /** The n most-recent Quartermaster runs (id desc), rehydrated to QmRun objects.
+   *
+   *  `job` scopes to one pass. Both dedup and supersede write here, and they run on the same
+   *  interval, so an unscoped "latest" answers "which timer fired last" — not "did MY pass run".
+   *  Reporting dedup's health from an unscoped read showed a supersede row with merges: 0, which
+   *  reads exactly like a dedup sweep that found nothing. */
+  latestQmRuns(n: number, job?: string): QmRun[] {
     const rows = this.db
       .query(
         `SELECT id, job, started_at_epoch, finished_at_epoch, rows_scanned, merges, aborted_for_ingest, skipped_no_vector, errored
-           FROM qm_runs ORDER BY id DESC LIMIT ?`,
+           FROM qm_runs ${job ? 'WHERE job = ?' : ''} ORDER BY id DESC LIMIT ?`,
       )
-      .all(n) as Array<{
+      .all(...(job ? [job, n] : [n])) as Array<{
         id: number; job: string; started_at_epoch: number; finished_at_epoch: number | null;
         rows_scanned: number; merges: number; aborted_for_ingest: number;
         skipped_no_vector: number; errored: number;

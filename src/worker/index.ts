@@ -1645,13 +1645,20 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           : undefined;
         // Quartermaster snapshot: switch + dedup state and the cosine gate, plus
         // the most recent persisted run (null until a slice has recorded one).
+        // Scoped to job='dedup' on purpose — every field around it describes dedup, so an
+        // unscoped "latest run" would report a supersede sweep under a dedup heading.
         const qm = {
           enabled: qmConfig.enabled,
           dedup_enabled: qmConfig.dedupEnabled,
           cosine_threshold: qmConfig.dedupCosineThreshold,
-          last_run: obsStore?.latestQmRuns(1)[0] ?? null,
+          last_run: obsStore?.latestQmRuns(1, 'dedup')[0] ?? null,
         };
-        const supersede = { links: obsStore ? obsStore.supersedeLinkCount() : 0 };
+        const supersede = {
+          enabled: qmConfig.supersedeEnabled,
+          cosine_threshold: qmConfig.supersedeCosineThreshold,
+          links: obsStore ? obsStore.supersedeLinkCount() : 0,
+          last_run: obsStore?.latestQmRuns(1, 'supersede')[0] ?? null,
+        };
         // Dream-stats path: cheap precursor diagnostics from the audit log.
         // Audit-log path mirrors the writer in recall-audit.ts (same env-var
         // override semantics) so a custom CAPTAIN_MEMO_DATA_DIR is honored.

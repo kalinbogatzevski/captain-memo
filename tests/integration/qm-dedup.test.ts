@@ -205,12 +205,15 @@ test('auto-dedup fold — cosine-gated, survivor keeps higher count, control sta
   expect(stats.qm!.last_run).not.toBeNull();
 });
 
-test('off by default — no CAPTAIN_MEMO_QM_DEDUP ⇒ no folds, no qm_runs rows', async () => {
+// CONTRACT CHANGED: dedup is ON by default, so the thing worth proving is no longer that it
+// stays asleep unasked — it's that the kill switch an operator reaches for actually kills it.
+// The old version of this test asserted the default and therefore never exercised the switch.
+test('kill switch — CAPTAIN_MEMO_QM_DEDUP=0 ⇒ no folds, no qm_runs rows', async () => {
   const port = await build({
+    CAPTAIN_MEMO_QM_DEDUP: '0',
     CAPTAIN_MEMO_QM_DEDUP_INTERVAL_MS: '50',
     CAPTAIN_MEMO_QM_DEDUP_WINDOW: '50',
     CAPTAIN_MEMO_QM_DEDUP_COSINE: '0.95',
-    // deliberately NOT setting CAPTAIN_MEMO_QM_DEDUP
   });
 
   const survivor = await seed(port, 'off by default dedup probe alpha');
@@ -224,11 +227,13 @@ test('off by default — no CAPTAIN_MEMO_QM_DEDUP ⇒ no folds, no qm_runs rows'
   await new Promise(r => setTimeout(r, 500));
 
   expect(archivedFlagOf(dup).archived).toBe(0);   // nothing folded
-  expect(latestQmRunsRows(5).length).toBe(0);     // timer never created ⇒ no runs
+  // Scoped to job='dedup': the supersede pass shares this table and is ON by default, so an
+  // unfiltered count would now be measuring whether supersede ran, not whether dedup stayed dead.
+  expect(latestQmRunsRows(50).filter(r => r.job === 'dedup').length).toBe(0); // timer never created
 
   const stats = await (await fetch(`http://localhost:${port}/stats`)).json() as
     { qm?: { enabled: boolean; dedup_enabled: boolean; last_run: unknown } };
-  expect(stats.qm!.enabled).toBe(true);            // master switch defaults ON
-  expect(stats.qm!.dedup_enabled).toBe(false);     // dedup defaults OFF
+  expect(stats.qm!.enabled).toBe(true);            // master switch still ON — only dedup was killed
+  expect(stats.qm!.dedup_enabled).toBe(false);     // the explicit '0' won
   expect(stats.qm!.last_run).toBeNull();           // no run ever recorded
 });

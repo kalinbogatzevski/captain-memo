@@ -63,3 +63,36 @@ test('still emits when version order and creation order agree', () => {
   expect(s.supersedeCandidateWindow(500).length).toBe(1);
   s.close(); rmSync(dir, { recursive: true, force: true });
 });
+
+// The scan selected `WHERE archived = 0` only, so a pair stayed a candidate forever after being
+// linked. linkSupersede is idempotent, so nothing was corrupted — but the sweep re-proposed the same
+// finished work every hour, and each re-proposal costs a vector read and a cosine compare in the
+// slice. Harmless while the pass was opt-in and effectively nobody ran it; now it is on by default.
+test('a pair already linked is not proposed again — the sweep converges', () => {
+  const { s, dir } = store();
+  const older = add(s, 'Bump thing to 1.0.0', 1000);
+  const newer = add(s, 'Bump thing to 2.0.0', 5000);
+  expect(s.supersedeCandidateWindow(500).length).toBe(1);   // first sweep sees it
+
+  s.linkSupersede(older, newer, {
+    entityKey: 'thing', olderVersion: '1.0.0', newerVersion: '2.0.0', atEpoch: 6000,
+  });
+
+  expect(s.supersedeCandidateWindow(500)).toEqual([]);      // second sweep has nothing left to do
+  s.close(); rmSync(dir, { recursive: true, force: true });
+});
+
+// windowLimit was declared, documented as "caps how many PAIRS are emitted", and never read. An
+// operator lowering CAPTAIN_MEMO_QM_DEDUP_WINDOW to bound supersede's work got no effect at all.
+// Safe to honour only because of the convergence fix above: without it, capping would permanently
+// starve whichever partitions sorted last, since finished pairs never left the candidate set.
+test('windowLimit caps the number of emitted pairs', () => {
+  const { s, dir } = store();
+  for (let i = 1; i <= 6; i++) {
+    add(s, `Bump package-${i} to 1.0.0`, 1000 + i);
+    add(s, `Bump package-${i} to 2.0.0`, 5000 + i);
+  }
+  expect(s.supersedeCandidateWindow(500).length).toBe(6);   // uncapped: every pair
+  expect(s.supersedeCandidateWindow(2).length).toBe(2);     // capped
+  s.close(); rmSync(dir, { recursive: true, force: true });
+});
