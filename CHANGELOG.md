@@ -5,6 +5,79 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.48] — 2026-08-01
+
+### Changed
+
+- **Both Quartermaster housekeeping passes are now ON by default.** Auto-dedup and version-supersede
+  were each opt-in. On the heaviest known install, supersede had recorded **zero** rows in `qm_runs`
+  after 1,241 dedup runs — the env var it needed had never been set, so in two months of running it
+  had never executed once. A default nobody enables is a feature nobody has.
+
+  Neither pass is as destructive as the opt-in default implied. Dedup **archives** a near-duplicate
+  into a survivor rather than deleting it, skips any row that was ever drilled into or explicitly
+  anchored, partitions by `(project, branch)` so a fold can never cross scopes, and requires **both**
+  a title-similarity gate and a cosine confirm. Supersede applies a reversible 0.5× score demotion.
+  `captain-memo dedup --undo` and `captain-memo supersede undo` reverse them.
+
+  Turn either off with `CAPTAIN_MEMO_QM_DEDUP=0` / `CAPTAIN_MEMO_QM_SUPERSEDE=0`, or both with
+  `CAPTAIN_MEMO_QM_ENABLED=0`. (Both env reads were `=== '1'`, which ignored the shipped default
+  outright; they are now `!== '0'`.)
+
+- **`CAPTAIN_MEMO_QM_DEDUP_WINDOW` default raised from 500 to 5,000.** The 500 was never measured —
+  it came from the original design plan, specified in the same breath as the 0.98 cosine threshold
+  that later proved unsatisfiable. Measured on a 14,409-row surfaced set across 211 partitions
+  (grouping is O(n²) per partition):
+
+  | window | grouping cost | foldable rows visible |
+  |---|---|---|
+  | 500 | 37 ms | 9 |
+  | 2,000 | 131 ms | 44 |
+  | **5,000** | **401 ms** | **200** |
+  | 14,409 (all) | 3,076 ms | 850 |
+
+  So 500 hid 94% of the duplicates that existed, and the symptom was visible in the audit table:
+  11 merges across 1,241 runs. Scanning everything is not the fix either — `candidates()` is
+  evaluated synchronously before the slice's first yield, so the full set means a 3-second stall.
+  5,000 sits just under the ~450 ms whole-corpus scan the supersede pass already runs hourly.
+
+### Fixed
+
+- **The supersede sweep never converged.** Its candidate scan selected on `archived = 0` alone, so a
+  pair stayed a candidate forever after being linked. `linkSupersede` is idempotent, so nothing was
+  ever corrupted — but every hour the sweep re-proposed the same finished work and paid a vector read
+  plus a cosine compare for each re-proposal. An already-superseded row is never the newest version of
+  its entity, so excluding it cannot hide a head. Harmless while the pass reached nobody; not harmless
+  once it is on by default.
+
+- **`supersedeCandidateWindow` ignored its own window limit.** The parameter was declared, documented
+  as "caps how many PAIRS are emitted", and never read, so an operator lowering
+  `CAPTAIN_MEMO_QM_DEDUP_WINDOW` to bound the work got no effect at all. Now honoured — which is only
+  safe because of the convergence fix above: without it, a cap would have permanently starved
+  whichever partitions sorted last.
+
+- **`/stats` reported one Quartermaster pass under the other's heading.** Both passes write to
+  `qm_runs`, and `qm.last_run` read the latest row of *any* job. With supersede switched on, a
+  supersede sweep showing `merges: 0` appeared beside `dedup_enabled` and `cosine_threshold` — reading
+  exactly like a dedup sweep that found nothing. `qm.last_run` is now scoped to `job='dedup'`, and
+  supersede gets its own block carrying its enabled flag, threshold and last run.
+
+- **"Top recalled" printed a number it was not sorted by.** The list is ranked by drill count alone,
+  but each entry displayed its `auto + search + drill` total, so on a real corpus it read
+  `9× 7× 8× 7× 38×` — indistinguishable from an unsorted list, and reported as one. The order was
+  correct throughout: every entry was tied on drill count and fell through to recency. Each top list
+  now prints the metric that ranks it; the provenance triplet beneath still carries the full
+  breakdown.
+
+### Added
+
+- **`docs/CONFIGURATION.md`** — a reference for all 133 environment variables: what each defaults to,
+  which subsystem owns it, and a single table of every kill switch. Coverage is verified
+  mechanically, so no setting the code reads is missing and no setting listed is one the code ignores.
+  It opens by arguing you should set none of them, and against pinning values you are not deliberately
+  overriding — several of the defaults changed in this release precisely because opt-in reached
+  nobody, and a pinned value would not have benefited.
+
 ## [0.27.47] — 2026-07-31
 
 ### Changed
