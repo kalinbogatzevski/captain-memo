@@ -1460,6 +1460,146 @@ export class ObservationsStore {
     return row?.t ?? null;
   }
 
+  /**
+   * Candidate rows for the idle THEME pass: every live, surfaced observation.
+   *
+   * Deliberately NOT sameSessionCandidateRows. That query keeps only sessions holding two or
+   * more rows, which is precisely inverted for this purpose: a row that is alone in its session
+   * is a PRIME theme candidate — one session learned a fact once, another session learned it
+   * again weeks later, and neither would qualify under the same-session filter. Themes are
+   * cross-session by definition, so the session shape must not restrict the population.
+   *
+   * Themes themselves (session_id 'theme') are excluded: a theme of themes would compound
+   * generated text on generated text, drifting further from anything actually observed.
+   */
+  themeCandidateRows(limit: number): Array<{
+    id: number; type: string; title: string; session_id: string; created_at_epoch: number;
+    from_auto: number; from_search: number; from_drill: number;
+  }> {
+    return this.db
+      .query(
+        `SELECT id, type, title, session_id, created_at_epoch, from_auto, from_search, from_drill
+           FROM observations
+          WHERE archived = 0 AND (from_auto + from_search + from_drill) > 0
+            AND session_id != 'theme'
+          ORDER BY COALESCE(last_surfaced_at, created_at_epoch) DESC
+          LIMIT ?`,
+      )
+      .all(limit) as Array<{
+        id: number; type: string; title: string; session_id: string; created_at_epoch: number;
+        from_auto: number; from_search: number; from_drill: number;
+      }>;
+  }
+
+  /**
+   * Write a THEME: one generated observation standing for a cross-session cluster, with its
+   * members archived beneath it. Stage 2 of semantic consolidation, and the first writer of the
+   * theme_member_ids / archived_into_theme_id columns migration v6 added.
+   *
+   * Distinct from a dedup fold in what it claims. A fold says "these were the same event, keep
+   * the best-worn copy". A theme says "these were separate learnings of one durable fact, here
+   * is that fact" — so the theme is a NEW row rather than a promoted member, and the members are
+   * preserved beneath it rather than absorbed into one of their own.
+   *
+   * Counters are summed onto the theme because surfacing counts are evidence of usefulness: a
+   * theme that inherited none would look brand new, and the tide would treat a well-worn fact as
+   * unproven. Reversible in one call — see unmakeTheme.
+   */
+  createTheme(
+    draft: { title: string; narrative: string; facts: string[]; concepts: string[] },
+    memberIds: number[],
+    ctx: { project_id: string; branch: string | null; atEpoch: number },
+  ): number {
+    if (memberIds.length < 2) {
+      throw new Error(`createTheme needs at least 2 members, got ${memberIds.length}`);
+    }
+    const tx = this.db.transaction((): number => {
+      const placeholders = memberIds.map(() => '?').join(',');
+      const sums = this.db
+        .query(
+          `SELECT COALESCE(SUM(from_auto),0) a, COALESCE(SUM(from_search),0) s,
+                  COALESCE(SUM(from_drill),0) d, MAX(last_surfaced_at) ls
+             FROM observations WHERE id IN (${placeholders}) AND archived = 0`,
+        )
+        .get(...memberIds) as { a: number; s: number; d: number; ls: number | null };
+
+      // session_id 'theme' marks provenance: this row was written by the machine, not captured
+      // from a session. Anything reading observations can tell generated text from observed text.
+      const themeId = Number(this.db
+        .query(
+          `INSERT INTO observations
+             (session_id, project_id, prompt_number, type, title, narrative, facts, concepts,
+              files_read, files_modified, created_at_epoch, branch,
+              from_auto, from_search, from_drill, last_surfaced_at, theme_member_ids)
+           VALUES ('theme', ?, 0, 'discovery', ?, ?, ?, ?, '[]', '[]', ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(ctx.project_id, draft.title, draft.narrative, JSON.stringify(draft.facts),
+          JSON.stringify(draft.concepts), ctx.atEpoch, ctx.branch,
+          sums.a, sums.s, sums.d, sums.ls, JSON.stringify(memberIds)).lastInsertRowid);
+
+      this.db
+        .query(
+          `UPDATE observations SET archived = 1, archived_into_theme_id = ?
+            WHERE id IN (${placeholders}) AND archived = 0`,
+        )
+        .run(themeId, ...memberIds);
+      return themeId;
+    });
+    return tx();
+  }
+
+  /**
+   * Reverse a theme: un-archive every member and retire the generated row. Returns the number of
+   * members restored (0 when the id is not a live theme, so it is safe to call on anything and
+   * idempotent on a theme already undone).
+   *
+   * The theme is archived rather than deleted — the same never-hard-delete rule the fold path
+   * follows, and it keeps the audit trail of what the machine once believed.
+   */
+  unmakeTheme(themeId: number): number {
+    const tx = this.db.transaction((): number => {
+      // session_id='theme' is what makes a row a theme. theme_member_ids alone is NOT enough:
+      // mergeDuplicateGroup writes that column on a dedup SURVIVOR too, so without this check
+      // undoing a "theme" could un-fold a dedup merge and then archive its survivor.
+      const row = this.db
+        .query("SELECT theme_member_ids, archived FROM observations WHERE id = ? AND session_id = 'theme'")
+        .get(themeId) as { theme_member_ids: string | null; archived: number } | undefined;
+      if (!row || row.archived === 1 || !row.theme_member_ids) return 0;
+      const ids = JSON.parse(row.theme_member_ids) as number[];
+      if (ids.length === 0) return 0;
+      const placeholders = ids.map(() => '?').join(',');
+      const restored = this.db
+        .query(
+          `UPDATE observations SET archived = 0, archived_into_theme_id = NULL
+            WHERE id IN (${placeholders}) AND archived_into_theme_id = ?`,
+        )
+        .run(...ids, themeId).changes;
+      this.db.query('UPDATE observations SET archived = 1 WHERE id = ?').run(themeId);
+      return Number(restored);
+    });
+    return tx();
+  }
+
+  /** Live themes, newest first — what `captain-memo theme list` shows.
+   *
+   *  Scoped on session_id='theme', NOT on theme_member_ids alone: mergeDuplicateGroup writes that
+   *  column on dedup survivors as well, and without the scope this reported 200 themes on a
+   *  corpus that had none. */
+  listThemes(limit: number): Array<{ id: number; title: string; created_at_epoch: number; member_ids: number[] }> {
+    const rows = this.db
+      .query(
+        `SELECT id, title, created_at_epoch, theme_member_ids
+           FROM observations
+          WHERE archived = 0 AND session_id = 'theme' AND theme_member_ids IS NOT NULL
+          ORDER BY created_at_epoch DESC, id DESC LIMIT ?`,
+      )
+      .all(limit) as Array<{ id: number; title: string; created_at_epoch: number; theme_member_ids: string }>;
+    return rows.map(r => ({
+      id: r.id, title: r.title, created_at_epoch: r.created_at_epoch,
+      member_ids: JSON.parse(r.theme_member_ids) as number[],
+    }));
+  }
+
   /** Pin a row so the Tide/Quartermaster never ebbs or folds it. */
   markAnchored(id: number): void {
     this.db.query('UPDATE observations SET is_anchored = 1 WHERE id = ?').run(id);

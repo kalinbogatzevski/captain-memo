@@ -1,0 +1,60 @@
+// src/worker/theme-pass.ts — Stage 2's slice: find cross-session clusters, ask the judge for a
+// theme, write the ones it accepts. Pure orchestration over injected deps, like quartermaster.ts.
+//
+// Two properties govern the shape:
+//
+//   1. The judge may decline, and declining is expected. The finder gathers by cosine, which
+//      groups things that SOUND alike; only a reader can tell whether they SAY one thing. A
+//      declined cluster is left completely untouched — no partial write, no marker, nothing to
+//      clean up — and a later pass may reach a different answer as the corpus changes.
+//
+//   2. Every model call costs money and latency, so the pass is bounded on BOTH axes: at most
+//      maxClusters candidates, and it stops the moment ingest arrives. Unlike the fold slices,
+//      an abort here can strand nothing: each cluster is judged and written in one step.
+import type { ThemeCluster } from './theme-cluster.ts';
+import type { ThemeDraft } from './theme-judge.ts';
+
+export interface ThemePassDeps {
+  /** Cross-session clusters, already guarded and protection-filtered. */
+  clusters: () => ThemeCluster[];
+  /** Haiku wrapper. Returns null to decline — never throws (see theme-judge.ts). */
+  judge: (cluster: ThemeCluster) => Promise<ThemeDraft | null>;
+  /** Insert the theme and archive its members beneath it. Returns the new theme's id. */
+  createTheme: (draft: ThemeDraft, memberIds: number[]) => number;
+  /** True when ingest/embedding work arrived — stop before spending another model call. */
+  shouldAbort: () => boolean;
+  yieldToLoop: () => Promise<void>;
+}
+
+export interface ThemePassResult {
+  clustersConsidered: number;
+  themesWritten: number;
+  /** Clusters the judge looked at and refused. High is healthy, not a fault. */
+  declined: number;
+  /** Clusters whose write threw — counted, never rethrown, so one bad row cannot kill the pass. */
+  failed: number;
+  aborted: boolean;
+}
+
+/** Run one theme-building pass. Never throws. */
+export async function runThemePass(deps: ThemePassDeps): Promise<ThemePassResult> {
+  const res: ThemePassResult = {
+    clustersConsidered: 0, themesWritten: 0, declined: 0, failed: 0, aborted: false,
+  };
+  for (const cluster of deps.clusters()) {
+    if (deps.shouldAbort()) { res.aborted = true; return res; }
+    res.clustersConsidered++;
+    const draft = await deps.judge(cluster);
+    if (!draft) { res.declined++; await deps.yieldToLoop(); continue; }
+    try {
+      deps.createTheme(draft, cluster.members.map(m => m.id));
+      res.themesWritten++;
+    } catch {
+      // A failed write leaves the cluster exactly as it was (createTheme is transactional), so
+      // the honest tally is "considered but not written" — never a silent success.
+      res.failed++;
+    }
+    await deps.yieldToLoop();
+  }
+  return res;
+}

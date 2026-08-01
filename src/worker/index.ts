@@ -30,6 +30,9 @@ import { runPromotionSlice, type PromotionDeps } from './promotion.ts';
 import { buildPromotionJudge } from './promotion-judge.ts';
 import { runQmDedupSlice } from './quartermaster.ts';
 import { findSemanticGroups } from './semantic-candidates.ts';
+import { findThemeClusters } from './theme-cluster.ts';
+import { buildThemeJudge } from './theme-judge.ts';
+import { runThemePass } from './theme-pass.ts';
 import { isIdle } from './idle.ts';
 import { runQmSupersedeSlice, applySupersedeDemotion } from './supersede.ts';
 import { setWorkNote, listLocalActive, clearWorkNote, overlapsAgainst, repoOverlapsAgainst, groupRepoContention, repoActiveHolders, type SetWorkNoteInput } from './work-notes.ts';
@@ -1185,6 +1188,63 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     }, qmConfig.semanticCheckIntervalMs);
   }
 
+  // Themes (Stage 2) — the same idle window, deliberately AFTER the fold pass. Stage 1 removes
+  // same-session restatements first, so the clusterer sees one row per event and a cluster is
+  // genuinely "this fact was learned in N different sessions" rather than "one session said it
+  // three ways". Needs a summarizer: with no transport there is nobody to write the theme.
+  //
+  // Every model call is a cost the other passes do not have, so this one is bounded hard
+  // (themeMaxClusters per pass) and the judge is free to decline all of them. Declining is the
+  // expected outcome for most clusters — see theme-judge.ts.
+  let themeTimer: ReturnType<typeof setInterval> | null = null;
+  let themePromise: Promise<unknown> | null = null;
+  if (!opts.readOnly && obsStore && opts.summarizerTransport && qmConfig.enabled && qmConfig.themeEnabled) {
+    const themeStore = obsStore;
+    const judge = buildThemeJudge(opts.summarizerTransport);
+    themeTimer = setInterval(() => {
+      if (themePromise || semanticPromise) return;   // never race the fold pass over one corpus
+      const nowS = Math.floor(Date.now() / 1000);
+      const lastActivity = themeStore.lastActivityEpoch();
+      const idle = isIdle({
+        ingestActive: processBatchPromise != null,
+        queuePending: obsQueue?.pendingCount() ?? 0,
+        secondsSinceLastActivity: lastActivity == null ? Infinity : Math.max(0, nowS - lastActivity),
+        activeSessions: opts.activeSessionCount?.() ?? 0,
+      }, { minIdleSeconds: qmConfig.semanticMinIdleSeconds });
+      if (!idle) return;
+
+      const startedAt = nowS;
+      themePromise = runThemePass({
+        clusters: () => findThemeClusters({
+          rows: themeStore.themeCandidateRows(qmConfig.dedupWindow),
+          representativeVector: repVec,
+          cosineThreshold: qmConfig.themeCosineThreshold,
+          minMembers: qmConfig.themeMinMembers,
+          maxClusters: qmConfig.themeMaxClusters,
+          isProtected: (id) => themeStore.isProtected(id),
+        }),
+        judge,
+        createTheme: (draft, memberIds) => themeStore.createTheme(draft, memberIds, {
+          project_id: opts.projectId, branch: null, atEpoch: Math.floor(Date.now() / 1000),
+        }),
+        shouldAbort: () => processBatchPromise != null || (obsQueue?.pendingCount() ?? 0) > 0,
+        yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
+      })
+        .then(r => {
+          themeStore.recordQmRun({ job: 'theme', startedAt, finishedAt: Math.floor(Date.now() / 1000),
+            rowsScanned: r.clustersConsidered, merges: r.themesWritten, skippedNoVector: r.declined,
+            abortedForIngest: r.aborted, errored: r.failed > 0 });
+          if (r.themesWritten > 0) console.error(`[qm-theme] wrote ${r.themesWritten} theme(s), declined ${r.declined}`);
+        })
+        .catch(err => {
+          themeStore.recordQmRun({ job: 'theme', startedAt, finishedAt: Math.floor(Date.now() / 1000),
+            rowsScanned: 0, merges: 0, skippedNoVector: 0, abortedForIngest: false, errored: true });
+          console.error('[qm-theme] ERROR', err);
+        })
+        .finally(() => { themePromise = null; });
+    }, qmConfig.semanticCheckIntervalMs);
+  }
+
   // Promotion (opt-in, OFF by default). Sibling of the Quartermaster auto-dedup
   // timer: each tick pulls a bounded window of durable, high-signal, not-yet-promoted
   // observations, runs ONE judge pass deciding curated-worthy vs ephemeral, writes
@@ -1732,6 +1792,13 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           min_idle_seconds: qmConfig.semanticMinIdleSeconds,
           last_run: obsStore?.latestQmRuns(1, 'semantic')[0] ?? null,
         };
+        const theme = {
+          enabled: qmConfig.themeEnabled,
+          cosine_threshold: qmConfig.themeCosineThreshold,
+          min_members: qmConfig.themeMinMembers,
+          live: obsStore ? obsStore.listThemes(1000).length : 0,
+          last_run: obsStore?.latestQmRuns(1, 'theme')[0] ?? null,
+        };
         const supersede = {
           enabled: qmConfig.supersedeEnabled,
           cosine_threshold: qmConfig.supersedeCosineThreshold,
@@ -1804,6 +1871,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           qm,
           supersede,
           semantic,
+          theme,
           dream,
           version: VERSION,
           edition: EDITION,   // 'federation' | 'oss' — surfaced for the SessionStart banner
@@ -2448,6 +2516,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     if (qmDedupTimer) clearInterval(qmDedupTimer);
     if (qmSupersedeTimer) clearInterval(qmSupersedeTimer);
     if (semanticTimer) clearInterval(semanticTimer);
+    if (themeTimer) clearInterval(themeTimer);
     if (promotionTimer) clearInterval(promotionTimer);
     if (pendingTickTimer) clearInterval(pendingTickTimer);
     // clearInterval cancels the SCHEDULE, not work already IN FLIGHT. Every background slice below is

@@ -5,7 +5,7 @@ change it.
 
 ## Read this first: you need none of these
 
-Captain Memo ships with working defaults for all 138 settings. A fresh install indexes, recalls,
+Captain Memo ships with working defaults for all 142 settings. A fresh install indexes, recalls,
 summarises, dedupes and decays without a single line in `worker.env`.
 
 This document exists for the operator who wants to *change* something, not for the operator who
@@ -47,6 +47,7 @@ misbehaves and you want it to stop.
 | `CAPTAIN_MEMO_QM_DEDUP=0` | Near-duplicate folding only | ON |
 | `CAPTAIN_MEMO_QM_SUPERSEDE=0` | Stale-version demotion only | ON |
 | `CAPTAIN_MEMO_QM_SEMANTIC=0` | Idle-time semantic consolidation only | ON |
+| `CAPTAIN_MEMO_QM_THEME=0` | Idle-time theme building only | ON |
 | `CAPTAIN_MEMO_TIDE_ENABLED=0` | Decay re-ranking; back to flat recency | ON |
 | `CAPTAIN_MEMO_TIDE_TIERING=0` | Lifecycle transitions (active → dormant → archived) | ON |
 | `CAPTAIN_MEMO_RECALL_AUDIT=0` | The recall audit log that feeds dream stats | ON |
@@ -327,6 +328,10 @@ Anchored rows, and any row ever drilled into, are permanently exempt from ebbing
 | `CAPTAIN_MEMO_QM_SEMANTIC_MIN_IDLE_S` | `1800` (30 min) | Quiet time required before a pass may start. |
 | `CAPTAIN_MEMO_QM_SEMANTIC_CHECK_MS` | `600000` (10 min) | How often idleness is *checked* (the pass itself is rare). |
 | `CAPTAIN_MEMO_QM_SEMANTIC_MAX_GROUPS` | `200` | Cap on groups emitted per pass. |
+| `CAPTAIN_MEMO_QM_THEME` | ON | Idle-time theme building: cross-session clusters become one durable fact. Needs a summarizer. |
+| `CAPTAIN_MEMO_QM_THEME_COSINE` | `0.93` | Cluster membership. Looser than the fold threshold on purpose (see below). |
+| `CAPTAIN_MEMO_QM_THEME_MIN_MEMBERS` | `3` | Minimum observations for a theme. Two is a pair. |
+| `CAPTAIN_MEMO_QM_THEME_MAX_CLUSTERS` | `5` | Clusters judged per pass — each is one model call. |
 | `CAPTAIN_MEMO_QM_SUPERSEDE` | ON | Demotes an older version-fact when a newer one exists. |
 | `CAPTAIN_MEMO_QM_SUPERSEDE_COSINE` | `0.93` | Lower than dedup's on purpose: supersede applies a reversible 0.5x demotion, dedup archives. |
 
@@ -337,6 +342,20 @@ defers it. It exists because title-gated dedup could never see a fact restated i
 words: on a live corpus, **zero** semantically-similar pairs reached the cosine confirm at any
 threshold, because the title gate filtered them all first. Restricted to same-session pairs,
 where 83% of high-cosine pairs live and "one event described twice" is near-definitional.
+
+The theme pass is stage 2, and the only part of the system that **generates** text. Stage 1 folds
+same-session restatements; this handles the other measured population — the same standing fact
+re-learned across *different* sessions weeks apart, where folding would destroy the evidence that
+it never stuck. One generated observation states the fact; the originals are archived beneath it,
+listed in `theme_member_ids`, and restored by `captain-memo theme undo <id>`.
+
+Its threshold is deliberately looser than the fold's (0.93 vs 0.95) because a theme is additive
+and reversible where a fold archives a row into another row's identity, and because the model is a
+second gate the fold path has no equivalent of. **Declining is the expected outcome for most
+clusters** — a transport error, an unparseable reply, or an explicit refusal all write nothing and
+leave the cluster untouched.
+
+Inspect what it wrote with `captain-memo theme list` / `theme show <id>`.
 
 Both passes yield between groups and abort mid-slice when ingest arrives, so neither starves the
 worker. `captain-memo dedup --undo` and `captain-memo supersede undo` reverse their effects.

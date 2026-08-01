@@ -63,6 +63,22 @@ export interface QmConfig {
   /** Hard floor: seconds of no observation activity before the pass may start. Guards the
    *  case every instantaneous signal misses — a user reading, thinking, or mid-sentence. */
   semanticMinIdleSeconds: number;
+  /** Theme building (idle-time, Stage 2). Default ON; off via CAPTAIN_MEMO_QM_THEME=0.
+   *
+   *  Stage 1 folds same-session restatements. This handles the other measured population: the
+   *  same standing fact re-learned across sessions weeks apart, where a fold would destroy the
+   *  evidence that it failed to stick. One generated observation states the durable fact; the
+   *  originals are archived beneath it and restorable in one call. Requires a summarizer. */
+  themeEnabled: boolean;
+  /** Cosine for cluster membership. LOWER than the fold threshold on purpose: a theme is
+   *  additive and reversible where a fold archives a row into another's identity, so it can
+   *  afford a wider net — and the judge is a second, semantic gate the fold path has no
+   *  equivalent of. 312 unblocked pairs sit in the 0.93 band on the reference corpus. */
+  themeCosineThreshold: number;
+  /** Minimum rows for a theme. Two is a pair, not a theme. */
+  themeMinMembers: number;
+  /** Max clusters judged per pass — each one is a model call. */
+  themeMaxClusters: number;
   /** Cosine confirm for SUPERSESSION, deliberately separate from dedup's.
    *
    *  The two guard actions of very different destructiveness: dedup ARCHIVES a row; supersede applies a
@@ -106,6 +122,10 @@ export const DEFAULT_QM_CONFIG: QmConfig = {
   semanticMaxGroups: 200,
   semanticCheckIntervalMs: 600_000,   // check every 10 min; the pass itself is rare
   semanticMinIdleSeconds: 1_800,      // 30 min quiet before anything starts
+  themeEnabled: true,
+  themeCosineThreshold: 0.93,
+  themeMinMembers: 3,
+  themeMaxClusters: 5,                // 5 model calls per idle pass; themes accrue slowly
 };
 
 /** Build a QmConfig from a plain env record. Unparseable numeric values fall back
@@ -133,5 +153,9 @@ export function loadQmConfig(env: Record<string, string | undefined>): QmConfig 
     semanticMaxGroups: num(env.CAPTAIN_MEMO_QM_SEMANTIC_MAX_GROUPS, D.semanticMaxGroups),
     semanticCheckIntervalMs: num(env.CAPTAIN_MEMO_QM_SEMANTIC_CHECK_MS, D.semanticCheckIntervalMs),
     semanticMinIdleSeconds: num(env.CAPTAIN_MEMO_QM_SEMANTIC_MIN_IDLE_S, D.semanticMinIdleSeconds),
+    themeEnabled: env.CAPTAIN_MEMO_QM_THEME !== '0',
+    themeCosineThreshold: num(env.CAPTAIN_MEMO_QM_THEME_COSINE, D.themeCosineThreshold),
+    themeMinMembers: num(env.CAPTAIN_MEMO_QM_THEME_MIN_MEMBERS, D.themeMinMembers),
+    themeMaxClusters: num(env.CAPTAIN_MEMO_QM_THEME_MAX_CLUSTERS, D.themeMaxClusters),
   };
 }

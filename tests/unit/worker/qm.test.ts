@@ -38,6 +38,21 @@ test('semantic opt-OUT via env, and its knobs are tunable', () => {
   expect(loadQmConfig({ CAPTAIN_MEMO_QM_SEMANTIC_MIN_IDLE_S: '600' }).semanticMinIdleSeconds).toBe(600);
   expect(loadQmConfig({ CAPTAIN_MEMO_QM_SEMANTIC_COSINE: 'nonsense' }).semanticCosineThreshold).toBe(0.95);
 });
+test('theme defaults: ON, wider cosine than the fold, 3-member minimum', () => {
+  expect(DEFAULT_QM_CONFIG.themeEnabled).toBe(true);
+  expect(DEFAULT_QM_CONFIG.themeCosineThreshold).toBe(0.93);
+  expect(DEFAULT_QM_CONFIG.themeMinMembers).toBe(3);
+  expect(DEFAULT_QM_CONFIG.themeMaxClusters).toBe(5);
+});
+// A theme is additive and reversible where a fold archives a row into another's identity, and
+// the judge is a second gate the fold path has no equivalent of — so it can afford a wider net.
+test('theme threshold is looser than the fold threshold, on purpose', () => {
+  expect(DEFAULT_QM_CONFIG.themeCosineThreshold).toBeLessThan(DEFAULT_QM_CONFIG.semanticCosineThreshold);
+});
+test('theme opt-OUT via env', () => {
+  expect(loadQmConfig({ CAPTAIN_MEMO_QM_THEME: '0' }).themeEnabled).toBe(false);
+  expect(loadQmConfig({ CAPTAIN_MEMO_QM_THEME_MIN_MEMBERS: '5' }).themeMinMembers).toBe(5);
+});
 test('master kill switch stops both passes', () => { expect(loadQmConfig({ CAPTAIN_MEMO_QM_ENABLED: '0' }).enabled).toBe(false); });
 test('numeric override + invalid falls back to default', () => {
   expect(loadQmConfig({ CAPTAIN_MEMO_QM_DEDUP_COSINE: '0.95' }).dedupCosineThreshold).toBe(0.95);
