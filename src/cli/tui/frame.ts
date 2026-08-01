@@ -80,7 +80,7 @@ export interface Dims {
 }
 
 const VIEW_LABEL: Record<string, string> = {
-  surfaced: 'Surfaced', recalled: 'Recalled', recent: 'Recent',
+  surfaced: 'Surfaced', recalled: 'Recalled', recent: 'Recent', themes: 'Themes',
 };
 
 export function buildFrame(state: TopState, data: FrameData, dims: Dims): string[] {
@@ -229,7 +229,7 @@ function dashboardFrame(state: TopState, data: FrameData, dims: Dims): string[] 
   return [
     ...body,
     '',
-    hintBar(['[s]urfaced', '[r]ecalled', '[n]recent', '[a]I-sources', '[m]tokens', '[+/-]rate', '[?]help', '[q]uit']),
+    hintBar(['[s]urfaced', '[r]ecalled', '[n]recent', '[T]hemes', '[a]I-sources', '[m]tokens', '[+/-]rate', '[?]help', '[q]uit']),
   ];
 }
 
@@ -250,7 +250,7 @@ function sourcesFrame(state: TopState, data: FrameData, dims: Dims): string[] {
     out.push(...renderSourceBars(byOrigin, barWidth));
   }
   out.push('');
-  out.push(hintBar(['[s]urfaced', '[r]ecalled', '[n]recent', '[a/Esc]back', '[+/-]rate', '[?]help', '[q]uit']));
+  out.push(hintBar(['[s]urfaced', '[r]ecalled', '[n]recent', '[T]hemes', '[a/Esc]back', '[+/-]rate', '[?]help', '[q]uit']));
   return out;
 }
 
@@ -306,7 +306,7 @@ function tokensFrame(state: TopState, data: FrameData, dims: Dims): string[] {
   out.push('');
   out.push('  ' + dim('cache-read is the same context re-sent each turn — it dwarfs fresh, so share is of fresh'));
   out.push('');
-  out.push(hintBar(['[s]urfaced', '[r]ecalled', '[a]I-sources', '[m/Esc]back', '[+/-]rate', '[?]help', '[q]uit']));
+  out.push(hintBar(['[s]urfaced', '[r]ecalled', '[T]hemes', '[a]I-sources', '[m/Esc]back', '[+/-]rate', '[?]help', '[q]uit']));
   return out;
 }
 

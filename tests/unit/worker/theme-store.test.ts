@@ -193,3 +193,30 @@ describe('listThemes', () => {
     s.close(); rmSync(dir, { recursive: true, force: true });
   });
 });
+
+// The `top` TUI's table takes a population predicate; themes become one more view, reusing its
+// sorting, filtering, paging and drill-in rather than growing a parallel screen.
+describe('queryRecall themes view', () => {
+  test('returns only machine-written themes', () => {
+    const { s, dir } = store();
+    const ids = [add(s, 'member one', 's1', 100), add(s, 'member two', 's2', 200)];
+    s.bumpRetrieval(ids, 'auto');
+    const themeId = s.createTheme(draft, ids, { project_id: 'p', branch: null, atEpoch: 400 });
+    const plain = add(s, 'an ordinary observation', 's9', 500);
+    s.bumpRetrieval([plain], 'auto');
+
+    const page = s.queryRecall({ view: 'themes', sort: 'recency', desc: true, limit: 50, offset: 0 } as never);
+    expect(page.rows.map(r => r.id)).toEqual([themeId]);
+    expect(page.total).toBe(1);
+    s.close(); rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('a retired theme drops out of the view', () => {
+    const { s, dir } = store();
+    const ids = [add(s, 'a', 's1', 100), add(s, 'b', 's2', 200)];
+    const themeId = s.createTheme(draft, ids, { project_id: 'p', branch: null, atEpoch: 400 });
+    s.unmakeTheme(themeId);
+    expect(s.queryRecall({ view: 'themes', sort: 'recency', desc: true, limit: 50, offset: 0 } as never).total).toBe(0);
+    s.close(); rmSync(dir, { recursive: true, force: true });
+  });
+});

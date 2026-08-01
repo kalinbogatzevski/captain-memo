@@ -67,6 +67,11 @@ export interface StatsResponse {
      *  for back-compat with pre-v0.1.16 worker payloads. */
     recent_surfaced?: RecentSurfacedEntry[];
   };
+  /** Quartermaster housekeeping. Optional — pre-v0.27.48 payloads omit these. */
+  qm?: { enabled: boolean; dedup_enabled: boolean; cosine_threshold: number; last_run: QmRunBlock | null };
+  supersede?: { enabled?: boolean; cosine_threshold?: number; links: number; last_run?: QmRunBlock | null };
+  semantic?: { enabled: boolean; cosine_threshold: number; min_idle_seconds: number; last_run: QmRunBlock | null };
+  theme?: { enabled: boolean; cosine_threshold: number; min_members: number; live: number; last_run: QmRunBlock | null };
   /** Tide lifecycle snapshot. Optional — pre-v0.5.3 worker payloads omit it. */
   tide?: {
     enabled: boolean;
@@ -79,6 +84,13 @@ export interface StatsResponse {
     max_stability_days: number | null;
   };
   dream?: DreamStatsBlock;
+}
+
+/** One persisted Quartermaster run, as /stats reports it. */
+interface QmRunBlock {
+  id: number; job: string; startedAt: number; finishedAt: number | null;
+  rowsScanned: number; merges: number; skippedNoVector: number;
+  abortedForIngest: boolean; errored: boolean;
 }
 
 interface RecallTopEntry {
@@ -433,6 +445,14 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
     out.push('');
   }
 
+  // Housekeeping — full width, above the Tide/Dream pair. These four passes mutate the corpus,
+  // so they sit above the sections that merely describe it. Omitted whole on an older worker
+  // payload rather than shown as an empty header.
+  if (stats.qm || stats.supersede || stats.semantic || stats.theme) {
+    out.push(...renderHousekeepingBlock(stats, panelWidth));
+    out.push('');
+  }
+
   // Tide │ Dream — side by side when the panel affords it. Both are 5 rows and
   // neither fills half a wide panel on its own, so stacking them cost 6 rows for
   // nothing.
@@ -470,6 +490,52 @@ function pairBlocks(
   const out: string[] = [];
   if (leftFull.length > 0) out.push(...leftFull, '');
   if (rightFull.length > 0) out.push(...rightFull, '');
+  return out;
+}
+
+/** Housekeeping — the four consolidation passes. Each is invisible without this: they run on
+ *  their own timers, and before this block the only way to tell whether one had ever done
+ *  anything was to read /stats JSON or query qm_runs by hand. */
+function renderHousekeepingBlock(stats: StatsResponse, blockWidth: number): string[] {
+  const out: string[] = [];
+  out.push(sectionRule('Housekeeping', blockWidth));
+  out.push(`   ${dim('consolidation passes — all reversible, none delete')}`);
+
+  const master = stats.qm?.enabled !== false;
+  // A pass reads as off when its own switch is off OR the master switch is. Distinguishing
+  // "disabled" from "enabled but idle" is the whole point of the block.
+  const state = (on: boolean | undefined): string =>
+    !master || on === false ? red('off') : green('on');
+  const run = (r: QmRunBlock | null | undefined, unit: string): string => {
+    if (!r) return dim('never run');
+    const ago = fmtAgo(Math.max(0, Math.floor(Date.now() / 1000) - r.startedAt));
+    const errored = r.errored ? ' ' + red('errored') : '';
+    return `${cyanBold(String(r.merges))} ${unit} ${dim(`· ${r.rowsScanned} scanned · ${ago} ago`)}${errored}`;
+  };
+
+  if (stats.qm) {
+    out.push(`   ${dim('Dedup'.padEnd(12))}${state(stats.qm.dedup_enabled)}  `
+      + `${dim(`cos ${stats.qm.cosine_threshold}`)}   ${run(stats.qm.last_run, 'folded')}`);
+  }
+  if (stats.supersede) {
+    const links = `${cyanBold(fmtCount(stats.supersede.links))} ${dim('link(s)')}`;
+    out.push(`   ${dim('Supersede'.padEnd(12))}${state(stats.supersede.enabled)}  `
+      + `${dim(`cos ${stats.supersede.cosine_threshold ?? '—'}`)}   ${links}`);
+  }
+  if (stats.semantic) {
+    out.push(`   ${dim('Semantic'.padEnd(12))}${state(stats.semantic.enabled)}  `
+      + `${dim(`cos ${stats.semantic.cosine_threshold}`)}   ${run(stats.semantic.last_run, 'folded')}`);
+  }
+  if (stats.theme) {
+    const live = `${cyanBold(String(stats.theme.live))} ${dim('live')}`;
+    out.push(`   ${dim('Themes'.padEnd(12))}${state(stats.theme.enabled)}  `
+      + `${dim(`cos ${stats.theme.cosine_threshold}`)}   ${live}`
+      + (stats.theme.live > 0 ? `   ${dim('→ captain-memo theme list')}` : ''));
+  }
+  if (stats.semantic) {
+    const mins = Math.round(stats.semantic.min_idle_seconds / 60);
+    out.push(`   ${dim(`Semantic and Themes run only after ${mins} min of no activity.`)}`);
+  }
   return out;
 }
 

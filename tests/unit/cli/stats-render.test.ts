@@ -455,3 +455,40 @@ test('renderStats — includes the AI sources block when by_origin is present', 
   expect(out).toContain('AI sources');
   expect(out).toContain('codex');
 });
+
+// The four housekeeping passes were reachable only in the /stats JSON. The rendered page — the
+// thing an operator actually reads — showed Tide and Dream but nothing about dedup, supersede,
+// semantic folding, or themes. A pass you cannot see is a pass you cannot trust or debug.
+const HOUSEKEEPING: StatsResponse = {
+  ...SAMPLE,
+  qm: { enabled: true, dedup_enabled: true, cosine_threshold: 0.95,
+        last_run: { id: 1, job: 'dedup', startedAt: 1, finishedAt: 2, rowsScanned: 40,
+                    merges: 3, skippedNoVector: 0, abortedForIngest: false, errored: false } },
+  supersede: { enabled: true, cosine_threshold: 0.93, links: 28, last_run: null },
+  semantic: { enabled: true, cosine_threshold: 0.95, min_idle_seconds: 1800, last_run: null },
+  theme: { enabled: true, cosine_threshold: 0.93, min_members: 3, live: 4, last_run: null },
+};
+
+test('renderStats — Housekeeping names all four passes and their live state', () => {
+  const text = renderStats(HOUSEKEEPING).map(stripAnsi).join('\n');
+  expect(text).toContain('Housekeeping');
+  expect(text).toContain('Dedup');
+  expect(text).toContain('Supersede');
+  expect(text).toContain('Semantic');
+  expect(text).toContain('Themes');
+  expect(text).toContain('28');            // supersede links
+  expect(text).toContain('4');             // live themes
+});
+
+test('renderStats — a disabled pass reads as off, not as idle', () => {
+  const off = { ...HOUSEKEEPING, theme: { ...HOUSEKEEPING.theme!, enabled: false, live: 0 } };
+  const text = renderStats(off).map(stripAnsi).join('\n');
+  expect(text).toMatch(/Themes\s+.*off/);
+});
+
+// Pre-0.27.48 workers omit these blocks entirely; the renderer must not throw or print an
+// empty section header on their output.
+test('renderStats — omits Housekeeping entirely on an older payload', () => {
+  const text = renderStats(SAMPLE).map(stripAnsi).join('\n');
+  expect(text).not.toContain('Housekeeping');
+});

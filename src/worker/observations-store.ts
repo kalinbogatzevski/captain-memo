@@ -354,7 +354,7 @@ export interface TideStats {
 }
 
 /** Which population the `top` table is showing. */
-export type RecallView = 'surfaced' | 'recalled' | 'recent';
+export type RecallView = 'surfaced' | 'recalled' | 'recent' | 'themes';
 /** Column the `top` table is sorted by. */
 export type RecallSort = 'total' | 'auto' | 'search' | 'drill' | 'recency';
 
@@ -815,6 +815,10 @@ export class ObservationsStore {
       surfaced: '(from_auto + from_search + from_drill) > 0',
       recalled: 'from_drill > 0',
       recent:   'last_surfaced_at IS NOT NULL',
+      // Themes are the rows the Captain WROTE. No surfacing predicate: a theme written an hour
+      // ago has not been retrieved yet and must still be visible — that is exactly when you want
+      // to read it and decide whether to keep it.
+      themes:   "session_id = 'theme'",
     };
     const orderExpr: Record<RecallSort, string> = {
       total:   '(from_auto + from_search + from_drill)',

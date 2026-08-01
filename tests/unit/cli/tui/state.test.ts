@@ -76,7 +76,20 @@ test('table — Tab cycles the view and resets selection', () => {
   s = run(s, k({ type: 'tab' }));
   expect(s.view).toBe('recent');
   s = run(s, k({ type: 'tab' }));
+  expect(s.view).toBe('themes');    // the Captain's own writing, last in the cycle
+  s = run(s, k({ type: 'tab' }));
   expect(s.view).toBe('surfaced');  // wraps
+});
+
+// Lowercase t has cycled the TYPE FILTER since before themes existed; the themes view takes
+// uppercase T so an existing habit keeps working.
+test('table — T opens themes, lowercase t still cycles the type filter', () => {
+  let s = run(initialState(), ch('s'), { type: 'data', ids: [1, 2, 3] });
+  const afterLower = run(s, ch('t'));
+  expect(afterLower.view).toBe('surfaced');       // unchanged
+  expect(afterLower.typeFilter).not.toBeUndefined();
+  const afterUpper = run(s, ch('T'));
+  expect(afterUpper.view).toBe('themes');
 });
 
 test('table — s/r/n switch the view in place (consistent with the dashboard)', () => {

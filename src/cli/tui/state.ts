@@ -40,7 +40,7 @@ export type Event =
   | { type: 'data'; ids: number[] }
   | { type: 'resize'; pageSize: number };
 
-const VIEWS: RecallView[] = ['surfaced', 'recalled', 'recent'];
+const VIEWS: RecallView[] = ['surfaced', 'recalled', 'recent', 'themes'];
 const SORTS: RecallSort[] = ['total', 'auto', 'search', 'drill', 'recency'];
 // Type filter cycle: all (null) then each observation type.
 const TYPE_CYCLE: Array<string | null> =
@@ -85,7 +85,7 @@ function followScroll(s: TopState): TopState {
 
 // Each view has a natural default ordering; entering a view adopts it.
 const VIEW_DEFAULT_SORT: Record<RecallView, RecallSort> = {
-  surfaced: 'total', recalled: 'drill', recent: 'recency',
+  surfaced: 'total', recalled: 'drill', recent: 'recency', themes: 'recency',
 };
 
 function enterTable(s: TopState, view: RecallView): TopState {
@@ -137,6 +137,7 @@ function reduceDashboard(s: TopState, key: Key): TopState {
       case 's': return enterTable(s, 'surfaced');
       case 'r': return enterTable(s, 'recalled');
       case 'n': return enterTable(s, 'recent');
+      case 'T': return enterTable(s, 'themes');   // uppercase: lowercase t is the type filter
       case 'a': return { ...s, mode: 'sources' };
       case 'm': return { ...s, mode: 'tokens' };
       case '+': return { ...s, refreshMs: clamp(s.refreshMs + REFRESH_STEP, MIN_REFRESH, MAX_REFRESH) };
@@ -159,6 +160,7 @@ function reduceTokens(s: TopState, key: Key): TopState {
       case 's': return enterTable(s, 'surfaced');
       case 'r': return enterTable(s, 'recalled');
       case 'n': return enterTable(s, 'recent');
+      case 'T': return enterTable(s, 'themes');   // uppercase: lowercase t is the type filter
       case 'm': return { ...s, mode: 'dashboard' };
       case 'a': return { ...s, mode: 'sources' };
       case '+': return { ...s, refreshMs: clamp(s.refreshMs + REFRESH_STEP, MIN_REFRESH, MAX_REFRESH) };
@@ -177,6 +179,7 @@ function reduceSources(s: TopState, key: Key): TopState {
       case 's': return enterTable(s, 'surfaced');
       case 'r': return enterTable(s, 'recalled');
       case 'n': return enterTable(s, 'recent');
+      case 'T': return enterTable(s, 'themes');   // uppercase: lowercase t is the type filter
       case 'a': return { ...s, mode: 'dashboard' };
       case '+': return { ...s, refreshMs: clamp(s.refreshMs + REFRESH_STEP, MIN_REFRESH, MAX_REFRESH) };
       case '-': return { ...s, refreshMs: clamp(s.refreshMs - REFRESH_STEP, MIN_REFRESH, MAX_REFRESH) };
@@ -219,6 +222,7 @@ function reduceTable(s: TopState, key: Key): TopState {
         case 's': return enterTable(s, 'surfaced');   // view switch in-place,
         case 'r': return enterTable(s, 'recalled');   // consistent with the
         case 'n': return enterTable(s, 'recent');     // dashboard s/r/n keys
+        case 'T': return enterTable(s, 'themes');   // uppercase: lowercase t is the type filter
         case 'a': return { ...s, mode: 'sources' };   // AI-sources chart tab
         case 'm': return { ...s, mode: 'tokens' };    // live per-session token flow
         case 'j': return followScroll({ ...s, selection: clamp(s.selection + 1, 0, lastIndex) });
