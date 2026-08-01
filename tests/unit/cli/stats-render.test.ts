@@ -492,3 +492,76 @@ test('renderStats — omits Housekeeping entirely on an older payload', () => {
   const text = renderStats(SAMPLE).map(stripAnsi).join('\n');
   expect(text).not.toContain('Housekeeping');
 });
+
+// A countdown, because "runs after 30 min of no activity" tells you the rule but never how long
+// is left — and the clock resets on every recall, so the honest answer changes minute to minute.
+const IDLE = (over: Partial<NonNullable<StatsResponse['idle']>>) => ({
+  ...HOUSEKEEPING,
+  idle: {
+    seconds_since_activity: 600, min_idle_seconds: 1800,
+    eligible: false, blocked_by: [] as string[], ...over,
+  },
+});
+
+test('renderStats — counts down the time left before the idle passes may start', () => {
+  const text = renderStats(IDLE({ seconds_since_activity: 600 })).map(stripAnsi).join('\n');
+  expect(text).toMatch(/Next pass\s+in 20m/);          // 1800 - 600 = 1200s
+});
+
+test('renderStats — says so plainly once the wait is over', () => {
+  const text = renderStats(IDLE({ seconds_since_activity: 2000, eligible: true })).map(stripAnsi).join('\n');
+  expect(text).toMatch(/Next pass\s+.*(eligible|due)/i);
+  expect(text).not.toContain('in 0m');
+});
+
+// A countdown that keeps ticking while a batch is running would be a lie: the pass cannot start,
+// and the reason is knowable. Name it instead.
+test('renderStats — names what is blocking rather than showing a countdown', () => {
+  const text = renderStats(IDLE({
+    seconds_since_activity: 4000, eligible: false, blocked_by: ['queue', 'co-session'],
+  })).map(stripAnsi).join('\n');
+  expect(text).toMatch(/Next pass\s+.*(waiting|blocked)/i);
+  expect(text).toContain('queue');
+  expect(text).toContain('co-session');
+});
+
+test('renderStats — older payloads without the idle block still render', () => {
+  const text = renderStats(HOUSEKEEPING).map(stripAnsi).join('\n');
+  expect(text).toContain('Housekeeping');
+  expect(text).not.toContain('Next pass');
+});
+
+// An abort means the pass never LOOKED. Printing that as a bare "0 considered" made it read as
+// "nothing to theme" — a completely different claim about the corpus, and the one that sent the
+// author hunting for a bug in the clusterer that was working correctly all along.
+test('renderStats — an aborted pass reads as skipped, not as empty', () => {
+  const aborted = {
+    ...HOUSEKEEPING,
+    theme: {
+      ...HOUSEKEEPING.theme!,
+      last_run: { id: 9, job: 'theme', startedAt: Math.floor(Date.now() / 1000) - 60,
+                  finishedAt: null, rowsScanned: 0, merges: 0, skippedNoVector: 0,
+                  abortedForIngest: true, errored: false },
+    },
+  };
+  const text = renderStats(aborted).map(stripAnsi).join('\n');
+  expect(text).toMatch(/Themes\s+.*skipped/);
+  expect(text).toContain('ingest was busy');
+  expect(text).not.toMatch(/Themes.*0 considered/);
+});
+
+test('renderStats — a pass that ran and found nothing still says so', () => {
+  const ran = {
+    ...HOUSEKEEPING,
+    theme: {
+      ...HOUSEKEEPING.theme!,
+      last_run: { id: 9, job: 'theme', startedAt: Math.floor(Date.now() / 1000) - 60,
+                  finishedAt: null, rowsScanned: 4, merges: 0, skippedNoVector: 4,
+                  abortedForIngest: false, errored: false },
+    },
+  };
+  const text = renderStats(ran).map(stripAnsi).join('\n');
+  expect(text).toContain('4 considered');
+  expect(text).toContain('4 declined');
+  expect(text).not.toContain('skipped');
+});

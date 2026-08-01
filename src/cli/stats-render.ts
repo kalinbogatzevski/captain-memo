@@ -520,6 +520,9 @@ function renderHousekeepingBlock(stats: StatsResponse, blockWidth: number): stri
     if (!r) return dim('never run');
     const ago = fmtAgo(Math.max(0, Math.floor(Date.now() / 1000) - r.startedAt));
     const errored = r.errored ? ' ' + red('errored') : '';
+    if (r.abortedForIngest && r.rowsScanned === 0) {
+      return `${yellow('skipped')} ${dim(`· ingest was busy · ${ago} ago`)}${errored}`;
+    }
     return `${cyanBold(String(r.merges))} ${unit} ${dim(`· ${r.rowsScanned} scanned · ${ago} ago`)}${errored}`;
   };
 
@@ -538,8 +541,20 @@ function renderHousekeepingBlock(stats: StatsResponse, blockWidth: number): stri
   }
   if (stats.theme) {
     const live = `${cyanBold(String(stats.theme.live))} ${dim('live')}`;
+    // Show the last RUN as well as the live count. Showing only `0 live` made a pass that runs
+    // every tick and correctly declines look identical to a pass that never runs at all — which
+    // is exactly the reading it got. A theme job records clusters considered in rowsScanned and
+    // refusals in skippedNoVector, so it needs its own phrasing rather than dedup's "folded".
+    const tr = stats.theme.last_run;
+    const themeRun = tr
+      // An abort means the pass never LOOKED. Printing that as a bare "0 considered" made it
+      // read as "nothing to theme", which is a completely different claim about the corpus.
+      ? (tr.abortedForIngest
+          ? `${dim('·')} ${yellow('skipped')} ${dim(`· ingest was busy · ${fmtAgo(Math.max(0, Math.floor(Date.now() / 1000) - tr.startedAt))} ago`)}`
+          : `${dim('·')} ${cyanBold(String(tr.rowsScanned))} considered ${dim(`· ${tr.skippedNoVector} declined · ${fmtAgo(Math.max(0, Math.floor(Date.now() / 1000) - tr.startedAt))} ago`)}`)
+      : dim('· never run');
     out.push(`   ${dim('Themes'.padEnd(12))}${state(stats.theme.enabled)}  `
-      + `${dim(`cos ${stats.theme.cosine_threshold}`)}   ${live}`
+      + `${dim(`cos ${stats.theme.cosine_threshold}`)}   ${live} ${themeRun}`
       + (stats.theme.live > 0 ? `   ${dim('→ captain-memo theme list')}` : ''));
   }
   // The countdown. "Runs after 30 min of no activity" states the rule but never how long is

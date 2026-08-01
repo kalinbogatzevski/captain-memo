@@ -1279,6 +1279,19 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           return themeId;
         },
         shouldAbort: () => processBatchPromise != null || (obsQueue?.pendingCount() ?? 0) > 0,
+        // Only a FORCED run waits. A scheduled one steps aside and comes round again shortly;
+        // a forced one was explicitly asked for, so abandoning its whole tick to a queue that is
+        // almost never empty on a working machine made `--for` report zeros it never earned.
+        ...((force || forcedNow()) ? {
+          waitForQuiet: async () => {
+            const deadline = Date.now() + 60_000;
+            while (Date.now() < deadline) {
+              await new Promise(r => setTimeout(r, 1000));
+              if (processBatchPromise == null && (obsQueue?.pendingCount() ?? 0) === 0) return true;
+            }
+            return false;
+          },
+        } : {}),
         yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
         });
       })()
@@ -1297,6 +1310,22 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       return themePromise;
     };
     themeTimer = setInterval(() => { startTheme?.(); }, qmConfig.semanticCheckIntervalMs);
+  }
+
+  // The forced-window ticker. A separate, fast timer rather than re-arming the scheduled ones:
+  // it does nothing at all unless a window is open, and the starters already refuse to double a
+  // pass in flight, so the only cost when idle-gated is one cheap comparison every 30s.
+  //
+  // This is what makes `--for` mean what it says. The scheduled interval is 10 minutes, so a
+  // 10-minute window inheriting it bought one extra pass; at this cadence the window actually
+  // grinds the backlog down.
+  let forcedTimer: ReturnType<typeof setInterval> | null = null;
+  if (!opts.readOnly && (startSemantic || startTheme)) {
+    forcedTimer = setInterval(() => {
+      if (!forcedNow()) return;
+      startSemantic?.();
+      startTheme?.();
+    }, qmConfig.forcedTickMs);
   }
 
   // Promotion (opt-in, OFF by default). Sibling of the Quartermaster auto-dedup
@@ -2635,6 +2664,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     if (qmSupersedeTimer) clearInterval(qmSupersedeTimer);
     if (semanticTimer) clearInterval(semanticTimer);
     if (themeTimer) clearInterval(themeTimer);
+    if (forcedTimer) clearInterval(forcedTimer);
     if (promotionTimer) clearInterval(promotionTimer);
     if (pendingTickTimer) clearInterval(pendingTickTimer);
     // clearInterval cancels the SCHEDULE, not work already IN FLIGHT. Every background slice below is

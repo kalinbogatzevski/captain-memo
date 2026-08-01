@@ -79,6 +79,14 @@ export interface QmConfig {
   themeMinMembers: number;
   /** Max clusters judged per pass — each one is a model call. */
   themeMaxClusters: number;
+  /** How often to tick WHILE a forced window is open (`consolidate --for`).
+   *
+   *  Deliberately far shorter than semanticCheckIntervalMs. Those are two clocks with opposite
+   *  intents: the scheduled check is tuned for politeness — wake rarely, never intrude — whereas
+   *  a forced window is the user explicitly ASKING for intrusion. Inheriting the polite cadence
+   *  made `--for 10m` buy roughly one extra pass instead of grinding the backlog, since the
+   *  window and the interval were both 10 minutes. */
+  forcedTickMs: number;
   /** Cosine confirm for SUPERSESSION, deliberately separate from dedup's.
    *
    *  The two guard actions of very different destructiveness: dedup ARCHIVES a row; supersede applies a
@@ -126,6 +134,7 @@ export const DEFAULT_QM_CONFIG: QmConfig = {
   themeCosineThreshold: 0.93,
   themeMinMembers: 3,
   themeMaxClusters: 5,                // 5 model calls per idle pass; themes accrue slowly
+  forcedTickMs: 30_000,               // while forcing: every 30s, not every 10 min
 };
 
 /** Build a QmConfig from a plain env record. Unparseable numeric values fall back
@@ -157,5 +166,6 @@ export function loadQmConfig(env: Record<string, string | undefined>): QmConfig 
     themeCosineThreshold: num(env.CAPTAIN_MEMO_QM_THEME_COSINE, D.themeCosineThreshold),
     themeMinMembers: num(env.CAPTAIN_MEMO_QM_THEME_MIN_MEMBERS, D.themeMinMembers),
     themeMaxClusters: num(env.CAPTAIN_MEMO_QM_THEME_MAX_CLUSTERS, D.themeMaxClusters),
+    forcedTickMs: num(env.CAPTAIN_MEMO_QM_FORCED_TICK_MS, D.forcedTickMs),
   };
 }

@@ -28,6 +28,11 @@ export interface ThemePassDeps {
   ) => Promise<number> | number;
   /** True when ingest/embedding work arrived — stop before spending another model call. */
   shouldAbort: () => boolean;
+  /** Wait for ingest to pass rather than abandoning the pass outright. Supplied when the run was
+   *  explicitly FORCED: on a machine in active use the queue is rarely empty, so aborting on the
+   *  first check meant a forced pass examined nothing at all and reported a zero it never earned.
+   *  Returns true if the coast cleared, false if it gave up. */
+  waitForQuiet?: () => Promise<boolean>;
   yieldToLoop: () => Promise<void>;
 }
 
@@ -47,7 +52,12 @@ export async function runThemePass(deps: ThemePassDeps): Promise<ThemePassResult
     clustersConsidered: 0, themesWritten: 0, declined: 0, failed: 0, aborted: false,
   };
   for (const cluster of deps.clusters()) {
-    if (deps.shouldAbort()) { res.aborted = true; return res; }
+    if (deps.shouldAbort()) {
+      // Forced runs wait it out; scheduled runs step aside — they will come round again shortly
+      // and have nothing to prove.
+      const cleared = deps.waitForQuiet ? await deps.waitForQuiet() : false;
+      if (!cleared) { res.aborted = true; return res; }
+    }
     res.clustersConsidered++;
     const draft = await deps.judge(cluster);
     if (!draft) { res.declined++; await deps.yieldToLoop(); continue; }

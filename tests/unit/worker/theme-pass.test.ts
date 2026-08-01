@@ -104,6 +104,41 @@ describe('runThemePass', () => {
     expect(seen).toEqual([{ project_id: 'erp-platform', branch: 'master' }]);
   });
 
+  // A scheduled run steps aside for ingest — it comes round again shortly and has nothing to
+  // prove. A FORCED run was explicitly asked for, and on a working machine the queue is almost
+  // never empty, so abandoning the whole tick made `--for` report zeros it never earned.
+  test('a scheduled run still abandons its tick to ingest', async () => {
+    const r = await runThemePass({
+      ...base, clusters: () => [cluster([1, 2, 3])], shouldAbort: () => true,
+    });
+    expect(r.aborted).toBe(true);
+    expect(r.clustersConsidered).toBe(0);
+  });
+
+  test('a forced run waits for the coast to clear and then works', async () => {
+    let busy = true;
+    const r = await runThemePass({
+      ...base,
+      clusters: () => [cluster([1, 2, 3])],
+      shouldAbort: () => busy,
+      waitForQuiet: async () => { busy = false; return true; },
+    });
+    expect(r.aborted).toBe(false);
+    expect(r.clustersConsidered).toBe(1);
+    expect(r.themesWritten).toBe(1);
+  });
+
+  test('a forced run that waits in vain still reports the abort honestly', async () => {
+    const r = await runThemePass({
+      ...base,
+      clusters: () => [cluster([1, 2, 3])],
+      shouldAbort: () => true,
+      waitForQuiet: async () => false,          // never cleared
+    });
+    expect(r.aborted).toBe(true);
+    expect(r.clustersConsidered).toBe(0);
+  });
+
   test('yields between clusters so the heartbeat keeps beating', async () => {
     let yields = 0;
     await runThemePass({
