@@ -5,6 +5,38 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.29.1] — 2026-08-02
+
+### Fixed
+
+- **Themes were discarding two-thirds of what they should have found.** The minimum cluster size
+  was 3, borrowed from the folding path where "two is a pair, not a theme" is sound because the
+  survivor already states the fact. For a theme it is backwards: the whole phenomenon is the same
+  standing fact learned in one session and *again* in another weeks later, so two separate
+  learning events **is** the signal. On the same corpus: 3 members yields 4 candidate clusters,
+  2 yields 14.
+
+- **A forced pass no longer abandons its turn.** `consolidate` skipped the idle wait but still
+  stepped aside for any queued work — and on a machine in use the queue is rarely empty, so a
+  forced pass could examine nothing at all and report zero. A forced run now waits for the coast
+  to clear; a scheduled one still steps aside, since it comes round again shortly.
+
+- **The stats panel could not tell "found nothing" from "never looked".** Both printed as
+  `0 considered`, which reads as a claim about your corpus rather than about the scheduler. An
+  interrupted pass now reads `skipped · ingest was busy`, and the Themes line shows its last run
+  at all — previously it showed only a live count, so a pass running every tick looked dead.
+
+- `--for` now ticks every 30 seconds while its window is open rather than inheriting the
+  ten-minute background interval, which had made `--for 10m` worth about one extra pass.
+
+### Known
+
+- Themes currently consider only observations that have been **retrieved at least once** — on a
+  large corpus that can be a small fraction of it. Widening that is not a matter of raising a
+  limit: comparing every pair across a full corpus runs to over a billion comparisons. The route
+  is nearest-neighbour search against the vector index instead of brute force, written up in
+  `docs/specs/2026-08-02-theme-reach.md`.
+
 ## [0.29.0] — 2026-08-01
 
 ### Added
