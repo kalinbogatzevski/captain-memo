@@ -5,6 +5,32 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.53] — 2026-08-01
+
+### Added
+
+- **A Housekeeping section on `captain-memo stats`.** Four passes now mutate the corpus — dedup,
+  supersede, semantic folding, themes — and none of them appeared anywhere an operator looks.
+  They were reachable only by reading the `/stats` JSON or querying `qm_runs` by hand.
+
+  ```
+  Housekeeping ────────────────────────────────────────
+   consolidation passes — all reversible, none delete
+   Dedup       on  cos 0.95   0 folded · 1 scanned · 1 h ago
+   Supersede   on  cos 0.93   150 link(s)
+   Semantic    on  cos 0.95   never run
+   Themes      on  cos 0.93   0 live
+   Semantic and Themes run only after 30 min of no activity.
+  ```
+
+  "Never run" is a distinct state from "ran and found nothing", and a pass stopped by its own
+  switch reads differently from one the master switch stopped. Older worker payloads omit the
+  section entirely rather than showing an empty header.
+
+- **A Themes view in `top`, on uppercase `T`.** Themes join surfaced / recalled / recent as one
+  more population, so sorting, filtering, paging and drill-in work on them for free. Uppercase
+  because lowercase `t` has cycled the type filter since long before themes existed.
+
 ## [0.27.52] — 2026-08-01
 
 ### Added
