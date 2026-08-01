@@ -5,6 +5,31 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.49] — 2026-08-01
+
+### Fixed
+
+- **`captain-memo dedup --apply` folded rows the automatic sweep protects.** The background pass
+  skips any member that was drilled into or explicitly anchored — "a protected memory is never
+  archived automatically" — but the manual command called the merge directly and never consulted
+  that gate. The manual tool was therefore *more* destructive than the automatic one it supplements,
+  which is exactly backwards, and it mattered the moment the automatic pass started shipping on.
+
+  Filtered when the groups are built rather than at apply time, so the dry-run stops promising folds
+  that will not happen. On a 124k-row corpus the dry-run drops from 628 groups / 850 archivable to
+  626 / 846.
+
+### Changed
+
+- **`captain-memo dedup` now documents that its gate differs from the hourly sweep's.** It decides on
+  title similarity alone; the sweep additionally requires an embedding cosine ≥ 0.95. That gap is the
+  reason the command exists — the sweep is bounded to the most-recently-surfaced
+  `CAPTAIN_MEMO_QM_DEDUP_WINDOW` rows, and folding slides that window only by as much as it folds, so
+  on a 14,409-row surfaced corpus it reaches a fixed point after about three sweeps having folded 212
+  of 846 foldable rows and then goes quiet. This command is the unbounded pass that clears the rest.
+  Reach in exchange for a looser gate, which is why it is dry-run by default. An operator should not
+  have had to read the source to learn their manual tool judges differently from the automatic one.
+
 ## [0.27.48] — 2026-08-01
 
 ### Changed
