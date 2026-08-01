@@ -166,9 +166,11 @@ function runDedup(
     console.log('');
   }
 
-  const corpusNote = `${cyan(String(groups.length))} group(s) · ${cyan(String(archivable))} observation(s) would be archived`;
+  // Tense follows the mode: --apply has already done it by the time this prints.
+  const corpusNote = (tense: 'would be' | 'were') =>
+    `${cyan(String(groups.length))} group(s) · ${cyan(String(archivable))} observation(s) ${tense} archived`;
   if (!apply) {
-    console.log(`${gold('▸')} ${corpusNote}.`);
+    console.log(`${gold('▸')} ${corpusNote('would be')}.`);
     console.log(dim('  Re-run with --apply to perform the merge (observations.db is backed up first).'));
     return 0;
   }
@@ -176,7 +178,7 @@ function runDedup(
   const backupPath = backup(obsPath);
   const atEpoch = Math.floor(Date.now() / 1000);
   for (const g of groups) store.mergeDuplicateGroup(g.survivor.id, g.members.map(m => m.id), atEpoch);
-  console.log(`${green('✓')} Merged ${corpusNote}.`);
+  console.log(`${green('✓')} Merged ${corpusNote('were')}.`);
   console.log(dim(`  Backup: ${backupPath}`));
   console.log(dim('  Reverse anytime with: captain-memo dedup --undo'));
   return 0;
