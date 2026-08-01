@@ -1408,6 +1408,58 @@ export class ObservationsStore {
     return out;
   }
 
+  /**
+   * Candidate rows for the idle SEMANTIC pass: live, surfaced observations belonging to a
+   * session that holds at least two of them.
+   *
+   * The session filter is the safety property, not an optimisation. Cosine alone cannot tell a
+   * restatement from a build progression — measured, three stages of one feature scored
+   * 0.971-0.979 — but two high-cosine observations emitted inside ONE session are the summarizer
+   * describing one event twice. See docs/specs/2026-08-01-semantic-consolidation-findings.md.
+   *
+   * Surfaced-only matches dedup's target: a row that never reached the user is not bloating
+   * anything. Ordered newest-activity-first so a truncating `limit` keeps the live end.
+   */
+  sameSessionCandidateRows(limit: number): Array<{
+    id: number; type: string; title: string; session_id: string;
+    from_auto: number; from_search: number; from_drill: number;
+  }> {
+    return this.db
+      .query(
+        `SELECT id, type, title, session_id, from_auto, from_search, from_drill
+           FROM observations
+          WHERE archived = 0 AND (from_auto + from_search + from_drill) > 0
+            AND session_id IN (
+              SELECT session_id FROM observations
+               WHERE archived = 0 AND (from_auto + from_search + from_drill) > 0
+               GROUP BY session_id HAVING COUNT(*) > 1
+            )
+          ORDER BY COALESCE(last_surfaced_at, created_at_epoch) DESC
+          LIMIT ?`,
+      )
+      .all(limit) as Array<{
+        id: number; type: string; title: string; session_id: string;
+        from_auto: number; from_search: number; from_drill: number;
+      }>;
+  }
+
+  /**
+   * Newest moment the corpus saw activity — a row written OR a row surfaced — or null when it
+   * has never seen either. Feeds the idle gate's hard floor.
+   *
+   * A recall counts: a user searching their memory is using the machine even when nothing new
+   * is written. Null rather than 0 so a fresh install reads as "unknown", which the gate treats
+   * as idle; returning 0 would read as "active in 1970" and be indistinguishable from a bug.
+   */
+  lastActivityEpoch(): number | null {
+    const row = this.db
+      .query(
+        `SELECT MAX(MAX(COALESCE(last_surfaced_at, 0), created_at_epoch)) AS t FROM observations`,
+      )
+      .get() as { t: number | null } | undefined;
+    return row?.t ?? null;
+  }
+
   /** Pin a row so the Tide/Quartermaster never ebbs or folds it. */
   markAnchored(id: number): void {
     this.db.query('UPDATE observations SET is_anchored = 1 WHERE id = ?').run(id);

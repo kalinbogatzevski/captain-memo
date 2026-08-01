@@ -5,7 +5,7 @@ change it.
 
 ## Read this first: you need none of these
 
-Captain Memo ships with working defaults for all 133 settings. A fresh install indexes, recalls,
+Captain Memo ships with working defaults for all 138 settings. A fresh install indexes, recalls,
 summarises, dedupes and decays without a single line in `worker.env`.
 
 This document exists for the operator who wants to *change* something, not for the operator who
@@ -43,9 +43,10 @@ misbehaves and you want it to stop.
 
 | Setting | Turns off | Default |
 |---|---|---|
-| `CAPTAIN_MEMO_QM_ENABLED=0` | All Quartermaster housekeeping (dedup + supersede) | ON |
+| `CAPTAIN_MEMO_QM_ENABLED=0` | All Quartermaster housekeeping (dedup + supersede + semantic) | ON |
 | `CAPTAIN_MEMO_QM_DEDUP=0` | Near-duplicate folding only | ON |
 | `CAPTAIN_MEMO_QM_SUPERSEDE=0` | Stale-version demotion only | ON |
+| `CAPTAIN_MEMO_QM_SEMANTIC=0` | Idle-time semantic consolidation only | ON |
 | `CAPTAIN_MEMO_TIDE_ENABLED=0` | Decay re-ranking; back to flat recency | ON |
 | `CAPTAIN_MEMO_TIDE_TIERING=0` | Lifecycle transitions (active → dormant → archived) | ON |
 | `CAPTAIN_MEMO_RECALL_AUDIT=0` | The recall audit log that feeds dream stats | ON |
@@ -321,8 +322,21 @@ Anchored rows, and any row ever drilled into, are permanently exempt from ebbing
 | `CAPTAIN_MEMO_QM_DEDUP_WINDOW` | `5000` | Most-recently-surfaced rows examined per sweep. Quadratic per partition. |
 | `CAPTAIN_MEMO_QM_DEDUP_INTERVAL_MS` | `3600000` (1h) | Also paces the supersede sweep. |
 | `CAPTAIN_MEMO_QM_SLICE_MS` | `150` | Budget for one housekeeping chunk. |
+| `CAPTAIN_MEMO_QM_SEMANTIC` | ON | Idle-time semantic consolidation: cosine as the FINDER, for same-session pairs. |
+| `CAPTAIN_MEMO_QM_SEMANTIC_COSINE` | `0.95` | Cosine at or above which two same-session observations are one event. |
+| `CAPTAIN_MEMO_QM_SEMANTIC_MIN_IDLE_S` | `1800` (30 min) | Quiet time required before a pass may start. |
+| `CAPTAIN_MEMO_QM_SEMANTIC_CHECK_MS` | `600000` (10 min) | How often idleness is *checked* (the pass itself is rare). |
+| `CAPTAIN_MEMO_QM_SEMANTIC_MAX_GROUPS` | `200` | Cap on groups emitted per pass. |
 | `CAPTAIN_MEMO_QM_SUPERSEDE` | ON | Demotes an older version-fact when a newer one exists. |
 | `CAPTAIN_MEMO_QM_SUPERSEDE_COSINE` | `0.93` | Lower than dedup's on purpose: supersede applies a reversible 0.5x demotion, dedup archives. |
+
+The semantic pass is the one that runs only when the machine is idle: no ingest, no queued
+observations, no live co-session, and nothing surfaced or written for `MIN_IDLE_S`. It is a
+whole-corpus scan (~50 s measured on 124k rows) and competes for CPU, so a busy machine simply
+defers it. It exists because title-gated dedup could never see a fact restated in different
+words: on a live corpus, **zero** semantically-similar pairs reached the cosine confirm at any
+threshold, because the title gate filtered them all first. Restricted to same-session pairs,
+where 83% of high-cosine pairs live and "one event described twice" is near-definitional.
 
 Both passes yield between groups and abort mid-slice when ingest arrives, so neither starves the
 worker. `captain-memo dedup --undo` and `captain-memo supersede undo` reverse their effects.

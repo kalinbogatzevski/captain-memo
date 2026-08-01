@@ -38,6 +38,31 @@ export interface QmConfig {
    *  across 1,204 runs. It was never blocked by the merge guard or the partitioning — one unsatisfiable
    *  constant. The title gate still has to pass first; this is the confirm, not the whole test. */
   dedupCosineThreshold: number;
+  /** Semantic consolidation (idle-time). Default ON; off via CAPTAIN_MEMO_QM_SEMANTIC=0.
+   *
+   *  The pass the pipeline never had. Dedup gates candidacy on TITLE similarity and only then
+   *  confirms with cosine, which measured on a 124k corpus makes the confirm dead code: ZERO
+   *  semantically-similar pairs reach it at any threshold from 0.90 to 0.97, because nothing
+   *  survives the title gate. Two observations stating one fact in different words were
+   *  structurally unreachable. This inverts the order — cosine FINDS — for same-session pairs
+   *  only, behind every guard the title path already applies. */
+  semanticEnabled: boolean;
+  /** Cosine at or above which two SAME-SESSION observations are one event.
+   *
+   *  Same number as dedup's confirm, reached from the other direction: it is the level at which
+   *  measured pairs stop being restatements. Note that it is only trustworthy WITH the session
+   *  restriction — at this cosine, cross-session pairs are the same standing fact re-learned
+   *  weeks apart (a theme, not a fold) and the middle bands hold build progressions that no
+   *  threshold separates. */
+  semanticCosineThreshold: number;
+  /** Max groups one semantic pass may emit — bounds the downstream fold work. */
+  semanticMaxGroups: number;
+  /** How often to CHECK whether the machine is idle enough to run the pass. The check is
+   *  cheap; the pass itself only runs when every idle signal agrees. */
+  semanticCheckIntervalMs: number;
+  /** Hard floor: seconds of no observation activity before the pass may start. Guards the
+   *  case every instantaneous signal misses — a user reading, thinking, or mid-sentence. */
+  semanticMinIdleSeconds: number;
   /** Cosine confirm for SUPERSESSION, deliberately separate from dedup's.
    *
    *  The two guard actions of very different destructiveness: dedup ARCHIVES a row; supersede applies a
@@ -76,6 +101,11 @@ export const DEFAULT_QM_CONFIG: QmConfig = {
   dedupCosineThreshold: 0.95,
   supersedeCosineThreshold: 0.93,
   dedupWindow: 5_000,
+  semanticEnabled: true,
+  semanticCosineThreshold: 0.95,
+  semanticMaxGroups: 200,
+  semanticCheckIntervalMs: 600_000,   // check every 10 min; the pass itself is rare
+  semanticMinIdleSeconds: 1_800,      // 30 min quiet before anything starts
 };
 
 /** Build a QmConfig from a plain env record. Unparseable numeric values fall back
@@ -98,5 +128,10 @@ export function loadQmConfig(env: Record<string, string | undefined>): QmConfig 
     dedupCosineThreshold: num(env.CAPTAIN_MEMO_QM_DEDUP_COSINE, D.dedupCosineThreshold),
     supersedeCosineThreshold: num(env.CAPTAIN_MEMO_QM_SUPERSEDE_COSINE, D.supersedeCosineThreshold),
     dedupWindow: num(env.CAPTAIN_MEMO_QM_DEDUP_WINDOW, D.dedupWindow),
+    semanticEnabled: env.CAPTAIN_MEMO_QM_SEMANTIC !== '0',
+    semanticCosineThreshold: num(env.CAPTAIN_MEMO_QM_SEMANTIC_COSINE, D.semanticCosineThreshold),
+    semanticMaxGroups: num(env.CAPTAIN_MEMO_QM_SEMANTIC_MAX_GROUPS, D.semanticMaxGroups),
+    semanticCheckIntervalMs: num(env.CAPTAIN_MEMO_QM_SEMANTIC_CHECK_MS, D.semanticCheckIntervalMs),
+    semanticMinIdleSeconds: num(env.CAPTAIN_MEMO_QM_SEMANTIC_MIN_IDLE_S, D.semanticMinIdleSeconds),
   };
 }

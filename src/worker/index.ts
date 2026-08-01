@@ -29,6 +29,8 @@ import { loadPromotionConfig } from './promotion-config.ts';
 import { runPromotionSlice, type PromotionDeps } from './promotion.ts';
 import { buildPromotionJudge } from './promotion-judge.ts';
 import { runQmDedupSlice } from './quartermaster.ts';
+import { findSemanticGroups } from './semantic-candidates.ts';
+import { isIdle } from './idle.ts';
 import { runQmSupersedeSlice, applySupersedeDemotion } from './supersede.ts';
 import { setWorkNote, listLocalActive, clearWorkNote, overlapsAgainst, repoOverlapsAgainst, groupRepoContention, repoActiveHolders, type SetWorkNoteInput } from './work-notes.ts';
 import { resolveRepoClaim } from './repo-claim.ts';
@@ -163,6 +165,10 @@ export interface WorkerOptions {
    *  /remember writer can drive frontmatter/merge fills directly — distinct from the
    *  observation-shaped `summarize` above. Absent ⇒ writeMemory uses deterministic fallback. */
   summarizerTransport?: SummarizerTransport;
+  /** Live co-session count, for the idle gate that guards the semantic pass. Supplied by the
+   *  caller that owns the session manager (the federation layer); absent ⇒ 0, which is correct
+   *  for a worker that cannot spawn co-sessions in the first place. */
+  activeSessionCount?: () => number;
   observationTickMs?: number;
   observationBatchSize?: number;
   hookBudgetTokens?: number;
@@ -1114,6 +1120,71 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     }, qmConfig.dedupIntervalMs);
   }
 
+  // Semantic consolidation — the idle-time pass (Stage 1). Third sibling of the dedup and
+  // supersede timers, and deliberately built as a different CANDIDATE FINDER feeding the SAME
+  // proven slice: runQmDedupSlice still re-confirms cosine, still skips protected rows, still
+  // enforces cross-scope eligibility, still archives rather than deletes, still aborts on
+  // ingest. Only the way candidates are discovered changes.
+  //
+  // It exists because title-gated dedup could never see a fact restated in different words: on
+  // a 124k corpus, ZERO semantically-similar pairs reached the cosine confirm at any threshold,
+  // because the title gate filtered everything first. Restricted to same-session pairs, where
+  // measurement says 83% of high-cosine pairs live and where "one event described twice" is
+  // near-definitional. See docs/specs/2026-08-01-semantic-consolidation-findings.md.
+  //
+  // The timer only CHECKS idleness; the scan is O(n²) over the corpus (~50s measured) and runs
+  // solely when ingest is quiet, the queue is empty, no co-session is live, and nothing has
+  // happened for semanticMinIdleSeconds. A busy machine simply defers it, which costs nothing.
+  let semanticTimer: ReturnType<typeof setInterval> | null = null;
+  let semanticPromise: Promise<unknown> | null = null;
+  if (!opts.readOnly && obsStore && qmConfig.enabled && qmConfig.semanticEnabled) {
+    const semStore = obsStore;
+    semanticTimer = setInterval(() => {
+      if (semanticPromise) return;
+      const nowS = Math.floor(Date.now() / 1000);
+      const lastActivity = semStore.lastActivityEpoch();
+      const idle = isIdle({
+        ingestActive: processBatchPromise != null,
+        queuePending: obsQueue?.pendingCount() ?? 0,
+        // Unknown clock ⇒ Infinity, so a corpus that has never recorded activity still qualifies.
+        secondsSinceLastActivity: lastActivity == null ? Infinity : Math.max(0, nowS - lastActivity),
+        activeSessions: opts.activeSessionCount?.() ?? 0,
+      }, { minIdleSeconds: qmConfig.semanticMinIdleSeconds });
+      if (!idle) return;
+
+      const startedAt = nowS;
+      semanticPromise = runQmDedupSlice({
+        candidates: () => findSemanticGroups({
+          rows: semStore.sameSessionCandidateRows(qmConfig.dedupWindow),
+          representativeVector: repVec,
+          cosineThreshold: qmConfig.semanticCosineThreshold,
+          maxGroups: qmConfig.semanticMaxGroups,
+        }),
+        representativeVector: repVec,
+        memberIsProtected: (id) => semStore.isProtected(id),
+        mergeGroup: (s, m, at) => semStore.mergeDuplicateGroup(s, m, at, 'semantic'),
+        // Idleness was checked once at the top; this is the mid-flight guard for work that
+        // ARRIVES during the scan — a prompt landing at minute two must preempt it.
+        shouldAbort: () => processBatchPromise != null || (obsQueue?.pendingCount() ?? 0) > 0,
+        cfg: { ...qmConfig, dedupCosineThreshold: qmConfig.semanticCosineThreshold },
+        now: () => Math.floor(Date.now() / 1000),
+        yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
+      })
+        .then(r => {
+          semStore.recordQmRun({ job: 'semantic', startedAt, finishedAt: Math.floor(Date.now() / 1000),
+            rowsScanned: r.scanned, merges: r.merges, skippedNoVector: r.skippedNoVector,
+            abortedForIngest: r.aborted, errored: false });
+          if (r.merges > 0) console.error(`[qm-semantic] folded ${r.merges} restatement(s)` + (r.aborted ? ' (aborted for ingest)' : ''));
+        })
+        .catch(err => {
+          semStore.recordQmRun({ job: 'semantic', startedAt, finishedAt: Math.floor(Date.now() / 1000),
+            rowsScanned: 0, merges: 0, skippedNoVector: 0, abortedForIngest: false, errored: true });
+          console.error('[qm-semantic] ERROR', err);
+        })
+        .finally(() => { semanticPromise = null; });
+    }, qmConfig.semanticCheckIntervalMs);
+  }
+
   // Promotion (opt-in, OFF by default). Sibling of the Quartermaster auto-dedup
   // timer: each tick pulls a bounded window of durable, high-signal, not-yet-promoted
   // observations, runs ONE judge pass deciding curated-worthy vs ephemeral, writes
@@ -1653,6 +1724,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           cosine_threshold: qmConfig.dedupCosineThreshold,
           last_run: obsStore?.latestQmRuns(1, 'dedup')[0] ?? null,
         };
+        // Its own block: same table, different pass. An unscoped read would report whichever
+        // timer fired last (see qm.last_run above for the same trap).
+        const semantic = {
+          enabled: qmConfig.semanticEnabled,
+          cosine_threshold: qmConfig.semanticCosineThreshold,
+          min_idle_seconds: qmConfig.semanticMinIdleSeconds,
+          last_run: obsStore?.latestQmRuns(1, 'semantic')[0] ?? null,
+        };
         const supersede = {
           enabled: qmConfig.supersedeEnabled,
           cosine_threshold: qmConfig.supersedeCosineThreshold,
@@ -1724,6 +1803,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           tide,
           qm,
           supersede,
+          semantic,
           dream,
           version: VERSION,
           edition: EDITION,   // 'federation' | 'oss' — surfaced for the SessionStart banner
@@ -2367,6 +2447,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     if (tideSweepTimer) clearInterval(tideSweepTimer);
     if (qmDedupTimer) clearInterval(qmDedupTimer);
     if (qmSupersedeTimer) clearInterval(qmSupersedeTimer);
+    if (semanticTimer) clearInterval(semanticTimer);
     if (promotionTimer) clearInterval(promotionTimer);
     if (pendingTickTimer) clearInterval(pendingTickTimer);
     // clearInterval cancels the SCHEDULE, not work already IN FLIGHT. Every background slice below is

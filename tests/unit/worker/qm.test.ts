@@ -25,6 +25,19 @@ test('supersede opt-OUT via env', () => {
   expect(loadQmConfig({ CAPTAIN_MEMO_QM_SUPERSEDE: '0' }).supersedeEnabled).toBe(false);
   expect(loadQmConfig({ CAPTAIN_MEMO_QM_SUPERSEDE: '1' }).supersedeEnabled).toBe(true);
 });
+// The idle semantic pass — cosine as the FINDER, which the title-gated path never allowed.
+test('semantic defaults: ON, same cosine as dedup, 30-minute idle floor', () => {
+  expect(DEFAULT_QM_CONFIG.semanticEnabled).toBe(true);
+  expect(DEFAULT_QM_CONFIG.semanticCosineThreshold).toBe(0.95);
+  expect(DEFAULT_QM_CONFIG.semanticMinIdleSeconds).toBe(1800);
+  expect(DEFAULT_QM_CONFIG.semanticMaxGroups).toBe(200);
+});
+test('semantic opt-OUT via env, and its knobs are tunable', () => {
+  expect(loadQmConfig({ CAPTAIN_MEMO_QM_SEMANTIC: '0' }).semanticEnabled).toBe(false);
+  expect(loadQmConfig({ CAPTAIN_MEMO_QM_SEMANTIC_COSINE: '0.97' }).semanticCosineThreshold).toBe(0.97);
+  expect(loadQmConfig({ CAPTAIN_MEMO_QM_SEMANTIC_MIN_IDLE_S: '600' }).semanticMinIdleSeconds).toBe(600);
+  expect(loadQmConfig({ CAPTAIN_MEMO_QM_SEMANTIC_COSINE: 'nonsense' }).semanticCosineThreshold).toBe(0.95);
+});
 test('master kill switch stops both passes', () => { expect(loadQmConfig({ CAPTAIN_MEMO_QM_ENABLED: '0' }).enabled).toBe(false); });
 test('numeric override + invalid falls back to default', () => {
   expect(loadQmConfig({ CAPTAIN_MEMO_QM_DEDUP_COSINE: '0.95' }).dedupCosineThreshold).toBe(0.95);
