@@ -5,6 +5,25 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.27.55] — 2026-08-01
+
+### Changed
+
+- **A theme now requires recall evidence, not just similar wording.** Themes shipped grouping by
+  embedding similarity alone — but similarity groups everything that shares a vocabulary, which on
+  a real corpus is most of a project. A candidate now joins a cluster only when **both** signals
+  agree: it reads like the rest, *and* you have actually pulled them up together.
+
+  The evidence comes from the recall audit log, which has been quietly accumulating since long
+  before this pass existed — 14,669 co-retrieval pairs for a single project on the reference
+  corpus, built from searches you already ran. The ratio divides by each observation's own
+  surfacing count, so a row that appears everywhere cannot dominate a pair just by being popular.
+  No audit log means no evidence, which means no themes.
+
+  Measured on a live corpus, the same clusters survive the added requirement — meaning those
+  groupings were independently corroborated by how the memories are actually recalled, not only
+  by how they happen to be worded.
+
 ## [0.27.54] — 2026-08-01
 
 ### Fixed
