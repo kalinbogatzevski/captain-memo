@@ -9,6 +9,17 @@
 //   - --apply backs up observations.db first, then ARCHIVES members into the
 //     survivor (reversible: --undo, or flip archived=0). No hard deletes.
 //   - --undo reverses every prior dedup merge.
+//   - PROTECTED rows (drilled into, or anchored) are never folded — the same
+//     gate runQmDedupSlice applies. This was missing, so the manual command was
+//     more destructive than the automatic sweep it exists to supplement.
+//
+// Why this command still exists alongside the background sweep: the sweep is
+// bounded to the most-recently-surfaced CAPTAIN_MEMO_QM_DEDUP_WINDOW rows, and
+// folding only slides that window by as much as it folds. Measured on a 14,409-row
+// surfaced corpus it reaches a fixed point after ~3 sweeps having folded 212 of 846
+// foldable rows, then goes quiet — the rest sit below the recency cut permanently.
+// This command is the unbounded pass that clears them. It trades the sweep's cosine
+// confirm for reach, which is why it is dry-run by default and asks you to look.
 //
 // Operates on the DB file directly (separate SQLite connection). The worker
 // re-queries on each request, so changes are picked up live.
@@ -37,6 +48,13 @@ Options:
 Notes:
   - Considers SURFACED observations (those that have been retrieved at least
     once) — the dupes that actually bloat stats and search.
+  - Never folds a PROTECTED row: anything you drilled into, or anchored. Same
+    rule the hourly background sweep applies.
+  - Gate differs from the background sweep: this pass decides on TITLE
+    SIMILARITY alone, where the sweep additionally requires an embedding
+    cosine >= 0.95. So it folds more, and more loosely. That is the point —
+    it exists to clear a backlog the windowed sweep cannot reach — but review
+    the dry-run rather than trusting it the way you would trust the sweep.
   - Merges are reversible: members are archived (not deleted) into the survivor,
     and their counts are summed onto it. \`--undo\` restores them.
 `;
@@ -103,7 +121,13 @@ function runUndo(store: ObservationsStore, json: boolean): number {
 function runDedup(
   store: ObservationsStore, obsPath: string, threshold: number, apply: boolean, json: boolean,
 ): number {
-  const groups = store.findDuplicateGroups(threshold);
+  // A drilled-into or anchored row is protected from automatic folding — runQmDedupSlice skips it
+  // outright ("a protected memory is never archived automatically"). This command bypassed that
+  // gate entirely, which made the MANUAL tool more destructive than the background sweep. Filtered
+  // here rather than at apply-time so the dry-run never promises a fold that will not happen.
+  const groups = store.findDuplicateGroups(threshold)
+    .map(g => ({ ...g, members: g.members.filter(m => !store.isProtected(m.id)) }))
+    .filter(g => g.members.length > 0);
   const archivable = groups.reduce((n, g) => n + g.members.length, 0);
 
   if (json) {
