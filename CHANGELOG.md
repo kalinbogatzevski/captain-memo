@@ -5,6 +5,20 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.28.2] — 2026-08-01
+
+### Fixed
+
+- **Semantic folding never folded anything.** It grouped candidates by session alone — but a
+  session is not a scope. Switching repositories mid-session is ordinary, and one real session
+  spanned 27 project/branch pairs across 1,564 observations. The finder emitted groups whose
+  members belonged to different projects, the writer correctly refused every one of them, and
+  the pass reported "scanned 10, folded 0" indefinitely. Nothing in the counters distinguished
+  *found nothing* from *found things the writer will always reject*.
+
+  Folding now partitions by project and branch as well as session — the same scoping themes
+  received earlier today, which folding was missed on.
+
 ## [0.28.1] — 2026-08-01
 
 ### Fixed
