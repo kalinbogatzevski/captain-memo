@@ -21,6 +21,7 @@ import { dreamCommand } from './commands/dream.ts';
 import { dedupCommand } from './commands/dedup.ts';
 import { supersedeCommand } from './commands/supersede.ts';
 import { themeCommand } from './commands/theme.ts';
+import { consolidateCommand } from './commands/consolidate.ts';
 import { rememberCommand } from './commands/remember.ts';
 import { watchCommand } from './commands/watch.ts';
 import { topCommand } from './commands/top.ts';
@@ -60,6 +61,7 @@ Commands:
   dedup        Fold near-duplicate observations together (dry-run by default; --apply, --undo)
   supersede    list | undo <id> — inspect open supersede links and reverse them
   theme        list | show <id> | undo <id> — inspect machine-written themes and reverse them
+  consolidate  run a consolidation pass now, without waiting for the idle window
   eval         Run the search-quality eval harness (seed | run --profile=legacy,v2)
   top          Interactive live stats (htop-style: sort, filter, drill); press ? in-app
   watch        Deprecated alias for \`top\`
@@ -177,6 +179,9 @@ export async function main(args: string[]): Promise<void> {
       break;
     case 'theme':
       exit = await themeCommand(args.slice(1));
+      break;
+    case 'consolidate':
+      exit = await consolidateCommand(args.slice(1));
       break;
     case 'eval':
       exit = await evalCommand(args.slice(1));

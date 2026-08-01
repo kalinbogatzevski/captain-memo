@@ -79,6 +79,8 @@ export interface StatsResponse {
     eligible: boolean;
     /** Live signals holding the pass back right now, e.g. ['queue', 'co-session']. */
     blocked_by: string[];
+    /** Seconds left in a forced window (`consolidate --for`), 0 when not forcing. */
+    forced_seconds_left?: number;
   };
   /** Tide lifecycle snapshot. Optional — pre-v0.5.3 worker payloads omit it. */
   tide?: {
@@ -547,7 +549,11 @@ function renderHousekeepingBlock(stats: StatsResponse, blockWidth: number): stri
   if (stats.idle) {
     const i = stats.idle;
     let value: string;
-    if (i.blocked_by.length > 0) {
+    // A forced window outranks both the countdown and the blockers: it says the passes ARE
+    // running on every tick, which is neither "waiting" nor "in N minutes".
+    if ((i.forced_seconds_left ?? 0) > 0) {
+      value = `${gold('forcing')} ${dim('· every tick for the next')} ${cyanBold(fmtLeft(i.forced_seconds_left!))}`;
+    } else if (i.blocked_by.length > 0) {
       value = `${yellow('waiting')} ${dim('on')} ${cyanBold(i.blocked_by.join(', '))}`;
     } else if (i.eligible) {
       value = `${green('eligible now')} ${dim('· starts on the next check')}`;

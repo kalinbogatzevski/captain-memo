@@ -28,7 +28,9 @@ const REQUEST_DEADLINE_MS = Number(process.env.CAPTAIN_MEMO_ENGINE_REQUEST_MS ??
 // on a write the writer is STILL running (the timeout abandons main's wait; it does NOT cancel the
 // writer) — reporting failure on an eventual success, and a restart mid-run leaves it partial.
 const LONG_WRITE_DEADLINE_MS = Number(process.env.CAPTAIN_MEMO_REINDEX_MS ?? 30 * 60_000);
-const LONG_WRITE_PATHS = new Set(['/reindex']);
+// /consolidate joins /reindex here because a forced pass is a whole-corpus scan (~50s measured)
+// plus, for themes, a model call per cluster.
+const LONG_WRITE_PATHS = new Set(['/reindex', '/consolidate']);
 // How long to wait for the engine's first heartbeat before declaring the threaded path dead and
 // falling back to single-threaded. Generous on purpose: a healthy engine beats well under a
 // second, so this only fires for an engine that wedges without ever crashing AND never beating.

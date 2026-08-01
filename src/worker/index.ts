@@ -1142,10 +1142,19 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // happened for semanticMinIdleSeconds. A busy machine simply defers it, which costs nothing.
   let semanticTimer: ReturnType<typeof setInterval> | null = null;
   let semanticPromise: Promise<unknown> | null = null;
+  // Hoisted so POST /consolidate can drive the SAME code path the timer drives. `force` skips the
+  // idle gate and nothing else — every safety guard (protection, scope, cosine, merge guard,
+  // abort-on-ingest) still applies, and a pass already in flight is still never doubled.
+  let startSemantic: ((force?: boolean) => Promise<unknown> | null) | null = null;
+  // A forced WINDOW, not just a forced run. `consolidate --for 30m` sets this, and until it
+  // expires every scheduled tick skips the idle gate — so the passes work the backlog down
+  // back-to-back instead of one pass and then silence. Reverts to idle-gated on its own.
+  let forceUntilEpochMs = 0;
+  const forcedNow = (): boolean => Date.now() < forceUntilEpochMs;
   if (!opts.readOnly && obsStore && qmConfig.enabled && qmConfig.semanticEnabled) {
     const semStore = obsStore;
-    semanticTimer = setInterval(() => {
-      if (semanticPromise) return;
+    startSemantic = (force = false) => {
+      if (semanticPromise) return null;
       const nowS = Math.floor(Date.now() / 1000);
       const lastActivity = semStore.lastActivityEpoch();
       const idle = isIdle({
@@ -1155,7 +1164,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         secondsSinceLastActivity: lastActivity == null ? Infinity : Math.max(0, nowS - lastActivity),
         activeSessions: opts.activeSessionCount?.() ?? 0,
       }, { minIdleSeconds: qmConfig.semanticMinIdleSeconds });
-      if (!idle) return;
+      if (!force && !forcedNow() && !idle) return null;
 
       const startedAt = nowS;
       semanticPromise = runQmDedupSlice({
@@ -1187,7 +1196,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           console.error('[qm-semantic] ERROR', err);
         })
         .finally(() => { semanticPromise = null; });
-    }, qmConfig.semanticCheckIntervalMs);
+      return semanticPromise;
+    };
+    semanticTimer = setInterval(() => { startSemantic?.(); }, qmConfig.semanticCheckIntervalMs);
   }
 
   // Themes (Stage 2) — the same idle window, deliberately AFTER the fold pass. Stage 1 removes
@@ -1200,17 +1211,18 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // expected outcome for most clusters — see theme-judge.ts.
   let themeTimer: ReturnType<typeof setInterval> | null = null;
   let themePromise: Promise<unknown> | null = null;
+  let startTheme: ((force?: boolean) => Promise<unknown> | null) | null = null;
   if (!opts.readOnly && obsStore && opts.summarizerTransport && qmConfig.enabled && qmConfig.themeEnabled) {
     const themeStore = obsStore;
     const judge = buildThemeJudge(opts.summarizerTransport);
-    themeTimer = setInterval(() => {
+    startTheme = (force = false) => {
       // Only a theme run blocks a theme run. Gating on semanticPromise as well starved this
       // pass outright: both timers share semanticCheckIntervalMs, the semantic one is registered
       // first and assigns its promise synchronously, so every tick where folding had ANY work to
       // do skipped themes entirely. They read the same corpus but write disjoint rows — a fold
       // archives into an existing survivor, a theme mints a new row — and both take their own
       // transactions, so concurrency is safe.
-      if (themePromise) return;
+      if (themePromise) return null;
       const nowS = Math.floor(Date.now() / 1000);
       const lastActivity = themeStore.lastActivityEpoch();
       const idle = isIdle({
@@ -1219,7 +1231,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         secondsSinceLastActivity: lastActivity == null ? Infinity : Math.max(0, nowS - lastActivity),
         activeSessions: opts.activeSessionCount?.() ?? 0,
       }, { minIdleSeconds: qmConfig.semanticMinIdleSeconds });
-      if (!idle) return;
+      if (!force && !forcedNow() && !idle) return null;
 
       const startedAt = nowS;
       // Load the co-retrieval evidence ONCE per pass. This is the signal that makes a theme a
@@ -1282,7 +1294,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           console.error('[qm-theme] ERROR', err);
         })
         .finally(() => { themePromise = null; });
-    }, qmConfig.semanticCheckIntervalMs);
+      return themePromise;
+    };
+    themeTimer = setInterval(() => { startTheme?.(); }, qmConfig.semanticCheckIntervalMs);
   }
 
   // Promotion (opt-in, OFF by default). Sibling of the Quartermaster auto-dedup
@@ -1845,6 +1859,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             min_idle_seconds: cfg.minIdleSeconds,
             eligible: isIdle(sig, cfg),
             blocked_by: blockingSignals(sig),
+            forced_seconds_left: forcedNow() ? Math.ceil((forceUntilEpochMs - Date.now()) / 1000) : 0,
           };
         })();
         // Its own block: same table, different pass. An unscoped read would report whichever
@@ -2135,6 +2150,45 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           content: result.content,
           metadata: result.metadata,
         });
+      }
+
+      // Force a consolidation pass now, without waiting for the idle window. The lever exists
+      // because the passes are deliberately shy: on a machine in daily use they may not run for
+      // hours, which is right for a background job and wrong when you want to SEE one happen.
+      //
+      // `force` skips the idle gate and NOTHING else. Protected rows are still untouchable, scope
+      // is still enforced, the cosine confirm and merge guard still run, the slice still aborts
+      // when ingest arrives mid-pass, and a run already in flight is never doubled. This is a
+      // scheduling override, not a safety override.
+      if (req.method === 'POST' && url.pathname === '/consolidate') {
+        // ?for=<seconds> opens a forced window: every scheduled tick until it expires skips the
+        // idle gate. Clamped so a typo cannot pin the machine into permanent forcing.
+        const forSec = Math.min(Math.max(0, Number(url.searchParams.get('for') ?? 0) || 0), 4 * 3600);
+        if (forSec > 0) forceUntilEpochMs = Date.now() + forSec * 1000;
+        const which = url.searchParams.get('pass') ?? 'all';
+        if (!['all', 'semantic', 'theme'].includes(which)) {
+          return Response.json({ error: 'invalid_pass', allowed: ['all', 'semantic', 'theme'] }, { status: 400 });
+        }
+        const started: string[] = [];
+        const busy: string[] = [];
+        const disabled: string[] = [];
+        const wait: Array<Promise<unknown>> = [];
+        for (const [name, start] of [['semantic', startSemantic], ['theme', startTheme]] as const) {
+          if (which !== 'all' && which !== name) continue;
+          if (!start) { disabled.push(name); continue; }
+          const p = start(true);
+          if (p) { started.push(name); wait.push(p); } else busy.push(name);
+        }
+        // Returns as soon as the passes are STARTED, deliberately. Holding the response open for
+        // the minutes a pass takes meant the socket was closed under it — a whole-corpus scan plus
+        // a model call per cluster is far past any sane HTTP idle timeout, and through the thread
+        // proxy it failed as "connection closed", which reads as a dead worker. The caller polls
+        // /stats for the run row instead; `before` gives it a fixed point to poll against.
+        const before = obsStore
+          ? Object.fromEntries(started.map(n => [n, obsStore.latestQmRuns(1, n)[0]?.id ?? 0]))
+          : {};
+        void Promise.allSettled(wait);
+        return Response.json({ started, busy, disabled, before, forced_until_ms: forceUntilEpochMs || null });
       }
 
       if (req.method === 'POST' && url.pathname === '/reindex') {
