@@ -66,6 +66,12 @@ export interface ThemeClusterDeps {
   /** Minimum co-retrieval evidence to join a cluster. */
   coRetrievalThreshold?: number;
   blocked?: (titleA: string, titleB: string) => boolean;
+  /** Cluster keys the judge already refused. Skipped here rather than downstream so the
+   *  maxClusters budget is spent on clusters nobody has ruled on yet — otherwise the stable
+   *  ordering means the same refused head is re-judged every tick and the tail is never reached. */
+  declined?: Set<string>;
+  /** Sorted-member-id key for a cluster. Injected so the store owns the canonical form. */
+  clusterKey?: (memberIds: number[]) => string;
 }
 
 /** Any shared surfacing at all is evidence; the ratio is naturally small because it is divided by
@@ -149,6 +155,16 @@ function clusterOnePartition(
     if (members.length < deps.minMembers) continue;
     const sessions = new Set(members.map(m => m.session_id));
     if (sessions.size < 2) continue;                     // same-session ⇒ stage 1's job
+
+    // Already refused? Claim the rows so they cannot re-form a near-identical cluster this pass,
+    // but do NOT emit it — the budget belongs to clusters nobody has ruled on.
+    if (deps.declined && deps.clusterKey) {
+      const key = deps.clusterKey(members.map(m => m.id));
+      if (deps.declined.has(key)) {
+        for (const m of members) claimed.add(m.id);
+        continue;
+      }
+    }
 
     for (const m of members) claimed.add(m.id);
     out.push({

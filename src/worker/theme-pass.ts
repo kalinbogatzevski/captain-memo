@@ -26,6 +26,9 @@ export interface ThemePassDeps {
     draft: ThemeDraft, memberIds: number[],
     scope: { project_id: string; branch: string | null },
   ) => Promise<number> | number;
+  /** Remember a refusal so the next pass spends its budget on a cluster nobody has ruled on.
+   *  Without this the stable cluster ordering meant the same head was re-judged every tick. */
+  recordDecline?: (memberIds: number[]) => void;
   /** True when ingest/embedding work arrived — stop before spending another model call. */
   shouldAbort: () => boolean;
   /** Wait for ingest to pass rather than abandoning the pass outright. Supplied when the run was
@@ -60,7 +63,12 @@ export async function runThemePass(deps: ThemePassDeps): Promise<ThemePassResult
     }
     res.clustersConsidered++;
     const draft = await deps.judge(cluster);
-    if (!draft) { res.declined++; await deps.yieldToLoop(); continue; }
+    if (!draft) {
+      res.declined++;
+      deps.recordDecline?.(cluster.members.map(m => m.id));
+      await deps.yieldToLoop();
+      continue;
+    }
     try {
       await deps.createTheme(draft, cluster.members.map(m => m.id),
         { project_id: cluster.project_id, branch: cluster.branch });

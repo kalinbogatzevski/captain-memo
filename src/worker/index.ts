@@ -1257,8 +1257,17 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           maxClusters: qmConfig.themeMaxClusters,
           isProtected: (id) => themeStore.isProtected(id),
           coRetrieval,
+          // Refusals expire after a week: the corpus moves, a cluster gains members, and a
+          // judgement made against two observations may go the other way against four.
+          declined: themeStore.recentThemeDeclines(nowS - 7 * 86400),
+          clusterKey: (ids) => ObservationsStore.clusterKey(ids),
         }),
+
         judge,
+        // Remember the refusal. Without this the pass re-judged its own stable head every tick:
+        // 75 runs overnight, 279 clusters considered, 279 declined, 0 written — the same 5
+        // clusters 56 times over, at one model call each.
+        recordDecline: (ids) => themeStore.recordThemeDecline(ids, Math.floor(Date.now() / 1000)),
         // Files the theme in the CLUSTER's own (project_id, branch), not the worker's — every
         // member shares that scope by construction. Passing opts.projectId with branch:null
         // filed cross-project themes under whatever the worker happened to run as.

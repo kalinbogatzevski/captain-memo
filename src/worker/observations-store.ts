@@ -298,6 +298,21 @@ export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
     name: 'clamp_runaway_stability',
     up: (db) => db.exec('UPDATE observations SET stability_days = 365 WHERE stability_days > 365'),
   },
+  {
+    // v22 — remember which clusters the judge refused.
+    //
+    // Without this the theme pass starved itself. findThemeClusters returns a stable order and the
+    // pass takes the first themeMaxClusters of it, so the SAME head was re-judged every tick while
+    // everything past it stayed unreachable. Measured over one night: 75 runs, 279 clusters
+    // considered, 279 declined, 0 written — the same 5 clusters judged 56 times, and 279 model
+    // calls spent re-reaching an answer that was known after the first.
+    version: 22,
+    name: 'add_theme_declines',
+    up: (db) => db.exec(`CREATE TABLE IF NOT EXISTS theme_declines (
+      cluster_key TEXT PRIMARY KEY,
+      declined_at_epoch INTEGER NOT NULL
+    )`),
+  },
 ];
 
 export type NewObservation = Omit<
@@ -1641,6 +1656,31 @@ export class ObservationsStore {
                WHERE archived = 0 AND (from_auto + from_search + from_drill) > 0`)
       .all() as Array<{ id: number; n: number }>;
     return new Map(rows.map(r => [r.id, r.n]));
+  }
+
+  /** Stable identity for a cluster: its sorted member ids. Two passes that gather the same rows
+   *  produce the same key, which is what makes a refusal rememberable. */
+  static clusterKey(memberIds: number[]): string {
+    return [...memberIds].sort((a, b) => a - b).join(',');
+  }
+
+  /** Record that the judge refused this exact cluster, so the next pass can move on to one it has
+   *  not seen. Re-declining refreshes the timestamp rather than erroring. */
+  recordThemeDecline(memberIds: number[], atEpoch: number): void {
+    this.db
+      .query(`INSERT INTO theme_declines (cluster_key, declined_at_epoch) VALUES (?, ?)
+              ON CONFLICT(cluster_key) DO UPDATE SET declined_at_epoch = excluded.declined_at_epoch`)
+      .run(ObservationsStore.clusterKey(memberIds), atEpoch);
+  }
+
+  /** Cluster keys refused within the cooldown. The refusal is not permanent: the corpus changes,
+   *  a cluster gains members, and a judgement made against three observations may go the other way
+   *  against five. */
+  recentThemeDeclines(sinceEpoch: number): Set<string> {
+    const rows = this.db
+      .query('SELECT cluster_key FROM theme_declines WHERE declined_at_epoch >= ?')
+      .all(sinceEpoch) as Array<{ cluster_key: string }>;
+    return new Set(rows.map(r => r.cluster_key));
   }
 
   /** Pin a row so the Tide/Quartermaster never ebbs or folds it. */

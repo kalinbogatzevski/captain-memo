@@ -204,6 +204,44 @@ describe('findThemeClusters', () => {
     });
   });
 
+  // FOUND AFTER A FULL NIGHT OF ZEROS: 75 runs, 279 clusters considered, 279 declined, 0 written.
+  // findThemeClusters returns a stable order and the pass takes the first maxClusters of it, so
+  // the same head was re-judged 56 times while everything past position 5 stayed unreachable.
+  // Skipping known refusals is what lets the budget reach the tail.
+  describe('declined clusters', () => {
+    const rows = [
+      row(1, 'a', 's1', 9), row(2, 'a2', 's2', 8), row(3, 'a3', 's3', 7),
+      row(4, 'b', 's4', 6), row(5, 'b2', 's5', 5), row(6, 'b3', 's6', 4),
+    ];
+    const vm = { 1: at(0), 2: at(2), 3: at(4), 4: at(90), 5: at(92), 6: at(94) };
+    const key = (ids: number[]) => [...ids].sort((x, y) => x - y).join(',');
+
+    test('without a decline memory, a cap always returns the same head', () => {
+      const first = findThemeClusters({ ...base, rows, representativeVector: vecs(vm), maxClusters: 1 });
+      const again = findThemeClusters({ ...base, rows, representativeVector: vecs(vm), maxClusters: 1 });
+      expect(first[0]!.members.map(m => m.id)).toEqual(again[0]!.members.map(m => m.id));
+    });
+
+    test('a refused cluster steps aside so the next one gets the budget', () => {
+      const first = findThemeClusters({ ...base, rows, representativeVector: vecs(vm), maxClusters: 1 });
+      const refused = new Set([key(first[0]!.members.map(m => m.id))]);
+      const second = findThemeClusters({
+        ...base, rows, representativeVector: vecs(vm), maxClusters: 1,
+        declined: refused, clusterKey: key,
+      });
+      expect(second.length).toBe(1);
+      expect(second[0]!.members.map(m => m.id)).not.toEqual(first[0]!.members.map(m => m.id));
+    });
+
+    test('every cluster refused ⇒ nothing emitted, rather than the head again', () => {
+      const all = findThemeClusters({ ...base, rows, representativeVector: vecs(vm) });
+      const refused = new Set(all.map(c => key(c.members.map(m => m.id))));
+      expect(findThemeClusters({
+        ...base, rows, representativeVector: vecs(vm), declined: refused, clusterKey: key,
+      })).toEqual([]);
+    });
+  });
+
   test('maxClusters caps the work', () => {
     const rows: ThemeRow[] = [];
     const vm: Record<number, Float32Array> = {};
