@@ -5,6 +5,19 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.29.2] — 2026-08-02
+
+### Fixed
+
+- **The theme pass re-judged the same clusters forever.** A full night of consolidation produced
+  75 runs, 279 clusters considered, 279 declined and nothing written — because every run examined
+  the *same* five. Candidates come back in a stable order and the pass takes the first few, so it
+  kept re-asking about its own head while everything behind it was unreachable.
+
+  It now remembers what it has already ruled on and moves to clusters nobody has judged. Refusals
+  expire after a week, since a cluster that gains members deserves a fresh look. Verified across
+  three consecutive passes: five judged, then a *different* five, then correctly nothing left.
+
 ## [0.29.1] — 2026-08-02
 
 ### Fixed
