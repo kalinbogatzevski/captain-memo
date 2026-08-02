@@ -87,8 +87,45 @@ vector index for its k nearest neighbours instead of comparing it against every 
 Until that lands, themes see the surfaced 11%, and the honest framing on the panel and in the
 docs should say so rather than implying whole-corpus coverage.
 
+## 5b. The k-NN route was attempted and is blocked on the index build (2026-08-02)
+
+Measured on the live install rather than reasoned about:
+
+| step | result |
+|---|---|
+| one `k=20` vector query, no centroids | **615 ms** (brute-forces all 143,231 vectors) |
+| therefore 124,800 queries | ~21 hours — **worse** than all-pairs |
+| centroids present? | **zero** — IVF has never run on this corpus |
+
+So k-NN is not an alternative to the index; it *requires* it. Enabling
+`CAPTAIN_MEMO_IVF_ENABLED=1` bootstraps correctly — 477 centroids for 143k vectors at
+`targetPerCluster: 300` — but assignment then runs at:
+
+```
+256 rows per ~2 minutes, one CPU core pinned at 99%
+-> ~18 hours to assign 143,253 vectors
+```
+
+`reassignCluster` performs one delete + insert per row against a partitioned `vec0` table, so the
+cost is per-row rather than per-batch. That is the blocker, and it is in the vector store, not in
+the theme pass.
+
+**Turned back off** on this install. The partial state is harmless: `queryClustered` always
+appends `UNCLUSTERED` to the probe list, so the 99.6% of vectors still in cluster `-1` remain
+searchable. Verified after reverting — `/search/observations` returns correct hits in 1.6 s.
+
+The work, in order:
+
+1. **Batch `reassignCluster`.** One transaction per sweep slice instead of per row. Until this
+   lands, the index cannot be built on a corpus this size.
+2. Then k-NN, or better: group candidates by `cluster_id` and run all-pairs *within* each cluster
+   (~300 vectors each), which is ~21M comparisons for the whole corpus instead of 1.34bn.
+3. Only then does the surfaced filter come off.
+
 ## 6. Corrections this supersedes
 
 - The claim that 4 clusters reflected a clean corpus. It reflected `minMembers: 3`.
 - The claim that the recency window was the limiter (§2 — it is not).
 - `themeCandidateRows`' doc comment implies it sees the corpus; it sees the surfaced ninth of it.
+- §5's "the fix is k-NN against the vector index" was too quick. k-NN needs centroids, centroids
+  need an 18-hour build, and the build needs batched reassignment first. The order matters.
