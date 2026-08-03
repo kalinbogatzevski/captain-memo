@@ -29,6 +29,22 @@ export interface VectorQueryResult {
  *  and an explicit sentinel is unambiguous in every query (Task 2 spike). */
 const UNCLUSTERED = -1;
 
+/** Vectors per vec0 chunk. vec0 allocates a fixed-size chunk PER PARTITION and scans whole
+ *  chunks, so a chunk far larger than a cluster costs both disk and query time for empty space.
+ *
+ *  Measured on a live 144k-vector store with targetPerCluster=300 (median cluster 147 vectors):
+ *
+ *    chunk_size | allocated | waste | p50 query
+ *          1024 |   1888 MB |   70% |   62.7 ms   <- vec0's default
+ *           256 |    849 MB |   34% |
+ *           128 |    578 MB |   19% |   36.4 ms   <- results byte-identical (agreement 1.000)
+ *            64 |    628 MB |   10% |
+ *
+ *  128 is the knee: it is smaller AND faster than the default with no change in what comes back,
+ *  because the query stops scanning 7/8ths empty space. Going below trades diminishing disk gains
+ *  for more chunks to walk. */
+export const VEC_CHUNK_SIZE = 128;
+
 const SCHEMA = `
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
   chunk_id TEXT PRIMARY KEY,
@@ -38,7 +54,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks_p USING vec0(
   chunk_id TEXT PRIMARY KEY,
   cluster_id INTEGER PARTITION KEY,
-  embedding FLOAT[__DIM__]
+  embedding FLOAT[__DIM__],
+  chunk_size=__CHUNK__
 );
 
 CREATE TABLE IF NOT EXISTS vec_chunk_meta (
@@ -106,7 +123,8 @@ export class VectorStore {
     this.ivfConfig = opts.ivfConfig ?? DEFAULT_IVF_CONFIG;
     if (!opts.readonly) {
       this.db.exec('PRAGMA journal_mode = WAL;');
-      this.db.exec(SCHEMA.replace(/__DIM__/g, String(opts.dimension)));
+      this.db.exec(SCHEMA.replace(/__DIM__/g, String(opts.dimension))
+        .replace(/__CHUNK__/g, String(VEC_CHUNK_SIZE)));
       this.db.exec(SEED_SEQ); // unchanged from Task 2 — keep this line, don't drop it
     }
   }
@@ -197,6 +215,51 @@ export class VectorStore {
       return this.queryUnfiltered(collection, embedding, topK);
     }
     return this.queryClustered(collection, embedding, topK, centroids);
+  }
+
+  /** Vectors per chunk this store was CREATED with, read from the recorded DDL. Null if the
+   *  table is absent. Cheap: one sqlite_master row, no scan. */
+  chunkCapacity(): number | null {
+    const row = this.db
+      .query(`SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_chunks_p'`)
+      .get() as { sql: string } | null;
+    if (!row?.sql) return null;
+    const m = /chunk_size\s*=\s*(\d+)/.exec(row.sql);
+    return m ? Number(m[1]) : 1024;   // vec0's default when the clause is absent
+  }
+
+  /** Re-lay the partitioned table at `target` vectors per chunk. Returns null when it already
+   *  matches — callers can invoke this unconditionally.
+   *
+   *  chunk_size is fixed at CREATE time, and `ALTER TABLE ... RENAME` corrupts a vec0 table (it
+   *  moves the main table but not its shadow tables, leaving "no such table: <new>_rowids"), so
+   *  the only safe route is copy out, drop, recreate, copy back. That is two passes over the
+   *  corpus — ~5 min for 144k vectors — which is why this is a maintenance operation run with the
+   *  worker stopped, not something the sweep does underneath a live worker.
+   *
+   *  Wrapped in a single transaction: a crash mid-rebuild rolls back to the original table rather
+   *  than leaving a half-copied index. */
+  rebuildChunkLayout(target: number = VEC_CHUNK_SIZE): { moved: number } | null {
+    if (this.chunkCapacity() === target) return null;
+    const dim = this.dimension;
+    let moved = 0;
+    const tx = this.db.transaction(() => {
+      this.db.exec(`CREATE VIRTUAL TABLE vec_chunks_p_relay USING vec0(
+        chunk_id TEXT PRIMARY KEY, cluster_id INTEGER PARTITION KEY,
+        embedding FLOAT[${dim}], chunk_size=${target})`);
+      this.db.exec(`INSERT INTO vec_chunks_p_relay(chunk_id, cluster_id, embedding)
+                    SELECT chunk_id, cluster_id, embedding FROM vec_chunks_p`);
+      moved = (this.db.query(`SELECT COUNT(*) n FROM vec_chunks_p_relay_rowids`).get() as { n: number }).n;
+      this.db.exec(`DROP TABLE vec_chunks_p`);
+      this.db.exec(`CREATE VIRTUAL TABLE vec_chunks_p USING vec0(
+        chunk_id TEXT PRIMARY KEY, cluster_id INTEGER PARTITION KEY,
+        embedding FLOAT[${dim}], chunk_size=${target})`);
+      this.db.exec(`INSERT INTO vec_chunks_p(chunk_id, cluster_id, embedding)
+                    SELECT chunk_id, cluster_id, embedding FROM vec_chunks_p_relay`);
+      this.db.exec(`DROP TABLE vec_chunks_p_relay`);
+    });
+    tx();
+    return { moved };
   }
 
   /** Today's exact brute-force scan — used when a collection has no centroids
