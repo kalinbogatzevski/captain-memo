@@ -51,7 +51,7 @@ test('startWorker — the real sweep wiring migrates legacy rows over actual tic
   // Proves the ACTUAL index.ts wiring (not just the pure runIvfSweepSlice
   // function, already covered in Task 4's unit tests) drains the old
   // vec_chunks table via real setInterval ticks — the exact end-to-end path
-  // a real upgrade hits, with IVF left at its default (disabled).
+  // a real upgrade hits, with clustering explicitly switched off.
   const vectorDbPath = join(workDir, 'vec.db');
   const { VectorStore } = await import('../../src/worker/vector-store.ts');
   const seed = new VectorStore({ dbPath: vectorDbPath, dimension: 4 });

@@ -52,7 +52,7 @@ const EMPTY_RESULT: IvfSweepResult = { legacyMigrated: 0, bootstrapped: 0, assig
  *     operate exclusively on the new `vec_chunks_p` table, so migration is a
  *     required correctness step now, not part of the opt-in clustering
  *     feature — gating it on `enabled` would strand an existing install's
- *     entire corpus in the old table forever on the default (disabled)
+ *     entire corpus in the old table forever on a switched-off (=0)
  *     config. See the plan's Global Constraints for the full incident.
  *  2. Nothing further, if clustering itself is disabled.
  *  3. Nothing, if the corpus is still below the clustering threshold.
@@ -71,7 +71,7 @@ export async function runIvfSweepSlice(deps: IvfSweepDeps): Promise<IvfSweepResu
     return { ...EMPTY_RESULT, legacyMigrated: migrated };
   }
 
-  if (!cfg.enabled) return EMPTY_RESULT; // clustering itself stays opt-in; migration above does not
+  if (!cfg.enabled) return EMPTY_RESULT; // clustering can be switched off; migration above cannot
 
   const totalVectors = deps.countVectors(collection);
   if (totalVectors < cfg.minCorpusSize) return EMPTY_RESULT;

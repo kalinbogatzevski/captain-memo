@@ -206,7 +206,7 @@ export class VectorStore {
    *  rows remain uncopied. This is a required correctness net, not an edge
    *  case: `add()`/`query()` operate exclusively on `vec_chunks_p`, so without
    *  this, any chunk the migration sweep hasn't reached yet — which, on the
-   *  default (IVF-disabled) config, could mean the ENTIRE pre-upgrade corpus,
+   *  switched-off (CAPTAIN_MEMO_IVF_ENABLED=0) config, could mean the ENTIRE pre-upgrade corpus,
    *  forever, if the sweep were ever gated on `enabled` — would be silently
    *  invisible to every search. (It isn't gated that way — see
    *  runIvfSweepSlice — but this union is a second, independent safety net in

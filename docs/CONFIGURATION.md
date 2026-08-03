@@ -288,17 +288,15 @@ every value below can be overridden individually.
 
 ### IVF vector index
 
-Off by default. Enable with `CAPTAIN_MEMO_IVF_ENABLED=1` once a store gets large: every vector
-query otherwise compares the query against **every** stored embedding, which is exact and linear.
-Measured on a 143,720-vector store, that flat scan is **1166 ms p50** — for one leg, of one
-search, before anything is ranked.
+**On by default.** Switch off with `CAPTAIN_MEMO_IVF_ENABLED=0` if you need an exhaustive scan.
 
-Enabled, the corpus is grouped into clusters (one centroid per ~300 vectors) and a query reads
-only the nearest few. The index builds incrementally in the background; **searches stay correct
-throughout**, because every query also probes the not-yet-assigned partition unconditionally.
+Without it, every vector query compares the query against **every** stored embedding — exact, and
+linear in corpus size. Measured on a 143,720-vector store that is **1166 ms p50**, for one leg of
+one search, before anything is ranked. With it, the corpus is grouped into clusters (one centroid
+per ~300 vectors) and a query reads only the nearest few.
 
-Measured on that same store (477 centroids, 50 probes at a fixed stride, exhaustive scan as
-ground truth, k=10):
+The trade is recall, so it is published rather than assumed. Measured on that store (477
+centroids, 50 probes at a fixed stride, exhaustive scan as ground truth, k=10):
 
 | clusters probed | p50 | recall@10 |
 |---|---|---|
@@ -308,14 +306,27 @@ ground truth, k=10):
 | **16** (default) | **47.5 ms** | **0.938** |
 | 32 | 95.2 ms | 0.978 |
 
+Defaulting it on is safe because it degrades to a no-op rather than to wrong answers. Nothing
+happens below `MIN_CORPUS`. Every query also probes the not-yet-assigned partition
+unconditionally, so a half-built, interrupted or abandoned index never silently loses a result.
+And below ~16 clusters the probe reads the whole corpus anyway, giving recall 1.0 — the
+approximation only bites once a store is genuinely large, which is exactly where it pays.
+
+The index builds in the background in bounded slices. It runs at `BUILD_MS` while there is
+anything left to assign, then drops to `SWEEP_MS` once converged. Two cadences because the phases
+have opposite needs: at 60 s a 143k-vector build takes **37 hours**, and a 2 s cadence left
+running after convergence pins a CPU core forever — the sweep never terminates, it only stops
+having new work.
+
 | Setting | Default | Notes |
 |---|---|---|
-| `CAPTAIN_MEMO_IVF_ENABLED` | OFF | `1` enables clustered vector search. |
+| `CAPTAIN_MEMO_IVF_ENABLED` | ON | `0` switches it off. Any other value, including a typo, leaves it on. |
 | `CAPTAIN_MEMO_IVF_MIN_CORPUS` | `3000` | Below this the flat scan is used regardless — it is faster than the arithmetic to avoid it. |
 | `CAPTAIN_MEMO_IVF_TARGET_PER_CLUSTER` | `300` | Vectors per cluster; cluster count is corpus size divided by this. |
 | `CAPTAIN_MEMO_IVF_PROBE_CLUSTERS` | `16` | Clusters read per query. Lower is faster and misses more — see the table; measure on your own corpus. |
-| `CAPTAIN_MEMO_IVF_SWEEP_BATCH` | `64` | Vectors processed per background slice. |
-| `CAPTAIN_MEMO_IVF_SWEEP_MS` | `60000` | Seconds between slices. **Do not lower this to speed up the initial build and then leave it.** The sweep never finishes: once every vector is assigned it switches to a permanent rebalance that re-samples and rewrites every centroid on each tick. At 2 s that pinned a CPU core continuously. |
+| `CAPTAIN_MEMO_IVF_SWEEP_BATCH` | `64` | Vectors per slice. Measured optimum: past ~64 the vec0 partition rewrite goes superlinear (256 held the writer for 8.6 s), so a bigger batch is worse on **both** throughput and latency. |
+| `CAPTAIN_MEMO_IVF_BUILD_MS` | `2000` | Cadence while building. Holds writer duty at ~19% and builds 143k vectors in ~75 min. |
+| `CAPTAIN_MEMO_IVF_SWEEP_MS` | `60000` | Cadence once converged, when the only remaining work is rebalancing. |
 | `CAPTAIN_MEMO_IVF_MIN_LEARNING_RATE` | `0.01` | Centroid drift floor, so clusters keep adapting instead of freezing. |
 
 ### Tide (decay and lifecycle)

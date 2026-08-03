@@ -11,10 +11,14 @@ test('loadIvfConfig — defaults when env is empty', () => {
   expect(cfg).toEqual(DEFAULT_IVF_CONFIG);
 });
 
-test('loadIvfConfig — CAPTAIN_MEMO_IVF_ENABLED=1 turns it on; anything else leaves it off', () => {
+test('loadIvfConfig — on unless explicitly switched off with 0', () => {
+  expect(loadIvfConfig({}).enabled).toBe(true);                                   // default
+  expect(loadIvfConfig({ CAPTAIN_MEMO_IVF_ENABLED: '0' }).enabled).toBe(false);   // only opt-out
   expect(loadIvfConfig({ CAPTAIN_MEMO_IVF_ENABLED: '1' }).enabled).toBe(true);
-  expect(loadIvfConfig({ CAPTAIN_MEMO_IVF_ENABLED: '0' }).enabled).toBe(false);
-  expect(loadIvfConfig({}).enabled).toBe(false);
+  // A typo must not silently disable the index — that would be a 25x slowdown nobody asked for,
+  // and it is the failure mode `=== '1'` had: every value except the exact string '1' meant off.
+  expect(loadIvfConfig({ CAPTAIN_MEMO_IVF_ENABLED: 'true' }).enabled).toBe(true);
+  expect(loadIvfConfig({ CAPTAIN_MEMO_IVF_ENABLED: '' }).enabled).toBe(true);
 });
 
 test('loadIvfConfig — numeric overrides parse, unparseable values fall back to default', () => {

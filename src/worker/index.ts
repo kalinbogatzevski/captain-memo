@@ -1049,16 +1049,24 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // Deliberately NOT gated on ivfConfig.enabled: add()/query() operate
   // exclusively on the new vec_chunks_p table, so the legacy-migration part
   // of the sweep must run even when clustering itself is off — otherwise, on
-  // the default (disabled) config, an existing install's corpus would sit in
+  // a switched-off (=0) config, an existing install's corpus would sit in
   // the old vec_chunks table forever, invisible to every search. Only the
   // clustering behavior inside a tick (bootstrap/assign/rebalance) checks
   // cfg.enabled — see runIvfSweepSlice.
-  let ivfSweepTimer: ReturnType<typeof setInterval> | null = null;
+  let ivfSweepTimer: ReturnType<typeof setTimeout> | null = null;
   let ivfSweepPromise: Promise<unknown> | null = null;
   if (!opts.readOnly) {
-    ivfSweepTimer = setInterval(() => {
-      if (ivfSweepPromise) return;
-      ivfSweepPromise = runIvfSweepSlice({
+    // Self-scheduling rather than setInterval, because the right cadence depends on which phase
+    // the sweep is in and only the slice that just ran knows. While there is still work to assign
+    // it runs at buildIntervalMs; once converged — nothing left but rebalancing, which never ends
+    // — it drops to sweepIntervalMs. One fixed interval cannot serve both: 60 s makes a 143k
+    // build take 37 hours, and 2 s left running after convergence pins a core forever.
+    //
+    // This also removes the need for the in-flight guard the interval version needed: the next
+    // slice is only scheduled once the previous one has settled.
+    const scheduleIvfSweep = (delayMs: number): void => {
+      ivfSweepTimer = setTimeout(() => {
+        ivfSweepPromise = runIvfSweepSlice({
         collection: collectionName,
         cfg: ivfConfig,
         countLegacyRows: () => vector.countLegacyRows(),
@@ -1074,17 +1082,26 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         sample: defaultSample,
         yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
       })
-        .then(r => {
-          if (r.legacyMigrated > 0 || r.bootstrapped > 0 || r.assigned > 0 || r.rebalanced > 0) {
-            console.error(
-              `[ivf-sweep] legacyMigrated=${r.legacyMigrated} bootstrapped=${r.bootstrapped} `
-              + `assigned=${r.assigned} rebalanced=${r.rebalanced}`,
-            );
-          }
-        })
-        .catch(err => console.error('[ivf-sweep] ERROR', err))
-        .finally(() => { ivfSweepPromise = null; });
-    }, ivfConfig.sweepIntervalMs);
+          .then(r => {
+            const building = r.legacyMigrated > 0 || r.bootstrapped > 0 || r.assigned > 0;
+            if (building || r.rebalanced > 0) {
+              console.error(
+                `[ivf-sweep] legacyMigrated=${r.legacyMigrated} bootstrapped=${r.bootstrapped} `
+                + `assigned=${r.assigned} rebalanced=${r.rebalanced}`,
+              );
+            }
+            return building;
+          })
+          // Back off to the slow cadence on error rather than retrying at build speed, so a
+          // persistent failure cannot spin. A later successful slice restores the fast cadence.
+          .catch(err => { console.error('[ivf-sweep] ERROR', err); return false; })
+          .then(building => {
+            ivfSweepPromise = null;
+            scheduleIvfSweep(building ? ivfConfig.buildIntervalMs : ivfConfig.sweepIntervalMs);
+          });
+      }, delayMs);
+    };
+    scheduleIvfSweep(ivfConfig.buildIntervalMs);
   }
 
   // Shared representative-vector accessor: centroid of an observation's chunk vectors.
@@ -2723,7 +2740,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     if (captureTimer) clearInterval(captureTimer);
     if (retentionTimer) clearInterval(retentionTimer);
     if (tideSweepTimer) clearInterval(tideSweepTimer);
-    if (ivfSweepTimer) clearInterval(ivfSweepTimer);
+    if (ivfSweepTimer) clearTimeout(ivfSweepTimer);
     if (qmDedupTimer) clearInterval(qmDedupTimer);
     if (qmSupersedeTimer) clearInterval(qmSupersedeTimer);
     if (semanticTimer) clearInterval(semanticTimer);

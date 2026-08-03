@@ -36,7 +36,12 @@ export interface IvfConfig {
    *  Past ~64 the vec0 partition rewrite degrades sharply, so the large batch is worse on BOTH
    *  axes — it is not even a throughput-for-latency trade. */
   sweepBatch: number;
+  /** Cadence once the index has CONVERGED — every vector assigned, nothing left to do but
+   *  rebalance. Slow on purpose: the sweep never terminates, so this runs forever. */
   sweepIntervalMs: number;
+  /** Cadence while the index is still BEING BUILT — legacy rows to migrate or vectors to
+   *  assign. Fast on purpose; see the default for the arithmetic. */
+  buildIntervalMs: number;
   /** Mini-batch centroid update learning-rate floor — a centroid's per-batch
    *  update weight never drops below this even after many hits, so it keeps
    *  adapting instead of freezing solid once a cluster has seen a lot of data. */
@@ -44,7 +49,16 @@ export interface IvfConfig {
 }
 
 export const DEFAULT_IVF_CONFIG: IvfConfig = {
-  enabled: false,
+  // ON by default as of the measured build. A flat scan is exact but linear: 1166 ms p50 on a
+  // 143,720-vector store, and every store grows. Waiting for users to discover an env var means
+  // the ones who never read the docs get the slowest search, which is backwards.
+  //
+  // Safe to default because it degrades to a no-op rather than to wrong answers: nothing happens
+  // below minCorpusSize, every query also probes the not-yet-assigned partition unconditionally
+  // so a partial index hides nothing, and below ~16 clusters the probe reads the whole corpus
+  // anyway (recall 1.0). The approximation only bites once a store is genuinely large, which is
+  // exactly where the 25x is worth 0.938 recall.
+  enabled: true,
   minCorpusSize: 3000,
   targetPerCluster: 300,
   // Measured on the live 143,726-vector / 477-centroid index, 50 probes spread across the
@@ -63,7 +77,20 @@ export const DEFAULT_IVF_CONFIG: IvfConfig = {
   // that drops a relevant memory has failed at the only job it has.
   probeClusters: 16,
   sweepBatch: 64,
+  // Two cadences, because the sweep has two phases with opposite needs and one interval cannot
+  // serve both. Measured: a batch-64 slice costs ~376 ms (167 getUnclusteredChunks + 17
+  // countVectors + 192 reassign at the 3.01 ms/row above).
+  //
+  //   interval | writer duty | time to build 143,720 vectors
+  //      60 s  |       0.6%  |  37.4 HOURS   <- one interval for both phases meant this
+  //       2 s  |      18.8%  |  75 min
+  //       1 s  |      37.6%  |  37 min       rejected: over the 25% writer-duty budget
+  //
+  // 60 s while building is why anyone would reach for CAPTAIN_MEMO_IVF_SWEEP_MS at all, and
+  // lowering that knob is how a converged index ends up rebalancing every 2 s forever, pinning
+  // a core. Splitting the phases removes the reason to touch it.
   sweepIntervalMs: 60_000,
+  buildIntervalMs: 2_000,
   minLearningRate: 0.01,
 };
 
@@ -76,12 +103,14 @@ export function loadIvfConfig(env: Record<string, string | undefined>): IvfConfi
   };
   const D = DEFAULT_IVF_CONFIG;
   return {
-    enabled: env.CAPTAIN_MEMO_IVF_ENABLED === '1',
+    // !== '0' so only an explicit opt-OUT disables it; matches how the QM options read.
+    enabled: env.CAPTAIN_MEMO_IVF_ENABLED !== '0',
     minCorpusSize: num(env.CAPTAIN_MEMO_IVF_MIN_CORPUS, D.minCorpusSize),
     targetPerCluster: num(env.CAPTAIN_MEMO_IVF_TARGET_PER_CLUSTER, D.targetPerCluster),
     probeClusters: num(env.CAPTAIN_MEMO_IVF_PROBE_CLUSTERS, D.probeClusters),
     sweepBatch: num(env.CAPTAIN_MEMO_IVF_SWEEP_BATCH, D.sweepBatch),
     sweepIntervalMs: num(env.CAPTAIN_MEMO_IVF_SWEEP_MS, D.sweepIntervalMs),
+    buildIntervalMs: num(env.CAPTAIN_MEMO_IVF_BUILD_MS, D.buildIntervalMs),
     minLearningRate: num(env.CAPTAIN_MEMO_IVF_MIN_LEARNING_RATE, D.minLearningRate),
   };
 }
