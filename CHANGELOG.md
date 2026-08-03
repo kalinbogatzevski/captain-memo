@@ -5,18 +5,19 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
-## [Unreleased]
+## [0.30.0] — 2026-08-03
 
 ### Added
 
-- **Clustered vector index (IVF), for stores that have outgrown the flat scan.** Every vector
-  query compared the query against *every* stored embedding — exact, and linear in corpus size.
-  On a 143,720-vector store that measured **1166 ms p50**, for one leg of one search, before
-  anything was ranked. Enabled with `CAPTAIN_MEMO_IVF_ENABLED=1`, the corpus is grouped into
-  clusters (one centroid per ~300 vectors) and a query reads only the nearest few.
+- **Clustered vector search (IVF), on by default.** Every vector query compared the query against
+  *every* stored embedding — exact, and linear in corpus size. On a 143,720-vector store that
+  measured **1166 ms p50**, for one leg of one search, before anything was ranked. The corpus is
+  now grouped into clusters (one centroid per ~300 vectors) and a query reads only the nearest
+  few. Switch off with `CAPTAIN_MEMO_IVF_ENABLED=0`.
 
-  The trade is recall, so it is published rather than assumed. Measured on that store with an
-  exhaustive scan as ground truth, 50 probes drawn at a fixed stride, k=10:
+  The trade is recall, so it ships measured rather than asserted — exhaustive scan as ground
+  truth, 50 probes drawn at a fixed stride so they span the corpus rather than one ingest batch,
+  k=10:
 
   | clusters probed | p50 | recall@10 |
   |---|---|---|
@@ -25,25 +26,35 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
   | **16** (default) | **47.5 ms** | **0.938** |
   | 32 | 95.2 ms | 0.978 |
 
-  The default probes 16. A whole recall — embed, both legs, fuse, boost, Tide — measures
-  509-674 ms end to end, so the difference between 8 and 16 is under 4% of what a caller waits
-  for, and 8 drops one true neighbour in seven. A memory system that answers fast and omits the
-  note you needed has failed at the only job it has.
+  Defaulting it on is safe because it degrades to a no-op, not to wrong answers: nothing happens
+  below 3,000 vectors, every query **also probes the not-yet-assigned partition unconditionally**
+  so a half-built or abandoned index never silently loses a result, and below ~16 clusters the
+  probe reads the whole corpus anyway. The approximation only bites once a store is genuinely
+  large, which is exactly where the 25x is worth it.
 
-  Two properties make it safe to switch on mid-life. The index builds incrementally in the
-  background, and **every query also probes the not-yet-assigned partition unconditionally** — so
-  a half-built, interrupted or abandoned index never silently loses a result. Existing installs
-  are migrated from the old unpartitioned table by the same background sweep, which runs even
-  when clustering itself is left off.
+  Recall figures are a mild over-estimate and say so: probe vectors are drawn from the corpus, so
+  each has a guaranteed self-match, while a real query is embedded from typed text and has no
+  anchor. Reported as measured, not adjusted.
 
-  Recall figures are a mild over-estimate, stated plainly: probe vectors are drawn from the
-  corpus and so each has a guaranteed self-match. Real queries are embedded from typed text and
-  have no such anchor. Reported as measured, not adjusted.
+- **The background build has two cadences, because one interval could not serve both phases.**
+  A slice costs ~376 ms. At the old fixed 60 s that is 0.6% writer duty and **37 hours** to index
+  143k vectors — so the feature appeared to do nothing for a day and a half, and the obvious
+  response was to lower `CAPTAIN_MEMO_IVF_SWEEP_MS`. That is a trap: the sweep never terminates,
+  it only runs out of new work, after which it rebalances forever at whatever cadence was left
+  behind. Set to 2 s for a build and left there, it pinned a CPU core continuously.
 
-  One warning worth reading before tuning: `CAPTAIN_MEMO_IVF_SWEEP_MS` is not a build-speed dial
-  to set and forget. The sweep never finishes — once every vector is assigned it switches to a
-  permanent rebalance that rewrites every centroid on each tick. Lowered to 2 s for an initial
-  build and left there, it pinned a CPU core continuously.
+  The sweep now runs at `CAPTAIN_MEMO_IVF_BUILD_MS` (2 s: ~19% writer duty, 143k vectors in
+  ~75 min) while there is anything left to assign, then drops to `CAPTAIN_MEMO_IVF_SWEEP_MS`
+  (60 s) once converged. Nobody needs to touch either knob.
+
+- **`probeClusters` raised 8 → 16.** 8 was chosen by convention and never measured; it silently
+  dropped one true neighbour in seven (recall 0.858). A whole recall — embed, both legs, fuse,
+  boost, Tide — measures 509-674 ms end to end, so 16 costs under 4% of what a caller waits for.
+
+- **Existing installs migrate themselves.** `add()` and `query()` operate only on the new
+  partitioned table, so the background sweep copies the old `vec_chunks` corpus across — and it
+  runs even when clustering is switched off, because otherwise a `=0` install would strand its
+  entire corpus in a table nothing reads.
 
 ## [0.29.2] — 2026-08-02
 
