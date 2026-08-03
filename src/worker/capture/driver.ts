@@ -16,11 +16,16 @@ export interface CaptureDriverDeps {
   log?: (msg: string) => void;
   /** Ignore the per-source cutoff (for an explicit history backfill). Default false. */
   ignoreCutoff?: boolean;
+  /** Awaited after each session so a long tick cannot monopolise the engine thread. `extract()`
+   *  has no cursor and re-reads a live session's whole file, which measured 2,486 ms across a
+   *  real install's sessions — long enough that a synchronous tick starved request handling. */
+  yieldToLoop?: () => Promise<void>;
 }
 
-export function runCaptureTick(deps: CaptureDriverDeps): { ingested: number; events: number } {
+export async function runCaptureTick(deps: CaptureDriverDeps): Promise<{ ingested: number; events: number }> {
   const now = deps.now ?? (() => Date.now());
   const log = deps.log ?? (() => {});
+  const yieldToLoop = deps.yieldToLoop ?? (async () => {});
   const nowEpoch = Math.floor(now() / 1000);
   let ingested = 0;
   let events = 0;
@@ -60,6 +65,10 @@ export function runCaptureTick(deps: CaptureDriverDeps): { ingested: number; eve
         events += fresh.length;
         log(`[capture:${src.id}] ingested ${ref.sessionId} → ${fresh.length} new event(s)`);
       }
+      // AFTER markIngested, never between extract and record: a yield in that gap would let a
+      // shutdown land on a session that was parsed but not accounted for, and it would be
+      // re-parsed in full on the next boot.
+      await yieldToLoop();
     }
   }
 

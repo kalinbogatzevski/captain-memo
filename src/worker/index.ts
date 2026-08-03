@@ -939,9 +939,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // persist to disk). First tick seeds a per-source cutoff so pre-existing history
   // isn't summarized in bulk; only sessions finished after enable are captured.
   let captureTimer: ReturnType<typeof setInterval> | null = null;
+  let capturePromise: Promise<unknown> | null = null;
   // Exposed to the /capture/backfill handler: runs one tick that IGNORES the cutoff,
   // so `captain-memo capture backfill` can ingest pre-cutoff history on demand.
-  let captureBackfill: (() => { ingested: number; events: number }) | null = null;
+  let captureBackfill: (() => Promise<{ ingested: number; events: number }>) | null = null;
   const captureSourceIds: string[] = [];
   // Hoisted so stopResources() can close its SQLite handle on shutdown — capture is now armed on every boot,
   // and on Windows an unclosed db handle blocks the temp-dir rm (EBUSY) and, in prod, a `restart`/`vacuum`.
@@ -973,14 +974,18 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         captureSourceIds.length = 0;
         for (const s of captureSources) if (s.available()) captureSourceIds.push(s.id);
       };
-      const runTick = (ignoreCutoff: boolean): { ingested: number; events: number } => {
+      const runTick = async (ignoreCutoff: boolean): Promise<{ ingested: number; events: number }> => {
         try {
-          const r = runCaptureTick({
+          const r = await runCaptureTick({
             sources: captureSources,
             state: cs,
             enqueue: (ev) => { captureQueue.enqueue(ev); },
             log: (m) => console.log(m),
             ignoreCutoff,
+            // extract() re-reads a live session's whole file, so a tick over a real install's
+            // sessions measured 2,486 ms. Run synchronously that is 2.5 s in which the engine
+            // thread serves nothing — the reason /stats timed out while /health answered in 1 ms.
+            yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
           });
           refreshActiveIds();
           if (r.ingested > 0) console.log(`[capture] ingested ${r.ingested} session(s), ${r.events} event(s)${ignoreCutoff ? ' (backfill)' : ''}`);
@@ -992,8 +997,13 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       };
       captureBackfill = () => runTick(true);
       const captureTickMs = Number(process.env.CAPTAIN_MEMO_CAPTURE_TICK_MS ?? 60_000);
-      runTick(false); // seed cutoffs + populate the active-source list at boot
-      captureTimer = setInterval(() => runTick(false), captureTickMs);
+      void runTick(false); // seed cutoffs + populate the active-source list at boot
+      // Skip — not queue — if the previous tick is still going. Now that a tick yields it can
+      // outlive its interval on a big backlog, and overlapping ticks would double-extract.
+      captureTimer = setInterval(() => {
+        if (capturePromise) return;
+        capturePromise = runTick(false).finally(() => { capturePromise = null; });
+      }, captureTickMs);
       // Per-source diagnostic: the RESOLVED path each source watches + whether it currently exists. Makes a
       // misresolved home / wrong path visible in the log instead of a silent "no sources detected".
       const captureDiag = captureSources.map(s => `${s.id}=${s.available() ? 'watching' : 'absent'}[${s.describe()}]`).join(' ');
@@ -2711,7 +2721,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             ? 'cross-AI capture is OFF because the summarizer is not running — run `captain-memo doctor`. Capture feeds the summarizer pipeline, so it stays off until the summarizer works.'
             : 'no cross-AI capture sources active on this host',
         });
-        const r = captureBackfill();
+        const r = await captureBackfill();
         return Response.json({ ...r, sources: captureSourceIds });
       }
 
@@ -2757,7 +2767,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     // allSettled, not all: a slice that rejects has already logged + recorded its own errored audit row —
     // here we only care that it is DONE, and one failing slice must not skip the drain of the others.
     await Promise.allSettled([
-      processBatchPromise, tideSweepPromise, ivfSweepPromise, qmDedupPromise, qmSupersedePromise, promotionPromise,
+      processBatchPromise, tideSweepPromise, ivfSweepPromise, capturePromise, qmDedupPromise, qmSupersedePromise, promotionPromise,
     ].filter((p): p is Promise<unknown> => p != null));
     if (watcher) await watcher.close();
     if (obsQueue) obsQueue.close();
