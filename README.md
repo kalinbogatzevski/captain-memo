@@ -377,6 +377,9 @@ captain-memo status              # is the worker reachable?
 captain-memo stats               # corpus stats by channel + indexing progress
 captain-memo top                 # interactive live stats (htop-style); press ? for help
 captain-memo dedup               # fold near-duplicate observations (dry-run by default)
+captain-memo supersede           # inspect open supersede links (list) or reverse one (undo <id>)
+captain-memo consolidate         # run a consolidation pass now, skipping the idle wait (--for 30m)
+captain-memo theme               # list themes written by consolidation (theme undo <id> to reverse)
 captain-memo reindex             # cheap sha-diff reindex (or --force to re-embed)
 captain-memo remember            # persist a curated memory entry (--type, --name, --slug; body via --body/--file/stdin)
 captain-memo observation list    # recent captured observations
@@ -506,6 +509,60 @@ captain-memo dream --dry-run --json       # machine-readable report
 ```
 
 **Preview only for now.** `--dry-run` is required — the write path (theme insertion + member archival) is deliberately not shipped until the dry-run output has been validated against real co-retrieval data. It never contacts the worker, never writes to the DB, and never calls the summarizer, so it is safe to run at any time. The `Dream` section in `stats` / `top` shows the inputs it would read: the audit log's size and entry count, and how many co-retrieval pairs have accumulated.
+
+### Knowledge clustering (v0.30.0+)
+
+Above 3,000 vectors the corpus is partitioned into clusters by mini-batch k-means — roughly one
+centroid per 300 vectors — and a search reads only the nearest few instead of scanning everything.
+On by default; `CAPTAIN_MEMO_IVF_ENABLED=0` switches it off.
+
+The trade is recall, so it is measured rather than asserted. On a live 143,720-vector store, with an
+exhaustive scan as ground truth and 50 probe vectors drawn at a fixed stride:
+
+| clusters probed | p50 | recall@10 |
+|---|---|---|
+| all (exhaustive) | 1166 ms | 1.000 |
+| 8 | 27.2 ms | 0.858 |
+| **16** (default) | **47.5 ms** | **0.938** |
+| 32 | 95.2 ms | 0.978 |
+
+Safe to default on because it degrades to a no-op rather than to wrong answers: nothing happens
+below the corpus threshold, every query **also probes the not-yet-assigned partition
+unconditionally** — so a half-built or abandoned index never silently loses a result — and below
+~16 clusters the probe reads the whole corpus anyway. The index builds in the background in
+bounded slices, fast while there is work to assign and slow once converged.
+
+The partition is also interesting in its own right. Measured on that store: 412 clusters, **87% of
+them spanning more than one repository**, 72% mixing curated notes with captured observations, and
+three distinct kinds of grouping that nothing in the method distinguishes — topical, methodological
+(memories united by *how* something was learned rather than what it was about), and episodic (one
+task's arc including its dead ends).
+
+[The full analysis, with method and limits →](https://captain-memo.ispcq.com/clusters.html)
+
+### Consolidation: folding and themes
+
+Two passes run in the background when the machine is idle — no queued work, no live co-session, and
+a stretch of quiet — and yield the moment ingest arrives.
+
+- **Semantic folding** collapses same-session restatements: one event the summarizer described
+  twice. Cosine is the *finder* here, not just a confirm, because title-overlap gating meant no
+  semantically-similar pair ever reached the confirm step.
+- **Themes** are the opposite case: the same standing fact learned in one session and *again* in
+  another weeks later. Two separate learning events is the phenomenon, not a weak version of it. A
+  model is asked to name the theme and declines most of what it sees.
+
+Both are on by default and both are reversible (`captain-memo dedup --undo`,
+`captain-memo theme undo <id>`). To watch one happen rather than wait for the idle window:
+
+```bash
+captain-memo consolidate --for 30m    # skip the idle gate for the next 30 minutes
+captain-memo theme list               # read what was written
+```
+
+`consolidate` overrides **scheduling only**. Protected rows stay untouchable, project and branch
+scope is still enforced, the cosine confirm and merge guard still run, and a pass already in flight
+is never doubled.
 
 ### Vendor provenance (v0.16.0+)
 
