@@ -5,6 +5,28 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.30.1] — 2026-08-03
+
+### Fixed
+
+- **The cross-AI capture tick blocked the engine thread for up to 2.5 s every minute.** `extract()`
+  has no cursor, so a live session's whole file is re-parsed on each tick and the already-ingested
+  prefix discarded. Measured on a real install: **2,486 ms** to re-extract every session (codex
+  alone 1,670 ms of 105 MB). The tick was synchronous, so that was 2.5 s in which the worker could
+  serve nothing — which is why `/stats` timed out at ~9 s while `/health` answered in 1 ms.
+
+  The tick is async now and yields between sessions, after each one is recorded rather than
+  between extract and record — a yield in that gap would let a shutdown land on a session that was
+  parsed but not accounted for, and it would be re-parsed in full on the next boot. Overlapping
+  ticks are skipped, not queued, since a yielding tick can now outlive its own interval.
+
+  This redistributes the CPU rather than reducing it; total duty is unchanged at ~4%. What goes
+  away is the stall. The underlying cursorless re-parse remains, bounded by live-session size.
+
+- **The committed `plugin/dist/mcp-server.js` was stale after the version bump**, so the plugin
+  reported the previous version. There is a test for exactly this and it caught it; the bundle is
+  rebuilt.
+
 ## [0.30.0] — 2026-08-03
 
 ### Added
