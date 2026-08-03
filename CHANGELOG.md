@@ -5,6 +5,40 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.30.2] — 2026-08-03
+
+### Changed
+
+- **The vector index was 70% empty space, and queries paid to scan it.** vec0 allocates a
+  fixed-size chunk per partition and scans whole chunks. Its default is 1024 vectors/chunk while
+  `targetPerCluster` is 300, and real clusters are heavily skewed — measured on a live
+  144k-vector store: min 1, median 120, max 3153. The result was 483,328 allocated slots for
+  144,004 vectors, a median chunk 147/1024 full, and **1,325 MB of the 1,888 MB store empty**.
+
+  Rebuilt at `chunk_size=128`, measured on a copy before anything live was touched, same probes
+  and same centroids:
+
+  | chunk_size | storage | p50 query | agreement with old index |
+  |---|---|---|---|
+  | 1024 (was) | 1888 MB | 62.7 ms | — |
+  | **128** | **578 MB** | **36.4 ms** | **1.000** |
+
+  Smaller *and* 42% faster with byte-identical results, because the query stops reading 7/8ths
+  empty space.
+
+  New stores get this automatically. Existing stores are re-laid by `captain-memo vacuum` — not
+  by the background sweep, because `chunk_size` is fixed at CREATE time and `ALTER TABLE ...
+  RENAME` is quietly destructive on a vec0 table (it moves the main table but not its shadow
+  tables). The re-lay is copy-out/drop/recreate/copy-back in one transaction, which needs the
+  exclusive lock `vacuum` already holds with the worker stopped.
+
+### Fixed
+
+- **`vacuum` reported savings the WAL had not delivered.** VACUUM rewrites the whole database and
+  in WAL mode that rewrite goes *through* the WAL, but the command only checkpointed beforehand —
+  so it printed "saved 1.17 GB" with a 734 MB `-wal` still on disk. It checkpoints afterwards now,
+  and `fileSize()` counts `-wal`/`-shm` so the figure reconciles with `du`.
+
 ## [0.30.1] — 2026-08-03
 
 ### Fixed
