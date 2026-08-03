@@ -24,6 +24,8 @@ import { ObservationsStore } from './observations-store.ts';
 import type { RecallQuery, RecallView, RecallSort } from './observations-store.ts';
 import { loadTideConfig, computeBuoyancy, tideMultiplier } from './tide.ts';
 import { runTideSweepSlice } from './tide-sweep.ts';
+import { runIvfSweepSlice } from './ivf-sweep.ts';
+import { loadIvfConfig, defaultSample } from './ivf.ts';
 import { loadQmConfig } from './qm.ts';
 import { loadPromotionConfig } from './promotion-config.ts';
 import { runPromotionSlice, type PromotionDeps } from './promotion.ts';
@@ -335,10 +337,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     ...(opts.embedderApiFormat !== undefined && { apiFormat: opts.embedderApiFormat }),
     maxInputTokens: opts.embedderMaxInputTokens ?? embedderMaxTokens(opts.embedderModel),
   });
+  const ivfConfig = loadIvfConfig(process.env);
   const vector = new VectorStore({
     dbPath: opts.vectorDbPath,
     dimension: opts.embeddingDimension,
     readonly: !!opts.readOnly,
+    ivfConfig,
   });
 
   const collectionName = `am_${opts.projectId}`;
@@ -1034,6 +1038,53 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         .catch(err => console.error('[tide-sweep] ERROR', err))
         .finally(() => { tideSweepPromise = null; });
     }, tideConfig.sweepIntervalMs);
+  }
+
+  // IVF clustering sweep (A2). Writer-only, bounded, heartbeat-safe: each
+  // slice does exactly one bounded unit of work (migrate a legacy batch,
+  // bootstrap once, assign a batch of new chunks, or rebalance a batch of
+  // existing ones) — see runIvfSweepSlice. Skips (not queues) if a prior
+  // slice is still running.
+  //
+  // Deliberately NOT gated on ivfConfig.enabled: add()/query() operate
+  // exclusively on the new vec_chunks_p table, so the legacy-migration part
+  // of the sweep must run even when clustering itself is off — otherwise, on
+  // the default (disabled) config, an existing install's corpus would sit in
+  // the old vec_chunks table forever, invisible to every search. Only the
+  // clustering behavior inside a tick (bootstrap/assign/rebalance) checks
+  // cfg.enabled — see runIvfSweepSlice.
+  let ivfSweepTimer: ReturnType<typeof setInterval> | null = null;
+  let ivfSweepPromise: Promise<unknown> | null = null;
+  if (!opts.readOnly) {
+    ivfSweepTimer = setInterval(() => {
+      if (ivfSweepPromise) return;
+      ivfSweepPromise = runIvfSweepSlice({
+        collection: collectionName,
+        cfg: ivfConfig,
+        countLegacyRows: () => vector.countLegacyRows(),
+        migrateLegacyBatch: (limit) => vector.migrateLegacyBatch(limit),
+        countVectors: (coll) => vector.countVectors(coll),
+        getCentroids: (coll) => vector.getCentroids(coll),
+        setCentroids: (coll, centroids) => vector.setCentroids(coll, centroids),
+        allocateClusterIds: (coll, n) => vector.allocateClusterIds(coll, n),
+        sampleAnyVectors: (coll, limit) => vector.sampleAnyVectors(coll, limit),
+        sampleClusteredVectors: (coll, limit) => vector.sampleClusteredVectors(coll, limit),
+        getUnclusteredChunks: (coll, limit) => vector.getUnclusteredChunks(coll, limit),
+        reassignClusterBatch: (items) => vector.reassignClusterBatch(items),
+        sample: defaultSample,
+        yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
+      })
+        .then(r => {
+          if (r.legacyMigrated > 0 || r.bootstrapped > 0 || r.assigned > 0 || r.rebalanced > 0) {
+            console.error(
+              `[ivf-sweep] legacyMigrated=${r.legacyMigrated} bootstrapped=${r.bootstrapped} `
+              + `assigned=${r.assigned} rebalanced=${r.rebalanced}`,
+            );
+          }
+        })
+        .catch(err => console.error('[ivf-sweep] ERROR', err))
+        .finally(() => { ivfSweepPromise = null; });
+    }, ivfConfig.sweepIntervalMs);
   }
 
   // Shared representative-vector accessor: centroid of an observation's chunk vectors.
@@ -1876,6 +1927,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           cosine_threshold: qmConfig.dedupCosineThreshold,
           last_run: obsStore?.latestQmRuns(1, 'dedup')[0] ?? null,
         };
+        // Vector index state. Cheap by construction — see indexSummary's measured comment.
+        const ivf = { enabled: ivfConfig.enabled, ...vector.indexSummary(collectionName) };
         // Countdown to the next idle window. Built from the SAME signals the gate uses, so the
         // number on screen can never promise a pass the gate would refuse.
         const idle = (() => {
@@ -1985,6 +2038,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           recall,
           tide,
           qm,
+          ivf,
           supersede,
           semantic,
           theme,
@@ -2669,6 +2723,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     if (captureTimer) clearInterval(captureTimer);
     if (retentionTimer) clearInterval(retentionTimer);
     if (tideSweepTimer) clearInterval(tideSweepTimer);
+    if (ivfSweepTimer) clearInterval(ivfSweepTimer);
     if (qmDedupTimer) clearInterval(qmDedupTimer);
     if (qmSupersedeTimer) clearInterval(qmSupersedeTimer);
     if (semanticTimer) clearInterval(semanticTimer);
@@ -2685,7 +2740,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     // allSettled, not all: a slice that rejects has already logged + recorded its own errored audit row —
     // here we only care that it is DONE, and one failing slice must not skip the drain of the others.
     await Promise.allSettled([
-      processBatchPromise, tideSweepPromise, qmDedupPromise, qmSupersedePromise, promotionPromise,
+      processBatchPromise, tideSweepPromise, ivfSweepPromise, qmDedupPromise, qmSupersedePromise, promotionPromise,
     ].filter((p): p is Promise<unknown> => p != null));
     if (watcher) await watcher.close();
     if (obsQueue) obsQueue.close();

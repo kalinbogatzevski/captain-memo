@@ -286,6 +286,38 @@ every value below can be overridden individually.
 | `CAPTAIN_MEMO_RARE_TOKEN_BOOST` | ON | Only active when proper-noun boost is on. |
 | `CAPTAIN_MEMO_SUPERSEDE_PENALTY` | profile | Score multiplier applied to a superseded row. |
 
+### IVF vector index
+
+Off by default. Enable with `CAPTAIN_MEMO_IVF_ENABLED=1` once a store gets large: every vector
+query otherwise compares the query against **every** stored embedding, which is exact and linear.
+Measured on a 143,720-vector store, that flat scan is **1166 ms p50** — for one leg, of one
+search, before anything is ranked.
+
+Enabled, the corpus is grouped into clusters (one centroid per ~300 vectors) and a query reads
+only the nearest few. The index builds incrementally in the background; **searches stay correct
+throughout**, because every query also probes the not-yet-assigned partition unconditionally.
+
+Measured on that same store (477 centroids, 50 probes at a fixed stride, exhaustive scan as
+ground truth, k=10):
+
+| clusters probed | p50 | recall@10 |
+|---|---|---|
+| all (flat scan) | 1166 ms | 1.000 |
+| 4 | 15.3 ms | 0.748 |
+| 8 | 27.2 ms | 0.858 |
+| **16** (default) | **47.5 ms** | **0.938** |
+| 32 | 95.2 ms | 0.978 |
+
+| Setting | Default | Notes |
+|---|---|---|
+| `CAPTAIN_MEMO_IVF_ENABLED` | OFF | `1` enables clustered vector search. |
+| `CAPTAIN_MEMO_IVF_MIN_CORPUS` | `3000` | Below this the flat scan is used regardless — it is faster than the arithmetic to avoid it. |
+| `CAPTAIN_MEMO_IVF_TARGET_PER_CLUSTER` | `300` | Vectors per cluster; cluster count is corpus size divided by this. |
+| `CAPTAIN_MEMO_IVF_PROBE_CLUSTERS` | `16` | Clusters read per query. Lower is faster and misses more — see the table; measure on your own corpus. |
+| `CAPTAIN_MEMO_IVF_SWEEP_BATCH` | `64` | Vectors processed per background slice. |
+| `CAPTAIN_MEMO_IVF_SWEEP_MS` | `60000` | Seconds between slices. **Do not lower this to speed up the initial build and then leave it.** The sweep never finishes: once every vector is assigned it switches to a permanent rebalance that re-samples and rewrites every centroid on each tick. At 2 s that pinned a CPU core continuously. |
+| `CAPTAIN_MEMO_IVF_MIN_LEARNING_RATE` | `0.01` | Centroid drift floor, so clusters keep adapting instead of freezing. |
+
 ### Tide (decay and lifecycle)
 
 | Setting | Default | Notes |
