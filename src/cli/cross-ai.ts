@@ -126,13 +126,14 @@ function withDetail(base: ConnectResult, detail: string | undefined): ConnectRes
   return detail !== undefined ? { ...base, detail } : base;
 }
 
-// --- cursor mcp.json merge (PURE — unit-tested without disk) -----------------
-// Read the existing ~/.cursor/mcp.json (as a string, or null/'' when absent),
-// merge in mcpServers["captain-memo"] = { command: 'bun', args: [path] }, and
-// return the serialized result. Preserves every other server and top-level key.
-// Idempotent: re-merging the same path yields identical content. Refreshes the
-// path if it changed (re-point to a moved mcp-server.js).
-export function mergeCursorMcpConfig(existingJson: string | null, mcpServerPath: string): string {
+// --- mcpServers-shape merge (PURE — unit-tested without disk) ----------------
+// Shared by every adapter whose target file is `{ mcpServers: { name: {command,args} } }`
+// (cursor, Claude Desktop, and — via mergeCursorMcpConfig — agy). Read the existing config
+// (as a string, or null/'' when absent), merge in mcpServers["captain-memo"] =
+// { command, args: [path] }, and return the serialized result. Preserves every other
+// server and top-level key. Idempotent: re-merging the same command+path yields identical
+// content. Refreshes the path (or command) if it changed.
+function mergeMcpServersConfig(existingJson: string | null, command: string, mcpServerPath: string): string {
   let root: Record<string, unknown> = {};
   if (existingJson && existingJson.trim().length > 0) {
     const parsed = JSON.parse(existingJson);
@@ -143,9 +144,24 @@ export function mergeCursorMcpConfig(existingJson: string | null, mcpServerPath:
   const servers = (root.mcpServers && typeof root.mcpServers === 'object' && !Array.isArray(root.mcpServers))
     ? (root.mcpServers as Record<string, unknown>)
     : {};
-  servers['captain-memo'] = { command: 'bun', args: [mcpServerPath] };
+  servers['captain-memo'] = { command, args: [mcpServerPath] };
   root.mcpServers = servers;
   return JSON.stringify(root, null, 2) + '\n';
+}
+
+// ~/.cursor/mcp.json. Hardcodes `command: 'bun'` — Cursor is not known to launch MCP
+// servers with a minimal PATH the way Claude Desktop does, so a bare `bun` is fine here.
+export function mergeCursorMcpConfig(existingJson: string | null, mcpServerPath: string): string {
+  return mergeMcpServersConfig(existingJson, 'bun', mcpServerPath);
+}
+
+// Claude Desktop's claude_desktop_config.json — same top-level `mcpServers` stdio shape as
+// cursor, with one difference that matters: the COMMAND is passed in, because Claude Desktop
+// launches configured servers with a minimal PATH. A bare `bun` resolves in your terminal and
+// fails inside the app, and the failure is silent — the server just never starts. Callers pass
+// an absolute path (see claudeDesktopAdapter, which uses process.execPath).
+export function mergeClaudeDesktopConfig(existingJson: string | null, command: string, mcpServerPath: string): string {
+  return mergeMcpServersConfig(existingJson, command, mcpServerPath);
 }
 
 // Pull the single mcp-server.js path out of mcpCommand for the cursor merge /
@@ -642,7 +658,80 @@ const jetbrainsAdapter: ToolAdapter = {
   },
 };
 
-export const ADAPTERS: ToolAdapter[] = [codexAdapter, geminiAdapter, agyAdapter, cursorAdapter, opencodeAdapter, vibeAdapter, kimiAdapter, vscodeAdapter, jetbrainsAdapter];
+/** Claude Desktop's config directory, or null when the app is not installed.
+ *  Roaming first — that is where the config was verified to live on Windows;
+ *  the Local fallback covers layouts that differ. Returns the directory that
+ *  actually exists rather than assuming one.
+ *
+ *  VERIFIED vs. CONVENTION-DERIVED: the Windows Roaming entry (%APPDATA%\Claude) and the
+ *  macOS entry (~/Library/Application Support/Claude) were both OBSERVED on real machines.
+ *  The Linux entry below was NOT — Claude Desktop shipped a Linux beta 2026-06-30 (Ubuntu
+ *  22.04+/Debian 12+), but nobody has checked a real install here yet. It is derived from a
+ *  pattern, not a citation: the two verified paths above are exactly Electron's standard
+ *  `userData` layout for an app named "Claude" (`%APPDATA%\<app>` on Windows,
+ *  `~/Library/Application Support/<app>` on macOS), and `~/.config/<app>` (or
+ *  `$XDG_CONFIG_HOME/<app>` when set) is the Linux member of that same three-OS triple. If
+ *  you get access to a Linux box with the app installed, confirm this before trusting it. */
+function claudeDesktopConfigDir(home: string): string | null {
+  const candidates = [
+    process.env.APPDATA ? join(process.env.APPDATA, 'Claude') : join(home, 'AppData', 'Roaming', 'Claude'),
+    process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Claude') : join(home, 'AppData', 'Local', 'Claude'),
+    join(home, 'Library', 'Application Support', 'Claude'),   // macOS — VERIFIED (Electron userData)
+    process.env.XDG_CONFIG_HOME ? join(process.env.XDG_CONFIG_HOME, 'Claude') : join(home, '.config', 'Claude'),   // Linux — UNVERIFIED, convention-derived (see doc comment)
+  ];
+  for (const dir of candidates) if (existsSync(dir)) return dir;
+  return null;
+}
+
+// Claude Desktop chat app (GUI). Local stdio MCP server via claude_desktop_config.json.
+// VERIFIED on Windows: the config lives in ROAMING %APPDATA%\Claude\ — not %LOCALAPPDATA%,
+// which is where the third-party-inference build keeps ITS data directory.
+// Tools only: the chat app has no hook surface, so there is no passive capture and no
+// auto-injection (spec 2026-08-07 §3). SKILL.md is deliberately NOT copied — no confirmed
+// read path exists, and writing one would produce a file nothing loads plus a report that
+// overstates what was wired.
+const claudeDesktopAdapter: ToolAdapter = {
+  id: 'claude-desktop',
+  label: 'Claude Desktop (chat app)',
+  detect({ home }) {
+    return claudeDesktopConfigDir(home) !== null;
+  },
+  connect(ctx) {
+    const dir = claudeDesktopConfigDir(ctx.home);
+    if (dir === null) {
+      return { tool: 'claude-desktop', mcp: 'skipped', skill: 'skipped', detail: 'Claude Desktop config directory not found' };
+    }
+    const cfgPath = join(dir, 'claude_desktop_config.json');
+    const serverPath = mcpServerPath(ctx.mcpCommand);
+    // process.execPath is the ABSOLUTE bun binary running this CLI — exactly what the app
+    // needs, with no PATH lookup and no `which` probe.
+    const command = process.execPath;
+
+    let mcp: ConnectResult['mcp'] = 'failed';
+    let detail: string | undefined;
+    try {
+      const existing = existsSync(cfgPath) ? readFileSync(cfgPath, 'utf-8') : null;
+      let already = false;
+      if (existing && existing.trim().length > 0) {
+        try {
+          const entry = JSON.parse(existing)?.mcpServers?.['captain-memo'];
+          if (entry && entry.command === command && Array.isArray(entry.args) && entry.args.includes(serverPath)) {
+            already = true;
+          }
+        } catch { /* unparseable → the merge below throws and we report failed */ }
+      }
+      const merged = mergeClaudeDesktopConfig(existing, command, serverPath);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(cfgPath, merged);
+      mcp = already ? 'present' : 'added';
+    } catch (e) {
+      detail = (e as Error).message;
+    }
+    return withDetail({ tool: 'claude-desktop', mcp, skill: 'skipped' }, detail);
+  },
+};
+
+export const ADAPTERS: ToolAdapter[] = [codexAdapter, geminiAdapter, agyAdapter, cursorAdapter, opencodeAdapter, vibeAdapter, kimiAdapter, vscodeAdapter, jetbrainsAdapter, claudeDesktopAdapter];
 
 // Detect installed tools (or the `only` subset), connect each, return reports.
 // `only` filters by adapter id; an unknown id yields a skipped result so the

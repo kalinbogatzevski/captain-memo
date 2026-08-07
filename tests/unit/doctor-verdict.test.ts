@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { schemaDrift, migrationVerdict, workerVerdict, embedderVerdict } from '../../src/cli/commands/doctor.ts';
+import { schemaDrift, migrationVerdict, workerVerdict, embedderVerdict, captureSourceVerdict } from '../../src/cli/commands/doctor.ts';
 
 // ---------------------------------------------------------------------------
 // schemaDrift — does the live DB actually HAVE what the migrations promise?
@@ -116,4 +116,95 @@ test('embedderVerdict cannot confirm a hosted endpoint when the worker did not a
   const c = embedderVerdict('https://api.voyageai.com/v1/embeddings', null);
   expect(c.status).toBe('WARN');
   expect(c.detail).toContain('unverified');
+});
+
+// ---------------------------------------------------------------------------
+// captureSourceVerdict — an active capture source (its session directory exists
+// on this host, so the tool is installed and being used) that has ingested
+// ZERO sessions means the corpus is quietly not growing. Today nothing reports
+// this combination; it is the exact shape of a skipped-rollout bug and a
+// mispointed transcripts dir alike.
+//
+// FINDING 2 (final whole-branch review): a brand-new `connect codex` + `doctor` on
+// ANY fresh install lands in exactly this state, because the driver seeds a
+// per-source cutoff on its first tick and deliberately skips every pre-existing
+// session older than it (driver.ts). That is capture working AS DESIGNED, not a
+// failure — so this used to FAIL doctor (and non-zero-exit it) on the branch's own
+// onboarding path. CHANGED from FAIL to WARN, and the remedy now leads with
+// `captain-memo capture backfill` — the actual fix for pre-existing sessions —
+// instead of pointing straight at worker.log as if something were broken.
+// ---------------------------------------------------------------------------
+
+test('captureSourceVerdict: active source with zero ingested sessions WARNs (benign on a fresh install)', () => {
+  const checks = captureSourceVerdict(['codex'], { codex: 0 }, { codex: 3 });
+
+  expect(checks).toHaveLength(1);
+  expect(checks[0]!.status).toBe('WARN');
+  expect(checks[0]!.detail).toContain('codex');
+  expect(checks[0]!.remedy).toBeDefined();
+});
+
+test('captureSourceVerdict: the zero-ingested remedy leads with `capture backfill`, not worker.log', () => {
+  const checks = captureSourceVerdict(['codex'], { codex: 0 }, { codex: 3 });
+  const remedy = checks[0]!.remedy!;
+
+  expect(remedy.indexOf('captain-memo capture backfill')).toBeGreaterThanOrEqual(0);
+  // "backfill" must come before "worker.log" — it's the first thing to try, not a footnote.
+  expect(remedy.indexOf('captain-memo capture backfill')).toBeLessThan(remedy.indexOf('worker.log'));
+});
+
+test('captureSourceVerdict: the zero-ingested detail does not assert breakage', () => {
+  const checks = captureSourceVerdict(['codex'], { codex: 0 }, { codex: 3 });
+  // Must not claim capture IS broken — only that nothing has landed yet.
+  expect(checks[0]!.detail).not.toMatch(/NOTHING has been ingested — capture is finding no transcripts/);
+});
+
+test('captureSourceVerdict: active source that has ingested sessions PASSes', () => {
+  const checks = captureSourceVerdict(['codex'], { codex: 42 }, { codex: 0 });
+
+  expect(checks).toHaveLength(1);
+  expect(checks[0]!.status).toBe('PASS');
+  expect(checks[0]!.detail).toContain('42');
+});
+
+test('captureSourceVerdict: no active sources yields no findings', () => {
+  expect(captureSourceVerdict([], {}, {})).toHaveLength(0);
+});
+
+test('captureSourceVerdict: a source missing from the ingested map counts as zero and WARNs', () => {
+  const checks = captureSourceVerdict(['agy'], {}, { agy: 2 });
+
+  expect(checks).toHaveLength(1);
+  expect(checks[0]!.status).toBe('WARN');
+});
+
+// Fix round 1: an older worker whose /stats predates this feature has NO `ingested` field at
+// all — that is "unknown", not "zero". Treating it as zero FAILed every active source on sight,
+// which is exactly what the live check hit against a not-yet-restarted worker. Field present but
+// EMPTY (the test above) is real information (the worker enumerated it) and must still FAIL;
+// field ABSENT is not, and must produce no findings at all.
+test('captureSourceVerdict: ingested field entirely absent (older worker) yields no findings', () => {
+  expect(captureSourceVerdict(['codex', 'agy'], undefined, { codex: 5 })).toHaveLength(0);
+});
+
+// The predicate fix: "the session directory exists" is NOT "the tool is in use".
+// One abandoned rollout from months ago made a source permanently "active", so doctor
+// nagged forever about a tool the machine does not run. The honest signal is whether
+// there are sessions NEWER than the source's capture cutoff that produced nothing.
+test('captureSourceVerdict: stale sessions older than the cutoff yield NO finding', () => {
+  const checks = captureSourceVerdict(['codex'], { codex: 0 }, { codex: 0 });
+
+  expect(checks).toHaveLength(0);
+});
+
+test('captureSourceVerdict: recent sessions with nothing ingested still WARNs', () => {
+  const checks = captureSourceVerdict(['codex'], { codex: 0 }, { codex: 3 });
+
+  expect(checks).toHaveLength(1);
+  expect(checks[0]!.status).toBe('WARN');
+  expect(checks[0]!.remedy).toContain('capture backfill');
+});
+
+test('captureSourceVerdict: an absent recent map yields no findings (never assert from no data)', () => {
+  expect(captureSourceVerdict(['codex'], { codex: 0 }, undefined)).toHaveLength(0);
 });

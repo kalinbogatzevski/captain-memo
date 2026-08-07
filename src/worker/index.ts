@@ -944,6 +944,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // so `captain-memo capture backfill` can ingest pre-cutoff history on demand.
   let captureBackfill: (() => Promise<{ ingested: number; events: number }>) | null = null;
   const captureSourceIds: string[] = [];
+  // Per-source count of sessions newer than that source's cutoff, refreshed every tick.
+  // Distinguishes "this tool is not used here" from "this tool is used and capture missed it".
+  const captureRecent: Record<string, number> = {};
   // Hoisted so stopResources() can close its SQLite handle on shutdown — capture is now armed on every boot,
   // and on Windows an unclosed db handle blocks the temp-dir rm (EBUSY) and, in prod, a `restart`/`vacuum`.
   let captureState: CaptureState | null = null;
@@ -974,7 +977,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         captureSourceIds.length = 0;
         for (const s of captureSources) if (s.available()) captureSourceIds.push(s.id);
       };
-      const runTick = async (ignoreCutoff: boolean): Promise<{ ingested: number; events: number }> => {
+      const runTick = async (
+        ignoreCutoff: boolean,
+      ): Promise<{ ingested: number; events: number; recent: Record<string, number> }> => {
         try {
           const r = await runCaptureTick({
             sources: captureSources,
@@ -988,11 +993,15 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
           });
           refreshActiveIds();
+          // Replace wholesale, don't merge: a source that stopped being used must drop back to 0,
+          // and a stale non-zero here would resurrect the very false alarm this reporting exists to kill.
+          for (const k of Object.keys(captureRecent)) delete captureRecent[k];
+          Object.assign(captureRecent, r.recent);
           if (r.ingested > 0) console.log(`[capture] ingested ${r.ingested} session(s), ${r.events} event(s)${ignoreCutoff ? ' (backfill)' : ''}`);
           return r;
         } catch (err) {
           console.error('[capture-tick]', (err as Error).message);
-          return { ingested: 0, events: 0 };
+          return { ingested: 0, events: 0, recent: {} };
         }
       };
       captureBackfill = () => runTick(true);
@@ -2094,7 +2103,20 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           },
           // Cross-AI capture sources active on this host (codex/agy/gemini/kimi/opencode),
           // so `doctor` / `config show` can report which non-Claude tools feed observations.
-          capture: { sources: captureSourceIds },
+          capture: {
+            sources: captureSourceIds,
+            // Per-source ingested totals. doctor reads THIS rather than opening
+            // capture-state.db behind the worker's back.
+            ingested: Object.fromEntries(
+              captureSourceIds.map((id) => [id, captureState?.ingestedSessions(id) ?? 0]),
+            ) as Record<string, number>,
+            // Sessions newer than each source's cutoff — the work capture was supposed to pick
+            // up. Zero means the tool is not in use on this host, no matter how long its session
+            // directory has existed, and doctor must then stay quiet.
+            recent: Object.fromEntries(
+              captureSourceIds.map((id) => [id, captureRecent[id] ?? 0]),
+            ) as Record<string, number>,
+          },
           worker: {
             started_at_epoch: workerStartedAtEpoch,
             uptime_s: Math.floor(Date.now() / 1000) - workerStartedAtEpoch,

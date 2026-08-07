@@ -4,6 +4,31 @@ Captain Memo's worker is an **agent-agnostic local HTTP service**, and it ships 
 *any* MCP-speaking AI coding tool can share the **same local memory corpus** — the same one Claude Code
 populates. Point several tools at one worker and context one tool learned becomes available to the others.
 
+## Which surface gives you what
+
+Captain Memo's reach depends on the surface you work in, because passive capture and
+auto-injection need a hook or an on-disk transcript — neither of which a GUI chat app has.
+
+| Surface | Read/write | Observe | Auto-inject | Setup |
+|---|---|---|---|---|
+| **Claude Code** — CLI, IDE extension | Yes | Yes | Yes | install the plugin |
+| **Claude Code** — desktop-app Code tab | Yes | Yes¹ | Yes¹ | install the plugin |
+| **Codex** — CLI, VS Code, desktop app | Yes | Yes | No | `captain-memo connect codex` |
+| **Claude Desktop chat app** | Yes | No | No | `captain-memo connect claude-desktop` |
+
+¹ *Unverified.* Observe/auto-inject need the worker to read the Code tab's on-disk transcripts, and
+those are assumed to land in `~/.claude/projects` (`CAPTAIN_MEMO_TRANSCRIPTS_DIR`) like the CLI's do.
+We now have evidence against that assumption: `%APPDATA%\Claude\` on a Windows install contains a
+`claude-code-sessions\` directory, suggesting the Code tab stores its transcripts under the desktop
+app's own data directory instead. Until confirmed either way, treat the Code tab's observe/auto-inject
+as unverified — the CLI and IDE-extension rows are unaffected.
+
+**Work in Claude Code (CLI/IDE extension) and you get everything; the chat app gives you tools only.**
+
+One command covers a whole tool family, not one surface: `~/.codex/config.toml` is shared by
+the Codex CLI, the VS Code extension and the Codex desktop app, and all three write their
+transcripts to the same `~/.codex/sessions/`, so `connect codex` wires and observes all of them.
+
 It's two pieces per tool:
 
 1. **Register the MCP server** → the tool gets `search_all`, `search_observations`, `search_memory`,
@@ -54,6 +79,21 @@ Add to `.cursor/mcp.json` (project) or the global MCP settings:
 ```
 
 Then drop the skill body into `.cursor/rules/captain-memo.md` (Cursor reads project rules).
+
+## Claude Desktop (chat app)
+
+    captain-memo connect claude-desktop
+
+Writes an `mcpServers` entry into `claude_desktop_config.json` (Windows: `%APPDATA%\Claude\`,
+Roaming). Restart the app afterwards.
+
+The entry names an **absolute** path to the `bun` binary. This is not cosmetic: the app launches
+configured servers with a minimal PATH, so a bare `bun` works in your terminal and fails inside
+the app — and it fails silently, with the server simply never starting.
+
+Recall here is **tool-driven**: the chat app has no hook surface, so the model must choose to
+search rather than having memory injected for it. There is also no passive capture — nothing
+observes the conversation. Both are structural, not missing features.
 
 ## Gemini CLI
 

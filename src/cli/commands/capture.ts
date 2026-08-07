@@ -43,6 +43,13 @@ export async function captureCommand(args: string[]): Promise<number> {
     if (!existsSync(dbPath)) { console.log('ingested:       (nothing yet)'); return 0; }
     const db = new Database(dbPath, { readonly: true });
     try {
+      // Deliberate plain COUNT(*): this answers "how many sessions has capture SEEN/attempted",
+      // including ones that were opened and produced zero events (events_ingested = 0) — that raw
+      // touch-count is itself useful here, e.g. confirming capture is at least reaching a tool's
+      // session directory even while investigating a zero-event bug. This is intentionally a
+      // DIFFERENT question from doctor's CaptureState.ingestedSessions(), which answers "did
+      // capture actually produce observations" and excludes zero-event sessions on purpose — see
+      // the comment there. Do not "align" the two.
       const rows = db.query(
         'SELECT source, COUNT(*) AS n, MAX(ingested_at_epoch) AS last FROM capture_ingested GROUP BY source ORDER BY source',
       ).all() as Array<{ source: string; n: number; last: number }>;

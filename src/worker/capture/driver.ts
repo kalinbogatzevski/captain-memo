@@ -22,13 +22,20 @@ export interface CaptureDriverDeps {
   yieldToLoop?: () => Promise<void>;
 }
 
-export async function runCaptureTick(deps: CaptureDriverDeps): Promise<{ ingested: number; events: number }> {
+export async function runCaptureTick(
+  deps: CaptureDriverDeps,
+): Promise<{ ingested: number; events: number; recent: Record<string, number> }> {
   const now = deps.now ?? (() => Date.now());
   const log = deps.log ?? (() => {});
   const yieldToLoop = deps.yieldToLoop ?? (async () => {});
   const nowEpoch = Math.floor(now() / 1000);
   let ingested = 0;
   let events = 0;
+  // Per-source count of sessions NEWER than that source's cutoff — i.e. work capture was
+  // actually supposed to pick up. Zero means the tool is not in use on this host, however
+  // long its session directory has existed; doctor needs that distinction to avoid warning
+  // forever about one abandoned rollout from months ago.
+  const recent: Record<string, number> = {};
 
   for (const src of deps.sources) {
     if (!src.available() || !src.enabled()) continue;
@@ -36,6 +43,8 @@ export async function runCaptureTick(deps: CaptureDriverDeps): Promise<{ ingeste
 
     let refs: SessionRef[];
     try { refs = src.discover(); } catch (e) { log(`[capture:${src.id}] discover failed: ${(e as Error).message}`); continue; }
+
+    recent[src.id] = refs.filter((r) => r.mtimeEpoch > cutoff).length;
 
     for (const ref of refs) {
       if (!deps.ignoreCutoff && ref.mtimeEpoch <= cutoff) continue;           // backfill guard
@@ -72,5 +81,5 @@ export async function runCaptureTick(deps: CaptureDriverDeps): Promise<{ ingeste
     }
   }
 
-  return { ingested, events };
+  return { ingested, events, recent };
 }

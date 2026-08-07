@@ -174,6 +174,27 @@ test('yields between sessions so a long tick cannot monopolise the engine thread
   ]);
 });
 
+// FINDING 1 (full pipeline) — driver.ts deliberately marks a session ingested (for dedup) even
+// when extract() returned zero events; that comment says the counter doctor reads must not be
+// fooled by it. Confirms the two halves connect: the driver's zero-event mark is still recorded
+// for dedup (wasIngested), but CaptureState.ingestedSessions — what doctor reads via /stats — does
+// NOT count it, so a source whose extractor silently produces nothing stays honestly at zero
+// instead of reporting a green "N session(s) ingested".
+test('a session that extracts to zero events is deduped but does NOT count toward ingestedSessions', async () => {
+  const state = tmpState();
+  state.ensureCutoff('codex', 100);
+  const ref: SessionRef = { sessionId: 's1', path: '/x', marker: 'm1', mtimeEpoch: 150 };
+  const src: CaptureSource = {
+    id: 'codex', available: () => true, enabled: () => true, describe: () => '/x',
+    discover: () => [ref], extract: () => [],
+  };
+  const r = await runCaptureTick({ sources: [src], state, enqueue: () => {}, now: () => 200_000 });
+
+  expect(r.ingested).toBe(0);                                 // nothing NEW was enqueued
+  expect(state.wasIngested('codex', 's1', 'm1')).toBe(true);   // …but it IS recorded, so it isn't re-opened every tick
+  expect(state.ingestedSessions('codex')).toBe(0);             // doctor's counter stays honest: zero events, zero credit
+});
+
 test('still works with no yieldToLoop supplied', async () => {
   const state = tmpState();
   state.ensureCutoff('codex', 100);
@@ -184,4 +205,32 @@ test('still works with no yieldToLoop supplied', async () => {
   });
   expect(r.ingested).toBe(1);
   expect(enq).toHaveLength(1);
+});
+
+// The tick already knows both halves of "is this tool actually in use here": the source's
+// cutoff and each ref's mtime. Reporting the count of sessions NEWER than the cutoff is what
+// lets doctor tell "nothing to capture" apart from "something to capture, and we missed it".
+test('runCaptureTick reports per-source count of sessions newer than the cutoff', async () => {
+  const state = tmpState();
+  state.ensureCutoff('codex', 1000); // capture enabled at t=1000
+  const refs: SessionRef[] = [
+    { sessionId: 'old', path: '/x/old', marker: 'm1', mtimeEpoch: 500 },  // predates cutoff
+    { sessionId: 'new', path: '/x/new', marker: 'm2', mtimeEpoch: 2000 }, // after cutoff
+  ];
+  const r = await runCaptureTick({
+    sources: [fakeSource(refs)], state, enqueue: () => {}, now: () => 3_000_000,
+  });
+  expect(r.recent).toEqual({ codex: 1 });
+});
+
+test('runCaptureTick reports zero recent when every session predates the cutoff', async () => {
+  const state = tmpState();
+  state.ensureCutoff('codex', 1000);
+  const refs: SessionRef[] = [
+    { sessionId: 'stale', path: '/x/stale', marker: 'm1', mtimeEpoch: 400 },
+  ];
+  const r = await runCaptureTick({
+    sources: [fakeSource(refs)], state, enqueue: () => {}, now: () => 3_000_000,
+  });
+  expect(r.recent).toEqual({ codex: 0 });
 });

@@ -30,6 +30,9 @@ export interface CodexSourceOptions {
   quiesceMs?: number;
   now?: () => number;
   env?: Record<string, string | undefined>;
+  /** Loud-failure sink. Defaults to console.error. Injected so tests can assert
+   *  that an unparseable rollout is REPORTED rather than silently skipped. */
+  warn?: (message: string) => void;
 }
 
 function clip(s: string, max = SUMMARY_MAX): string {
@@ -67,6 +70,7 @@ export function createCodexSource(opts: CodexSourceOptions): CaptureSource {
   const dir = opts.dir ?? env.CAPTAIN_MEMO_CAPTURE_CODEX_DIR ?? join(homedir(), '.codex', 'sessions');
   const quiesceMs = opts.quiesceMs ?? Number(env.CAPTAIN_MEMO_CAPTURE_QUIESCE_MS ?? DEFAULT_QUIESCE_MS);
   const now = opts.now ?? (() => Date.now());
+  const warn = opts.warn ?? ((m: string) => console.error(m));
 
   function walk(d: string, acc: string[]): void {
     let names: string[];
@@ -76,7 +80,7 @@ export function createCodexSource(opts: CodexSourceOptions): CaptureSource {
       let st;
       try { st = statSync(p); } catch { continue; }
       if (st.isDirectory()) walk(p, acc);
-      else if (st.isFile() && name.startsWith('rollout-') && name.endsWith('.jsonl')) acc.push(p);
+      else if (st.isFile() && name.startsWith('rollout-') && (name.endsWith('.jsonl') || name.endsWith('.jsonl.zst'))) acc.push(p);
     }
   }
 
@@ -94,7 +98,7 @@ export function createCodexSource(opts: CodexSourceOptions): CaptureSource {
         let st;
         try { st = statSync(path); } catch { continue; }
         if (now() - st.mtimeMs < quiesceMs) continue; // still being written
-        const m = /-(\w{8}-\w{4}-\w{4}-\w{4}-\w{12})\.jsonl$/.exec(path);
+        const m = /-(\w{8}-\w{4}-\w{4}-\w{4}-\w{12})\.jsonl(\.zst)?$/.exec(path);
         const sessionId = m?.[1] ?? path;
         refs.push({ sessionId, path, marker: `${Math.floor(st.mtimeMs)}:${st.size}`, mtimeEpoch: Math.floor(st.mtimeMs / 1000) });
       }
@@ -103,12 +107,23 @@ export function createCodexSource(opts: CodexSourceOptions): CaptureSource {
 
     extract(ref): RawObservationEvent[] {
       let text: string;
-      try { text = readFileSync(ref.path, 'utf8'); } catch { return []; }
+      try {
+        text = ref.path.endsWith('.zst')
+          ? Buffer.from(Bun.zstdDecompressSync(readFileSync(ref.path))).toString('utf8')
+          : readFileSync(ref.path, 'utf8');
+      } catch (e) {
+        // LOUD: a rollout we matched but cannot read is capture silently losing a
+        // session. Never return [] without saying which file and why.
+        warn(`[capture:codex] unreadable rollout ${ref.path}: ${(e as Error).message}`);
+        return [];
+      }
 
       const turns: Turn[] = [];
       let cur: Turn | null = null;
       let promptNumber = 0;
       let lastTs = Math.floor(now() / 1000);
+      let totalLines = 0;
+      let parseFailures = 0;
 
       const startTurn = (userText: string) => {
         cur = { promptNumber: ++promptNumber, userText, parts: [], files: new Set(), tsEpoch: lastTs };
@@ -118,8 +133,9 @@ export function createCodexSource(opts: CodexSourceOptions): CaptureSource {
 
       for (const line of text.split(/\r?\n/)) {
         if (!line.trim()) continue;
+        totalLines++;
         let o: { type?: string; timestamp?: string; payload?: Record<string, unknown> };
-        try { o = JSON.parse(line); } catch { continue; }
+        try { o = JSON.parse(line); } catch { parseFailures++; continue; }
         const pt = (o.payload?.type as string | undefined) ?? undefined;
         const p = o.payload ?? {};
         if (o.timestamp) { const t = Date.parse(o.timestamp); if (!Number.isNaN(t)) lastTs = Math.floor(t / 1000); }
@@ -160,7 +176,7 @@ export function createCodexSource(opts: CodexSourceOptions): CaptureSource {
         // everything else (reasoning, token_count, world_state, outputs, …) skipped
       }
 
-      return turns
+      const events = turns
         .filter((t) => t.userText.trim() || t.parts.length > 0)
         .map((t) => ({
           session_id: ref.sessionId,
@@ -176,6 +192,21 @@ export function createCodexSource(opts: CodexSourceOptions): CaptureSource {
           origin_agent: 'codex' as const,
           source: 'capture:codex',
         }));
+
+      // LOUD: a rollout that read and decompressed fine but yielded zero turns is
+      // the exact shape a codex payload-format rename takes from outside — file
+      // matched, parsed, produced nothing, and (before this) nothing said so. An
+      // EMPTY file is not interesting (nothing was ever written yet); a file WITH
+      // content that turned into nothing is. Reuse the same warn sink as the
+      // unreadable-file case above rather than a second mechanism.
+      if (events.length === 0 && totalLines > 0) {
+        const why = parseFailures > 0
+          ? `${parseFailures}/${totalLines} line(s) failed JSON.parse`
+          : `${totalLines} line(s) parsed but none matched a recognised payload type`;
+        warn(`[capture:codex] ${ref.path} produced zero turns (${why}) — payload format may have changed`);
+      }
+
+      return events;
     },
   };
 }

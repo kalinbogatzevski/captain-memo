@@ -5,6 +5,44 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.30.3] — 2026-08-07
+
+### Fixed
+
+- **Compressed codex rollouts were skipped in total silence, so cross-AI capture stopped dead.**
+  The codex capture source matched only `rollout-*.jsonl`. Newer codex writes its transcripts as
+  `rollout-<ts>-<uuid>.jsonl.zst` under `~/.codex/sessions/YYYY/MM/DD/`, and those were ignored with
+  no error, no warning and no log line — after a codex upgrade capture simply produced nothing,
+  which from outside reads as "memory mysteriously does nothing".
+
+  Compressed rollouts are now decompressed with the native `Bun.zstdDecompressSync` (no new
+  dependency), and the session-id regex tolerates the `.zst` suffix so a compressed rollout keeps
+  its identity instead of falling back to its path and re-ingesting forever. A rollout that matches
+  the name pattern but cannot be read, decompressed, or parsed now **warns naming the file**, and so
+  does one that parses but yields no turns — previously that case was recorded as ingested, which
+  let `doctor` report healthy while nothing was captured.
+
+### Added
+
+- **`doctor` reports a capture source that should have captured something and did not.** The signal
+  is deliberately narrow: sessions **newer than that source's capture cutoff** which produced
+  nothing. Directory existence is not enough — one abandoned rollout from months ago would
+  otherwise make a source permanently "active" and warn forever on a machine that does not use the
+  tool. A fresh install is not an error either: the driver seeds a cutoff on its first tick, so
+  pre-existing sessions are skipped by design, and the finding is a WARN whose remedy leads with
+  `captain-memo capture backfill`.
+
+- **`captain-memo connect claude-desktop`** wires the Claude Desktop chat app to the local captain
+  over stdio, instead of a hand-edited `claude_desktop_config.json`. The entry names an **absolute**
+  interpreter path: the app launches configured MCP servers with a minimal PATH, so a bare `bun`
+  works in a terminal and fails silently inside the app. Windows Roaming is verified; the Linux path
+  (`$XDG_CONFIG_HOME/Claude`, else `~/.config/Claude`) follows Electron's `userData` convention and
+  is labelled unverified in the code until confirmed on a Linux box with the app installed.
+
+  `docs/cross-ai-tools.md` gains a tier table so a new user can see which surface gives them what:
+  Claude Code gets everything, Codex gets everything but auto-injection, and the chat app gets tools
+  only — it has no hook surface, so recall there is tool-driven and there is no passive capture.
+
 ## [0.30.2] — 2026-08-03
 
 ### Changed

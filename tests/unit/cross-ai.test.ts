@@ -1,8 +1,8 @@
-import { test, expect, beforeEach, afterEach } from 'bun:test';
+import { test, expect, beforeEach, afterEach, describe } from 'bun:test';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { mergeCursorMcpConfig, mergeKimiConfig, mergeVibeMcpConfig, parseOllamaList, connectCrossAi, type Runner } from '../../src/cli/cross-ai.ts';
+import { mergeCursorMcpConfig, mergeVibeMcpConfig, mergeKimiConfig, mergeClaudeDesktopConfig, parseOllamaList, connectCrossAi, type Runner } from '../../src/cli/cross-ai.ts';
 
 const MCP_PATH = '/repo/plugin/dist/mcp-server.js';
 
@@ -56,6 +56,45 @@ test('mergeCursorMcpConfig — refreshes the path if it changed (re-point to new
   const first = mergeCursorMcpConfig(null, '/old/path/mcp-server.js');
   const out = JSON.parse(mergeCursorMcpConfig(first, MCP_PATH));
   expect(out.mcpServers['captain-memo'].args).toEqual([MCP_PATH]);
+});
+
+// ---- mergeClaudeDesktopConfig — the pure, disk-free merge --------------------
+// Same mcpServers shape as cursor's, but the command is a caller-supplied absolute
+// path rather than a hardcoded 'bun' — Claude Desktop launches configured servers
+// with a minimal PATH, so a bare 'bun' would resolve in a terminal and fail silently
+// inside the app.
+
+test('mergeClaudeDesktopConfig: writes an absolute command into an empty config', () => {
+  const out = mergeClaudeDesktopConfig(null, 'C:\\Users\\u\\.bun\\bin\\bun.exe', 'C:\\repo\\mcp-server.js');
+  const parsed = JSON.parse(out);
+
+  expect(parsed.mcpServers['captain-memo'].command).toBe('C:\\Users\\u\\.bun\\bin\\bun.exe');
+  expect(parsed.mcpServers['captain-memo'].args).toEqual(['C:\\repo\\mcp-server.js']);
+});
+
+test('mergeClaudeDesktopConfig: preserves foreign servers and foreign top-level keys', () => {
+  const existing = JSON.stringify({
+    globalShortcut: 'Alt+Space',
+    mcpServers: { filesystem: { command: 'node', args: ['/srv/fs.js'] } },
+  });
+  const parsed = JSON.parse(mergeClaudeDesktopConfig(existing, '/usr/bin/bun', '/repo/mcp-server.js'));
+
+  expect(parsed.globalShortcut).toBe('Alt+Space');
+  expect(parsed.mcpServers.filesystem).toEqual({ command: 'node', args: ['/srv/fs.js'] });
+  expect(parsed.mcpServers['captain-memo'].command).toBe('/usr/bin/bun');
+});
+
+test('mergeClaudeDesktopConfig: re-merging is byte-stable', () => {
+  const once = mergeClaudeDesktopConfig(null, '/usr/bin/bun', '/repo/mcp-server.js');
+  const twice = mergeClaudeDesktopConfig(once, '/usr/bin/bun', '/repo/mcp-server.js');
+
+  expect(twice).toBe(once);
+});
+
+test('mergeClaudeDesktopConfig: re-points a moved server path', () => {
+  const once = mergeClaudeDesktopConfig(null, '/usr/bin/bun', '/old/mcp-server.js');
+  const parsed = JSON.parse(mergeClaudeDesktopConfig(once, '/usr/bin/bun', '/new/mcp-server.js'));
+  expect(parsed.mcpServers['captain-memo'].args).toEqual(['/new/mcp-server.js']);
 });
 
 // ---- connectCrossAi — cursor adapter against an injected temp home ----------
@@ -186,6 +225,93 @@ test('connectCrossAi — undetected tool (no CLI / no config dir) is skipped fro
 // ---- mergeKimiConfig / parseOllamaList — `connect kimi` must leave kimi LAUNCHABLE -------------
 // Without [providers.*] + [models.<alias>] + a root default_model in ~/.kimi/config.toml, bare `kimi` has
 // nothing to route to and dies with "LLM not set". `connect kimi` used to write NONE of it.
+// ---- claude-desktop adapter — claude_desktop_config.json via a FAKE Roaming dir ----
+// claudeDesktopConfigDir() reads process.env.APPDATA / LOCALAPPDATA directly — not the
+// injected `home` — because that's how the real config is found on a real machine. So
+// these tests point APPDATA/LOCALAPPDATA at a fake dir under the temp `home` and always
+// restore the originals afterwards, so a test run here can never read or write whatever
+// Claude Desktop config already exists on the machine running the suite.
+describe('connectCrossAi — claude-desktop adapter', () => {
+  let savedAppData: string | undefined;
+  let savedLocalAppData: string | undefined;
+  let savedXdgConfigHome: string | undefined;
+  let fakeClaudeDir: string;
+
+  beforeEach(() => {
+    savedAppData = process.env.APPDATA;
+    savedLocalAppData = process.env.LOCALAPPDATA;
+    savedXdgConfigHome = process.env.XDG_CONFIG_HOME;
+    fakeClaudeDir = join(home, 'FakeRoaming', 'Claude');
+    mkdirSync(fakeClaudeDir, { recursive: true });
+    process.env.APPDATA = join(home, 'FakeRoaming');
+    process.env.LOCALAPPDATA = join(home, 'FakeLocal');
+    // No XDG override by default — whatever the host machine has set (if anything) must never
+    // leak into these tests, since the Linux candidate would otherwise resolve outside the
+    // temp `home` and could touch a real ~/.config/Claude on the machine running the suite.
+    delete process.env.XDG_CONFIG_HOME;
+  });
+
+  afterEach(() => {
+    if (savedAppData === undefined) delete process.env.APPDATA; else process.env.APPDATA = savedAppData;
+    if (savedLocalAppData === undefined) delete process.env.LOCALAPPDATA; else process.env.LOCALAPPDATA = savedLocalAppData;
+    if (savedXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = savedXdgConfigHome;
+  });
+
+  test('only:[claude-desktop] writes an absolute process.execPath command; skill is skipped (tools only)', () => {
+    const results = connectCrossAi({ only: ['claude-desktop'], mcpCommand: ['bun', MCP_PATH], skillSource, home, run: noopRunner });
+    expect(results.length).toBe(1);
+    const r = results[0]!;
+    expect(r.tool).toBe('claude-desktop');
+    expect(r.mcp).toBe('added');
+    expect(r.skill).toBe('skipped');   // SKILL.md deliberately not copied — no confirmed read path
+
+    const cfg = JSON.parse(readFileSync(join(fakeClaudeDir, 'claude_desktop_config.json'), 'utf-8'));
+    expect(cfg.mcpServers['captain-memo'].command).toBe(process.execPath);
+    expect(cfg.mcpServers['captain-memo'].args).toEqual([MCP_PATH]);
+  });
+
+  test('is idempotent and preserves a pre-existing foreign server + top-level key', () => {
+    writeFileSync(
+      join(fakeClaudeDir, 'claude_desktop_config.json'),
+      JSON.stringify({ globalShortcut: 'Alt+Space', mcpServers: { filesystem: { command: 'node', args: ['/x.js'] } } }),
+    );
+    connectCrossAi({ only: ['claude-desktop'], mcpCommand: ['bun', MCP_PATH], skillSource, home, run: noopRunner });
+    const second = connectCrossAi({ only: ['claude-desktop'], mcpCommand: ['bun', MCP_PATH], skillSource, home, run: noopRunner });
+    expect(second[0]!.mcp).toBe('present');
+
+    const cfg = JSON.parse(readFileSync(join(fakeClaudeDir, 'claude_desktop_config.json'), 'utf-8'));
+    expect(cfg.globalShortcut).toBe('Alt+Space');
+    expect(cfg.mcpServers.filesystem).toEqual({ command: 'node', args: ['/x.js'] });
+    expect(cfg.mcpServers['captain-memo'].command).toBe(process.execPath);
+    expect(Object.keys(cfg.mcpServers).filter((k) => k === 'captain-memo').length).toBe(1);
+  });
+
+  test('is absent from auto-detect when no Claude config directory exists', () => {
+    rmSync(fakeClaudeDir, { recursive: true, force: true });
+    const results = connectCrossAi({ mcpCommand: ['bun', MCP_PATH], skillSource, home, run: noopRunner });
+    expect(results.map((r) => r.tool)).not.toContain('claude-desktop');
+  });
+
+  // Linux candidate (UNVERIFIED, convention-derived — see the doc comment on
+  // claudeDesktopConfigDir): $XDG_CONFIG_HOME/Claude, checked after both Windows candidates.
+  // Neither Windows dir exists in this temp home, so a successful write here proves the probe
+  // actually falls through to the Linux entry rather than stopping short of it.
+  test('probes the Linux path ($XDG_CONFIG_HOME/Claude) when neither Windows dir exists', () => {
+    rmSync(fakeClaudeDir, { recursive: true, force: true });   // remove the Roaming candidate
+    // LOCALAPPDATA points at FakeLocal (from beforeEach), but FakeLocal/Claude was never created.
+    const fakeXdgClaudeDir = join(home, 'FakeXdgConfig', 'Claude');
+    mkdirSync(fakeXdgClaudeDir, { recursive: true });
+    process.env.XDG_CONFIG_HOME = join(home, 'FakeXdgConfig');
+
+    const results = connectCrossAi({ only: ['claude-desktop'], mcpCommand: ['bun', MCP_PATH], skillSource, home, run: noopRunner });
+    expect(results[0]!.mcp).toBe('added');
+
+    const cfg = JSON.parse(readFileSync(join(fakeXdgClaudeDir, 'claude_desktop_config.json'), 'utf-8'));
+    expect(cfg.mcpServers['captain-memo'].command).toBe(process.execPath);
+    expect(cfg.mcpServers['captain-memo'].args).toEqual([MCP_PATH]);
+  });
+});
+
 
 test('parseOllamaList — takes the NAME column, skips the header, ignores blanks', () => {
   const out = parseOllamaList('NAME              ID          SIZE\nqwen3.5:9b        abc         5 GB\ngemma4:12b        def         8 GB\n\n');

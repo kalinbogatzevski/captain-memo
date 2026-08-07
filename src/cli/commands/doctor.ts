@@ -252,11 +252,61 @@ async function checkVectorDim(): Promise<void> {
   });
 }
 
+/** One finding per ACTIVE capture source. Active = the worker reports it in
+ *  /stats capture.sources, i.e. the tool's session directory exists on this host.
+ *  Active with zero ingested sessions means capture has not produced any observations
+ *  from that tool yet — worth a look, but NOT necessarily broken.
+ *
+ *  `ingested` is `undefined` when the /stats payload has no `ingested` field at
+ *  all — an older worker that predates this check, not a source that is really
+ *  at zero. That is unknown, not zero, so it produces NO findings (matching the
+ *  `sources === undefined` skip a few lines below in checkCapture()) rather than
+ *  a finding on every active source. Once the field IS present, a source missing
+ *  from the map is a real zero — the worker enumerated it and it had no
+ *  ingested sessions to report.
+ *
+ *  WARN, not FAIL: the driver seeds a per-source cutoff the FIRST tick a source is
+ *  seen (see driver.ts) and deliberately skips every pre-existing session older than
+ *  it — that is by design, not damage. So a brand-new `connect codex` + `doctor` on
+ *  ANY fresh install lands exactly here, with capture working correctly. That is the
+ *  common case, and a diagnostic that FAILs the common case trains people to ignore
+ *  it (and non-zero-exits the onboarding path itself). The genuinely-broken case (a
+ *  payload-format rename that silently zeroes out every extract — see the codex-source
+ *  zero-turn warning) lands here too and is indistinguishable from outside without
+ *  reading worker.log — so the remedy leads with the benign fix and falls back to the
+ *  log for the rest. */
+export function captureSourceVerdict(
+  sources: string[],
+  ingested: Record<string, number> | undefined,
+  recent: Record<string, number> | undefined,
+): Check[] {
+  // Either field absent (a worker predating them) ⇒ we know nothing. Say nothing.
+  if (ingested === undefined || recent === undefined) return [];
+  return sources.flatMap((id) => {
+    const n = ingested[id] ?? 0;
+    if (n > 0) {
+      return [{ name: `capture:${id}`, status: 'PASS', detail: `${n} session(s) ingested` } as Check];
+    }
+    // "The session directory exists" is NOT "the tool is in use here". A single abandoned
+    // rollout from months ago otherwise makes a source permanently active, and doctor nags
+    // forever about a tool this machine does not run — the false alarm that teaches people
+    // to ignore doctor. Only speak when there is something capture SHOULD have caught:
+    // sessions newer than this source's cutoff that produced nothing.
+    if ((recent[id] ?? 0) === 0) return [];
+    return [{
+      name: `capture:${id}`,
+      status: 'WARN',
+      detail: `${id} sessions exist on this host but none have been ingested yet — normal right after enabling capture (pre-existing sessions are skipped by design until backfilled), but worth checking if it persists`,
+      remedy: `captain-memo capture backfill   (ingests ${id}'s pre-existing sessions now — the likely fix); if it still shows nothing afterwards, check worker.log for '[capture:${id}]' warnings and confirm the session directory the worker resolved matches what the tool actually writes to (captain-memo capture status)`,
+    } as Check];
+  });
+}
+
 async function checkCapture(): Promise<void> {
   const s = await fetchJson(`http://127.0.0.1:${WORKER_PORT}/stats`);
   if (!s.ok) return; // worker unreachable — the `worker service` check owns that
   const b = s.body as {
-    capture?: { sources?: string[] };
+    capture?: { sources?: string[]; ingested?: Record<string, number>; recent?: Record<string, number> };
     summarizer?: { provider?: string; enabled?: boolean; cooling_down?: boolean };
   };
 
@@ -295,6 +345,10 @@ async function checkCapture(): Promise<void> {
     } else {
       record({ name: 'summarizer', status: 'PASS', detail: `${sm.provider} running — observations + capture enabled` });
     }
+  }
+
+  for (const check of captureSourceVerdict(b.capture?.sources ?? [], b.capture?.ingested, b.capture?.recent)) {
+    record(check);
   }
 
   // Which non-Claude tools are feeding observations (codex/agy/gemini/kimi/opencode).

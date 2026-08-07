@@ -68,6 +68,25 @@ export class CaptureState {
     return row?.events_ingested ?? 0;
   }
 
+  /** How many sessions of `source` actually PRODUCED something — `events_ingested > 0`.
+   *  This is doctor's question: "is capture actually yielding observations?" A session marked
+   *  ingested with events_ingested=0 (extract ran, decompressed fine, but the file matched a
+   *  zero-event outcome — see codex-source's zero-turn warning) must NOT count here, or a
+   *  payload-format rename that silently zeroes out every extract would still show doctor a
+   *  green "N session(s) ingested" — precisely the incident this counter exists to catch.
+   *
+   *  Deliberately narrower than `capture status`'s own COUNT(*) query in
+   *  src/cli/commands/capture.ts, which answers a different question — "how many sessions has
+   *  capture SEEN/attempted" — and keeps counting zero-event sessions on purpose, because that
+   *  raw touch-count is itself a useful troubleshooting signal there. Do not "align" the two;
+   *  see the comment on that query for why. */
+  ingestedSessions(source: string): number {
+    const row = this.db
+      .query('SELECT COUNT(*) AS n FROM capture_ingested WHERE source = ? AND events_ingested > 0')
+      .get(source) as { n: number } | null;
+    return row?.n ?? 0;
+  }
+
   markIngested(source: string, sessionId: string, marker: string, nowEpoch: number, eventsIngested = 0): void {
     this.db
       .query(
