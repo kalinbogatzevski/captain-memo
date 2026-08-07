@@ -909,7 +909,7 @@ import { join as join8 } from "path";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.30.3",
+  version: "0.30.4",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -967,10 +967,11 @@ var package_default = {
   },
   overrides: {
     qs: "^6.15.3",
-    hono: "^4.12.30",
+    hono: "^4.12.34",
     "body-parser": "^2.3.0",
     "@hono/node-server": "^2.0.5",
-    "fast-uri": "^3.1.3"
+    "fast-uri": "^3.1.5",
+    "ip-address": "^10.4.0"
   },
   devDependencies: {
     "@types/bun": "^1.1.0",

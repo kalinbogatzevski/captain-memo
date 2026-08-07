@@ -5,6 +5,24 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.30.4] — 2026-08-07
+
+### Security
+
+- **Cleared five advisories in transitive dependencies of `@modelcontextprotocol/sdk`** — two high,
+  three moderate. `fast-uri` (host confusion via a backslash authority introducer, reached through
+  `ajv`), `ip-address` (leading-zero octets decoded as decimal while resolvers read them as octal,
+  plus two related trust-boundary misclassifications, reached through `express-rate-limit`), and
+  `hono` (ReDoS in the CORS middleware, reached through `@hono/node-server`).
+
+  Two of the three were already pinned here from an earlier clear-out, at `hono ^4.12.30` and
+  `fast-uri ^3.1.3` — the new advisories simply moved past those floors, and `ip-address` had never
+  been pinned. The overrides now sit at `fast-uri ^3.1.5` (a patched 3.x exists, so no major bump),
+  `hono ^4.12.34`, and `ip-address ^10.4.0`. `bun audit` reports no vulnerabilities.
+
+  Nothing in the source changed: the suite is 1520 pass / 11 fail before and after the bumps, the
+  11 being pre-existing Windows-only backup failures measured against a pristine-master baseline.
+
 ## [0.30.3] — 2026-08-07
 
 ### Fixed
