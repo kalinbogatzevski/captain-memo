@@ -5,6 +5,31 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.30.7] — 2026-08-08
+
+### Fixed
+
+- **Backup and restore were completely broken on Windows.** GNU tar reads an absolute `C:\…` path
+  passed to `-f` as a REMOTE `host:path` spec — so it tried to `rsh` to a host called "C" and died
+  with `Cannot connect to C: resolve failed`. The MSYS2 tar shipped with Git for Windows additionally
+  mangled backslashes in `-C` into `C\:\Users\…`. Every Windows user was affected; there was no
+  workaround short of copying the data directory by hand.
+
+  Fixed by naming the archive by **basename** with `cwd` set to its directory, and rewriting `-C`
+  paths to forward slashes **on Windows only** — a backslash is a legal filename character on POSIX,
+  so that rewrite must not happen there. Portable across GNU tar and the bsdtar Windows ships, unlike
+  the GNU-only `--force-local`.
+
+- **The repo-root cache kept negative lookups for a full minute.** `detectRepoRootSync` returns null
+  both for "this is not a repository" and for "git did not answer within its 2 s spawn timeout", and
+  `repoRootCache` cached that null for the whole 60 s TTL. One slow spawn under load therefore
+  stripped `repo_root` from every worknote for a minute, silently disabling repo contention. Caught
+  in the act: a full-suite run poisoned the cache for a directory that an uncached probe resolved
+  correctly milliseconds later. Negative results now expire after 5 s (`REPO_ROOT_NEGATIVE_TTL_MS`).
+
+Both were found while making the test suite pass on Windows, and both are genuine production bugs
+rather than test problems. Verified on Windows at 1546 pass / 1 skip / 0 fail with `tsc` clean.
+
 ## [0.30.6] — 2026-08-08
 
 ### Fixed
