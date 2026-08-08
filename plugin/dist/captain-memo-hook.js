@@ -905,7 +905,7 @@ import { join as join8 } from "path";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.30.5",
+  version: "0.30.6",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -957,7 +957,7 @@ var package_default = {
     "@modelcontextprotocol/sdk": "^1.25.1",
     chokidar: "^4.0.3",
     "gpt-tokenizer": "^2.5.1",
-    nanoid: "^5.0.7",
+    nanoid: "^5.1.16",
     "sqlite-vec": "^0.1.9",
     zod: "^3.24.0"
   },

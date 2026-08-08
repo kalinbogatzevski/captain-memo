@@ -3527,7 +3527,12 @@ var require_fast_uri = __commonJS((exports, module) => {
   }
   function resolve(baseURI, relativeURI, options) {
     const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
-    const resolved = resolveComponent(parse5(baseURI, schemelessOptions), parse5(relativeURI, schemelessOptions), schemelessOptions, true);
+    const { parsed: baseParsed, malformedAuthorityOrPort: baseMalformed } = parseWithStatus(baseURI, schemelessOptions);
+    const { parsed: relativeParsed, malformedAuthorityOrPort: relativeMalformed } = parseWithStatus(relativeURI, schemelessOptions);
+    if (baseMalformed || relativeMalformed) {
+      throw new Error(baseParsed.error || relativeParsed.error || "URI is malformed.");
+    }
+    const resolved = resolveComponent(baseParsed, relativeParsed, schemelessOptions, true);
     schemelessOptions.skipEscape = true;
     return serialize(resolved, schemelessOptions);
   }
@@ -3654,6 +3659,7 @@ var require_fast_uri = __commonJS((exports, module) => {
   }
   var URI_PARSE = /^(?:([^#/:?]+):)?(?:\/\/((?:([^#/?@]*)@)?(\[[^#/?\]]+\]|[^#/:?]*)(?::(\d*))?))?([^#?]*)(?:\?([^#]*))?(?:#((?:.|[\n\r])*))?/u;
   var AUTHORITY_PREFIX = /^(?:[^#/:?]+:)?\/\/([^/?#]*)/;
+  var AUTHORITY_INTRODUCER_REGION = /^(?:[^#/:?]+:)?([/\\\t\n\r]*)/;
   function getParseError(parsed, matches) {
     if (matches[2] !== undefined && parsed.path && parsed.path[0] !== "/") {
       return 'URI path must start with "/" when authority is present.';
@@ -3687,6 +3693,20 @@ var require_fast_uri = __commonJS((exports, module) => {
     if (authorityMatch !== null && authorityMatch[1].indexOf("\\") !== -1) {
       parsed.error = "URI authority must not contain a literal backslash.";
       malformedAuthorityOrPort = true;
+    }
+    const introducerMatch = uri.match(AUTHORITY_INTRODUCER_REGION);
+    if (introducerMatch !== null) {
+      const region = introducerMatch[1];
+      const normalizedRegion = region.replace(/[\t\n\r]/g, "");
+      if (normalizedRegion.length >= 2) {
+        if (normalizedRegion.slice(0, 2) !== "//") {
+          parsed.error = parsed.error || "URI authority must not contain a literal backslash.";
+          malformedAuthorityOrPort = true;
+        } else if (region.length !== normalizedRegion.length) {
+          parsed.error = parsed.error || "URI authority introducer must not contain whitespace.";
+          malformedAuthorityOrPort = true;
+        }
+      }
     }
     const matches = uri.match(URI_PARSE);
     if (matches) {
@@ -12643,15 +12663,20 @@ var POOL_SIZE_MULTIPLIER = 128;
 var pool;
 var poolOffset;
 function fillPool(bytes) {
-  if (bytes < 0 || bytes > 1024)
+  if (bytes < 0)
     throw new RangeError("Wrong ID size");
-  if (!pool || pool.length < bytes) {
-    pool = Buffer.allocUnsafe(bytes * POOL_SIZE_MULTIPLIER);
-    crypto.getRandomValues(pool);
-    poolOffset = 0;
-  } else if (poolOffset + bytes > pool.length) {
-    crypto.getRandomValues(pool);
-    poolOffset = 0;
+  try {
+    if (!pool || pool.length < bytes) {
+      pool = Buffer.allocUnsafe(bytes * POOL_SIZE_MULTIPLIER);
+      crypto.getRandomValues(pool);
+      poolOffset = 0;
+    } else if (poolOffset + bytes > pool.length) {
+      crypto.getRandomValues(pool);
+      poolOffset = 0;
+    }
+  } catch (e) {
+    pool = undefined;
+    throw e;
   }
   poolOffset += bytes;
 }
@@ -12756,7 +12781,7 @@ function loadWorkerEnv() {
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.30.5",
+  version: "0.30.6",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -12808,7 +12833,7 @@ var package_default = {
     "@modelcontextprotocol/sdk": "^1.25.1",
     chokidar: "^4.0.3",
     "gpt-tokenizer": "^2.5.1",
-    nanoid: "^5.0.7",
+    nanoid: "^5.1.16",
     "sqlite-vec": "^0.1.9",
     zod: "^3.24.0"
   },

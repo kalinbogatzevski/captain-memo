@@ -209,13 +209,15 @@ test('gooseConfigCandidates — one layout per OS, matching goose\'s etcetera ap
   try {
     delete process.env.XDG_CONFIG_HOME;
     process.env.APPDATA = 'C:\\Users\\x\\AppData\\Roaming';
+    // Every expectation goes through join() too: on Windows the separator is a backslash, and
+    // hardcoding '/' here made these fail on the windows-latest runner while the code was fine.
     const [win, mac, xdg] = gooseConfigCandidates('/home/x');
     expect(win).toBe(join('C:\\Users\\x\\AppData\\Roaming', 'Block', 'goose', 'config', 'config.yaml'));
-    expect(mac).toBe('/home/x/Library/Application Support/Block.block.goose/config.yaml');
-    expect(xdg).toBe('/home/x/.config/goose/config.yaml');
+    expect(mac).toBe(join('/home/x', 'Library', 'Application Support', 'Block.block.goose', 'config.yaml'));
+    expect(xdg).toBe(join('/home/x', '.config', 'goose', 'config.yaml'));
 
     process.env.XDG_CONFIG_HOME = '/custom/cfg';
-    expect(gooseConfigCandidates('/home/x')[2]).toBe('/custom/cfg/goose/config.yaml');
+    expect(gooseConfigCandidates('/home/x')[2]).toBe(join('/custom/cfg', 'goose', 'config.yaml'));
   } finally {
     if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = prevXdg;
     if (prevAppdata === undefined) delete process.env.APPDATA; else process.env.APPDATA = prevAppdata;
@@ -226,7 +228,9 @@ test('gooseConfigPath — GOOSE_PATH_ROOT wins when absolute, is ignored when re
   const prev = process.env.GOOSE_PATH_ROOT;
   try {
     process.env.GOOSE_PATH_ROOT = '/opt/goose-root';
-    expect(gooseConfigPath('/home/x')).toBe('/opt/goose-root/config/config.yaml');
+    // join() again, not a literal — a leading slash IS absolute on Windows, so this branch is
+    // taken there too, but the separators come back as backslashes.
+    expect(gooseConfigPath('/home/x')).toBe(join('/opt/goose-root', 'config', 'config.yaml'));
     // goose's validated_path_root DROPS a relative value rather than resolving it, so we must too.
     process.env.GOOSE_PATH_ROOT = 'relative/root';
     expect(gooseConfigPath('/home/x')).not.toContain('relative/root');

@@ -5,6 +5,22 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.30.6] — 2026-08-08
+
+### Fixed
+
+- **Two of 0.30.5's new goose tests failed on Windows, and the tests were the thing that was wrong.**
+  The adapter builds every path with `join()`, which is correct on all three platforms, but the
+  assertions compared against hardcoded forward-slash strings — so the `windows-latest` CI runner saw
+  backslashes and failed. Both expectations now go through `join()` as well. No change to shipped
+  behaviour on any platform; 0.30.5's goose support was itself fine.
+
+### Security
+
+- **Cleared a high advisory in `nanoid`** ([GHSA-28wg-ghj8-5hjv](https://github.com/advisories/GHSA-28wg-ghj8-5hjv)
+  — the non-secure generators can loop indefinitely on a negative `size`). It is a direct dependency;
+  the floor moves from `^5.0.7` to `^5.1.16`. `bun audit` is clean again.
+
 ## [0.30.5] — 2026-08-08
 
 ### Added
