@@ -101,6 +101,14 @@ interface RepoRootCacheEntry {
 }
 
 // Exported so tests can flush it between cases via _resetRepoRootCache().
+/** How long a NULL resolution is trusted. `detectRepoRootSync` returns null both for "definitely
+ *  not a repo" and for "git didn't answer in time" (its spawn has a 2s timeout), and those are
+ *  indistinguishable to this layer. Caching that null for the full TTL turns one slow spawn under
+ *  load into a full minute of claims with no repo_root — repo-contention silently stops working.
+ *  A short TTL still collapses the dozens of files in a single /worknote/set into one probe (the
+ *  reason this cache exists) while letting a transient failure heal in seconds instead of a minute. */
+export const REPO_ROOT_NEGATIVE_TTL_MS = 5_000;
+
 export const repoRootCache = new Map<string, RepoRootCacheEntry>();
 
 /** Test-only helper — clears the in-memory TTL cache. */
@@ -117,7 +125,10 @@ export function detectRepoRootSyncCached(cwd: string): string | null {
   const cached = repoRootCache.get(cwd);
   if (cached && cached.expires_at_ms > now) return cached.root;
   const root = detectRepoRootSync(cwd);
-  repoRootCache.set(cwd, { root, expires_at_ms: now + BRANCH_CACHE_TTL_MS });
+  repoRootCache.set(cwd, {
+    root,
+    expires_at_ms: now + (root === null ? REPO_ROOT_NEGATIVE_TTL_MS : BRANCH_CACHE_TTL_MS),
+  });
   return root;
 }
 

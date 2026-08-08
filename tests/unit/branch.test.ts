@@ -8,6 +8,7 @@ import {
   detectRepoRootSync,
   detectRepoRootSyncCached,
   _resetRepoRootCache,
+  REPO_ROOT_NEGATIVE_TTL_MS,
   repoRootCache,
   detectDirtySync,
   detectDirtySyncCached,
@@ -259,6 +260,39 @@ describe('detectDirtySyncCached', () => {
 
       const updated = dirtyCache.get(d)!;
       expect(updated.expires_at_ms).toBeGreaterThan(Date.now() + DIRTY_CACHE_TTL_MS - 1000);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+});
+
+// A `git rev-parse` that TIMES OUT (2s) under load is indistinguishable from "not a repo" — both
+// yield null. Caching that null for the full 60s TTL turns one slow spawn into a minute of claims
+// with no repo_root, so repo-contention silently stops working on a busy machine. Observed for
+// real: a full-suite run poisoned the cache for a checkout's own src/worker directory while an
+// uncached probe milliseconds later resolved it fine. Negative results therefore get a SHORT TTL —
+// long enough to still dedupe the dozens of files in one /worknote/set, short enough to self-heal.
+describe('detectRepoRootSyncCached — negative results expire fast', () => {
+  beforeEach(() => { _resetRepoRootCache(); });
+
+  test('a resolved repo root is cached for the full TTL', () => {
+    const d = tmpRepo();
+    try {
+      expect(detectRepoRootSyncCached(d)).not.toBeNull();
+      const entry = repoRootCache.get(d)!;
+      expect(entry.expires_at_ms).toBeGreaterThan(Date.now() + BRANCH_CACHE_TTL_MS - 5_000);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  test('an unresolved root is cached only briefly, so a transient git failure self-heals', () => {
+    const d = mkdtempSync(join(tmpdir(), 'cm-norepo-'));
+    try {
+      expect(detectRepoRootSyncCached(d)).toBeNull();
+      const entry = repoRootCache.get(d)!;
+      expect(entry.expires_at_ms).toBeLessThanOrEqual(Date.now() + REPO_ROOT_NEGATIVE_TTL_MS);
+      expect(REPO_ROOT_NEGATIVE_TTL_MS).toBeLessThan(BRANCH_CACHE_TTL_MS);
     } finally {
       rmSync(d, { recursive: true, force: true });
     }

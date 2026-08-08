@@ -2,7 +2,7 @@
 import { Database } from 'bun:sqlite';
 import * as sqliteVec from 'sqlite-vec';
 import { existsSync } from 'fs';
-import { join } from 'path';
+import { join, dirname, basename } from 'path';
 import { validateManifest, type BackupManifest } from './manifest.ts';
 
 export interface DurableTarget { archivePath: string; srcPath: string; isVector: boolean }
@@ -77,23 +77,46 @@ export function backupStamp(): string {
   return new Date().toISOString().replace(/[-:T]/g, '').replace(/\..+$/, '').slice(0, 14);
 }
 
-async function runTar(args: string[]): Promise<void> {
-  const proc = Bun.spawn(['tar', ...args], { stdout: 'pipe', stderr: 'pipe' });
+/** An absolute Windows archive path (`C:\...`) passed to `-f` is read by GNU tar as a REMOTE
+ *  `host:path` spec — it tries to rsh to host "C" and dies with "Cannot connect to C: resolve
+ *  failed", so every backup/restore fails on Windows. Naming the archive by BASENAME and running
+ *  tar from its directory removes the colon from the argument entirely. That works on GNU tar and
+ *  bsdtar alike, unlike `--force-local` (GNU-only, rejected by the bsdtar Windows ships). */
+function tarCwdAndName(archivePath: string): { cwd: string; name: string } {
+  return { cwd: dirname(archivePath), name: basename(archivePath) };
+}
+
+/** `-C` takes a DIRECTORY, so the colon rule above doesn't apply — but the GNU tar that ships with
+ *  MSYS2/Git-for-Windows treats backslashes as escapes and mangles `C:\Users\...` into
+ *  `C\:\\Users\...`, then reports "Cannot open: No such file or directory". Forward slashes are
+ *  accepted by every tar on Windows, so normalize separators there.
+ *
+ *  Windows ONLY: on POSIX a backslash is a legal character in a filename, so rewriting it would
+ *  corrupt a directory that legitimately contains one. */
+function tarDirArg(dir: string): string {
+  return process.platform === 'win32' ? dir.replace(/\\/g, '/') : dir;
+}
+
+async function runTar(args: string[], cwd: string): Promise<void> {
+  const proc = Bun.spawn(['tar', ...args], { stdout: 'pipe', stderr: 'pipe', cwd });
   const [code, err] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
   if (code !== 0) throw new Error(`tar ${args.join(' ')} failed (exit ${code}): ${err.trim()}`);
 }
 
 /** gzip-tar the staging dir's CONTENTS (relative members) into outPath. */
 export async function createArchive(stagingDir: string, outPath: string): Promise<void> {
-  await runTar(['-czf', outPath, '-C', stagingDir, '.']);
+  const { cwd, name } = tarCwdAndName(outPath);
+  await runTar(['-czf', name, '-C', tarDirArg(stagingDir), '.'], cwd);
 }
 
 export async function extractArchive(archivePath: string, destDir: string): Promise<void> {
-  await runTar(['-xzf', archivePath, '-C', destDir]);
+  const { cwd, name } = tarCwdAndName(archivePath);
+  await runTar(['-xzf', name, '-C', tarDirArg(destDir)], cwd);
 }
 
 async function tarMember(archivePath: string, member: string): Promise<string> {
-  const proc = Bun.spawn(['tar', '-xzOf', archivePath, member], { stdout: 'pipe', stderr: 'pipe' });
+  const { cwd, name } = tarCwdAndName(archivePath);
+  const proc = Bun.spawn(['tar', '-xzOf', name, member], { stdout: 'pipe', stderr: 'pipe', cwd });
   const [out, , code] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
