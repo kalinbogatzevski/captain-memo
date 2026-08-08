@@ -92,6 +92,50 @@ export interface KeywordHit {
   rank: number;        // FTS5 BM25 score (lower = more relevant; we'll invert)
 }
 
+/** Ceiling on how many tokens of a query reach FTS5.
+ *
+ *  MEASURED on this corpus (149,179 chunks, `chunks_fts MATCH` alone, no embedding):
+ *
+ *    tokens |   2  |  10  |  30   |  60   |  120  |  250
+ *    time   | 271ms| 474ms| 1.06s | 2.15s | 4.85s | 13.47s      (~54 ms per token)
+ *
+ *  FTS5 unions ONE posting list per OR'd term before bm25 ever ranks anything, so the cost
+ *  is linear in token count and the ranking cannot save you — the common words whose lists
+ *  span most of the index are exactly the ones being unioned. Uncapped, a query crosses the
+ *  10s thread-RPC deadline (REQUEST_DEADLINE_MS) at ~185 tokens and the request 503s with
+ *  `thread_rpc_timeout`. A 1 KB body is ~170 tokens, which is why `/search/all` on one
+ *  measured 10,003 ms → 503, and why a `/remember` dedup search over a large body did too.
+ *  Inbound peer searches carry the requester's query text, so a fleet-mate sending a long
+ *  query timed out the SERVING captain the same way.
+ *
+ *  32 holds the worst case near 1s while leaving far more signal than any real query needs. */
+export const KEYWORD_MAX_TOKENS = 32;
+
+/** Tokens to OR into an FTS5 MATCH: deduped, capped, original order preserved.
+ *
+ *  Selection is longest-first because token length is a cheap proxy for selectivity — the
+ *  short tokens are the stopwords with the largest posting lists, i.e. the expensive ones
+ *  that contribute least. Order is then restored so the expression still reads like the
+ *  query, and so the behaviour is stable rather than dependent on sort tie-breaks. */
+export function keywordMatchTokens(query: string, max: number = KEYWORD_MAX_TOKENS): string[] {
+  const raw = query.match(/[\p{L}\p{N}_]+/gu) ?? [];
+  const seen = new Set<string>();
+  const tokens: string[] = [];
+  for (const t of raw) {
+    const key = t.toLowerCase();   // FTS5's default tokenizer is case-insensitive, so "A" and "a" are one term
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tokens.push(t);
+  }
+  if (tokens.length <= max) return tokens;
+  return tokens
+    .map((t, i) => ({ t, i }))
+    .sort((a, b) => b.t.length - a.t.length || a.i - b.i)
+    .slice(0, max)
+    .sort((a, b) => a.i - b.i)
+    .map(({ t }) => t);
+}
+
 export class MetaStore {
   private db: Database;
 
@@ -187,7 +231,7 @@ export class MetaStore {
     // so Bulgarian/etc. tokens survive), then OR the tokens so any-overlap
     // matches rather than requiring full-phrase. Each token is double-quoted
     // so FTS5 doesn't interpret special characters as syntax.
-    const tokens = query.match(/[\p{L}\p{N}_]+/gu) ?? [];
+    const tokens = keywordMatchTokens(query);
     if (tokens.length === 0) return [];
     const safeQuery = tokens.map(t => `"${t.replace(/"/g, '""')}"`).join(' OR ');
     const rows = this.db

@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test';
-import { MetaStore } from '../../src/worker/meta.ts';
+import { MetaStore, keywordMatchTokens, KEYWORD_MAX_TOKENS } from '../../src/worker/meta.ts';
 import { unlinkSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -133,6 +133,53 @@ test('MetaStore — searchKeyword via FTS5 returns ranked chunks', () => {
   const hits = store.searchKeyword('GLAB#367', 5);
   expect(hits.length).toBeGreaterThan(0);
   expect(hits[0]!.chunk_id).toBe('a');
+});
+
+test('keywordMatchTokens — caps a long query, because FTS cost is linear in token count', () => {
+  // Regression: searchKeyword OR'd EVERY token of the query into one FTS5 MATCH with no cap.
+  // FTS5 unions one posting list per OR'd term, so cost grows linearly with token count —
+  // measured on a 149,179-chunk corpus: 2 tokens 271ms, 30 → 1.06s, 60 → 2.15s, 120 → 4.85s,
+  // 250 → 13.5s. The thread-RPC deadline is 10s, so an uncapped query 503s past ~185 tokens.
+  // That is what a /remember dedup search on a large body did, and what every inbound peer
+  // search carrying a long query did.
+  const short = keywordMatchTokens('GLAB#367 fixed locked form fields');
+  expect(short).toEqual(['GLAB', '367', 'fixed', 'locked', 'form', 'fields']);
+
+  const long = keywordMatchTokens(Array.from({ length: 400 }, (_, i) => `token${i}`).join(' '));
+  expect(long.length).toBeLessThanOrEqual(KEYWORD_MAX_TOKENS);
+});
+
+test('keywordMatchTokens — keeps the selective words and drops the stopwords', () => {
+  // Length is a cheap proxy for selectivity: the short tokens are the ones whose posting
+  // lists are most of the index, and they are exactly what makes the union expensive.
+  const q = 'the a of to in on at is it be ' + 'thread_rpc_timeout federation orchestrator';
+  const kept = keywordMatchTokens(q, 3);
+  expect(kept).toEqual(['thread_rpc_timeout', 'federation', 'orchestrator']);
+});
+
+test('keywordMatchTokens — dedupes, and preserves the original word order', () => {
+  const kept = keywordMatchTokens('federation federation orchestrator federation');
+  expect(kept).toEqual(['federation', 'orchestrator']);
+});
+
+test('MetaStore — searchKeyword still finds a distinctive term buried in a long query', () => {
+  const docId = store.upsertDocument({
+    source_path: '/abs/path/long.md',
+    channel: 'memory',
+    project_id: 'erp-platform',
+    sha: 'abc',
+    mtime_epoch: 1,
+    metadata: {},
+  });
+  store.replaceChunksForDocument(docId, [
+    { chunk_id: 'x', text: 'the zzqqxx marker lives here', sha: 's1', position: 0, metadata: {} },
+    { chunk_id: 'y', text: 'unrelated filler about the deploy path', sha: 's2', position: 1, metadata: {} },
+  ]);
+  // A realistic "large body" query: lots of common words plus one distinctive term.
+  const noise = 'the and of to in on at is it be for with from that this a an '.repeat(30);
+  const hits = store.searchKeyword(`${noise} zzqqxx`, 5);
+  expect(hits.length).toBeGreaterThan(0);
+  expect(hits[0]!.chunk_id).toBe('x');
 });
 
 test('MetaStore — getChunkById returns chunk + parent document', () => {

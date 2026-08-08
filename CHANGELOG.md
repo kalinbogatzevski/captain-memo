@@ -5,6 +5,34 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.30.8] — 2026-08-08
+
+### Fixed
+
+- **A long query took the whole search path down, and the cost was hiding in the keyword half.**
+  `searchKeyword` OR'd *every* token of a query into a single FTS5 `MATCH` with no cap. FTS5 unions
+  one posting list per OR'd term **before** bm25 ranks anything, so cost is linear in token count and
+  the ranking cannot rescue it — the common words whose posting lists span most of the index are
+  exactly the ones being unioned.
+
+  Measured on a 149,179-chunk corpus, `MATCH` alone with no embedding involved:
+
+  | tokens | 2 | 30 | 60 | 120 | 250 |
+  |---|---|---|---|---|---|
+  | before | 271 ms | 1.06 s | 2.15 s | 4.93 s | **14.04 s** |
+  | after | — | 626 ms | 712 ms | 688 ms | **656 ms** |
+
+  That is ~54 ms per token, crossing the 10 s thread-RPC deadline at roughly 185 tokens. A 1 KB body
+  is about 170 tokens, so `POST /search/all` with one measured **10,003 ms and returned 503
+  `thread_rpc_timeout`** — the 10,003 being the deadline itself rather than the work finishing. The
+  same path is why `/remember` timed out when updating an existing memory with a large body: that
+  update runs a dedup search over the body.
+
+  Queries are now deduped and capped at 32 tokens, chosen longest-first because token length is a
+  cheap proxy for selectivity, with the original word order preserved. Retrieval quality is
+  unaffected in practice: a distinctive term buried in 500 stopwords still ranks first, and there is
+  a test asserting exactly that.
+
 ## [0.30.7] — 2026-08-08
 
 ### Fixed
