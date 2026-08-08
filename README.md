@@ -12,6 +12,12 @@
 
 Captain Memo is a Claude Code plugin — and a **cross-AI local-memory layer**: one local corpus shared by every MCP-speaking coding agent on your machine (Claude Code, Codex, Gemini CLI, Antigravity, goose, Cursor, opencode, Kimi CLI), so what one tool learns, the others recall. Every session leaves a wake; Captain Memo keeps the log so the next session — in any of your AI tools — sails with what was learned in the last one.
 
+<p align="center">
+  <img src="docs/demo.gif" alt="Terminal recording: `captain-memo connect` wires six installed AI tools to one shared worker, then `captain-memo stats` shows four of them writing into the same local corpus" width="820">
+</p>
+
+<p align="center"><sub>One command wires every AI coding tool on the machine. They all read and write <b>one</b> local corpus.</sub></p>
+
 > **Platforms — Linux, macOS and native Windows (x64).** Linux runs under `systemd --user`; **macOS runs as a per-user launchd LaunchAgent** (no root — see [macOS](#macos) below); Windows runs natively under a per-user Scheduled Task (no WSL, no admin) — see [Windows (native)](#windows-native), or the [WSL2 fallback](#wsl2-fallback). One `ServiceManager` interface, three supervisors; the CLI is identical on all three.
 
 ---
