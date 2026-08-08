@@ -65,10 +65,33 @@ mkdir -p ~/.codex/skills/captain-memo
 cp /path/to/captain-memo/skills/captain-memo/SKILL.md ~/.codex/skills/captain-memo/SKILL.md
 ```
 
-Codex loads the skill automatically and will call `search_all` on its own. The first tool call prompts
-for approval interactively; approve it (or, for non-interactive automation, run
-`codex exec --dangerously-bypass-approvals-and-sandbox …`). Verified live: Codex recalled an observation
-that Claude Code had captured, from the same worker.
+Codex loads the skill automatically and will call `search_all` on its own. Verified live: Codex
+recalled an observation that Claude Code had captured, from the same worker.
+
+**Registering the server is not enough to make it work non-interactively — `captain-memo connect
+codex` also pre-approves the tools, and here is why.** Codex gates every MCP tool call behind an
+approval elicitation. In the TUI you answer it; under `codex exec` there is no one to answer, so the
+call is rejected in ~13 ms with `user cancelled MCP tool call`. The failure is silent in the worst
+way: the skill still loads and still tells the model to recall, so the agent believes it has memory,
+gets none, and carries on. Anyone scripting `codex exec` in CI or a pipeline hits this.
+
+The approval is stored **per tool** in `~/.codex/config.toml`, in codex's own shape — it is exactly
+what codex writes when you pick *"Always allow"* in the TUI:
+
+```toml
+[mcp_servers.captain-memo.tools.search_all]
+approval_mode = "approve"
+```
+
+`connect codex` appends one such block per tool, adding only headers that are absent so your
+config.toml is never rewritten or reflowed. Note there is **no server-level switch**: a
+`[mcp_servers.captain-memo] approval_mode = …` is rejected by `codex --strict-config` as an unknown
+field, which is why it has to be enumerated.
+
+Do **not** reach for `--dangerously-bypass-approvals-and-sandbox` for this. It disables approvals
+*and* the sandbox for everything in that run, which is a far larger grant than "let captain-memo read
+my memory", and `-a never` / `approval_policy = "never"` do not help — the MCP elicitation is a
+separate gate from the shell-command approval policy.
 
 ## Cursor
 

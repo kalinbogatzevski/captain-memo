@@ -521,6 +521,40 @@ export function parseOllamaList(stdout: string): string[] {
 
 // Codex CLI (~/.codex). Register: `codex mcp add captain-memo -- bun <path>`.
 // Skill: copy SKILL.md → ~/.codex/skills/captain-memo/SKILL.md.
+/** Every tool captain-memo's MCP server exposes. Codex approves MCP tools ONE AT A TIME, so this
+ *  list is what `connect codex` pre-approves. Kept as a literal rather than imported from
+ *  src/mcp-server.ts so the CLI does not pull in the MCP SDK just to read names — a test asserts it
+ *  stays identical to that server's `TOOLS`, so it cannot drift silently. */
+export const CODEX_TOOL_NAMES = [
+  'search_memory', 'remember', 'search_skill', 'search_observations', 'search_all', 'get_full',
+  'reindex', 'stats', 'status', 'work_set', 'work_active', 'work_clear',
+] as const;
+
+/** Pre-approve captain-memo's tools in codex's config.toml.
+ *
+ *  WHY THIS EXISTS: registering the server is not enough to make it usable non-interactively.
+ *  Codex gates every MCP tool call behind an approval elicitation, and in `codex exec` there is no
+ *  user to answer it — the call is rejected in ~13 ms with `user cancelled MCP tool call`. The skill
+ *  still loads and still tells the model to recall, so the agent believes it has memory, silently
+ *  gets none, and carries on. Anyone scripting `codex exec` in CI or a pipeline hits this.
+ *
+ *  Codex writes these blocks itself when you pick "Always allow" in the TUI, and the shape is its
+ *  own: `[mcp_servers.<server>.tools.<tool>] approval_mode = "approve"`. It is PER TOOL — a
+ *  server-level `approval_mode` is rejected outright by `codex --strict-config` as an unknown field.
+ *
+ *  Append-only on purpose: we add a block only when that exact header is absent, and never rewrite
+ *  or reformat the rest of the file. config.toml is hand-edited and holds the user's model choice,
+ *  profiles and other servers; round-tripping it through a TOML writer would reflow all of that. */
+export function mergeCodexToolApprovals(existingToml: string, tools: readonly string[] = CODEX_TOOL_NAMES): string {
+  let out = existingToml;
+  for (const tool of tools) {
+    const header = `[mcp_servers.captain-memo.tools.${tool}]`;
+    if (out.includes(header)) continue;
+    out = `${out.replace(/\n+$/, '')}\n\n${header}\napproval_mode = "approve"\n`;
+  }
+  return out;
+}
+
 const codexAdapter: ToolAdapter = {
   id: 'codex',
   label: 'Codex CLI',
@@ -537,6 +571,24 @@ const codexAdapter: ToolAdapter = {
     if (r.status === 0) mcp = 'added';
     else if (looksAlreadyPresent(r)) mcp = 'present';
     else detail = errDetail(r, 'codex mcp add failed');
+
+    // Registration alone leaves `codex exec` unable to CALL anything (see mergeCodexToolApprovals).
+    // Best-effort: a failure here does not undo a successful registration, it just means the user
+    // gets the approval prompts interactively, which is codex's own default.
+    if (mcp !== 'failed') {
+      const cfgPath = join(ctx.home, '.codex', 'config.toml');
+      try {
+        const before = existsSync(cfgPath) ? readFileSync(cfgPath, 'utf-8') : '';
+        const after = mergeCodexToolApprovals(before);
+        if (after !== before) {
+          mkdirSync(dirname(cfgPath), { recursive: true });
+          writeFileSync(cfgPath, after);
+        }
+      } catch (e) {
+        detail = `MCP registered, but pre-approving tools failed (${(e as Error).message}) — codex will prompt for each tool`;
+      }
+    }
+
     const skill = copySkill(ctx.skillSource, join(ctx.home, '.codex', 'skills', 'captain-memo', 'SKILL.md'));
     return withDetail({ tool: 'codex', mcp, skill }, detail);
   },

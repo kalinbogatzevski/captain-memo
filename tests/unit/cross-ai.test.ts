@@ -2,7 +2,7 @@ import { test, expect, beforeEach, afterEach, describe } from 'bun:test';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { mergeCursorMcpConfig, mergeVibeMcpConfig, mergeKimiConfig, mergeClaudeDesktopConfig, mergeGooseConfig, toBlockYaml, gooseConfigPath, gooseConfigCandidates, extractGooseEntry, gooseExtensionEntry, parseOllamaList, connectCrossAi, type Runner } from '../../src/cli/cross-ai.ts';
+import { mergeCursorMcpConfig, mergeVibeMcpConfig, mergeKimiConfig, mergeClaudeDesktopConfig, mergeGooseConfig, toBlockYaml, mergeCodexToolApprovals, CODEX_TOOL_NAMES, gooseConfigPath, gooseConfigCandidates, extractGooseEntry, gooseExtensionEntry, parseOllamaList, connectCrossAi, type Runner } from '../../src/cli/cross-ai.ts';
 
 // Bun's native YAML, typed locally so this compiles against an @types/bun predating `Bun.YAML`.
 const YAML = (globalThis as { Bun: { YAML: { parse(s: string): any; stringify(v: unknown): string } } }).Bun.YAML;
@@ -98,6 +98,45 @@ test('mergeClaudeDesktopConfig: re-points a moved server path', () => {
   const once = mergeClaudeDesktopConfig(null, '/usr/bin/bun', '/old/mcp-server.js');
   const parsed = JSON.parse(mergeClaudeDesktopConfig(once, '/usr/bin/bun', '/new/mcp-server.js'));
   expect(parsed.mcpServers['captain-memo'].args).toEqual(['/new/mcp-server.js']);
+});
+
+// ---- mergeCodexToolApprovals — codex approves MCP tools ONE AT A TIME ---------
+
+test('CODEX_TOOL_NAMES — stays identical to the MCP server\'s own TOOLS list', async () => {
+  // Anti-drift guard. The names are duplicated in cross-ai.ts so the CLI does not import the MCP
+  // SDK just to read them; this test is what makes that duplication safe. Add a tool to the server
+  // without pre-approving it and codex silently cannot call it from `codex exec`.
+  const { TOOLS } = await import('../../src/mcp-server.ts');
+  expect([...CODEX_TOOL_NAMES] as string[]).toEqual(TOOLS.map((t: { name: string }) => t.name));
+});
+
+test('mergeCodexToolApprovals — writes one approval block per tool', () => {
+  const out = mergeCodexToolApprovals('', ['search_all', 'status']);
+  expect(out).toContain('[mcp_servers.captain-memo.tools.search_all]');
+  expect(out).toContain('[mcp_servers.captain-memo.tools.status]');
+  expect(out.match(/approval_mode = "approve"/g)).toHaveLength(2);
+});
+
+test('mergeCodexToolApprovals — idempotent, and never rewrites what is already there', () => {
+  // config.toml is hand-edited and holds the user's model, profiles and other servers. We append
+  // only; a second run must be a byte-for-byte no-op.
+  const existing = [
+    'model = "gpt-5.6-sol"',
+    '',
+    '[mcp_servers.other-server]',
+    'command = "node"',
+    '',
+    '[mcp_servers.captain-memo.tools.status]',
+    'approval_mode = "approve"',
+    '',
+  ].join('\n');
+  const once = mergeCodexToolApprovals(existing, ['status', 'search_all']);
+  const twice = mergeCodexToolApprovals(once, ['status', 'search_all']);
+  expect(twice).toBe(once);
+  // The pre-existing entry was not duplicated, and the foreign server survived untouched.
+  expect(once.match(/\[mcp_servers\.captain-memo\.tools\.status\]/g)).toHaveLength(1);
+  expect(once).toContain('[mcp_servers.other-server]');
+  expect(once).toContain('model = "gpt-5.6-sol"');
 });
 
 // ---- mergeGooseConfig — same pure, disk-free merge, over goose's config.yaml -
