@@ -4,43 +4,25 @@ var __getProtoOf = Object.getPrototypeOf;
 var __defProp = Object.defineProperty;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
-function __accessProp(key) {
-  return this[key];
-}
-var __toESMCache_node;
-var __toESMCache_esm;
 var __toESM = (mod, isNodeMode, target) => {
-  var canCache = mod != null && typeof mod === "object";
-  if (canCache) {
-    var cache = isNodeMode ? __toESMCache_node ??= new WeakMap : __toESMCache_esm ??= new WeakMap;
-    var cached = cache.get(mod);
-    if (cached)
-      return cached;
-  }
   target = mod != null ? __create(__getProtoOf(mod)) : {};
   const to = isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target;
   for (let key of __getOwnPropNames(mod))
     if (!__hasOwnProp.call(to, key))
       __defProp(to, key, {
-        get: __accessProp.bind(mod, key),
+        get: () => mod[key],
         enumerable: true
       });
-  if (canCache)
-    cache.set(mod, to);
   return to;
 };
 var __commonJS = (cb, mod) => () => (mod || cb((mod = { exports: {} }).exports, mod), mod.exports);
-var __returnValue = (v) => v;
-function __exportSetter(name, newValue) {
-  this[name] = __returnValue.bind(null, newValue);
-}
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, {
       get: all[name],
       enumerable: true,
       configurable: true,
-      set: __exportSetter.bind(all, name)
+      set: (newValue) => all[name] = () => newValue
     });
 };
 
@@ -3545,12 +3527,7 @@ var require_fast_uri = __commonJS((exports, module) => {
   }
   function resolve(baseURI, relativeURI, options) {
     const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
-    const { parsed: baseParsed, malformedAuthorityOrPort: baseMalformed } = parseWithStatus(baseURI, schemelessOptions);
-    const { parsed: relativeParsed, malformedAuthorityOrPort: relativeMalformed } = parseWithStatus(relativeURI, schemelessOptions);
-    if (baseMalformed || relativeMalformed) {
-      throw new Error(baseParsed.error || relativeParsed.error || "URI is malformed.");
-    }
-    const resolved = resolveComponent(baseParsed, relativeParsed, schemelessOptions, true);
+    const resolved = resolveComponent(parse5(baseURI, schemelessOptions), parse5(relativeURI, schemelessOptions), schemelessOptions, true);
     schemelessOptions.skipEscape = true;
     return serialize(resolved, schemelessOptions);
   }
@@ -3677,7 +3654,6 @@ var require_fast_uri = __commonJS((exports, module) => {
   }
   var URI_PARSE = /^(?:([^#/:?]+):)?(?:\/\/((?:([^#/?@]*)@)?(\[[^#/?\]]+\]|[^#/:?]*)(?::(\d*))?))?([^#?]*)(?:\?([^#]*))?(?:#((?:.|[\n\r])*))?/u;
   var AUTHORITY_PREFIX = /^(?:[^#/:?]+:)?\/\/([^/?#]*)/;
-  var AUTHORITY_INTRODUCER_REGION = /^(?:[^#/:?]+:)?([/\\\t\n\r]*)/;
   function getParseError(parsed, matches) {
     if (matches[2] !== undefined && parsed.path && parsed.path[0] !== "/") {
       return 'URI path must start with "/" when authority is present.';
@@ -3711,20 +3687,6 @@ var require_fast_uri = __commonJS((exports, module) => {
     if (authorityMatch !== null && authorityMatch[1].indexOf("\\") !== -1) {
       parsed.error = "URI authority must not contain a literal backslash.";
       malformedAuthorityOrPort = true;
-    }
-    const introducerMatch = uri.match(AUTHORITY_INTRODUCER_REGION);
-    if (introducerMatch !== null) {
-      const region = introducerMatch[1];
-      const normalizedRegion = region.replace(/[\t\n\r]/g, "");
-      if (normalizedRegion.length >= 2) {
-        if (normalizedRegion.slice(0, 2) !== "//") {
-          parsed.error = parsed.error || "URI authority must not contain a literal backslash.";
-          malformedAuthorityOrPort = true;
-        } else if (region.length !== normalizedRegion.length) {
-          parsed.error = parsed.error || "URI authority introducer must not contain whitespace.";
-          malformedAuthorityOrPort = true;
-        }
-      }
     }
     const matches = uri.match(URI_PARSE);
     if (matches) {
@@ -12794,7 +12756,7 @@ function loadWorkerEnv() {
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.30.4",
+  version: "0.30.5",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,

@@ -2,7 +2,10 @@ import { test, expect, beforeEach, afterEach, describe } from 'bun:test';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { mergeCursorMcpConfig, mergeVibeMcpConfig, mergeKimiConfig, mergeClaudeDesktopConfig, parseOllamaList, connectCrossAi, type Runner } from '../../src/cli/cross-ai.ts';
+import { mergeCursorMcpConfig, mergeVibeMcpConfig, mergeKimiConfig, mergeClaudeDesktopConfig, mergeGooseConfig, toBlockYaml, gooseConfigPath, gooseConfigCandidates, extractGooseEntry, gooseExtensionEntry, parseOllamaList, connectCrossAi, type Runner } from '../../src/cli/cross-ai.ts';
+
+// Bun's native YAML, typed locally so this compiles against an @types/bun predating `Bun.YAML`.
+const YAML = (globalThis as { Bun: { YAML: { parse(s: string): any; stringify(v: unknown): string } } }).Bun.YAML;
 
 const MCP_PATH = '/repo/plugin/dist/mcp-server.js';
 
@@ -95,6 +98,162 @@ test('mergeClaudeDesktopConfig: re-points a moved server path', () => {
   const once = mergeClaudeDesktopConfig(null, '/usr/bin/bun', '/old/mcp-server.js');
   const parsed = JSON.parse(mergeClaudeDesktopConfig(once, '/usr/bin/bun', '/new/mcp-server.js'));
   expect(parsed.mcpServers['captain-memo'].args).toEqual(['/new/mcp-server.js']);
+});
+
+// ---- mergeGooseConfig — same pure, disk-free merge, over goose's config.yaml -
+
+test('mergeGooseConfig — null/empty config gets a fresh extensions map with our entry', () => {
+  const out = YAML.parse(mergeGooseConfig(null, MCP_PATH));
+  expect(out.extensions['captain-memo']).toEqual(gooseExtensionEntry(MCP_PATH));
+  expect(Object.keys(out.extensions)).toEqual(['captain-memo']);
+});
+
+test('mergeGooseConfig — empty-string config behaves like null', () => {
+  const out = YAML.parse(mergeGooseConfig('', MCP_PATH));
+  expect(out.extensions['captain-memo'].args).toEqual([MCP_PATH]);
+});
+
+test('mergeGooseConfig — preserves other extensions AND goose top-level provider keys', () => {
+  // A realistic goose config: provider settings live at the top level beside `extensions`.
+  const existing = YAML.stringify({
+    GOOSE_PROVIDER: 'anthropic',
+    GOOSE_MODEL: 'claude-sonnet-5',
+    extensions: {
+      developer: { name: 'developer', type: 'builtin', enabled: true, timeout: 300 },
+    },
+  });
+  const out = YAML.parse(mergeGooseConfig(existing, MCP_PATH));
+  expect(out.extensions['captain-memo'].cmd).toBe('bun');
+  // Foreign extension untouched — a clobber here would silently disable the user's tools.
+  expect(out.extensions.developer).toEqual({ name: 'developer', type: 'builtin', enabled: true, timeout: 300 });
+  // Provider keys untouched — a clobber here would log the user out of their model.
+  expect(out.GOOSE_PROVIDER).toBe('anthropic');
+  expect(out.GOOSE_MODEL).toBe('claude-sonnet-5');
+});
+
+test('mergeGooseConfig — idempotent: re-merge produces no duplicate and stable content', () => {
+  const first = mergeGooseConfig(null, MCP_PATH);
+  const second = mergeGooseConfig(first, MCP_PATH);
+  expect(YAML.parse(second)).toEqual(YAML.parse(first));
+});
+
+test('mergeGooseConfig — refreshes the path if it changed (re-point to new mcp-server.js)', () => {
+  const first = mergeGooseConfig(null, '/old/path/mcp-server.js');
+  const out = YAML.parse(mergeGooseConfig(first, MCP_PATH));
+  expect(out.extensions['captain-memo'].args).toEqual([MCP_PATH]);
+});
+
+test('mergeGooseConfig — emits BLOCK style, never Bun.YAML flow style', () => {
+  // Regression guard: Bun.YAML.stringify emits `{extensions: {captain-memo: {...}}}` on ONE line
+  // and takes no options, which would flatten the user's whole hand-editable config.
+  const out = mergeGooseConfig(YAML.stringify({ GOOSE_PROVIDER: 'anthropic' }), MCP_PATH);
+  expect(out.startsWith('{')).toBe(false);
+  expect(out).toContain('\nextensions:\n');
+  expect(out).toContain('  captain-memo:\n');
+  expect(out).toContain('    cmd: bun\n');
+  // Still valid YAML with every key intact.
+  const parsed = YAML.parse(out);
+  expect(parsed.GOOSE_PROVIDER).toBe('anthropic');
+  expect(parsed.extensions['captain-memo']).toEqual(gooseExtensionEntry(MCP_PATH));
+});
+
+test('toBlockYaml — quotes what would otherwise re-parse as structure (Windows paths, reserved words)', () => {
+  const win = 'C:\\Users\\k\\.bun\\bin\\mcp-server.js';
+  // Bare, the drive colon would parse as a nested key and silently corrupt the file.
+  const out = mergeGooseConfig(null, win);
+  expect(YAML.parse(out).extensions['captain-memo'].args).toEqual([win]);
+
+  const tricky = toBlockYaml({ a: 'no', b: 'plain', c: '12', d: 'has: colon', e: '', f: null, g: [], h: {} });
+  const back = YAML.parse(tricky);
+  expect(back).toEqual({ a: 'no', b: 'plain', c: '12', d: 'has: colon', e: '', f: null, g: [], h: {} });
+});
+
+test('toBlockYaml — a STRING that looks numeric survives as a string, in every YAML numeric form', () => {
+  // Regression: an earlier version gated bare output on a hand-written number regex that missed
+  // exponents, so the string "1e5" was emitted bare and re-parsed as the NUMBER 100000. YAML 1.1
+  // types far more than decimals, so the gate is now a round-trip check, not a pattern list.
+  const strings = {
+    dec: '12', frac: '0.5', neg: '-3', exp: '1e5', expNeg: '1E-5', padded: '007',
+    hex: '0x1F', oct: '0o17', underscored: '1_000', sexagesimal: '1:30', inf: '.inf', nan: '.nan',
+    yes: 'yes', no: 'no', t: 'true', nul: 'null', y: 'y', off: 'off',
+  };
+  expect(YAML.parse(toBlockYaml(strings))).toEqual(strings);
+
+  // ...while REAL numbers and booleans still round-trip as numbers and booleans, not strings.
+  const scalars = { n: 12, f: 0.5, neg: -3, t: true, f2: false, nul: null };
+  expect(YAML.parse(toBlockYaml(scalars))).toEqual(scalars);
+});
+
+test('toBlockYaml — nesting survives: deep maps, arrays of objects, unicode and multiline', () => {
+  const shape = {
+    GOOSE_PROVIDER: 'anthropic',
+    deep: { a: { b: { c: 'bottom' } } },
+    items: [{ n: 1 }, { n: 2 }],
+    text: { multiline: 'line1\nline2', cyrillic: 'Привет', cjk: '日本語', quoted: 'say "hi"' },
+    empties: { str: '', arr: [], obj: {} },
+  };
+  expect(YAML.parse(toBlockYaml(shape))).toEqual(shape);
+});
+
+test('extractGooseEntry — round-trips our entry, and is null when absent or unparseable', () => {
+  const merged = mergeGooseConfig(null, MCP_PATH);
+  expect(extractGooseEntry(merged)).toBe(JSON.stringify(gooseExtensionEntry(MCP_PATH)));
+  expect(extractGooseEntry(YAML.stringify({ GOOSE_PROVIDER: 'anthropic' }))).toBeNull();
+  expect(extractGooseEntry('\t: : not: valid: yaml: [')).toBeNull();
+});
+
+test('gooseConfigCandidates — one layout per OS, matching goose\'s etcetera app strategy', () => {
+  // Platform-independent on purpose: the candidate LIST is the same everywhere, only which one
+  // gets picked varies. Asserting the list keeps this test honest on a Windows or macOS runner.
+  const prevXdg = process.env.XDG_CONFIG_HOME, prevAppdata = process.env.APPDATA;
+  try {
+    delete process.env.XDG_CONFIG_HOME;
+    process.env.APPDATA = 'C:\\Users\\x\\AppData\\Roaming';
+    const [win, mac, xdg] = gooseConfigCandidates('/home/x');
+    expect(win).toBe(join('C:\\Users\\x\\AppData\\Roaming', 'Block', 'goose', 'config', 'config.yaml'));
+    expect(mac).toBe('/home/x/Library/Application Support/Block.block.goose/config.yaml');
+    expect(xdg).toBe('/home/x/.config/goose/config.yaml');
+
+    process.env.XDG_CONFIG_HOME = '/custom/cfg';
+    expect(gooseConfigCandidates('/home/x')[2]).toBe('/custom/cfg/goose/config.yaml');
+  } finally {
+    if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = prevXdg;
+    if (prevAppdata === undefined) delete process.env.APPDATA; else process.env.APPDATA = prevAppdata;
+  }
+});
+
+test('gooseConfigPath — GOOSE_PATH_ROOT wins when absolute, is ignored when relative', () => {
+  const prev = process.env.GOOSE_PATH_ROOT;
+  try {
+    process.env.GOOSE_PATH_ROOT = '/opt/goose-root';
+    expect(gooseConfigPath('/home/x')).toBe('/opt/goose-root/config/config.yaml');
+    // goose's validated_path_root DROPS a relative value rather than resolving it, so we must too.
+    process.env.GOOSE_PATH_ROOT = 'relative/root';
+    expect(gooseConfigPath('/home/x')).not.toContain('relative/root');
+    expect(gooseConfigCandidates('/home/x')).toContain(gooseConfigPath('/home/x'));
+  } finally {
+    if (prev === undefined) delete process.env.GOOSE_PATH_ROOT; else process.env.GOOSE_PATH_ROOT = prev;
+  }
+});
+
+test('gooseConfigPath — prefers a candidate that already exists over the platform default', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'goose-path-'));
+  try {
+    // Simulate a machine where goose already wrote an XDG config: it must be found even if this
+    // test runs on a Windows or macOS runner, where the platform default would be a different slot.
+    const xdg = join(tmp, '.config', 'goose');
+    mkdirSync(xdg, { recursive: true });
+    writeFileSync(join(xdg, 'config.yaml'), 'extensions: {}\n');
+    const prev = process.env.XDG_CONFIG_HOME;
+    try {
+      delete process.env.XDG_CONFIG_HOME;
+      expect(gooseConfigPath(tmp)).toBe(join(xdg, 'config.yaml'));
+    } finally {
+      if (prev === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = prev;
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 // ---- connectCrossAi — cursor adapter against an injected temp home ----------
@@ -406,7 +565,9 @@ test('the CLI probe is bounded — a spawn that never returns cannot stall the i
   const probeCeiling = /const PROBE_TIMEOUT_MS = ([0-9_]+)/.exec(src)?.[1]?.replace(/_/g, '');
   const wireCeiling = /const WIRE_TIMEOUT_MS = ([0-9_]+)/.exec(src)?.[1]?.replace(/_/g, '');
   expect(Number(wireCeiling)).toBeGreaterThan(Number(probeCeiling));
-  expect(src).toMatch(/run\('which', \[id\], PROBE_TIMEOUT_MS\)/);   // detection uses the SHORT one
+  // detection uses the SHORT ceiling, and probes with the PLATFORM's own PATH tool — Windows
+  // ships no `which`, so a hardcoded one made every adapter's probe error there.
+  expect(src).toMatch(/run\(isWindows \? 'where' : 'which', \[id\], PROBE_TIMEOUT_MS\)/);
 });
 
 test('a probe that times out reports the tool absent instead of throwing', () => {

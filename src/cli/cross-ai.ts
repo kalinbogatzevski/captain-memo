@@ -18,9 +18,10 @@
 // "already added"; cursor is a read+parse+merge+write that never clobbers.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from 'fs';
-import { dirname, join } from 'path';
+import { dirname, isAbsolute, join } from 'path';
 import { homedir } from 'os';
 import { spawnSync } from 'child_process';
+import { isMac, isWindows } from '../shared/platform.ts';
 
 // Console style matches install.ts (info/ok/warn).
 function info(text: string): void { console.log(`  ${text}`); }
@@ -95,7 +96,10 @@ export interface ToolAdapter {
 // `which <id>` — tool CLI on PATH? Pulled out so adapters share one probe.
 function cliOnPath(run: Runner, id: string): boolean {
   // Short ceiling: a `which` that takes seconds is a stuck PATH entry, not a slow answer.
-  const r = run('which', [id], PROBE_TIMEOUT_MS);
+  // Windows ships no `which` — the equivalent is `where.exe`. Without this branch the probe
+  // errors on EVERY adapter there, so detection silently degrades to the config-dir check
+  // alone and a tool that IS installed but not yet configured reads as absent.
+  const r = run(isWindows ? 'where' : 'which', [id], PROBE_TIMEOUT_MS);
   return r.status === 0 && (r.stdout ?? '').trim().length > 0;
 }
 
@@ -169,6 +173,158 @@ export function mergeClaudeDesktopConfig(existingJson: string | null, command: s
 // after the command. Falls back to the last element so a longer argv still works.
 function mcpServerPath(mcpCommand: string[]): string {
   return mcpCommand[1] ?? mcpCommand[mcpCommand.length - 1] ?? '';
+}
+
+// --- goose config.yaml merge (PURE — unit-tested without disk) ---------------
+// goose (Block, Apache-2.0) has NO non-interactive registration command — `goose configure` is a
+// TUI and `goose mcp <name>` only launches a BUILT-IN extension's server. Its documented advanced
+// path is editing ~/.config/goose/config.yaml directly, where a top-level `extensions:` map holds
+// {name, cmd, args, enabled, envs, type, timeout} per entry. So register by read+parse+merge+write
+// (like cursor's mcp.json), never clobbering other extensions or the top-level provider keys.
+//
+// `envs: {}` is written explicitly rather than omitted: the documented example always carries the
+// key, and an empty map is inert whether goose defaults it or requires it.
+
+/** Bun's native YAML, feature-detected. Typed locally so this compiles against an @types/bun that
+ *  predates `Bun.YAML` — and so an older Bun reads as "absent" instead of throwing. */
+const bunYaml = (globalThis as {
+  Bun?: { YAML?: { parse(src: string): unknown; stringify(value: unknown): string } };
+}).Bun?.YAML;
+
+export function gooseExtensionEntry(mcpServerPath: string): Record<string, unknown> {
+  return {
+    name: 'captain-memo',
+    cmd: 'bun',
+    args: [mcpServerPath],
+    enabled: true,
+    envs: {},
+    type: 'stdio',
+    timeout: 300,
+  };
+}
+
+/** Every layout goose can put config.yaml in, in probe order. goose resolves this through the
+ *  `etcetera` crate's `choose_app_strategy(top_level_domain: "Block", author: "Block", app_name:
+ *  "goose")` (crates/goose/src/config/paths.rs), which picks a DIFFERENT strategy per OS — so a
+ *  single XDG path is right on exactly one of the three platforms.
+ *
+ *  - Windows → `Windows` strategy: base `config_dir()` is `data_dir()` = `%APPDATA%`, then
+ *    `<author>\<app_name>` and a literal `config` subfolder → `%APPDATA%\Block\goose\config\`.
+ *  - macOS  → `Apple` strategy: `~/Library/Application Support/<bundle_id>`, where `bundle_id()`
+ *    joins TLD + author.toLowerCase() + app_name → `Block.block.goose` (only the author is
+ *    lowercased — that asymmetry is in etcetera, not a typo here).
+ *  - Linux  → `Xdg` strategy: `$XDG_CONFIG_HOME/goose` else `~/.config/goose`.
+ *
+ *  VERIFIED vs. DERIVED: the Linux path was OBSERVED — `goose info` on goose 1.45.0 prints
+ *  `~/.config/goose/config.yaml`. The Windows and macOS paths are DERIVED by reading goose's
+ *  paths.rs and etcetera 0.11's strategy sources; neither has been seen on a real machine. That
+ *  is why this probes for an existing file rather than trusting one answer: if the derivation is
+ *  off but goose already wrote a config somewhere we list, we still find it. */
+export function gooseConfigCandidates(home: string): string[] {
+  return [
+    join(process.env.APPDATA || join(home, 'AppData', 'Roaming'), 'Block', 'goose', 'config', 'config.yaml'),
+    join(home, 'Library', 'Application Support', 'Block.block.goose', 'config.yaml'),
+    join(process.env.XDG_CONFIG_HOME?.trim() || join(home, '.config'), 'goose', 'config.yaml'),
+  ];
+}
+
+/** The config.yaml this machine's goose actually reads.
+ *  `GOOSE_PATH_ROOT` wins outright when it is ABSOLUTE — goose's own `validated_path_root` drops
+ *  relative values rather than resolving them, so a relative one must fall through, not be honoured.
+ *  Otherwise: first candidate that exists; if none do, the canonical one for this platform, so a
+ *  first-time write still lands where goose will look. */
+export function gooseConfigPath(home: string): string {
+  const root = process.env.GOOSE_PATH_ROOT?.trim();
+  if (root && isAbsolute(root)) return join(root, 'config', 'config.yaml');
+  const candidates = gooseConfigCandidates(home);
+  for (const c of candidates) if (existsSync(c)) return c;
+  return candidates[isWindows ? 0 : isMac ? 1 : 2]!;
+}
+
+/** Our entry as it currently stands in an existing config, JSON-normalized for comparison, or null.
+ *  Lets connect() report 'present' on an unchanged re-run instead of rewriting the file every time. */
+export function extractGooseEntry(existingYaml: string): string | null {
+  if (!bunYaml) return null;
+  try {
+    const parsed = bunYaml.parse(existingYaml) as Record<string, unknown> | null;
+    const exts = parsed?.extensions as Record<string, unknown> | undefined;
+    const entry = exts?.['captain-memo'];
+    return entry ? JSON.stringify(entry) : null;
+  } catch { return null; }
+}
+
+/** Shape gate: anything with a colon, backslash, space or leading punctuation is quoted outright.
+ *  Matters most for a Windows mcp-server path (`C:\Users\...`) — bare, the drive colon would parse
+ *  as a nested key and silently corrupt the file. */
+const YAML_BARE_SAFE = /^[A-Za-z0-9_][A-Za-z0-9_\-./]*$/;
+
+/** Serialize one scalar, quoting whenever bare output would not survive a round-trip.
+ *
+ *  Passing the shape gate is NOT sufficient, because YAML also *types* bare scalars: `yes` becomes
+ *  a bool, `12` an int, `1e5` a float, `0x1F` an int, `1_000` an int. Enumerating those rules by
+ *  regex is a losing game — an earlier version of this function did exactly that, allowed `1e5`
+ *  through, and turned the string "1e5" into the number 100000 on the way back in.
+ *
+ *  So the parser decides: emit bare only when re-parsing the bare token yields the identical
+ *  STRING. That subsumes every implicit-typing rule YAML has, including ones added later, and it
+ *  fails safe — no parser available, or any doubt at all, means quoted. */
+function yamlScalar(value: unknown): string {
+  if (value === null || value === undefined) return 'null';
+  if (typeof value === 'boolean' || typeof value === 'number') return String(value);
+  const s = String(value);
+  if (!YAML_BARE_SAFE.test(s)) return JSON.stringify(s);
+  try {
+    if (bunYaml && bunYaml.parse(s) === s) return s;
+  } catch { /* unparseable bare — fall through to the quoted form */ }
+  return JSON.stringify(s);   // JSON's double-quoted form is a valid YAML scalar
+}
+
+function isEmptyContainer(v: unknown): boolean {
+  if (Array.isArray(v)) return v.length === 0;
+  return !!v && typeof v === 'object' && Object.keys(v as object).length === 0;
+}
+
+/** Minimal BLOCK-style YAML emitter for plain data (nested maps, arrays, scalars).
+ *
+ *  Why this exists rather than `Bun.YAML.stringify`: Bun emits FLOW style only
+ *  (`{a: 1,b: {c: 2}}`) and accepts no options, so a round-trip would rewrite the user's
+ *  entire goose config onto one unreadable line. config.yaml is a file people open and
+ *  edit, so it has to come back out looking like the one goose itself writes.
+ *
+ *  ponytail: comments are still lost — inherent to any parse-then-emit round-trip, and
+ *  acceptable because goose authors this file itself via `goose configure`. If comment
+ *  preservation is ever needed, the upgrade path is a YAML CST library, not a bigger emitter. */
+export function toBlockYaml(value: unknown, indent = 0): string {
+  const pad = '  '.repeat(indent);
+  if (Array.isArray(value)) {
+    return value.map((item) =>
+      item && typeof item === 'object' && !isEmptyContainer(item)
+        ? `${pad}-\n${toBlockYaml(item, indent + 1)}`
+        : `${pad}- ${isEmptyContainer(item) ? (Array.isArray(item) ? '[]' : '{}') : yamlScalar(item)}\n`,
+    ).join('');
+  }
+  return Object.entries(value as Record<string, unknown>).map(([k, v]) => {
+    if (isEmptyContainer(v)) return `${pad}${yamlScalar(k)}: ${Array.isArray(v) ? '[]' : '{}'}\n`;
+    if (v && typeof v === 'object') return `${pad}${yamlScalar(k)}:\n${toBlockYaml(v, indent + 1)}`;
+    return `${pad}${yamlScalar(k)}: ${yamlScalar(v)}\n`;
+  }).join('');
+}
+
+export function mergeGooseConfig(existingYaml: string | null, mcpServerPath: string): string {
+  if (!bunYaml) throw new Error('Bun.YAML unavailable');
+  let root: Record<string, unknown> = {};
+  if (existingYaml && existingYaml.trim().length > 0) {
+    const parsed = bunYaml.parse(existingYaml);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      root = parsed as Record<string, unknown>;
+    }
+  }
+  const extensions = (root.extensions && typeof root.extensions === 'object' && !Array.isArray(root.extensions))
+    ? (root.extensions as Record<string, unknown>)
+    : {};
+  extensions['captain-memo'] = gooseExtensionEntry(mcpServerPath);
+  root.extensions = extensions;
+  return toBlockYaml(root);
 }
 
 // --- opencode opencode.json merge (PURE — unit-tested without disk) -----------
@@ -442,6 +598,51 @@ const agyAdapter: ToolAdapter = {
     }
     const skill = copySkill(ctx.skillSource, join(ctx.home, '.gemini', 'skills', 'captain-memo', 'SKILL.md'));
     return withDetail({ tool: 'agy', mcp, skill }, detail);
+  },
+};
+
+// goose (Block's OSS coding agent, Apache-2.0) — config-file only, see mergeGooseConfig above.
+// Config lives at $XDG_CONFIG_HOME/goose/config.yaml, falling back to ~/.config/goose/config.yaml.
+// VERIFIED against goose 1.45.0 on Linux: `goose info` reports exactly that path, and there is no
+// non-interactive registration command (`goose configure` takes no args, `goose plugin install` is
+// git-repos-only, `goose mcp <SERVER>` runs a BUNDLED server), so editing the file is the only route.
+//
+// SKILL: deliberately not written, and NOT for lack of a read path — `goose skills list` shows goose
+// reads `~/.claude/skills/` (plus `builtin://skills/`). That directory belongs to CLAUDE CODE, which
+// already receives this skill through the plugin install, so copying SKILL.md there to serve goose
+// would plant a second copy in another tool's skill set. Wiring it is a cross-tool decision, not a
+// goose one. Reports 'skipped' rather than silently reaching into a neighbour's config.
+//
+// Cross-platform: the config location differs per OS (see gooseConfigCandidates) and the PATH
+// probe uses `where` on Windows, so detection and wiring both work on Linux, macOS and Windows.
+const gooseAdapter: ToolAdapter = {
+  id: 'goose',
+  label: 'goose',
+  detect({ home, run }) {
+    return cliOnPath(run, 'goose') || existsSync(gooseConfigPath(home));
+  },
+  connect(ctx) {
+    if (!bunYaml) {
+      return {
+        tool: 'goose', mcp: 'failed', skill: 'skipped',
+        detail: 'this Bun has no native YAML support — upgrade Bun, or add the captain-memo block to config.yaml by hand',
+      };
+    }
+    const cfgPath = gooseConfigPath(ctx.home);
+    try {
+      const existing = existsSync(cfgPath) ? readFileSync(cfgPath, 'utf-8') : null;
+      const wanted = JSON.stringify(gooseExtensionEntry(mcpServerPath(ctx.mcpCommand)));
+      const current = existing ? extractGooseEntry(existing) : null;
+      if (current === wanted) return { tool: 'goose', mcp: 'present', skill: 'skipped' };
+      mkdirSync(dirname(cfgPath), { recursive: true });
+      writeFileSync(cfgPath, mergeGooseConfig(existing, mcpServerPath(ctx.mcpCommand)));
+      return { tool: 'goose', mcp: 'added', skill: 'skipped' };
+    } catch (e) {
+      return {
+        tool: 'goose', mcp: 'failed', skill: 'skipped',
+        detail: `could not update ${cfgPath}: ${e instanceof Error ? e.message : String(e)}`,
+      };
+    }
   },
 };
 
@@ -731,7 +932,7 @@ const claudeDesktopAdapter: ToolAdapter = {
   },
 };
 
-export const ADAPTERS: ToolAdapter[] = [codexAdapter, geminiAdapter, agyAdapter, cursorAdapter, opencodeAdapter, vibeAdapter, kimiAdapter, vscodeAdapter, jetbrainsAdapter, claudeDesktopAdapter];
+export const ADAPTERS: ToolAdapter[] = [codexAdapter, geminiAdapter, agyAdapter, gooseAdapter, cursorAdapter, opencodeAdapter, vibeAdapter, kimiAdapter, vscodeAdapter, jetbrainsAdapter, claudeDesktopAdapter];
 
 // Detect installed tools (or the `only` subset), connect each, return reports.
 // `only` filters by adapter id; an unknown id yields a skipped result so the

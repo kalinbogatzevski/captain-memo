@@ -114,6 +114,51 @@ subcommand — so `captain-memo connect agy` writes that file directly, merging:
 `~/.gemini/skills/`. agy's Google sign-in is a **separate keyring OAuth**, independent of this wiring. Once wired
 and signed in, an `agy` session discovers captain-memo's full memory toolset.
 
+## goose
+
+[goose](https://github.com/block/goose) is Block's open-source coding agent. It loads MCP servers as
+**extensions**, and there is no non-interactive way to register one: `goose configure` is a TUI that takes
+no arguments, `goose plugin install` only accepts git repositories, and `goose mcp <SERVER>` runs a *bundled*
+server. So `captain-memo connect goose` edits goose's `config.yaml` directly, merging one entry under the
+top-level `extensions:` map:
+
+```yaml
+extensions:
+  captain-memo:
+    name: captain-memo
+    cmd: bun
+    args:
+      - /path/to/captain-memo/plugin/dist/mcp-server.js
+    enabled: true
+    envs: {}
+    type: stdio
+    timeout: 300
+```
+
+Your other extensions and goose's own top-level keys (`GOOSE_PROVIDER`, `GOOSE_MODEL`, …) are preserved;
+re-running reports `already registered` and leaves the file byte-identical. Comments are not preserved —
+any parse-then-write round-trip loses them, and goose authors this file itself via `goose configure`.
+
+**Where the file lives depends on the OS**, because goose resolves it through the `etcetera` crate's
+per-platform app strategy:
+
+| Platform | `config.yaml` |
+|---|---|
+| Linux | `$XDG_CONFIG_HOME/goose/` → `~/.config/goose/` |
+| macOS | `~/Library/Application Support/Block.block.goose/` |
+| Windows | `%APPDATA%\Block\goose\config\` |
+| any | `$GOOSE_PATH_ROOT/config/` when that variable is set to an **absolute** path (it overrides all of the above; goose ignores relative values, and so do we) |
+
+`connect goose` probes all of these and uses whichever already exists, falling back to the platform default
+for a first-time write. Verified on goose 1.45.0: `goose info` reports the Linux path exactly. The macOS and
+Windows layouts are derived from goose's `paths.rs` and etcetera's sources, not yet observed on a real machine
+— which is precisely why it probes rather than trusting one answer.
+
+**The skill is deliberately not installed.** `goose skills list` shows goose reads `~/.claude/skills/`, which
+is Claude Code's directory — Claude Code already gets this skill from the plugin install, so writing there to
+serve goose would plant a second copy in another tool's skill set. `connect goose` reports `skill skipped`
+rather than reaching into a neighbour's config.
+
 ## opencode
 
 opencode (MIT, model-agnostic) has no `mcp add` CLI — MCP servers, providers, and agents are all

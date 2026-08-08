@@ -5,6 +5,38 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.30.5] — 2026-08-08
+
+### Added
+
+- **goose is now a wired tool — `captain-memo connect goose`.** [goose](https://github.com/block/goose)
+  is Block's open-source coding agent, and the eleventh surface to share the one local corpus. It has no
+  non-interactive way to register an MCP server (`goose configure` is an argument-less TUI, `goose plugin
+  install` takes git repositories only, `goose mcp <SERVER>` runs a *bundled* server), so the adapter merges
+  a `captain-memo` entry into goose's own `config.yaml` — preserving your other extensions and goose's
+  top-level `GOOSE_*` keys, and reporting `already registered` on a re-run without touching the file.
+
+  Where that file lives differs per OS, because goose resolves it through the `etcetera` crate's
+  per-platform app strategy: `~/.config/goose/` on Linux, `~/Library/Application Support/Block.block.goose/`
+  on macOS, `%APPDATA%\Block\goose\config\` on Windows, and `$GOOSE_PATH_ROOT/config/` when that variable
+  holds an absolute path. The adapter probes all of them and uses whichever already exists. The Linux path
+  is verified against goose 1.45.0; the macOS and Windows layouts are derived from goose's and etcetera's
+  sources and have not yet been seen on a real machine — which is why it probes instead of trusting one.
+
+  The skill is deliberately **not** installed: `goose skills list` reads `~/.claude/skills/`, which belongs
+  to Claude Code, and that already receives the skill from the plugin install.
+
+- **`AGENTS.md`** — a short orientation file for AI agents contributing to this repository: runtime, the
+  real commands, the `src/` layout, and the four conventions that are easy to get wrong (DCO sign-off, no
+  build step, no casual dependencies, and the `.md`/`.mdc`-only discovery globs).
+
+### Fixed
+
+- **The tool-detection probe used `which` on every platform, and Windows does not have it.** The shipped
+  equivalent there is `where.exe`, so the probe errored on **all** adapters under Windows and detection
+  silently degraded to the config-directory check alone — a tool that was installed but not yet configured
+  read as absent. Now branches on the platform.
+
 ## [0.30.4] — 2026-08-07
 
 ### Security

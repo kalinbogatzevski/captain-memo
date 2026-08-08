@@ -1,14 +1,18 @@
 {
   "name": "captain-memo",
-  "version": "0.30.4",
+  "version": "0.30.5",
   "description": "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) — hybrid search, three summarizer providers, self-hosted embedder. Replaces claude-mem.",
-  "author": { "name": "Kalin Bogatzevski" },
+  "author": {
+    "name": "Kalin Bogatzevski"
+  },
   "license": "MIT",
   "homepage": "https://github.com/kalinbogatzevski/captain-memo",
   "mcpServers": {
     "captain-memo": {
       "command": "bun",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/mcp-server.js"]
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/dist/mcp-server.js"
+      ]
     }
   }
 }
