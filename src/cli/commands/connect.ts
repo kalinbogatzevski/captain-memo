@@ -18,6 +18,7 @@ import {
   printConnectReport,
   ADAPTERS,
   OPENCODE_LOCAL_PROVIDER_KEYS,
+  PROBE_CLEAR,
 } from '../cross-ai.ts';
 
 // Pull `--local-provider <key>` (or `--local-provider=<key>`) out of argv, consuming its VALUE so the value is
@@ -128,10 +129,14 @@ export async function connectCommand(args: string[]): Promise<number> {
   const results = connectCrossAi({
     mcpCommand, skillSource, ...(localProvider ? { localProvider } : {}),
     onProbe: (tool, phase) => {
-      process.stdout.write(phase === 'detect' ? `  · checking ${tool}…\r` : `  · wiring ${tool}…\n`);
+      // ERASE the line before repainting, don't just \r onto it. The in-place probe line is
+      // routinely overwritten by a SHORTER one ("checking codex…" → "wiring codex…"), and a bare
+      // carriage return leaves the tail of the longer string sitting there — which rendered as
+      // "· wiring codex…x…" on every run. Same clear-line idiom as the migrate progress writer.
+      process.stdout.write(`${PROBE_CLEAR}  · ${phase === 'detect' ? 'checking' : 'wiring'} ${tool}…${phase === 'detect' ? '' : '\n'}`);
     },
   });
-  process.stdout.write('  ' + ' '.repeat(40) + '\r');
+  process.stdout.write(PROBE_CLEAR);
   printConnectReport(results);
   if (results.length > 0) {
     console.log();

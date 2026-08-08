@@ -27,7 +27,7 @@ import { WORKER_ENV_PATH, CONFIG_DIR, LOGS_DIR, DATA_DIR, DEFAULT_WORKER_PORT, D
 import { getServiceManager } from '../../services/service-manager/index.ts';
 import { grantPluginToolPermissions } from './install-hooks.ts';
 import { getEmbedderInstaller } from '../../services/embedder-installer/index.ts';
-import { connectCrossAi, printConnectReport } from '../cross-ai.ts';
+import { connectCrossAi, printConnectReport, PROBE_CLEAR } from '../cross-ai.ts';
 import { discoverMemoryGlobs, toolFromPath } from '../../shared/ai-memory-sources.ts';
 
 const REPO_ROOT = resolve(import.meta.dir, '../../..');
@@ -993,10 +993,12 @@ function wireCrossAi(opts: InstallOptions): void {
     const results = connectCrossAi({
       mcpCommand, skillSource,
       onProbe: (tool, phase) => {
-        process.stdout.write(phase === 'detect' ? `  · checking ${tool}…\r` : `  · wiring ${tool}…\n`);
+        // Erase before repainting — a bare \r leaves the tail of a longer previous line behind
+        // ("checking codex…" → "wiring codex…" rendered as "· wiring codex…x…"). See connect.ts.
+        process.stdout.write(`${PROBE_CLEAR}  · ${phase === 'detect' ? 'checking' : 'wiring'} ${tool}…${phase === 'detect' ? '' : '\n'}`);
       },
     });
-    process.stdout.write('  ' + ' '.repeat(40) + '\r');   // clear the last in-place probe line
+    process.stdout.write(PROBE_CLEAR);   // clear the last in-place probe line
     if (results.length === 0) {
       info('No other AI tools detected (Codex, Gemini, opencode, …) — only Claude Code wired.');
     } else {

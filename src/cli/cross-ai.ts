@@ -23,6 +23,13 @@ import { homedir } from 'os';
 import { spawnSync } from 'child_process';
 import { isMac, isWindows } from '../shared/platform.ts';
 
+/** Return to column 0 and ERASE the line, for the in-place per-tool probe line that `connect` and
+ *  `install` both repaint. A bare `\r` is not enough: the line is routinely overwritten by a SHORTER
+ *  one ("checking codex…" → "wiring codex…"), leaving the tail of the longer string on screen — which
+ *  is what rendered as "· wiring codex…x…" on every run. Piped or redirected we emit only `\r`, so a
+ *  captured log never has escape bytes written into it. */
+export const PROBE_CLEAR = process.stdout.isTTY === true ? '\r\x1b[2K' : '\r';
+
 // Console style matches install.ts (info/ok/warn).
 function info(text: string): void { console.log(`  ${text}`); }
 function ok(text: string): void { console.log(`  \x1b[32m✓\x1b[0m ${text}`); }
