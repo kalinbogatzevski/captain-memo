@@ -1,7 +1,7 @@
 import { test, expect } from 'bun:test';
 import {
   renderFrontmatter, deterministicFrontmatter, slugify, prefixForType,
-  resolveTargetDir, fillFrontmatter, writeMemory, findUpdateTarget,
+  resolveTargetDir, fillFrontmatter, writeMemory, findCollisionTarget, findNearDuplicate,
 } from '../../src/worker/memory-writer.ts';
 import { chunkMemoryFile } from '../../src/worker/chunkers/memory-file.ts';
 import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync } from 'fs';
@@ -134,69 +134,68 @@ test('writeMemory — mkdirs the resolved target dir', async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-test('findUpdateTarget — filename collision -> that file, embedder never queried', async () => {
+// ---------------------------------------------------------------------------
+// A fold now happens ONLY on an explicit filename collision. Semantic similarity is
+// ADVISORY: reported to the caller, never acted on. Measurement drove that — across the
+// live 812-memory corpus the nearest-other-memory cosine tops out at 0.9554 while the old
+// gate sat at cos 0.98875, so the semantic fold would not fire on any of them; and when it
+// DID fire it LLM-rewrote an existing memory with no backup, ledger or undo.
+// ---------------------------------------------------------------------------
+
+test('findCollisionTarget — a file at the named slug is the fold target', () => {
   const dir = mkdtempSync(join(tmpdir(), 'cm-dd-'));
   const existing = join(dir, 'decision_use-bun.md');
   writeFileSync(existing, '---\nname: x\ntype: decision\n---\nold');
-  const embed = mock(async () => { throw new Error('must not embed'); });
-  const searchMemory = mock(async () => []);
-  const target = await findUpdateTarget(
-    'use bun', dir, 'decision_use-bun.md',
-    { embed: embed as any, searchMemory: searchMemory as any, dedupThreshold: 0.85 },
-  );
-  expect(target).toBe(existing);
-  expect(embed).not.toHaveBeenCalled();
+  expect(findCollisionTarget(dir, 'decision_use-bun.md')).toBe(existing);
   rmSync(dir, { recursive: true, force: true });
 });
 
-test('findUpdateTarget — semantic hit >= threshold in dir -> that file', async () => {
+test('findCollisionTarget — no such file -> null, and it never touches the embedder', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-dd-'));
+  expect(findCollisionTarget(dir, 'decision_absent.md')).toBeNull();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('findNearDuplicate — hit >= threshold in dir is REPORTED, with its score', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'cm-dd-'));
   const hitPath = join(dir, 'reference_existing.md');
   writeFileSync(hitPath, '---\nname: y\ntype: reference\n---\nbody');
   const embed = mock(async () => [[0.1, 0.2]]);
-  const searchMemory = mock(async () => [{ source_path: hitPath, score: 0.91, chunk_id: 'memory:reference_existing:aa' }]);
-  const target = await findUpdateTarget(
-    'similar body', dir, 'reference_new.md',
-    { embed: embed as any, searchMemory: searchMemory as any, dedupThreshold: 0.85 },
-  );
+  const searchMemory = mock(async () => [{ source_path: hitPath, score: 0.94, chunk_id: 'memory:reference_existing:aa' }]);
+  const near = await findNearDuplicate('similar body', dir,
+    { embed: embed as any, searchMemory: searchMemory as any, dedupThreshold: 0.93 });
   expect(embed).toHaveBeenCalledTimes(1);
-  expect(target).toBe(hitPath);
+  expect(near).toEqual({ path: hitPath, score: 0.94 });
   rmSync(dir, { recursive: true, force: true });
 });
 
-test('findUpdateTarget — semantic hit below threshold -> null (create)', async () => {
+test('findNearDuplicate — hit below threshold -> null', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'cm-dd-'));
   const embed = mock(async () => [[0.1]]);
   const searchMemory = mock(async () => [{ source_path: join(dir, 'reference_x.md'), score: 0.4, chunk_id: 'c' }]);
-  const target = await findUpdateTarget(
-    'unique', dir, 'reference_new.md',
-    { embed: embed as any, searchMemory: searchMemory as any, dedupThreshold: 0.85 },
-  );
-  expect(target).toBeNull();
+  const near = await findNearDuplicate('unique', dir,
+    { embed: embed as any, searchMemory: searchMemory as any, dedupThreshold: 0.93 });
+  expect(near).toBeNull();
   rmSync(dir, { recursive: true, force: true });
 });
 
-test('findUpdateTarget — semantic hit OUTSIDE target dir is ignored', async () => {
+test('findNearDuplicate — a hit OUTSIDE the target dir is ignored', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'cm-dd-'));
   const embed = mock(async () => [[0.1]]);
   const searchMemory = mock(async () => [{ source_path: '/elsewhere/reference_x.md', score: 0.99, chunk_id: 'c' }]);
-  const target = await findUpdateTarget(
-    'x', dir, 'reference_new.md',
-    { embed: embed as any, searchMemory: searchMemory as any, dedupThreshold: 0.85 },
-  );
-  expect(target).toBeNull();
+  const near = await findNearDuplicate('x', dir,
+    { embed: embed as any, searchMemory: searchMemory as any, dedupThreshold: 0.93 });
+  expect(near).toBeNull();
   rmSync(dir, { recursive: true, force: true });
 });
 
-test('findUpdateTarget — embedder failure skips semantic dedup, returns null', async () => {
+test('findNearDuplicate — embedder failure degrades to no report, never to a search', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'cm-dd-'));
   const embed = mock(async () => { throw new Error('embedder offline'); });
   const searchMemory = mock(async () => []);
-  const target = await findUpdateTarget(
-    'x', dir, 'reference_new.md',
-    { embed: embed as any, searchMemory: searchMemory as any, dedupThreshold: 0.85 },
-  );
-  expect(target).toBeNull();
+  const near = await findNearDuplicate('x', dir,
+    { embed: embed as any, searchMemory: searchMemory as any, dedupThreshold: 0.93 });
+  expect(near).toBeNull();
   expect(searchMemory).not.toHaveBeenCalled();
   rmSync(dir, { recursive: true, force: true });
 });
@@ -305,4 +304,62 @@ test('writeMemory — missing body returns { ok:false, reason }', async () => {
   expect(res.ok).toBe(false);
   if (res.ok) throw new Error('expected failure');
   expect(res.reason).toBe('body is required');
+});
+
+
+// ---------------------------------------------------------------------------
+// THE CONTRACT of "report, never rewrite", pinned. These two are the tests that would
+// catch a regression back to silent folding — the behaviour that, when it fired, LLM-rewrote
+// an existing memory with no backup, no ledger and no undo.
+// ---------------------------------------------------------------------------
+
+test('writeMemory — a near-identical body under a NEW slug is CREATED, and the duplicate is reported', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-nd-'));
+  const existing = join(dir, 'reference_original.md');
+  writeFileSync(existing, '---\nname: Original\ndescription: d\ntype: reference\n---\nthe body');
+  const deps = fullDeps({
+    embed: mock(async () => [[0.1, 0.2]]),
+    searchMemory: mock(async () => [{ source_path: existing, score: 0.94, chunk_id: 'c' }]),
+    rememberDir: dir,
+    dedupThreshold: 0.93,
+  });
+  const res = await writeMemory(
+    { body: 'the body', type: 'reference', name: 'Copy', description: 'd', slug: 'copy', projectContext: {} } as any,
+    deps as any,
+  );
+
+  expect(res.ok).toBe(true);
+  if (!res.ok) return;
+  expect(res.action).toBe('created');                       // NOT folded
+  expect(res.path).toBe(join(dir, 'reference_copy.md'));    // its own file
+  expect(existsSync(existing)).toBe(true);                  // the original is untouched
+  expect(readFileSync(existing, 'utf-8')).toContain('the body');
+  expect(res.near_duplicate?.doc_id).toBe('memory:reference_original');
+  expect(res.near_duplicate?.score).toBe(0.94);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('writeMemory — a filename collision still folds, and reports no near-duplicate', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-nd-'));
+  const existing = join(dir, 'reference_same.md');
+  writeFileSync(existing, '---\nname: Same\ndescription: d\ntype: reference\n---\nold body');
+  const embed = mock(async () => [[0.1]]);
+  const deps = fullDeps({
+    embed,
+    generate: mock(async () => ({ content: [{ type: 'text' as const, text: 'merged body' }], model: 'm' })),
+    rememberDir: dir,
+    dedupThreshold: 0.93,
+  });
+  const res = await writeMemory(
+    { body: 'new body', type: 'reference', name: 'Same', description: 'd', slug: 'same', projectContext: {} } as any,
+    deps as any,
+  );
+
+  expect(res.ok).toBe(true);
+  if (!res.ok) return;
+  expect(res.action).toBe('updated');
+  // The collision IS the answer — no advisory, and no embedder round-trip to produce one.
+  expect(res.near_duplicate).toBeUndefined();
+  expect(embed).not.toHaveBeenCalled();
+  rmSync(dir, { recursive: true, force: true });
 });

@@ -12781,7 +12781,7 @@ function loadWorkerEnv() {
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.30.11",
+  version: "0.30.12",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -13029,9 +13029,12 @@ function formatRememberResult(result) {
       isError: true
     };
   }
-  return {
-    content: [{ type: "text", text: `Memory ${result.action}: ${result.path}` }]
-  };
+  const lines = [`Memory ${result.action}: ${result.path}`];
+  if (result.near_duplicate) {
+    lines.push(`Near-duplicate of ${result.near_duplicate.doc_id} (cosine ${result.near_duplicate.score.toFixed(3)}) ` + `\u2014 written separately, nothing was merged. Use the same slug to fold them, or forget one.`);
+  }
+  return { content: [{ type: "text", text: lines.join(`
+`) }] };
 }
 async function dispatchRemember(args, deps) {
   const body = buildRememberRequest(args, deps.cwd());

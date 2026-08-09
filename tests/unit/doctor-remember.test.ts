@@ -20,5 +20,5 @@ test('checkRemember reports defaults when no worker.env keys are set', () => {
   expect(c.detail).toContain('memory');
   expect(c.detail).toContain('promote=off');
   expect(c.detail).toContain('max=5');
-  expect(c.detail).toContain('dedup=0.99');
+  expect(c.detail).toContain('dedup=0.93');
 });

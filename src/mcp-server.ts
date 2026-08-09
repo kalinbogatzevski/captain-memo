@@ -185,7 +185,10 @@ export interface RememberToolArgs {
 
 /** Worker `POST /remember` response — mirrors WriteMemoryResult (src/worker/memory-writer.ts). */
 type RememberWorkerResult =
-  | { ok: true; path: string; action: 'created' | 'updated'; doc_id: string }
+  | {
+      ok: true; path: string; action: 'created' | 'updated'; doc_id: string;
+      near_duplicate?: { path: string; doc_id: string; score: number };
+    }
   | { ok: false; reason: string };
 
 /** Build the `POST /remember` request body: forward the model's fields verbatim and
@@ -217,9 +220,17 @@ export function formatRememberResult(
       isError: true,
     };
   }
-  return {
-    content: [{ type: 'text', text: `Memory ${result.action}: ${result.path}` }],
-  };
+  // SURFACE the advisory. A near-duplicate that lives only in the JSON is not a report — the whole
+  // point of replacing the silent semantic fold was that a human (or model) gets to decide, and it
+  // cannot decide about something it never sees.
+  const lines = [`Memory ${result.action}: ${result.path}`];
+  if (result.near_duplicate) {
+    lines.push(
+      `Near-duplicate of ${result.near_duplicate.doc_id} (cosine ${result.near_duplicate.score.toFixed(3)}) `
+      + `— written separately, nothing was merged. Use the same slug to fold them, or forget one.`,
+    );
+  }
+  return { content: [{ type: 'text', text: lines.join('\n') }] };
 }
 
 /** Orchestrate the remember tool: inject cwd, POST /remember, format the result.

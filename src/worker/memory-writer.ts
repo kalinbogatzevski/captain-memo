@@ -34,7 +34,12 @@ export interface WriteMemoryDeps {
 }
 
 export type WriteMemoryResult =
-  | { ok: true; path: string; action: 'created' | 'updated'; doc_id: string }
+  | {
+      ok: true; path: string; action: 'created' | 'updated'; doc_id: string;
+      /** An existing memory this one closely resembles. REPORTED, never acted on — the write went
+       *  ahead as asked. Present only when nothing was folded (a collision fold IS the answer). */
+      near_duplicate?: { path: string; doc_id: string; score: number };
+    }
   | { ok: false; reason: string };
 
 export interface Frontmatter {
@@ -174,29 +179,52 @@ type DedupDeps = Pick<WriteMemoryDeps, 'embed' | 'searchMemory' | 'dedupThreshol
  * (cheap, no embedder), then (b) semantic similarity scoped to `dir`. Embedder
  * failure degrades gracefully to "no semantic match" (spec §5).
  */
-export async function findUpdateTarget(
+export function findCollisionTarget(dir: string, filename: string): string | null {
+  const collision = join(dir, filename);
+  return existsSync(collision) ? collision : null;
+}
+
+/** ADVISORY ONLY — the nearest existing memory at or above the report threshold. It is REPORTED to
+ *  the caller and never folded into.
+ *
+ *  This used to auto-fold, and MEASUREMENT killed that. Across the live 812-memory corpus, the
+ *  cosine to the nearest OTHER memory tops out at 0.9554 (p99 0.9326, p95 0.8983, p50 0.7909) while
+ *  the gate sat at cos 0.98875 — so against TODAY'S corpus the semantic fold would fire zero times.
+ *  Note the limit of that claim: a fold destroys its own evidence (merged pairs no longer exist as
+ *  pairs), so this distribution cannot distinguish "never fired" from "fired and consumed everything
+ *  above the gate". What it does establish is that nothing currently in the corpus can reach it.
+ *  Every benchmark that "proved" it worked used identical bodies, the one input that clears it.
+ *
+ *  Real duplicates DO exist and sit at 0.93-0.96 — `aj_table_gen_param_binding_bug` vs
+ *  `aj_table_gen_bound_params_fatal` (0.9554), `bump-deploy-version` vs `bump_erp_version` (0.9479),
+ *  `no_fa4_icons` vs `use_fa6_icons` (0.9389) — every one of them slipped through. But simply
+ *  lowering the number would have switched on, for the first time ever, an LLM rewrite of an
+ *  existing memory with no backup, no ledger and no undo (see writeMemory's update branch). The
+ *  project's OTHER auto-merge, Quartermaster, ships disabled by default, reversible via --undo, with
+ *  a merge_events ledger. This one had none of the three and was on by default.
+ *
+ *  So: report, never rewrite. The caller gets `near_duplicate` and decides. A fold now happens only
+ *  on an explicit filename collision, where the caller named the slug and the intent is unambiguous.
+ */
+export async function findNearDuplicate(
   body: string,
   dir: string,
-  filename: string,
   deps: DedupDeps,
-): Promise<string | null> {
-  const collision = join(dir, filename);
-  if (existsSync(collision)) return collision;
-
+): Promise<{ path: string; score: number } | null> {
   let embedding: number[];
   try {
     const [vec] = await deps.embed([body]);
     if (!vec) return null;
     embedding = vec;
   } catch (err) {
-    console.warn(`[remember] embedder unavailable, skipping semantic dedup: ${(err as Error).message}`);
+    console.warn(`[remember] embedder unavailable, skipping near-duplicate check: ${(err as Error).message}`);
     return null;
   }
 
   const hits = await deps.searchMemory(embedding, dir, SEMANTIC_K);
   const top = hits[0];
   if (top && top.score >= deps.dedupThreshold && top.source_path.startsWith(dir)) {
-    return top.source_path;
+    return { path: top.source_path, score: top.score };
   }
   return null;
 }
@@ -216,7 +244,10 @@ export async function writeMemory(input: RememberInput, deps: WriteMemoryDeps): 
 
   const prefix = prefixForType(fm.type);
   const filename = `${prefix}_${fm.slug}.md`;
-  const updateTarget = await findUpdateTarget(input.body, targetDir, filename, deps);
+  // A fold happens ONLY on an explicit filename collision — the caller named this slug. Semantic
+  // similarity is advisory now (see findNearDuplicate): it is reported, never acted on.
+  const updateTarget = findCollisionTarget(targetDir, filename);
+  const nearDuplicate = updateTarget ? null : await findNearDuplicate(input.body, targetDir, deps);
   const path = updateTarget ?? join(targetDir, filename);
   const action: 'created' | 'updated' = updateTarget ? 'updated' : 'created';
 
@@ -254,5 +285,14 @@ export async function writeMemory(input: RememberInput, deps: WriteMemoryDeps): 
     return { ok: false, reason: `index failed: ${(err as Error).message}` };
   }
 
-  return { ok: true, path, action, doc_id: `memory:${basename(path, '.md')}` };
+  return {
+    ok: true, path, action, doc_id: `memory:${basename(path, '.md')}`,
+    ...(nearDuplicate && {
+      near_duplicate: {
+        path: nearDuplicate.path,
+        doc_id: `memory:${basename(nearDuplicate.path, '.md')}`,
+        score: nearDuplicate.score,
+      },
+    }),
+  };
 }

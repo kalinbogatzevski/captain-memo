@@ -34,7 +34,7 @@ test('config show — prints promote knobs with defaults', async () => {
   expect(text).toContain('promote_max_per_run');
   expect(text).toMatch(/promote_max_per_run\s+5/);
   expect(text).toContain('remember_dedup_threshold');
-  expect(text).toContain('0.99');
+  expect(text).toContain('0.93');
 });
 
 test('config show — env override wins for promote_enable', async () => {

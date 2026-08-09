@@ -133,16 +133,28 @@ export const ENV_REMEMBER_DEDUP_THRESHOLD = 'CAPTAIN_MEMO_REMEMBER_DEDUP_THRESHO
 export const DEFAULT_REMEMBER_DIR = join(homedir(), '.claude', 'memory');
 export const DEFAULT_PROMOTE_INTERVAL_MS = 21_600_000; // 6h
 export const DEFAULT_PROMOTE_MAX_PER_RUN = 5;
-/** COSINE similarity at or above which `remember` folds into an existing memory instead of writing
- *  a new one (findUpdateTarget). A real cosine as of the searchMemory fix — it previously compared
- *  against `1 - L2distance`, which is monotonic with cosine but is not one, so `0.85` read as
- *  "85% similar" while actually gating at **cos 0.98875** (d = 1 - 0.85 = 0.15; cos = 1 - d^2/2).
+/** COSINE similarity at or above which `remember` REPORTS an existing memory as a near-duplicate.
+ *  Reporting only — nothing is folded or rewritten on this signal (see findNearDuplicate). A fold
+ *  happens solely on an explicit filename collision.
  *
- *  0.99 therefore preserves the behaviour that has always shipped, a hair stricter, in the safe
- *  direction: fewer merges, not more. Near-verbatim is the intent — a merge REWRITES an existing
- *  memory through an LLM, so a false positive silently edits an entry the caller never named. Do not
- *  lower this casually; at 0.85 as a true cosine it would fold merely-related memories together. */
-export const DEFAULT_REMEMBER_DEDUP_THRESHOLD = 0.99;
+ *  CALIBRATED against the live 812-memory corpus rather than guessed. Cosine to the nearest OTHER
+ *  memory, measured across every one of them:
+ *
+ *    max 0.9554 | p99 0.9326 | p95 0.8983 | p90 0.8781 | p50 0.7909
+ *
+ *  Two populations with a real gap between them. Genuine duplicates cluster 0.93-0.96 —
+ *  aj_table_gen_param_binding_bug vs aj_table_gen_bound_params_fatal (0.9554), bump-deploy-version
+ *  vs bump_erp_version (0.9479), no_fa4_icons vs use_fa6_icons (0.9389). Merely-related material
+ *  sits far below (p50 0.79, p90 0.88). 0.93 sits in the gap: it surfaces the handful of true
+ *  duplicates and stays quiet about the rest. Counts at other values, same corpus: 0.90 -> 35 docs
+ *  (4.3%), 0.85 -> 152 (18.7%), 0.80 -> 362 (44.6%) — noise, not duplicates.
+ *
+ *  Because this now drives a REPORT and not a rewrite, a false positive costs a line of output
+ *  rather than an LLM silently editing a memory nobody named. Was 0.99 when it gated a fold; before
+ *  that, 0.85 compared against `1 - L2distance`, which really meant cos 0.98875 — high enough that
+ *  nothing in today's corpus can reach it. (Whether it ever fired historically is unknowable: a fold
+ *  consumes the pair that would have evidenced it.) */
+export const DEFAULT_REMEMBER_DEDUP_THRESHOLD = 0.93;
 
 /**
  * Encode an absolute cwd into Claude Code's project-dir slug, matching the

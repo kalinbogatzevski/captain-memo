@@ -76,12 +76,15 @@ export async function readBody(parsed: RememberArgs): Promise<string> {
   return stdin;
 }
 
+interface NearDuplicate { path: string; doc_id: string; score: number }
+
 interface RememberResult {
   ok: boolean;
   path?: string;
   action?: 'created' | 'updated';
   doc_id?: string;
   reason?: string;
+  near_duplicate?: NearDuplicate;
 }
 
 export async function rememberCommand(args: string[]): Promise<number> {
@@ -129,5 +132,11 @@ export async function rememberCommand(args: string[]): Promise<number> {
   console.log(`Remembered (${result.action}):`);
   console.log(`  path:   ${result.path}`);
   console.log(`  doc_id: ${result.doc_id}`);
+  // The advisory is the feature. Printing it here is what makes "report, never rewrite" real —
+  // a near-duplicate nobody sees is the same dead end as a fold that never fires.
+  if (result.near_duplicate) {
+    console.log(`  near-duplicate: ${result.near_duplicate.doc_id} (cosine ${result.near_duplicate.score.toFixed(3)})`);
+    console.log(`    written separately — nothing was merged. Reuse that slug to fold them, or \`captain-memo forget\` one.`);
+  }
   return 0;
 }

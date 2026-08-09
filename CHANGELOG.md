@@ -5,6 +5,45 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.30.12] — 2026-08-09
+
+### Changed
+
+- **`remember` no longer silently folds one memory into another. It reports and lets you decide.**
+
+  A write used to become an in-place update of a *different* memory whenever semantic similarity
+  cleared a threshold — and that update is an LLM rewrite of the existing body with **no backup, no
+  ledger and no undo**. The project's other auto-merge, Quartermaster, ships disabled by default,
+  reversible via `--undo`, behind a `merge_events` ledger. This one had none of the three and was on
+  by default.
+
+  Measurement is what settled it. Across the live 812-memory corpus, cosine to the nearest OTHER
+  memory: **max 0.9554, p99 0.9326, p95 0.8983, p90 0.8781, p50 0.7909** — while the gate sat at cos
+  0.98875. Against today's corpus it would fire **zero times**. (It cannot be shown it *never* fired:
+  a fold consumes the pair that would evidence it.) Meanwhile the duplicates it existed to catch are
+  right there, just below it: `aj_table_gen_param_binding_bug` vs `aj_table_gen_bound_params_fatal`
+  (0.9554), `bump-deploy-version` vs `bump_erp_version` (0.9479), `no_fa4_icons` vs `use_fa6_icons`
+  (0.9389), `sql-insert-null-coercion-trap` vs `null-binding-trap` (0.9323).
+
+  So it was a feature that did nothing, and whose only way of doing something was destructive.
+  Simply lowering the number would have switched on an unlogged LLM rewrite for the first time.
+
+  Now:
+  - a **fold** happens only on an explicit **filename collision** — you reused that slug, so the
+    intent is unambiguous. Unchanged behaviour.
+  - **semantic similarity is advisory**. The memory is written as asked, and the response carries
+    `near_duplicate: { path, doc_id, score }`. Surfaced by the CLI and the MCP tool, not just in the
+    JSON — a report nobody sees is the same dead end as a fold that never fires.
+  - `CAPTAIN_MEMO_REMEMBER_DEDUP_THRESHOLD` now gates that **report**, and moves `0.99 -> 0.93`,
+    sitting in the measured gap between related material (p95 0.8983) and true duplicates (0.93+).
+    A false positive now costs one line of output instead of editing a memory you never named.
+
+  **Note for anyone running promotion** (`CAPTAIN_MEMO_PROMOTE_ENABLE=1`, off by default): the
+  promotion judge supplies `type`/`name`/`description` but no `slug`, so promoted memories never
+  collide by filename and were relying on the semantic fold for idempotency. They now get an advisory
+  instead — which nothing reads in a background job. If you enable promotion and see duplicate
+  promotions, give it a deterministic slug; that restores idempotency through the explicit path.
+
 ## [0.30.11] — 2026-08-09
 
 ### Changed

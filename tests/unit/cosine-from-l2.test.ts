@@ -26,21 +26,28 @@ test('cosineFromL2 — is monotonically decreasing in distance', () => {
   for (let i = 1; i < cs.length; i++) expect(cs[i]!).toBeLessThan(cs[i - 1]!);
 });
 
-// THE REGRESSION THIS LOCKS: the new threshold must gate where the old one actually did,
-// not where the old one appeared to. Old gate: `1 - d >= 0.85`, i.e. d <= 0.15.
-test('the default threshold preserves the behaviour the old 1-L2 gate really had', () => {
-  const oldCutoffDistance = 0.15;                        // 1 - 0.85
-  const trueCosineAtOldCutoff = cosineFromL2(oldCutoffDistance);
-
-  expect(trueCosineAtOldCutoff).toBeCloseTo(0.98875, 5); // NOT 0.85 — that was the bug
-  // New default is a hair stricter, i.e. FEWER merges. Never looser: a merge rewrites an
-  // existing memory through an LLM, so a false positive silently edits an entry nobody named.
-  expect(DEFAULT_REMEMBER_DEDUP_THRESHOLD).toBeGreaterThanOrEqual(trueCosineAtOldCutoff);
-  expect(DEFAULT_REMEMBER_DEDUP_THRESHOLD).toBeLessThan(1);
+// What the old gate REALLY was, kept as the record of the bug: `1 - d >= 0.85` means d <= 0.15,
+// which is cos 0.98875 — not the 0.85 the constant advertised.
+test('the old 1-L2 gate really sat at cos 0.98875, not the 0.85 it advertised', () => {
+  expect(cosineFromL2(0.15)).toBeCloseTo(0.98875, 5);
 });
 
-test('a merely-related memory does not reach the gate', () => {
+// THE REGRESSION THIS LOCKS: the report threshold must sit in the GAP measured on the live
+// 812-memory corpus — above the merely-related mass, at or below the true-duplicate cluster.
+// Too high and it reports nothing (which is what the 0.98875 gate did); too low and it cries
+// duplicate over ordinary related material (0.85 -> 18.7% of the corpus, 0.80 -> 44.6%).
+test('the default report threshold sits in the measured gap between related and duplicate', () => {
+  const RELATED_P95 = 0.8983;      // 95th percentile of nearest-other-memory cosine
+  const DUPLICATE_FLOOR = 0.93;    // observed true-duplicate pairs run 0.93 - 0.9554
+  const CORPUS_MAX = 0.9554;       // nothing in the corpus is closer than this
+
+  expect(DEFAULT_REMEMBER_DEDUP_THRESHOLD).toBeGreaterThan(RELATED_P95);
+  expect(DEFAULT_REMEMBER_DEDUP_THRESHOLD).toBeLessThanOrEqual(DUPLICATE_FLOOR);
+  // and it must remain reachable at all — the failure mode of the gate it replaced
+  expect(DEFAULT_REMEMBER_DEDUP_THRESHOLD).toBeLessThan(CORPUS_MAX);
+});
+
+test('merely-related material stays below the threshold', () => {
   // cos 0.85 is "clearly related" in embedding space and used to LOOK like the threshold.
-  // Under a true cosine it must fall well short of folding two memories together.
   expect(0.85).toBeLessThan(DEFAULT_REMEMBER_DEDUP_THRESHOLD);
 });
