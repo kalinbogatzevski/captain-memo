@@ -5,6 +5,42 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.33.3] — 2026-08-10
+
+### Fixed
+
+- **The semantic fold pass shared dedup's 5,000-row window, and therefore found nothing — ever.**
+  `sameSessionCandidateRows` took the 5,000 most-recently-surfaced rows *globally*. Duplicates are
+  same-session by construction, so both halves of a pair must land in the window together — and a
+  global recency slice across 143 projects reduces each one to a sliver in which no session keeps
+  two rows. Measured on a 135k-observation corpus at cosine 0.94:
+
+  | window | rows scanned | groups | foldable rows |
+  |---|---|---|---|
+  | 5,000 (shared, before) | 5,000 | **0** | 0 |
+  | whole eligible population | 15,565 | **82** | **90** |
+
+  The two walks have different shapes, which is why sharing one constant was wrong: dedup groups
+  the surfaced set as a single O(n²) population, so its 5,000 is a measured compromise; the
+  semantic finder buckets by `(session, project, branch)` first and sessions are small, so its cost
+  is near-linear in rows. The eligible population is only ~15k, so the honest window is all of it.
+  New `CAPTAIN_MEMO_QM_SEMANTIC_WINDOW` (default 50,000) is a safety cap, not a target — it exists
+  so a corpus ten times this size still cannot wedge a pass. Cost 9.9 s with a 235 ms worst
+  event-loop stall, affordable only because the finder yields as of 0.33.2.
+
+  Rejected on measurement and recorded so it is not retried: per-project fair share of the same
+  budget. With 143 projects an equal split gives the busiest project 34 rows instead of 5,000 —
+  1,599 rows scanned, 6 groups, worse than the bug. Splitting a budget is not the fix when the
+  budget itself was the mistake.
+
+### Known, unfixed
+
+- **87.7% of observations are invisible to every housekeeping pass.** Both candidate queries
+  require `(from_auto + from_search + from_drill) > 0`, and on the reference corpus 118,471 of
+  135,060 observations have never been surfaced. Everything above is found within the 15,565 that
+  have. Unlocking the rest is a larger change and is not attempted here.
+- Themes additionally require co-retrieval evidence; their "0 considered" is not yet explained.
+
 ## [0.33.2] — 2026-08-09
 
 ### Fixed

@@ -57,6 +57,27 @@ export interface QmConfig {
   semanticCosineThreshold: number;
   /** Max groups one semantic pass may emit — bounds the downstream fold work. */
   semanticMaxGroups: number;
+  /**
+   * Rows the SEMANTIC finder scans. Separate from dedupWindow, because the two walks have
+   * different shapes and the shared 5,000 was silently crippling this one.
+   *
+   * Dedup groups the surfaced set as ONE population — O(n^2) — so its window buys duplicates at a
+   * rising price and 5,000 is a measured compromise. The semantic finder buckets by
+   * (session, project, branch) FIRST, and sessions are small, so its cost is near-linear in rows.
+   *
+   * MEASURED on the live 135k corpus (15,565 eligible rows), 2026-08-09:
+   *
+   *     window     rows scanned    groups found    time (yielded)
+   *      5,000            5,000               0            0.8 s
+   *     50,000           15,565              82            9.9 s     (the whole population)
+   *
+   * ZERO at 5,000. Duplicates are same-session, so BOTH halves of a pair must land in the window
+   * together; a global recency slice across 143 projects reduces each to a sliver in which no
+   * session keeps two rows. The population is only ~15k, so the honest window is "all of it" —
+   * affordable only because the finder now yields (worst event-loop stall 235 ms). The default is
+   * a safety cap, not a target: it exists so a corpus 10x this size still cannot wedge a pass.
+   */
+  semanticWindow: number;
   /** How often to CHECK whether the machine is idle enough to run the pass. The check is
    *  cheap; the pass itself only runs when every idle signal agrees. */
   semanticCheckIntervalMs: number;
@@ -139,6 +160,7 @@ export const DEFAULT_QM_CONFIG: QmConfig = {
   semanticEnabled: true,
   semanticCosineThreshold: 0.95,
   semanticMaxGroups: 200,
+  semanticWindow: 50_000,
   semanticCheckIntervalMs: 600_000,   // check every 10 min; the pass itself is rare
   semanticMinIdleSeconds: 1_800,      // 30 min quiet before anything starts
   themeEnabled: true,
@@ -171,6 +193,7 @@ export function loadQmConfig(env: Record<string, string | undefined>): QmConfig 
     semanticEnabled: env.CAPTAIN_MEMO_QM_SEMANTIC !== '0',
     semanticCosineThreshold: num(env.CAPTAIN_MEMO_QM_SEMANTIC_COSINE, D.semanticCosineThreshold),
     semanticMaxGroups: num(env.CAPTAIN_MEMO_QM_SEMANTIC_MAX_GROUPS, D.semanticMaxGroups),
+    semanticWindow: num(env.CAPTAIN_MEMO_QM_SEMANTIC_WINDOW, D.semanticWindow),
     semanticCheckIntervalMs: num(env.CAPTAIN_MEMO_QM_SEMANTIC_CHECK_MS, D.semanticCheckIntervalMs),
     semanticMinIdleSeconds: num(env.CAPTAIN_MEMO_QM_SEMANTIC_MIN_IDLE_S, D.semanticMinIdleSeconds),
     themeEnabled: env.CAPTAIN_MEMO_QM_THEME !== '0',

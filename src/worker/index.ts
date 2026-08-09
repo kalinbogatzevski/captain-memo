@@ -1443,7 +1443,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           // Same reasoning as the theme walk: breathe, and let ingest preempt.
           yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
           shouldAbort: () => processBatchPromise != null || (obsQueue?.pendingCount() ?? 0) > 0,
-          rows: semStore.sameSessionCandidateRows(qmConfig.dedupWindow),
+          rows: semStore.sameSessionCandidateRows(qmConfig.semanticWindow),
           representativeVector: repVec,
           cosineThreshold: qmConfig.semanticCosineThreshold,
           maxGroups: qmConfig.semanticMaxGroups,
