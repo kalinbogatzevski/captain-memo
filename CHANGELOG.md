@@ -5,6 +5,56 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.32.0] — 2026-08-09
+
+### Added
+
+- **`CAPTAIN_MEMO_SUMMARIZER_PROVIDER` accepts an ordered chain.** `codex,claude-oauth,agy` means
+  "prefer codex, else Claude, else agy". At boot the worker walks the list, probes each candidate,
+  and the **first one that can actually run** becomes the summarizer for that worker's lifetime.
+
+  A comma used to be an *error* here — it fell back to `claude-oauth`, which on a box with no Claude
+  login summarized nothing. A single value keeps exactly its previous meaning, so every existing
+  `worker.env` is unaffected, and the existing variable is extended rather than joined by a second
+  one (two flags that can contradict each other is the problem, not the solution).
+
+  **Why this exists:** the summarizer's model chain only ever protected against one failure mode
+  (`model_not_found`). A `claude-oauth` token expiry, or a 401, still stopped observations and every
+  cross-AI capture source dead — on a host with perfectly good `codex` and `agy` transports sitting
+  idle. This closes that at the layer where it belongs.
+
+  **Deliberate scope — probe-at-boot, NOT runtime failover.** `codex` and `agy` are subprocess CLIs
+  whose failures are exit codes and stderr strings, where "not logged in" is not reliably
+  distinguishable from "flag renamed" or "binary missing". Misclassify once and you either burn the
+  chain on a transient or wedge on a dead provider. A static choice is honest; doctor already FAILs
+  loudly when the summarizer is dead, and a restart re-walks the list. Switching provider
+  *mid-lifetime* (a token expiring at hour 30) needs cooldown and in-flight-batch handling and is
+  explicitly left as its own piece of work.
+
+  Probes are **structural** — token present and unexpired, binary on PATH, endpoint or key set —
+  not a live model call: a real call against codex or agy spawns a subprocess and costs seconds plus
+  tokens at *every* worker start. The common case, a healthy first entry, costs one cheap check, and
+  entries after the first success are never probed at all. The trade is stated in the code: a
+  provider whose binary exists but is logged *out* is still selected and fails at first use, where
+  doctor reports it.
+
+  A pinned `CAPTAIN_MEMO_SUMMARIZER_MODEL` binds to the **head** of the chain only. Handing a Claude
+  slug to `codex exec` is an instant 400, so later providers use their own defaults — the same class
+  of mistake as the judges passing a literal `'haiku'`, one layer up.
+
+  One bad entry costs that entry, not the chain: `codex,gpt4,agy` runs `codex -> agy` and warns.
+
+### Changed
+
+- **doctor WARNs when a preferred provider was skipped**, naming which and why. An ordered chain can
+  be perfectly healthy and still not be the provider you asked for — `codex,claude-oauth` quietly
+  serving claude-oauth because codex is not installed is exactly the state a green line would hide.
+- **`/stats.summarizer.provider` now reports the provider actually SELECTED**, plus `skipped[]`. It
+  previously re-resolved the env var, which with a chain is no longer ground truth for "which one is
+  running?" — the very question that field's own comment says it exists to answer.
+- The claude-oauth boot line no longer prints `token expires in ~150090216061 min` for an
+  env-supplied token (which carries no visible expiry); it says so instead.
+
 ## [0.31.1] — 2026-08-09
 
 ### Fixed

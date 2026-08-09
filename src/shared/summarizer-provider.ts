@@ -17,33 +17,74 @@ export interface ResolvedProvider {
   warning?: string;
 }
 
-/**
- * Map a raw env value to a provider. Accepts the aliases `openai`→openai-compatible and
- * `antigravity`→agy. On anything else, returns the default provider AND a warning explaining
- * what was wrong (with special-casing for a comma, i.e. "tried to set more than one").
- */
-export function resolveSummarizerProvider(raw: string | undefined): ResolvedProvider {
-  const p = (raw ?? DEFAULT_SUMMARIZER_PROVIDER).toLowerCase().trim();
-  switch (p) {
-    case 'claude-oauth': return { provider: 'claude-oauth' };
-    case 'claude-code': return { provider: 'claude-code' };
+/** One entry mapped, or null when the token is not a provider we know. */
+function mapOne(raw: string): SummarizerProvider | null {
+  switch (raw.toLowerCase().trim()) {
+    case 'claude-oauth': return 'claude-oauth';
+    case 'claude-code': return 'claude-code';
     case 'openai-compatible':
-    case 'openai': return { provider: 'openai-compatible' };
-    case 'anthropic': return { provider: 'anthropic' };
-    case 'codex': return { provider: 'codex' };
+    case 'openai': return 'openai-compatible';
+    case 'anthropic': return 'anthropic';
+    case 'codex': return 'codex';
     case 'agy':
-    case 'antigravity': return { provider: 'agy' };
-    default: {
-      const why = p.includes(',')
-        ? `you set more than one provider ("${raw}") — only ONE is supported, pick a single value`
-        : `unrecognized value "${raw}"`;
-      return {
-        provider: DEFAULT_SUMMARIZER_PROVIDER,
-        warning:
-          `${why}. Valid: ${VALID_SUMMARIZER_PROVIDERS}. ` +
-          `Falling back to '${DEFAULT_SUMMARIZER_PROVIDER}', which needs a Claude login — ` +
-          `on a machine with no Claude, set a real provider or nothing gets summarized.`,
-      };
-    }
+    case 'antigravity': return 'agy';
+    default: return null;
   }
+}
+
+export interface ResolvedProviders {
+  /** Ordered preference list. Never empty. The worker probes these in order at boot and the
+   *  FIRST one that can actually run becomes the summarizer for that worker's lifetime. */
+  providers: SummarizerProvider[];
+  warning?: string;
+}
+
+/**
+ * Map a raw env value to an ORDERED provider chain.
+ *
+ * A comma-separated list used to be an ERROR here ("only ONE is supported"), which quietly fell
+ * back to claude-oauth — on a box with no Claude login that summarized nothing. It is now the
+ * feature: `codex,claude-oauth,agy` means "prefer codex, else Claude, else agy". A single value
+ * keeps exactly today's meaning, so every existing worker.env is unaffected.
+ *
+ * Unknown entries are DROPPED with a warning rather than failing the whole list — one typo in a
+ * three-provider chain should cost that entry, not the summarizer. If nothing survives, we return
+ * the default and say so loudly.
+ */
+export function resolveSummarizerProviders(raw: string | undefined): ResolvedProviders {
+  const tokens = (raw ?? '').split(',').map(s => s.trim()).filter(Boolean);
+  if (tokens.length === 0) return { providers: [DEFAULT_SUMMARIZER_PROVIDER] };
+
+  const providers: SummarizerProvider[] = [];
+  const bad: string[] = [];
+  for (const tok of tokens) {
+    const mapped = mapOne(tok);
+    if (!mapped) { bad.push(tok); continue; }
+    if (!providers.includes(mapped)) providers.push(mapped);   // de-dup, keep first position
+  }
+
+  if (providers.length === 0) {
+    return {
+      providers: [DEFAULT_SUMMARIZER_PROVIDER],
+      warning:
+        `no valid provider in "${raw}" (unrecognized: ${bad.join(', ')}). Valid: ${VALID_SUMMARIZER_PROVIDERS}. ` +
+        `Falling back to '${DEFAULT_SUMMARIZER_PROVIDER}', which needs a Claude login — ` +
+        `on a machine with no Claude, set a real provider or nothing gets summarized.`,
+    };
+  }
+  if (bad.length > 0) {
+    return {
+      providers,
+      warning: `ignored unrecognized provider(s): ${bad.join(', ')}. Valid: ${VALID_SUMMARIZER_PROVIDERS}. ` +
+               `Using: ${providers.join(' -> ')}`,
+    };
+  }
+  return { providers };
+}
+
+/** Single-provider view of the same resolution — the head of the chain (what the customer put
+ *  first). Kept so callers that only care about the configured preference stay unchanged. */
+export function resolveSummarizerProvider(raw: string | undefined): ResolvedProvider {
+  const { providers, warning } = resolveSummarizerProviders(raw);
+  return warning ? { provider: providers[0]!, warning } : { provider: providers[0]! };
 }

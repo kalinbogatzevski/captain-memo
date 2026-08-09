@@ -7,7 +7,7 @@ import { Embedder } from './embedder.ts';
 import { embedderMaxTokens } from '../shared/embedder-limits.ts';
 import { loadWorkerEnv } from '../shared/worker-env.ts';
 import { ensureExtensionCapableSqlite } from '../shared/sqlite-extensions.ts';
-import { resolveSummarizerProvider } from '../shared/summarizer-provider.ts';
+import { resolveSummarizerProviders, resolveSummarizerProvider } from '../shared/summarizer-provider.ts';
 import { loadGatewayConfig, verifyToken } from '../shared/gateway-tokens.ts';
 import { dispatchTool, TOOLS } from '../mcp-server.ts';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -172,6 +172,13 @@ export interface WorkerOptions {
    *  /remember writer can drive frontmatter/merge fills directly — distinct from the
    *  observation-shaped `summarize` above. Absent ⇒ writeMemory uses deterministic fallback. */
   summarizerTransport?: SummarizerTransport;
+  /** The provider actually SELECTED by the boot probe walk. With an ordered chain the head of
+   *  CAPTAIN_MEMO_SUMMARIZER_PROVIDER is only a preference, so re-resolving the env var is no longer
+   *  ground truth for "which one is running?" — that is why this is threaded through instead. */
+  summarizerProvider?: SummarizerProvider;
+  /** Providers ahead of the winner that could not start, with the reason. Surfaced by doctor so a
+   *  silent demotion ("I thought codex was summarizing") is visible without reading worker.log. */
+  summarizerSkips?: Array<{ provider: string; reason: string }>;
   /** Live co-session count, for the idle gate that guards the semantic pass. Supplied by the
    *  caller that owns the session manager (the federation layer); absent ⇒ 0, which is correct
    *  for a worker that cannot spawn co-sessions in the first place. */
@@ -2120,7 +2127,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           // running?" — the RESOLVED provider (post-fallback), which is the ground truth the raw
           // worker.env value can't give (a bad "codex,agy" shows here as its real fallback).
           summarizer: {
-            provider: resolveSummarizerProvider(process.env[ENV_SUMMARIZER_PROVIDER]).provider,
+            provider: opts.summarizerProvider
+              ?? resolveSummarizerProvider(process.env[ENV_SUMMARIZER_PROVIDER]).provider,
+            // Which preferred providers lost, and why — an empty list is the normal case.
+            skipped: opts.summarizerSkips ?? [],
             model: process.env[ENV_SUMMARIZER_MODEL] ?? null,
             enabled: summarize != null, // summarize is `opts.summarize ?? null`, so it is NEVER undefined — must null-check (a `!== undefined` bug reported this as always-on)
             // In backoff after a recent failure (API 401/429/network). A persistently-failing summarizer
@@ -3051,6 +3061,98 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 
 /** Build WorkerOptions from process.env. Shared by the inline path (runWorkerCli) and
  *  the engine thread (engine.ts) so both boot identically. The caller adds `noServe`. */
+/** Cheap "can this provider actually run here?" probe + construction, per provider.
+ *
+ *  Returns the built summarizer, or `{ skip }` with a human reason the boot log prints. The probes
+ *  are deliberately STRUCTURAL (token present and unexpired, binary on PATH, endpoint/key set)
+ *  rather than a live model call: a real call against codex or agy spawns a subprocess and costs
+ *  seconds plus tokens at EVERY worker start, and the common case — a healthy first entry — must
+ *  cost one cheap check, not N expensive ones. The trade is honest and stated: a provider whose
+ *  binary exists but is logged OUT still gets selected and fails at first use, where doctor's
+ *  summarizer check reports it. Structural probes catch the common misconfiguration (a provider
+ *  named in the chain but never set up on this box) without making every boot pay for the rare one. */
+async function buildSummarizerFor(
+  pv: SummarizerProvider,
+  model: string,
+  fallbackModels: string[],
+  anthropicKey: string | undefined,
+): Promise<
+  | { summarize: (events: import('../shared/types.ts').RawObservationEvent[]) => Promise<SummarizerResult>;
+      transport: import('./summarizer.ts').SummarizerTransport; note: string }
+  | { skip: string }
+> {
+  const wrap = (s: Summarizer, note: string) => ({
+    summarize: (events: import('../shared/types.ts').RawObservationEvent[]) => s.summarize(events),
+    transport: s.getTransport(),
+    note,
+  });
+  const onPath = async (bin: string): Promise<boolean> => {
+    try {
+      const proc = Bun.spawn(['which', bin], { stdout: 'ignore', stderr: 'ignore' });
+      return (await proc.exited) === 0;
+    } catch { return false; }
+  };
+
+  if (pv === 'claude-oauth') {
+    const { createClaudeOauthTransport, readClaudeOauthToken } = await import('./summarizer-claude-oauth.ts');
+    const probe = readClaudeOauthToken();
+    if (!probe) return { skip: 'no OAuth token at ~/.claude/.credentials.json (run `claude login`)' };
+    const expiresIn = Math.floor((probe.expiresAt - Date.now()) / 60_000);
+    if (expiresIn <= 0) return { skip: 'OAuth token has expired (run `claude login`)' };
+    // An env-supplied token carries expiresAt = MAX_SAFE_INTEGER (it has no expiry we can see), which
+    // rendered as "expires in ~150090216061 min". Say what is actually true instead.
+    const expiryNote = probe.expiresAt === Number.MAX_SAFE_INTEGER
+      ? 'token from env (no expiry known)'
+      : `token expires in ~${expiresIn} min`;
+    return wrap(
+      new Summarizer({ apiKey: '', model, fallbackModels, transport: createClaudeOauthTransport() }),
+      `direct api.anthropic.com, no API key, no subprocess; model ${model}; ${expiryNote}`,
+    );
+  }
+  if (pv === 'claude-code') {
+    if (!await onPath('claude')) return { skip: '`claude` not on PATH' };
+    const { createClaudeCodeTransport } = await import('./summarizer-claude-code.ts');
+    return wrap(
+      new Summarizer({ apiKey: '', model, fallbackModels, transport: createClaudeCodeTransport() }),
+      `Max/Pro plan auth via 'claude -p'; model ${model}`,
+    );
+  }
+  if (pv === 'codex') {
+    if (!await onPath('codex')) return { skip: '`codex` not on PATH (npm i -g @openai/codex, then `codex login`)' };
+    const { createCodexTransport } = await import('./summarizer-codex.ts');
+    return wrap(
+      new Summarizer({ apiKey: '', model, fallbackModels, transport: createCodexTransport() }),
+      `ChatGPT Plus/Pro auth via 'codex exec', model ${model}; ~6-7s/call — agent boot, not inference`,
+    );
+  }
+  if (pv === 'agy') {
+    if (!await onPath('agy')) return { skip: '`agy` not on PATH (install Antigravity CLI, then run `agy` once to log in)' };
+    const { createAgyTransport } = await import('./summarizer-agy.ts');
+    return wrap(
+      new Summarizer({ apiKey: '', model, fallbackModels, transport: createAgyTransport() }),
+      `Google account via Antigravity CLI, model ${model}; ~3.4-5.5s/call, isolated $HOME`,
+    );
+  }
+  if (pv === 'openai-compatible') {
+    const endpoint = process.env[ENV_OPENAI_ENDPOINT];
+    if (!endpoint) return { skip: `${ENV_OPENAI_ENDPOINT} is not set (e.g. http://localhost:11434/v1/chat/completions)` };
+    const apiKey = process.env[ENV_OPENAI_API_KEY];
+    const { createOpenAITransport } = await import('./summarizer-openai.ts');
+    return wrap(
+      new Summarizer({
+        apiKey: '', model, fallbackModels,
+        transport: createOpenAITransport({ endpoint, ...(apiKey !== undefined && { apiKey }) }),
+      }),
+      `${endpoint}${apiKey ? ' [auth]' : ' [no auth]'}; model ${model}`,
+    );
+  }
+  if (!anthropicKey) return { skip: `${ENV_ANTHROPIC_API_KEY} is not set` };
+  return wrap(
+    new Summarizer({ apiKey: anthropicKey, model, fallbackModels }),
+    `Anthropic API key; model ${model}`,
+  );
+}
+
 export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
   const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
   const projectId = process.env.CAPTAIN_MEMO_PROJECT_ID ?? 'default';
@@ -3121,19 +3223,23 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
   //   - 'agy':            shells out to `agy -p`; Google account, no key.
   // An unrecognized value (e.g. a customer who tried to set "codex,agy") FAILS LOUD with the
   // valid list rather than silently working — see shared/summarizer-provider.ts.
-  const { provider, warning: providerWarning } = resolveSummarizerProvider(process.env[ENV_SUMMARIZER_PROVIDER]);
+  const { providers: summarizerProviders, warning: providerWarning } =
+    resolveSummarizerProviders(process.env[ENV_SUMMARIZER_PROVIDER]);
   if (providerWarning) console.error(`[worker] ${ENV_SUMMARIZER_PROVIDER}: ${providerWarning}`);
+  const provider = summarizerProviders[0]!;   // head of the chain — what the pinned model binds to
 
   // Model defaults are provider-shaped: DEFAULT_SUMMARIZER_MODEL is a Claude slug,
   // and handing a Claude slug to `codex exec` is an instant 400. Resolve the
   // default AFTER the provider is known. An explicit CAPTAIN_MEMO_SUMMARIZER_MODEL
   // always wins — the user may be on a plan with a different allowed model set.
-  const providerDefaultModel =
-    provider === 'codex' ? DEFAULT_CODEX_MODEL :
-    provider === 'agy'   ? DEFAULT_AGY_MODEL   : DEFAULT_SUMMARIZER_MODEL;
-  const providerDefaultFallbacks =
-    provider === 'codex' ? DEFAULT_CODEX_FALLBACKS :
-    provider === 'agy'   ? DEFAULT_AGY_FALLBACKS   : DEFAULT_SUMMARIZER_FALLBACKS;
+  const defaultModelFor = (pv: SummarizerProvider): string =>
+    pv === 'codex' ? DEFAULT_CODEX_MODEL :
+    pv === 'agy'   ? DEFAULT_AGY_MODEL   : DEFAULT_SUMMARIZER_MODEL;
+  const defaultFallbacksFor = (pv: SummarizerProvider): string[] =>
+    pv === 'codex' ? DEFAULT_CODEX_FALLBACKS :
+    pv === 'agy'   ? DEFAULT_AGY_FALLBACKS   : DEFAULT_SUMMARIZER_FALLBACKS;
+  const providerDefaultModel = defaultModelFor(provider);
+  const providerDefaultFallbacks = defaultFallbacksFor(provider);
   const summarizerModel = process.env[ENV_SUMMARIZER_MODEL] ?? providerDefaultModel;
   const summarizerFallbacksRaw = process.env[ENV_SUMMARIZER_FALLBACKS];
   // NOTE: agy model names contain commas? No — but they DO contain spaces and parens
@@ -3144,116 +3250,66 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
 
   let summarize: ((events: import('../shared/types.ts').RawObservationEvent[]) => Promise<import('./index.ts').SummarizerResult>) | undefined;
   let summarizerTransport: import('./summarizer.ts').SummarizerTransport | undefined;
-  if (provider === 'claude-oauth') {
-    const { createClaudeOauthTransport, readClaudeOauthToken } = await import('./summarizer-claude-oauth.ts');
-    const probe = readClaudeOauthToken();
-    if (!probe) {
-      console.error(
-        `[worker] summarizer provider = claude-oauth, but no OAuth token found ` +
-        `at ~/.claude/.credentials.json. Run \`claude login\` to authenticate, ` +
-        `or pick a different ${ENV_SUMMARIZER_PROVIDER}.`,
-      );
-    } else {
-      const summarizer = new Summarizer({
-        apiKey: '', // unused — OAuth transport carries the bearer token
-        model: summarizerModel,
-        fallbackModels: summarizerFallbacks,
-        transport: createClaudeOauthTransport(),
-      });
-      summarize = (events) => summarizer.summarize(events);
-      summarizerTransport = summarizer.getTransport();
-      const expiresIn = Math.floor((probe.expiresAt - Date.now()) / 60_000);
-      console.error(
-        `[worker] summarizer provider = claude-oauth ` +
-        `(direct api.anthropic.com, no API key, no subprocess; token expires in ~${expiresIn} min)`,
-      );
+  let activeProvider: SummarizerProvider | undefined;
+  const providerSkips: Array<{ provider: string; reason: string }> = [];
+
+  // PROBE AT BOOT, then commit — not runtime failover.
+  //
+  // Walk the customer's ordered chain and pick the FIRST provider that can actually run; that one
+  // serves for this worker's lifetime. Deliberately NOT per-call failover on auth errors: codex and
+  // agy are subprocess CLIs whose failures are exit codes and stderr strings, where "not logged in"
+  // is not reliably distinguishable from "flag renamed" or "binary missing" — misclassify once and
+  // you either burn the chain on a transient or wedge on a dead provider. A static choice is
+  // honest, and doctor already FAILs loudly when the summarizer is dead; a restart re-walks the list.
+  //
+  // OUT OF SCOPE for this version: switching provider mid-lifetime (e.g. an OAuth token expiring at
+  // hour 30). That needs cooldown and in-flight-batch handling and is its own piece of work.
+  //
+  // COST: entries AFTER the first success are never probed. With a healthy first entry the whole
+  // walk is one cheap check.
+  for (const candidate of summarizerProviders) {
+    // The pinned model belongs to the provider the customer pinned it FOR. Handing a Claude slug to
+    // `codex exec` is an instant 400 (see the provider-shaped defaults above), so the override binds
+    // to the head of the chain only; every later provider uses its own defaults.
+    const isHead = candidate === summarizerProviders[0];
+    const mdl = isHead ? summarizerModel : defaultModelFor(candidate);
+    const fbs = isHead ? summarizerFallbacks : defaultFallbacksFor(candidate);
+
+    const built = await buildSummarizerFor(candidate, mdl, fbs, anthropicKey);
+    if ('skip' in built) {
+      providerSkips.push({ provider: candidate, reason: built.skip });
+      console.error(`[worker] summarizer provider ${candidate} SKIPPED — ${built.skip}`);
+      continue;
     }
-  } else if (provider === 'claude-code') {
-    const { createClaudeCodeTransport } = await import('./summarizer-claude-code.ts');
-    const summarizer = new Summarizer({
-      apiKey: '', // unused under claude-code transport (auth via the CLI)
-      model: summarizerModel,
-      fallbackModels: summarizerFallbacks,
-      transport: createClaudeCodeTransport(),
-    });
-    summarize = (events) => summarizer.summarize(events);
-    summarizerTransport = summarizer.getTransport();
-    console.error(`[worker] summarizer provider = claude-code (Max/Pro plan auth via 'claude -p')`);
-  } else if (provider === 'codex') {
-    const { createCodexTransport } = await import('./summarizer-codex.ts');
-    const summarizer = new Summarizer({
-      apiKey: '', // unused under the codex transport (auth via `codex login`)
-      model: summarizerModel,
-      fallbackModels: summarizerFallbacks,
-      transport: createCodexTransport(),
-    });
-    summarize = (events) => summarizer.summarize(events);
-    summarizerTransport = summarizer.getTransport();
+    summarize = built.summarize;
+    summarizerTransport = built.transport;
+    activeProvider = candidate;
+    console.error(`[worker] summarizer provider = ${candidate} — ${built.note}`);
+    break;
+  }
+
+  if (!summarizerTransport) {
     console.error(
-      `[worker] summarizer provider = codex (ChatGPT Plus/Pro auth via 'codex exec', model ${summarizerModel}; ` +
-      `~6-7s/call — agent boot, not inference. Runs on the background tick, so it never blocks a prompt.)`,
-    );
-  } else if (provider === 'agy') {
-    const { createAgyTransport } = await import('./summarizer-agy.ts');
-    const summarizer = new Summarizer({
-      apiKey: '', // unused under the agy transport (auth via the Google OAuth token agy stored)
-      model: summarizerModel,
-      fallbackModels: summarizerFallbacks,
-      transport: createAgyTransport(),
-    });
-    summarize = (events) => summarizer.summarize(events);
-    summarizerTransport = summarizer.getTransport();
-    console.error(
-      `[worker] summarizer provider = agy (Google account via Antigravity CLI, model ${summarizerModel}; ` +
-      `~3.4-5.5s/call, runs under an isolated $HOME so your real \`agy --continue\` history stays clean)`,
-    );
-  } else if (provider === 'openai-compatible') {
-    const endpoint = process.env[ENV_OPENAI_ENDPOINT];
-    if (!endpoint) {
-      console.error(
-        `[worker] ${ENV_SUMMARIZER_PROVIDER}=openai-compatible requires ${ENV_OPENAI_ENDPOINT} to be set\n` +
-        `         (e.g. http://localhost:11434/v1/chat/completions for Ollama)`
-      );
-    } else {
-      const apiKey = process.env[ENV_OPENAI_API_KEY];
-      const { createOpenAITransport } = await import('./summarizer-openai.ts');
-      const summarizer = new Summarizer({
-        apiKey: '', // unused — openai transport carries its own optional key
-        model: summarizerModel,
-        fallbackModels: summarizerFallbacks,
-        transport: createOpenAITransport({
-          endpoint,
-          ...(apiKey !== undefined && { apiKey }),
-        }),
-      });
-      summarize = (events) => summarizer.summarize(events);
-      summarizerTransport = summarizer.getTransport();
-      console.error(`[worker] summarizer provider = openai-compatible (${endpoint})${apiKey ? ' [auth]' : ' [no auth]'}`);
-    }
-  } else if (anthropicKey) {
-    const summarizer = new Summarizer({
-      apiKey: anthropicKey,
-      model: summarizerModel,
-      fallbackModels: summarizerFallbacks,
-    });
-    summarize = (events) => summarizer.summarize(events);
-    summarizerTransport = summarizer.getTransport();
-    console.error(`[worker] summarizer provider = anthropic (Anthropic API key)`);
-  } else {
-    console.error(
-      `[worker] observation summarizer disabled — set one of:\n` +
-      `         - ${ENV_SUMMARIZER_PROVIDER}=claude-oauth       (Claude Max/Pro, no key, fastest)\n` +
-      `         - ${ENV_SUMMARIZER_PROVIDER}=claude-code        (Max/Pro plan, no key)\n` +
-      `         - ${ENV_SUMMARIZER_PROVIDER}=codex              (ChatGPT Plus/Pro, no key — run \`codex login\`)\n` +
-      `         - ${ENV_SUMMARIZER_PROVIDER}=agy                (Google account, no key — run \`agy\` once to log in)\n` +
-      `         - ${ENV_SUMMARIZER_PROVIDER}=openai-compatible  + ${ENV_OPENAI_ENDPOINT} (Ollama / LM Studio / OpenAI / etc.)\n` +
-      `         - ${ENV_ANTHROPIC_API_KEY}=sk-...                (direct Anthropic API)`
+      `[worker] observation summarizer disabled — no provider in "${summarizerProviders.join(', ')}" could start.\n` +
+      (providerSkips.length
+        ? providerSkips.map(s => `         - ${s.provider}: ${s.reason}`).join('\n') + '\n'
+        : '') +
+      `         Set ${ENV_SUMMARIZER_PROVIDER} to one or more of:\n` +
+      `         - claude-oauth       (Claude Max/Pro, no key, fastest)\n` +
+      `         - claude-code        (Max/Pro plan, no key)\n` +
+      `         - codex              (ChatGPT Plus/Pro, no key — run \`codex login\`)\n` +
+      `         - agy                (Google account, no key — run \`agy\` once to log in)\n` +
+      `         - openai-compatible  + ${ENV_OPENAI_ENDPOINT} (Ollama / LM Studio / OpenAI / etc.)\n` +
+      `         - ${ENV_ANTHROPIC_API_KEY}=sk-...        (direct Anthropic API)\n` +
+      `         A comma-separated list is an ordered preference, e.g. "claude-oauth,codex,agy".`
     );
   }
 
   return {
     port,
     projectId,
+    ...(activeProvider !== undefined && { summarizerProvider: activeProvider }),
+    ...(providerSkips.length > 0 && { summarizerSkips: providerSkips }),
     metaDbPath: META_DB_PATH,
     embedderEndpoint,
     embedderModel,

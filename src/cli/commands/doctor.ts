@@ -395,7 +395,8 @@ async function checkCapture(): Promise<void> {
   if (!s.ok) return; // worker unreachable — the `worker service` check owns that
   const b = s.body as {
     capture?: { sources?: string[]; ingested?: Record<string, number>; recent?: Record<string, number> };
-    summarizer?: { provider?: string; enabled?: boolean; cooling_down?: boolean };
+    summarizer?: { provider?: string; enabled?: boolean; cooling_down?: boolean;
+                   skipped?: Array<{ provider: string; reason: string }> };
     observations?: { by_origin?: Record<string, number> };
   };
 
@@ -432,7 +433,23 @@ async function checkCapture(): Promise<void> {
             : 'Check worker.log for the provider error (bad key / rate-limit / network). '),
       });
     } else {
-      record({ name: 'summarizer', status: 'PASS', detail: `${sm.provider} running — observations + capture enabled` });
+      // Name the DEMOTION when there was one. With an ordered provider chain the summarizer can be
+      // perfectly healthy and still not be the one you asked for — "codex,claude-oauth" silently
+      // serving claude-oauth because codex is not installed is exactly the state a green line would
+      // hide, and the operator would only learn it from worker.log.
+      const skipped = sm.skipped ?? [];
+      record({
+        name: 'summarizer',
+        status: skipped.length > 0 ? 'WARN' : 'PASS',
+        detail: `${sm.provider} running — observations + capture enabled`
+          + (skipped.length > 0
+              ? ` · PREFERRED provider(s) skipped: ${skipped.map(s => `${s.provider} (${s.reason})`).join('; ')}`
+              : ''),
+        ...(skipped.length > 0 && {
+          remedy: `fix the preferred provider, or drop it from ${'CAPTAIN_MEMO_SUMMARIZER_PROVIDER'} `
+                + `so the chain reflects what this machine can actually run`,
+        }),
+      });
     }
   }
 
