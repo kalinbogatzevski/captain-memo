@@ -66,6 +66,18 @@ export interface ThemeClusterDeps {
   /** Minimum co-retrieval evidence to join a cluster. */
   coRetrievalThreshold?: number;
   blocked?: (titleA: string, titleB: string) => boolean;
+  /**
+   * Breathe. This walk runs on the ENGINE thread and its cost is INVERTED: the seed loop breaks
+   * at maxClusters, so finding clusters is CHEAP and finding NOTHING is the expensive case —
+   * nothing stops it walking every seed against every candidate. Measured on the live 135k corpus
+   * (5,000-row window, largest partition 1,999 rows ⇒ 2,359,673 pairs): 928 ms when 5 clusters are
+   * found, 10,747 ms when none are. Synchronous, that outlives the 5 s heartbeat window — /health
+   * reports "engine unresponsive", /stats times out and writer RPCs 503 (observed live 2026-08-09).
+   * Absent ⇒ no yielding, which is only safe for the small inputs in tests.
+   */
+  yieldToLoop?: () => Promise<void>;
+  /** Ingest preempts housekeeping, exactly as in runQmDedupSlice. Checked at each breath. */
+  shouldAbort?: () => boolean;
   /** Cluster keys the judge already refused. Skipped here rather than downstream so the
    *  maxClusters budget is spent on clusters nobody has ruled on yet — otherwise the stable
    *  ordering means the same refused head is re-judged every tick and the tail is never reached. */
@@ -78,6 +90,10 @@ export interface ThemeClusterDeps {
  *  every appearance of BOTH rows. Measured pairs on the reference corpus cluster well under 0.1. */
 const DEFAULT_CO_RETRIEVAL_MIN = 0.02;
 
+/** Seeds (and rows) walked between breaths. Mirrors runQmDedupSlice's constant so the two
+ *  housekeeping walks yield at the same granularity. */
+const HEARTBEAT_EVERY = 32;
+
 const total = (r: ThemeRow): number => r.from_auto + r.from_search + r.from_drill;
 
 /**
@@ -88,7 +104,7 @@ const total = (r: ThemeRow): number => r.from_auto + r.from_search + r.from_dril
  * Every exclusion is applied BEFORE the size check, so a cluster that only reaches minMembers
  * by counting protected or vectorless rows is correctly dropped rather than shipped short.
  */
-export function findThemeClusters(deps: ThemeClusterDeps): ThemeCluster[] {
+export async function findThemeClusters(deps: ThemeClusterDeps): Promise<ThemeCluster[]> {
   const isBlocked = deps.blocked ?? mergeBlocked;
   const eligible = deps.rows.filter(r => !deps.isProtected(r.id));
 
@@ -108,31 +124,48 @@ export function findThemeClusters(deps: ThemeClusterDeps): ThemeCluster[] {
   const out: ThemeCluster[] = [];
   for (const bucket of partitions.values()) {
     if (out.length >= deps.maxClusters) break;
-    out.push(...clusterOnePartition(bucket, deps, isBlocked, deps.maxClusters - out.length));
+    if (deps.shouldAbort?.()) return out.slice(0, deps.maxClusters);
+    out.push(...await clusterOnePartition(bucket, deps, isBlocked, deps.maxClusters - out.length));
   }
   return out.slice(0, deps.maxClusters);
 }
 
 /** Cluster within ONE (project_id, branch) partition. Every member shares the scope by construction. */
-function clusterOnePartition(
+async function clusterOnePartition(
   rows0: ThemeRow[],
   deps: ThemeClusterDeps,
   isBlocked: (a: string, b: string) => boolean,
   budget: number,
-): ThemeCluster[] {
+): Promise<ThemeCluster[]> {
   const sorted = [...rows0].sort((a, b) => total(b) - total(a) || a.id - b.id);
   const coRetMin = deps.coRetrievalThreshold ?? DEFAULT_CO_RETRIEVAL_MIN;
 
+  // Vector resolution is itself O(n) DB round-trips — measured 0.58 ms/row, so 2.9 s for a
+  // 5,000-row window before a single pair is compared. Breathe here too, not just in the pairs.
   const vecs = new Map<number, Float32Array>();
+  let resolved = 0;
   for (const r of sorted) {
+    if (resolved > 0 && resolved % HEARTBEAT_EVERY === 0) {
+      await deps.yieldToLoop?.();
+      if (deps.shouldAbort?.()) return [];
+    }
+    resolved++;
     const v = deps.representativeVector(r.id);
     if (v) vecs.set(r.id, v);
   }
 
   const out: ThemeCluster[] = [];
   const claimed = new Set<number>();
+  let seedsWalked = 0;
   for (const seed of sorted) {
     if (out.length >= budget) break;
+    // One breath per HEARTBEAT_EVERY seeds. Each seed costs an O(n) inner walk, so the gap
+    // between breaths stays bounded by (HEARTBEAT_EVERY x partition size), not by the quadratic.
+    if (seedsWalked > 0 && seedsWalked % HEARTBEAT_EVERY === 0) {
+      await deps.yieldToLoop?.();
+      if (deps.shouldAbort?.()) return out;
+    }
+    seedsWalked++;
     if (claimed.has(seed.id)) continue;
     const sv = vecs.get(seed.id);
     if (!sv) continue;                                   // fail-closed
@@ -142,12 +175,20 @@ function clusterOnePartition(
       if (cand.id === seed.id || claimed.has(cand.id)) continue;
       const cv = vecs.get(cand.id);
       if (!cv) continue;                                 // fail-closed
-      if (cosine(sv, cv) < deps.cosineThreshold) continue;
       // BOTH signals required. Cosine says these READ alike; co-retrieval says you have actually
       // used them as one thing. Similarity alone groups every observation that shares a
       // vocabulary — which on a real corpus is most of a project — and that is the failure the
       // whole design exists to avoid.
+      //
+      // CO-RETRIEVAL IS CHECKED FIRST, and the order is load-bearing for cost, not for meaning:
+      // the two are a pure AND, so the verdict is identical either way. Co-retrieval is one map
+      // lookup; cosine is 1024 multiply-adds (~4.5 us measured). Co-retrieval is also far the
+      // more selective of the two — on the live corpus its evidence covers 427k pairs out of the
+      // 2.36M a 5,000-row window compares, so cheap-and-selective first skips the expensive test
+      // for the overwhelming majority. This is precisely the finds-nothing case that measured
+      // 10,747 ms with cosine leading.
       if (deps.coRetrieval(seed.id, cand.id) < coRetMin) continue;
+      if (cosine(sv, cv) < deps.cosineThreshold) continue;
       if (isBlocked(seed.title, cand.title)) continue;
       members.push(cand);
     }

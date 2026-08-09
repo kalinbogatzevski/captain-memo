@@ -1415,7 +1415,13 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // expires every scheduled tick skips the idle gate — so the passes work the backlog down
   // back-to-back instead of one pass and then silence. Reverts to idle-gated on its own.
   let forceUntilEpochMs = 0;
-  const forcedNow = (): boolean => Date.now() < forceUntilEpochMs;
+  /** WHICH pass the current forcing window covers. `--semantic --for 30m` used to arm a global
+   *  flag that the forced timer then applied to BOTH passes, so asking for folding also ran the
+   *  theme pass — including its model calls — every 30 s. The one-shot start already honoured
+   *  `pass=`; only the recurring window did not. */
+  let forcedPasses: 'all' | 'semantic' | 'theme' = 'all';
+  const forcedNow = (pass?: 'semantic' | 'theme'): boolean =>
+    Date.now() < forceUntilEpochMs && (pass === undefined || forcedPasses === 'all' || forcedPasses === pass);
   if (!opts.readOnly && obsStore && qmConfig.enabled && qmConfig.semanticEnabled) {
     const semStore = obsStore;
     startSemantic = (force = false) => {
@@ -1429,11 +1435,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         secondsSinceLastActivity: lastActivity == null ? Infinity : Math.max(0, nowS - lastActivity),
         activeSessions: opts.activeSessionCount?.() ?? 0,
       }, { minIdleSeconds: qmConfig.semanticMinIdleSeconds });
-      if (!force && !forcedNow() && !idle) return null;
+      if (!force && !forcedNow('semantic') && !idle) return null;
 
       const startedAt = nowS;
       semanticPromise = runQmDedupSlice({
         candidates: () => findSemanticGroups({
+          // Same reasoning as the theme walk: breathe, and let ingest preempt.
+          yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
+          shouldAbort: () => processBatchPromise != null || (obsQueue?.pendingCount() ?? 0) > 0,
           rows: semStore.sameSessionCandidateRows(qmConfig.dedupWindow),
           representativeVector: repVec,
           cosineThreshold: qmConfig.semanticCosineThreshold,
@@ -1496,7 +1505,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         secondsSinceLastActivity: lastActivity == null ? Infinity : Math.max(0, nowS - lastActivity),
         activeSessions: opts.activeSessionCount?.() ?? 0,
       }, { minIdleSeconds: qmConfig.semanticMinIdleSeconds });
-      if (!force && !forcedNow() && !idle) return null;
+      if (!force && !forcedNow('theme') && !idle) return null;
 
       const startedAt = nowS;
       // Load the co-retrieval evidence ONCE per pass. This is the signal that makes a theme a
@@ -1515,6 +1524,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         };
         return runThemePass({
         clusters: () => findThemeClusters({
+          // Housekeeping runs on the engine thread: breathe, and let ingest preempt. Without
+          // these the walk is one synchronous block that outlives the heartbeat window.
+          yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
+          shouldAbort: () => processBatchPromise != null || (obsQueue?.pendingCount() ?? 0) > 0,
           rows: themeStore.themeCandidateRows(qmConfig.dedupWindow),
           representativeVector: repVec,
           cosineThreshold: qmConfig.themeCosineThreshold,
@@ -1556,7 +1569,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // Only a FORCED run waits. A scheduled one steps aside and comes round again shortly;
         // a forced one was explicitly asked for, so abandoning its whole tick to a queue that is
         // almost never empty on a working machine made `--for` report zeros it never earned.
-        ...((force || forcedNow()) ? {
+        ...((force || forcedNow('theme')) ? {
           waitForQuiet: async () => {
             const deadline = Date.now() + 60_000;
             while (Date.now() < deadline) {
@@ -1597,8 +1610,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   if (!opts.readOnly && (startSemantic || startTheme)) {
     forcedTimer = setInterval(() => {
       if (!forcedNow()) return;
-      startSemantic?.();
-      startTheme?.();
+      if (forcedNow('semantic')) startSemantic?.();
+      if (forcedNow('theme')) startTheme?.();
     }, qmConfig.forcedTickMs);
   }
 
@@ -2496,10 +2509,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // ?for=<seconds> opens a forced window: every scheduled tick until it expires skips the
         // idle gate. Clamped so a typo cannot pin the machine into permanent forcing.
         const forSec = Math.min(Math.max(0, Number(url.searchParams.get('for') ?? 0) || 0), 4 * 3600);
-        if (forSec > 0) forceUntilEpochMs = Date.now() + forSec * 1000;
         const which = url.searchParams.get('pass') ?? 'all';
         if (!['all', 'semantic', 'theme'].includes(which)) {
           return Response.json({ error: 'invalid_pass', allowed: ['all', 'semantic', 'theme'] }, { status: 400 });
+        }
+        // Validate BEFORE arming, and arm only the pass that was asked for.
+        if (forSec > 0) {
+          forceUntilEpochMs = Date.now() + forSec * 1000;
+          forcedPasses = which as 'all' | 'semantic' | 'theme';
         }
         const started: string[] = [];
         const busy: string[] = [];

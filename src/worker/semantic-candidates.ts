@@ -51,7 +51,19 @@ export interface SemanticGroupDeps {
   maxGroups: number;
   /** Title-pair veto. Defaults to the shared merge guard; injectable for tests. */
   blocked?: (titleA: string, titleB: string) => boolean;
+  /**
+   * Breathe. Runs on the ENGINE thread. Measured on the live 135k corpus with the 5,000-row
+   * window: 1,942 ms resolving vectors + 869 ms over 192,306 pairs, uninterrupted — and it shares
+   * a forced tick with the theme pass, which is why the pair produced repeated 9-10 s heartbeat
+   * stalls live on 2026-08-09. Absent ⇒ no yielding, fine for the small inputs in tests.
+   */
+  yieldToLoop?: () => Promise<void>;
+  /** Ingest preempts housekeeping, as in runQmDedupSlice. Checked at each breath. */
+  shouldAbort?: () => boolean;
 }
+
+/** Rows walked between breaths. Same constant as runQmDedupSlice and findThemeClusters. */
+const HEARTBEAT_EVERY = 32;
 
 const total = (r: SemanticRow): number => r.from_auto + r.from_search + r.from_drill;
 const toEntry = (r: SemanticRow): DuplicateEntry => ({
@@ -69,7 +81,7 @@ const toEntry = (r: SemanticRow): DuplicateEntry => ({
  * evidence alone. The downstream confirm would also refuse it, but emitting it here would
  * inflate the candidate count and mask that embedding is lagging.
  */
-export function findSemanticGroups(deps: SemanticGroupDeps): DuplicateGroup[] {
+export async function findSemanticGroups(deps: SemanticGroupDeps): Promise<DuplicateGroup[]> {
   const isBlocked = deps.blocked ?? mergeBlocked;
   // Keyed by (session, project, branch) — a session is NOT a scope. One real session spanned 27
   // (project, branch) pairs across 1,564 rows, because switching repos mid-session is ordinary.
@@ -88,16 +100,30 @@ export function findSemanticGroups(deps: SemanticGroupDeps): DuplicateGroup[] {
     // Survivor invariant: highest total leads, ties by lowest id (matches findDuplicateGroups).
     const rows = [...bucket].sort((a, b) => total(b) - total(a) || a.id - b.id);
 
-    // Resolve vectors once per row — the pair loop is O(n²) in the session, which is small.
+    // Resolve vectors once per row. Each resolution is DB round-trips (measured 0.58 ms/row), so
+    // breathe every HEARTBEAT_EVERY rows — "the session is small" held for the sessions this was
+    // written against, not for a 5,000-row window across 699 of them.
     const vecs = new Map<number, Float32Array>();
+    let resolved = 0;
     for (const r of rows) {
+      if (resolved > 0 && resolved % HEARTBEAT_EVERY === 0) {
+        await deps.yieldToLoop?.();
+        if (deps.shouldAbort?.()) return out;
+      }
+      resolved++;
       const v = deps.representativeVector(r.id);
       if (v) vecs.set(r.id, v);
     }
 
     const claimed = new Set<number>();
+    let walked = 0;
     for (const survivor of rows) {
       if (out.length >= deps.maxGroups) break;
+      if (walked > 0 && walked % HEARTBEAT_EVERY === 0) {
+        await deps.yieldToLoop?.();
+        if (deps.shouldAbort?.()) return out;
+      }
+      walked++;
       if (claimed.has(survivor.id)) continue;
       const sv = vecs.get(survivor.id);
       if (!sv) continue;                                    // fail-closed

@@ -16,7 +16,7 @@ import type { ThemeDraft } from './theme-judge.ts';
 
 export interface ThemePassDeps {
   /** Cross-session clusters, already guarded and protection-filtered. */
-  clusters: () => ThemeCluster[];
+  clusters: () => Promise<ThemeCluster[]>;
   /** Haiku wrapper. Returns null to decline — never throws (see theme-judge.ts). */
   judge: (cluster: ThemeCluster) => Promise<ThemeDraft | null>;
   /** Insert the theme, archive its members beneath it, and INDEX it so it is retrievable.
@@ -54,7 +54,7 @@ export async function runThemePass(deps: ThemePassDeps): Promise<ThemePassResult
   const res: ThemePassResult = {
     clustersConsidered: 0, themesWritten: 0, declined: 0, failed: 0, aborted: false,
   };
-  for (const cluster of deps.clusters()) {
+  for (const cluster of await deps.clusters()) {
     if (deps.shouldAbort()) {
       // Forced runs wait it out; scheduled runs step aside — they will come round again shortly
       // and have nothing to prove.

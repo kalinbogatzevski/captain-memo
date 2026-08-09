@@ -29,13 +29,13 @@ const base = {
 };
 
 describe('findThemeClusters', () => {
-  test('clusters three cross-session restatements of one standing fact', () => {
+  test('clusters three cross-session restatements of one standing fact', async () => {
     const rows = [
       row(1, 'update-status skill command verified and available', 's1', 9),
       row(2, 'update-status skill registered and callable', 's2', 3),
       row(3, 'Confirmed update-status skill availability', 's3', 1),
     ];
-    const cs = findThemeClusters({ ...base, rows, representativeVector: vecs({ 1: at(0), 2: at(4), 3: at(8) }) });
+    const cs = await findThemeClusters({ ...base, rows, representativeVector: vecs({ 1: at(0), 2: at(4), 3: at(8) }) });
     expect(cs.length).toBe(1);
     expect(cs[0]!.members.map(m => m.id).sort()).toEqual([1, 2, 3]);
     expect(cs[0]!.sessionCount).toBe(3);
@@ -43,64 +43,64 @@ describe('findThemeClusters', () => {
 
   // The whole point of the split. A same-session group is a restatement stage 1 already folds;
   // sending it to a model would spend tokens to reach the same place less safely.
-  test('refuses a cluster confined to ONE session', () => {
+  test('refuses a cluster confined to ONE session', async () => {
     const rows = [row(1, 'a', 's1', 3), row(2, 'b', 's1', 2), row(3, 'c', 's1', 1)];
-    expect(findThemeClusters({ ...base, rows, representativeVector: vecs({ 1: at(0), 2: at(3), 3: at(6) }) })).toEqual([]);
+    expect(await findThemeClusters({ ...base, rows, representativeVector: vecs({ 1: at(0), 2: at(3), 3: at(6) }) })).toEqual([]);
   });
 
   // Two rows are a pair, not a theme. Summarising a pair costs a model call to say what the
   // higher-count row already says.
-  test('requires at least minMembers rows', () => {
+  test('requires at least minMembers rows', async () => {
     const rows = [row(1, 'a', 's1', 3), row(2, 'b', 's2', 1)];
-    expect(findThemeClusters({ ...base, rows, representativeVector: vecs({ 1: at(0), 2: at(3) }) })).toEqual([]);
+    expect(await findThemeClusters({ ...base, rows, representativeVector: vecs({ 1: at(0), 2: at(3) }) })).toEqual([]);
   });
 
-  test('does not cluster below the cosine threshold', () => {
+  test('does not cluster below the cosine threshold', async () => {
     const rows = [row(1, 'a', 's1'), row(2, 'b', 's2'), row(3, 'c', 's3')];
-    expect(findThemeClusters({ ...base, rows, representativeVector: vecs({ 1: at(0), 2: at(40), 3: at(80) }) })).toEqual([]);
+    expect(await findThemeClusters({ ...base, rows, representativeVector: vecs({ 1: at(0), 2: at(40), 3: at(80) }) })).toEqual([]);
   });
 
   // Same rule the fold path applies: a row you drilled into or anchored is never touched by
   // the machine. Excluding it can drop the cluster under minMembers, which is correct.
-  test('excludes protected rows, and drops the cluster if that leaves too few', () => {
+  test('excludes protected rows, and drops the cluster if that leaves too few', async () => {
     const rows = [row(1, 'a', 's1', 3), row(2, 'b', 's2', 2), row(3, 'c', 's3', 1)];
     const vm = { 1: at(0), 2: at(3), 3: at(6) };
-    expect(findThemeClusters({
+    expect(await findThemeClusters({
       ...base, rows, representativeVector: vecs(vm), isProtected: (id) => id === 3,
     })).toEqual([]);                                   // 2 left ⇒ under minMembers
   });
 
-  test('keeps a cluster that still has enough members after exclusion', () => {
+  test('keeps a cluster that still has enough members after exclusion', async () => {
     const rows = [row(1, 'a', 's1', 4), row(2, 'b', 's2', 3), row(3, 'c', 's3', 2), row(4, 'd', 's4', 1)];
     const vm = { 1: at(0), 2: at(2), 3: at(4), 4: at(6) };
-    const cs = findThemeClusters({
+    const cs = await findThemeClusters({
       ...base, rows, representativeVector: vecs(vm), isProtected: (id) => id === 4,
     });
     expect(cs.length).toBe(1);
     expect(cs[0]!.members.map(m => m.id).sort()).toEqual([1, 2, 3]);
   });
 
-  test('fail-closed on a missing vector', () => {
+  test('fail-closed on a missing vector', async () => {
     const rows = [row(1, 'a', 's1'), row(2, 'b', 's2'), row(3, 'c', 's3')];
-    expect(findThemeClusters({ ...base, rows, representativeVector: vecs({ 1: at(0), 2: at(3) }) })).toEqual([]);
+    expect(await findThemeClusters({ ...base, rows, representativeVector: vecs({ 1: at(0), 2: at(3) }) })).toEqual([]);
   });
 
-  test('honours the merge guard — a version mismatch never themes', () => {
+  test('honours the merge guard — a version mismatch never themes', async () => {
     const rows = [
       row(1, 'Bump captain-memo to 1.0.0', 's1'),
       row(2, 'Bump captain-memo to 2.0.0', 's2'),
       row(3, 'Bump captain-memo to 3.0.0', 's3'),
     ];
-    expect(findThemeClusters({ ...base, rows, representativeVector: vecs({ 1: at(0), 2: at(2), 3: at(4) }) })).toEqual([]);
+    expect(await findThemeClusters({ ...base, rows, representativeVector: vecs({ 1: at(0), 2: at(2), 3: at(4) }) })).toEqual([]);
   });
 
-  test('a row belongs to at most one cluster', () => {
+  test('a row belongs to at most one cluster', async () => {
     const rows = [
       row(1, 'a', 's1', 9), row(2, 'b', 's2', 8), row(3, 'c', 's3', 7),
       row(4, 'd', 's4', 6), row(5, 'e', 's5', 5), row(6, 'f', 's6', 4),
     ];
     const vm = { 1: at(0), 2: at(2), 3: at(4), 4: at(90), 5: at(92), 6: at(94) };
-    const cs = findThemeClusters({ ...base, rows, representativeVector: vecs(vm) });
+    const cs = await findThemeClusters({ ...base, rows, representativeVector: vecs(vm) });
     const all = cs.flatMap(c => c.members.map(m => m.id));
     expect(new Set(all).size).toBe(all.length);
   });
@@ -110,35 +110,35 @@ describe('findThemeClusters', () => {
   // project_id. Three unrelated repos phrasing a bug the same way would have been archived
   // together beneath one theme filed under whichever project the worker happened to run as.
   describe('scope', () => {
-    test('never clusters across project_id', () => {
+    test('never clusters across project_id', async () => {
       const rows = [
         row(1, 'Fix the login redirect loop', 's1', 3, 'erp-platform'),
         row(2, 'Fix the login redirect loop', 's2', 2, 'captain-hub'),
         row(3, 'Fix the login redirect loop', 's3', 1, '123net_aelita'),
       ];
-      expect(findThemeClusters({
+      expect(await findThemeClusters({
         ...base, rows, representativeVector: vecs({ 1: at(0), 2: at(1), 3: at(2) }),
       })).toEqual([]);
     });
 
-    test('never clusters across branch within one project', () => {
+    test('never clusters across branch within one project', async () => {
       const rows = [
         row(1, 'same words', 's1', 3, 'p', 'master'),
         row(2, 'same words', 's2', 2, 'p', 'feature/x'),
         row(3, 'same words', 's3', 1, 'p', 'master'),
       ];
-      expect(findThemeClusters({
+      expect(await findThemeClusters({
         ...base, rows, representativeVector: vecs({ 1: at(0), 2: at(1), 3: at(2) }),
       })).toEqual([]);   // only 2 in master ⇒ under minMembers
     });
 
-    test('a cluster reports the scope it is filed under', () => {
+    test('a cluster reports the scope it is filed under', async () => {
       const rows = [
         row(1, 'a', 's1', 3, 'erp-platform', 'master'),
         row(2, 'b', 's2', 2, 'erp-platform', 'master'),
         row(3, 'c', 's3', 1, 'erp-platform', 'master'),
       ];
-      const cs = findThemeClusters({
+      const cs = await findThemeClusters({
         ...base, rows, representativeVector: vecs({ 1: at(0), 2: at(2), 3: at(4) }),
       });
       expect(cs.length).toBe(1);
@@ -146,13 +146,13 @@ describe('findThemeClusters', () => {
       expect(cs[0]!.branch).toBe('master');
     });
 
-    test('two projects each get their own theme rather than one merged cluster', () => {
+    test('two projects each get their own theme rather than one merged cluster', async () => {
       const rows = [
         row(1, 'a', 's1', 6, 'A'), row(2, 'a', 's2', 5, 'A'), row(3, 'a', 's3', 4, 'A'),
         row(4, 'a', 's4', 3, 'B'), row(5, 'a', 's5', 2, 'B'), row(6, 'a', 's6', 1, 'B'),
       ];
       const vm = { 1: at(0), 2: at(1), 3: at(2), 4: at(0), 5: at(1), 6: at(2) };
-      const cs = findThemeClusters({ ...base, rows, representativeVector: vecs(vm) });
+      const cs = await findThemeClusters({ ...base, rows, representativeVector: vecs(vm) });
       expect(cs.length).toBe(2);
       expect(cs.map(c => c.project_id).sort()).toEqual(['A', 'B']);
       for (const c of cs) expect(new Set(c.members.map(m => m.project_id)).size).toBe(1);
@@ -171,22 +171,22 @@ describe('findThemeClusters', () => {
     ];
     const vm = { 1: at(0), 2: at(2), 3: at(4) };   // all well above the cosine threshold
 
-    test('refuses a cluster whose members have never been recalled together', () => {
-      expect(findThemeClusters({
+    test('refuses a cluster whose members have never been recalled together', async () => {
+      expect(await findThemeClusters({
         ...base, rows, representativeVector: vecs(vm), coRetrieval: () => 0,
       })).toEqual([]);
     });
 
-    test('forms the cluster when the recall evidence is there', () => {
-      const cs = findThemeClusters({
+    test('forms the cluster when the recall evidence is there', async () => {
+      const cs = await findThemeClusters({
         ...base, rows, representativeVector: vecs(vm), coRetrieval: () => 0.5,
       });
       expect(cs.length).toBe(1);
       expect(cs[0]!.members.length).toBe(3);
     });
 
-    test('drops the member that shares words but was never recalled alongside', () => {
-      const cs = findThemeClusters({
+    test('drops the member that shares words but was never recalled alongside', async () => {
+      const cs = await findThemeClusters({
         ...base,
         rows: [...rows, row(4, 'the same conclusion, phrasing four', 's4', 1)],
         representativeVector: vecs({ ...vm, 4: at(6) }),
@@ -196,8 +196,8 @@ describe('findThemeClusters', () => {
       expect(cs[0]!.members.map(m => m.id).sort()).toEqual([1, 2, 3]);   // 4 excluded
     });
 
-    test('honours the threshold, not merely non-zero evidence', () => {
-      expect(findThemeClusters({
+    test('honours the threshold, not merely non-zero evidence', async () => {
+      expect(await findThemeClusters({
         ...base, rows, representativeVector: vecs(vm),
         coRetrieval: () => 0.01, coRetrievalThreshold: 0.1,
       })).toEqual([]);
@@ -216,16 +216,16 @@ describe('findThemeClusters', () => {
     const vm = { 1: at(0), 2: at(2), 3: at(4), 4: at(90), 5: at(92), 6: at(94) };
     const key = (ids: number[]) => [...ids].sort((x, y) => x - y).join(',');
 
-    test('without a decline memory, a cap always returns the same head', () => {
-      const first = findThemeClusters({ ...base, rows, representativeVector: vecs(vm), maxClusters: 1 });
-      const again = findThemeClusters({ ...base, rows, representativeVector: vecs(vm), maxClusters: 1 });
+    test('without a decline memory, a cap always returns the same head', async () => {
+      const first = await findThemeClusters({ ...base, rows, representativeVector: vecs(vm), maxClusters: 1 });
+      const again = await findThemeClusters({ ...base, rows, representativeVector: vecs(vm), maxClusters: 1 });
       expect(first[0]!.members.map(m => m.id)).toEqual(again[0]!.members.map(m => m.id));
     });
 
-    test('a refused cluster steps aside so the next one gets the budget', () => {
-      const first = findThemeClusters({ ...base, rows, representativeVector: vecs(vm), maxClusters: 1 });
+    test('a refused cluster steps aside so the next one gets the budget', async () => {
+      const first = await findThemeClusters({ ...base, rows, representativeVector: vecs(vm), maxClusters: 1 });
       const refused = new Set([key(first[0]!.members.map(m => m.id))]);
-      const second = findThemeClusters({
+      const second = await findThemeClusters({
         ...base, rows, representativeVector: vecs(vm), maxClusters: 1,
         declined: refused, clusterKey: key,
       });
@@ -233,16 +233,16 @@ describe('findThemeClusters', () => {
       expect(second[0]!.members.map(m => m.id)).not.toEqual(first[0]!.members.map(m => m.id));
     });
 
-    test('every cluster refused ⇒ nothing emitted, rather than the head again', () => {
-      const all = findThemeClusters({ ...base, rows, representativeVector: vecs(vm) });
+    test('every cluster refused ⇒ nothing emitted, rather than the head again', async () => {
+      const all = await findThemeClusters({ ...base, rows, representativeVector: vecs(vm) });
       const refused = new Set(all.map(c => key(c.members.map(m => m.id))));
-      expect(findThemeClusters({
+      expect(await findThemeClusters({
         ...base, rows, representativeVector: vecs(vm), declined: refused, clusterKey: key,
       })).toEqual([]);
     });
   });
 
-  test('maxClusters caps the work', () => {
+  test('maxClusters caps the work', async () => {
     const rows: ThemeRow[] = [];
     const vm: Record<number, Float32Array> = {};
     for (let g = 0; g < 3; g++) {
@@ -252,7 +252,67 @@ describe('findThemeClusters', () => {
         vm[id] = at(g * 60 + i * 2);
       }
     }
-    expect(findThemeClusters({ ...base, rows, representativeVector: vecs(vm) }).length).toBe(3);
-    expect(findThemeClusters({ ...base, rows, representativeVector: vecs(vm), maxClusters: 1 }).length).toBe(1);
+    expect((await findThemeClusters({ ...base, rows, representativeVector: vecs(vm) })).length).toBe(3);
+    expect((await findThemeClusters({ ...base, rows, representativeVector: vecs(vm), maxClusters: 1 })).length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HEARTBEAT. The clusterer runs on the engine thread, and its cost is INVERTED: it is cheap
+// when it finds clusters (the seed loop breaks at maxClusters) and most expensive when it finds
+// NOTHING, because then nothing ever breaks the loop. Measured on the live 135k corpus with the
+// 5,000-row window: 928 ms when 5 clusters are found, 10,747 ms when none are — 2,359,673 pairs
+// in the largest partition (1,999 rows), fully synchronous. That stall outlives the 5 s heartbeat
+// freshness window, so /health reports "engine unresponsive", /stats times out and writer RPCs
+// 503 — observed live on 2026-08-09.
+// ---------------------------------------------------------------------------
+
+describe('heartbeat: a big partition must not starve the engine thread', () => {
+  /** One partition, no co-retrieval anywhere ⇒ zero clusters ⇒ the full quadratic walk. */
+  const bigPartition = (n: number) => {
+    const rows: ThemeRow[] = [];
+    const vm: Record<number, Float32Array> = {};
+    for (let i = 0; i < n; i++) {
+      rows.push(row(i, `row ${i}`, `s${i}`, 1));       // distinct sessions ⇒ all cross-session
+      vm[i] = at(i % 90);
+    }
+    return { rows, vm };
+  };
+
+  test('yields to the loop while walking a large partition', async () => {
+    const { rows, vm } = bigPartition(300);
+    let yields = 0;
+    await findThemeClusters({
+      ...base, rows, representativeVector: vecs(vm), coRetrieval: () => 0,
+      yieldToLoop: async () => { yields++; },
+    });
+    // Without yielding this is one uninterrupted synchronous block, however long it takes.
+    expect(yields).toBeGreaterThan(0);
+  });
+
+  test('aborts mid-walk when ingest arrives, instead of finishing the quadratic', async () => {
+    const { rows, vm } = bigPartition(300);
+    let yields = 0;
+    const out = await findThemeClusters({
+      ...base, rows, representativeVector: vecs(vm), coRetrieval: () => 0,
+      yieldToLoop: async () => { yields++; },
+      shouldAbort: () => yields >= 2,        // ingest lands after the second breath
+    });
+    expect(out).toEqual([]);
+    expect(yields).toBeLessThan(20);          // stopped early — did NOT walk all 300 seeds
+  });
+
+  test('still finds what it found before — yielding changes timing, never results', async () => {
+    // Same rows as the very first test in this file — the yield must not change the verdict.
+    const rows = [
+      row(1, 'update-status skill command verified and available', 's1', 9),
+      row(2, 'update-status skill registered and callable', 's2', 3),
+      row(3, 'Confirmed update-status skill availability', 's3', 1),
+    ];
+    const out = await findThemeClusters({
+      ...base, rows, representativeVector: vecs({ 1: at(0), 2: at(4), 3: at(8) }),
+    });
+    expect(out.length).toBe(1);
+    expect(out[0]!.members.map(m => m.id).sort()).toEqual([1, 2, 3]);
   });
 });

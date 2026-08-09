@@ -5,6 +5,39 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.33.2] — 2026-08-09
+
+### Fixed
+
+- **Housekeeping blocked the engine thread for up to 49 seconds.** Running `captain-memo
+  consolidate` on a 135k-observation corpus took the worker down: `/health` reported `engine
+  unresponsive 48965ms (idle)`, `/stats` timed out, and writer RPCs 503'd. The CLI's "socket
+  connection was closed" was a symptom — its `/stats` poll hit a wedged engine, not a dead one.
+
+  The cause is that `findThemeClusters`' cost is **inverted**. Its seed loop breaks at
+  `maxClusters`, so finding clusters is cheap and finding *nothing* is the worst case — nothing
+  stops it walking every seed against every candidate. Measured on a copy of the live corpus,
+  same input: **928 ms when 5 clusters are found, 10,747 ms when none are** (2,359,673 pairs,
+  largest partition 1,999 rows). A corpus that reports "0 considered" every run — which this one
+  does — paid the worst case every time, synchronously, past the 5 s heartbeat window.
+
+  Both finders now **yield**: `findThemeClusters` and `findSemanticGroups` breathe every 32 rows
+  in both synchronous loops (vector resolution and the pair walk) and honour `shouldAbort`, so
+  ingest preempts them — the pattern `runQmDedupSlice` already used. Fixing only the theme walk
+  left 14 of 90 health checks failing; the semantic finder is the same defect in the sibling pass,
+  and they share a forced tick.
+
+  The theme walk also now tests **co-retrieval before cosine**. The two are a pure AND so the
+  verdict is unchanged, but co-retrieval is one map lookup against 1024 multiply-adds and is far
+  the more selective (427k pairs of evidence against the 2.36M a window compares).
+
+  After, same input: **10,747 ms → 604 ms, worst event-loop stall 18 ms**. Re-running live the
+  exact command that broke it, sampling health once a second for 90 s: **0/90 failures**.
+
+- **`consolidate --semantic --for 30m` also ran the theme pass.** `--for` armed a global forcing
+  flag that the recurring timer applied to both passes — model calls included — every 30 s. The
+  one-shot start already honoured `pass=`; only the window did not.
+
 ## [0.33.1] — 2026-08-09
 
 ### Fixed

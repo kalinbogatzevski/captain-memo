@@ -23,7 +23,7 @@ describe('runThemePass', () => {
     const written: number[][] = [];
     const r = await runThemePass({
       ...base,
-      clusters: () => [cluster([1, 2, 3]), cluster([4, 5, 6])],
+      clusters: async () => [cluster([1, 2, 3]), cluster([4, 5, 6])],
       createTheme: (_d, ids) => { written.push(ids); return written.length; },
     });
     expect(r.themesWritten).toBe(2);
@@ -37,7 +37,7 @@ describe('runThemePass', () => {
     let writes = 0;
     const r = await runThemePass({
       ...base,
-      clusters: () => [cluster([1, 2, 3])],
+      clusters: async () => [cluster([1, 2, 3])],
       judge: async () => null,
       createTheme: () => { writes++; return 1; },
     });
@@ -50,7 +50,7 @@ describe('runThemePass', () => {
     let judged = 0;
     const r = await runThemePass({
       ...base,
-      clusters: () => [cluster([1, 2]), cluster([3, 4]), cluster([5, 6])],
+      clusters: async () => [cluster([1, 2]), cluster([3, 4]), cluster([5, 6])],
       judge: async () => { judged++; return draft; },
       shouldAbort: () => judged >= 1,
     });
@@ -62,7 +62,7 @@ describe('runThemePass', () => {
   test('a failed write is counted, not thrown', async () => {
     const r = await runThemePass({
       ...base,
-      clusters: () => [cluster([1, 2]), cluster([3, 4])],
+      clusters: async () => [cluster([1, 2]), cluster([3, 4])],
       createTheme: (_d, ids) => { if (ids[0] === 1) throw new Error('constraint'); return 7; },
     });
     expect(r.failed).toBe(1);
@@ -72,7 +72,7 @@ describe('runThemePass', () => {
   test('no clusters ⇒ no model calls at all', async () => {
     let judged = 0;
     const r = await runThemePass({
-      ...base, clusters: () => [], judge: async () => { judged++; return draft; },
+      ...base, clusters: async () => [], judge: async () => { judged++; return draft; },
     });
     expect(r).toEqual({ clustersConsidered: 0, themesWritten: 0, declined: 0, failed: 0, aborted: false });
     expect(judged).toBe(0);
@@ -86,7 +86,7 @@ describe('runThemePass', () => {
   test('awaits the writer, so an indexing failure is not reported as a success', async () => {
     const r = await runThemePass({
       ...base,
-      clusters: () => [cluster([1, 2, 3])],
+      clusters: async () => [cluster([1, 2, 3])],
       createTheme: async () => { throw new Error('embedder offline'); },
     });
     expect(r.themesWritten).toBe(0);
@@ -98,7 +98,7 @@ describe('runThemePass', () => {
     const c = cluster([1, 2, 3]);
     c.project_id = 'erp-platform'; c.branch = 'master';
     await runThemePass({
-      ...base, clusters: () => [c],
+      ...base, clusters: async () => [c],
       createTheme: (_d, _ids, scope) => { seen.push(scope); return 1; },
     });
     expect(seen).toEqual([{ project_id: 'erp-platform', branch: 'master' }]);
@@ -109,7 +109,7 @@ describe('runThemePass', () => {
   // never empty, so abandoning the whole tick made `--for` report zeros it never earned.
   test('a scheduled run still abandons its tick to ingest', async () => {
     const r = await runThemePass({
-      ...base, clusters: () => [cluster([1, 2, 3])], shouldAbort: () => true,
+      ...base, clusters: async () => [cluster([1, 2, 3])], shouldAbort: () => true,
     });
     expect(r.aborted).toBe(true);
     expect(r.clustersConsidered).toBe(0);
@@ -119,7 +119,7 @@ describe('runThemePass', () => {
     let busy = true;
     const r = await runThemePass({
       ...base,
-      clusters: () => [cluster([1, 2, 3])],
+      clusters: async () => [cluster([1, 2, 3])],
       shouldAbort: () => busy,
       waitForQuiet: async () => { busy = false; return true; },
     });
@@ -131,7 +131,7 @@ describe('runThemePass', () => {
   test('a forced run that waits in vain still reports the abort honestly', async () => {
     const r = await runThemePass({
       ...base,
-      clusters: () => [cluster([1, 2, 3])],
+      clusters: async () => [cluster([1, 2, 3])],
       shouldAbort: () => true,
       waitForQuiet: async () => false,          // never cleared
     });
@@ -143,7 +143,7 @@ describe('runThemePass', () => {
     let yields = 0;
     await runThemePass({
       ...base,
-      clusters: () => [cluster([1, 2]), cluster([3, 4])],
+      clusters: async () => [cluster([1, 2]), cluster([3, 4])],
       yieldToLoop: () => { yields++; return Promise.resolve(); },
     });
     expect(yields).toBe(2);

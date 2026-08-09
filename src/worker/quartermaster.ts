@@ -17,7 +17,10 @@ const HEARTBEAT_EVERY = 32;
 export interface QmDedupDeps {
   /** Bounded window of candidate groups from dedupCandidateWindow (already
    *  (project,branch)-scoped + negation/identifier guarded). */
-  candidates: () => DuplicateGroup[];
+  /** The candidate finder. May be async: the SEMANTIC finder yields to the loop while it walks
+   *  (it is O(n^2) over a 5,000-row window on the engine thread), while the dedup finder stays
+   *  synchronous. `await` below accepts either, so neither caller had to change. */
+  candidates: () => DuplicateGroup[] | Promise<DuplicateGroup[]>;
   /** Representative (centroid) vector of an observation's chunk vectors, or null
    *  when none exists yet — the fail-closed signal. */
   representativeVector: (obsId: number) => Float32Array | null;
@@ -59,7 +62,7 @@ export async function runQmDedupSlice(deps: QmDedupDeps): Promise<QmDedupResult>
   const res: QmDedupResult = { scanned: 0, merges: 0, skippedNoVector: 0, aborted: false };
   if (!deps.cfg.enabled || !deps.cfg.dedupEnabled) return res; // off by default
   const atEpoch = deps.now();
-  for (const group of deps.candidates()) {
+  for (const group of await deps.candidates()) {
     if (deps.shouldAbort()) { res.aborted = true; return res; } // ingest/heartbeat preempt
     res.scanned++;
     const survVec = deps.representativeVector(group.survivor.id);
