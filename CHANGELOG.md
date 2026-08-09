@@ -5,6 +5,81 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.30.9] — 2026-08-09
+
+### Added
+
+- **`captain-memo forget <doc_id|path>` — a memory could be written but never removed.** `remember`
+  created and updated; nothing forgot. `ingest.deleteFile()` already did the whole job — drops the
+  vectors, and the `documents` row cascades to `chunks` with `chunks_fts` cleaned by its own AFTER
+  DELETE triggers — but it had no route and no command, so it was only ever reachable from the file
+  watcher.
+
+  **Deleting the `.md` by hand does not unpublish a memory**, which is the trap this closes: the
+  document, its chunks and its vectors stay indexed and keep answering searches, so the entry lives
+  on with no file behind it. `maintenance` prunes only orphaned *vectors* (the reverse case) and
+  reindex does not drop documents whose source has vanished. The only workaround was to overwrite the
+  body via another `remember` and leave a husk.
+
+  ```
+  POST /forget { doc_id | path, dry_run }
+  captain-memo forget <doc_id|path> [--path] [--dry-run] [--yes]
+  ```
+
+  Deletes the file too, deliberately — left on disk under a watched directory it is re-indexed on the
+  next tick and the memory comes back. Index first, file second: the reverse can leave a document
+  indexed with its source already gone if the process dies between the two, which reads to every later
+  search as a live memory that cannot be opened. Only ever deletes something the index already knows
+  about, so this is not a file-deletion primitive for any path the worker can reach. Confirms by
+  default and prints what it is about to remove; a basename resolving to two documents is refused with
+  both candidates rather than guessed at.
+
+### Fixed
+
+- **`capture:<source>` called a working source dead.** `events_ingested` arrived as
+  `ALTER TABLE ... NOT NULL DEFAULT 0`, so every row written before it reads back as "this session
+  produced nothing" — exactly what `ingestedSessions()` counts. A source last captured *before* that
+  migration is pinned at 0 however well it worked, while one captured after gets real counts and
+  passes; that is the only difference between them. Where this was found, two sources sat at 0 while
+  the corpus already held **246** and **15** of their observations. The printed remedy could never
+  clear it either: `wasIngested()` skips any session whose marker is unchanged, so `capture backfill`
+  never re-extracts those files and never recounts. The extractors were fine throughout.
+
+  doctor now reads `observations.by_origin`, which `/stats` already sends; no worker change. An
+  additive column default is not neutral — it asserts a value about history it knows nothing about, so
+  it must never become a diagnostic's ground truth.
+
+- **The hook-latency line named a deadline nothing had been measured against.** `over_deadline` is
+  counted against the *caller's* `deadline_ms`, and the hook resolves `CAPTAIN_MEMO_HOOK_TIMEOUT_MS`
+  from its own process env — Claude Code's. The worker never reads that key, so scraping `worker.env`
+  for it answered a different question: **2000 there against the 10000 the hook was actually sending**.
+  Symptom was `p95 2229ms · max 2350ms` reported as "0/26 over the 2000ms deadline", with the
+  `p50 >= 0.8 x deadline` clause scored against a deadline that was not in force. `inject_latency` now
+  reports `deadline_ms` (most-recent non-null in the window) and the verdict prefers it, falling back
+  to the old lookup only for a worker too old to report it.
+
+- **`/remember` had no deadline of its own.** `LONG_WRITE_PATHS` covers `/reindex` and `/consolidate`;
+  everything else took the 10 s default, while `/remember` does an LLM frontmatter `generate` **plus**
+  a semantic dedup search **plus** a chunk-embed pass. Measured on a 149k-chunk corpus with an external
+  embedder, wall-clock at the endpoint:
+
+  | body | create | update |
+  |---|---|---|
+  | 2 KB | 1.8 s | — |
+  | 10 KB | 2.1 s | **14.0 s → 503 at 10.003 s** |
+  | 30 KB | 2.9 s | **11.3 s** |
+
+  Creates always fit; updates never did — an ordinary 30 KB update was a *guaranteed* 503, not an edge
+  case. The timeout only abandons *main's* wait: the writer runs on and **completes** the write, so the
+  caller was told "failed" about a write that had landed, which makes a retry duplicate work that
+  already succeeded. Now `REMEMBER_DEADLINE_MS` = 60 s (env `CAPTAIN_MEMO_REMEMBER_MS`), ~4x the
+  measured worst case. The same request returns 200 `updated` in 3.68 s.
+
+  **Refines 0.30.8's note.** That release capped FTS query tokens and read the `/remember` timeout as
+  one of its symptoms. The cap was real and its measurements stand, but this measurement was taken
+  *with* the cap in place and the update still crossed the deadline: the dedup search was never the
+  dominant cost on this path.
+
 ## [0.30.8] — 2026-08-08
 
 ### Fixed

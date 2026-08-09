@@ -905,7 +905,7 @@ import { join as join8 } from "path";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.30.8",
+  version: "0.30.9",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
