@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { schemaDrift, migrationVerdict, workerVerdict, embedderVerdict, captureSourceVerdict } from '../../src/cli/commands/doctor.ts';
+import { schemaDrift, migrationVerdict, workerVerdict, embedderVerdict, injectLatencyVerdict, INJECT_MIN_SAMPLES, captureSourceVerdict } from '../../src/cli/commands/doctor.ts';
 
 // ---------------------------------------------------------------------------
 // schemaDrift — does the live DB actually HAVE what the migrations promise?
@@ -207,4 +207,43 @@ test('captureSourceVerdict: recent sessions with nothing ingested still WARNs', 
 
 test('captureSourceVerdict: an absent recent map yields no findings (never assert from no data)', () => {
   expect(captureSourceVerdict(['codex'], { codex: 0 }, undefined)).toHaveLength(0);
+});
+
+// ---------------------------------------------------------------------------
+// injectLatencyVerdict — spec §4.2. The hook FAILS OPEN, so a missed deadline is
+// invisible; 865 such failures accumulated over ten weeks before anyone noticed.
+
+test('injectLatencyVerdict — says NOTHING on an older worker or too few samples', () => {
+  // "Absent" and "broken" are different. Asserting a problem from no data is the exact failure
+  // the federation key check already made once (PASS while zero peers were attested).
+  expect(injectLatencyVerdict(undefined, 2000)).toBeNull();
+  expect(injectLatencyVerdict(null, 2000)).toBeNull();
+  expect(injectLatencyVerdict({ n: INJECT_MIN_SAMPLES - 1, p50_ms: 9999, over_deadline_n: 99 }, 2000)).toBeNull();
+});
+
+test('injectLatencyVerdict — PASS with real headroom', () => {
+  const v = injectLatencyVerdict({ n: 100, p50_ms: 700, p95_ms: 1200, over_deadline_n: 2 }, 2000);
+  expect(v?.status).toBe('PASS');
+  expect(v?.detail).toContain('700ms');
+});
+
+test('injectLatencyVerdict — WARN when the median is within 20% of the deadline', () => {
+  const v = injectLatencyVerdict({ n: 100, p50_ms: 1600, p95_ms: 1900, over_deadline_n: 5 }, 2000);
+  expect(v?.status).toBe('WARN');
+  expect(v?.detail).toMatch(/within 20%/);
+});
+
+test('injectLatencyVerdict — WARN on a bimodal shape the median hides', () => {
+  // p50 1200 of 2000 looks survivable; 30% of calls are still missing. This clause is why the
+  // median alone is not enough.
+  const v = injectLatencyVerdict({ n: 100, p50_ms: 1200, p95_ms: 8000, over_deadline_n: 30 }, 2000);
+  expect(v?.status).toBe('WARN');
+  expect(v?.detail).toMatch(/30% of injects miss/);
+});
+
+test('injectLatencyVerdict — the remedy never says "raise the timeout"', () => {
+  // Raising it converts a visible failure into a slower prompt, which is how this went unnoticed.
+  const v = injectLatencyVerdict({ n: 100, p50_ms: 1900, p95_ms: 2100, over_deadline_n: 40 }, 2000);
+  expect(v?.remedy).toMatch(/do NOT raise the timeout/);
+  expect(v?.remedy).toMatch(/profile the local search/);
 });

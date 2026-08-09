@@ -2569,12 +2569,23 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 
         const flags: string[] = [];
         let embedding: number[] = [];
+        // Timed SEPARATELY from total elapsed (spec 4.1): the budget decision in 4.3 asks "can I
+        // afford an embed inside this deadline?", and that is unanswerable from a total alone. Stays
+        // null when the embed was skipped, so it is excluded from the p50 rather than counted as 0 —
+        // a local sidecar and a hosted embedder differ by an order of magnitude, so a zero would
+        // quietly make the hosted case look affordable.
+        let embedMs: number | null = null;
         if (!opts.skipEmbed) {
+          const embedStart = Date.now();
           try {
             const out = await embedder.embed([trimmed], 'query');
             embedding = out[0] ?? [];
           } catch {
             flags.push('embedder=voyage:keyword-fallback=true');
+          } finally {
+            // Recorded even on the failure path: a slow embed that then THREW still consumed the
+            // deadline, and hiding that cost is how the window would flatter the worst case.
+            embedMs = Date.now() - embedStart;
           }
         } else {
           flags.push('embedder=skipped');
@@ -2677,6 +2688,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           channels_searched: channelsRequested,
           degradation_flags: flags,
           elapsed_ms: Date.now() - startMs,
+          embed_ms: embedMs,
         });
       }
 

@@ -20,6 +20,7 @@ import {
   ENV_PROMOTE_ENABLE,
   ENV_PROMOTE_MAX_PER_RUN, DEFAULT_PROMOTE_MAX_PER_RUN,
   ENV_REMEMBER_DEDUP_THRESHOLD, DEFAULT_REMEMBER_DEDUP_THRESHOLD,
+  DEFAULT_HOOK_TIMEOUT_MS,
 } from '../../shared/paths.ts';
 import { isWindows } from '../../shared/platform.ts';
 import { VERSION } from '../../shared/version.ts';
@@ -81,6 +82,54 @@ async function fetchJson(url: string, timeoutMs = 3000): Promise<{ ok: boolean; 
 /** The worker's own report on whether embedding is WORKING — fetched by checkWorker
  *  (which runs first), judged by checkEmbedder. null until fetched / if it failed. */
 let lastStats: Record<string, unknown> | null = null;
+
+/** Spec §4.2 thresholds, in ONE place rather than scattered as magic numbers at the comparison. */
+export const INJECT_P50_FRACTION = 0.8;      // p50 at/above 80% of the deadline = no headroom left
+export const INJECT_OVER_FRACTION = 0.25;    // a quarter of calls already failing
+/** Below this many samples we say NOTHING. A handful of injects right after a restart is not
+ *  evidence, and asserting a problem from no data is the failure mode this whole design exists to
+ *  avoid — the previous federation check reported PASS while zero peers were attested. */
+export const INJECT_MIN_SAMPLES = 20;
+
+/** Hook retrieval latency (spec §4.2). The hook FAILS OPEN: when /inject/context misses its deadline
+ *  the turn silently loses its memory and nothing surfaces — 865 such failures accumulated over ten
+ *  weeks unnoticed. This is the check that makes that visible.
+ *
+ *  Two clauses, because the median alone lies here. A p50 of 1.9s against a 2s deadline looks
+ *  survivable while a quarter of calls are still failing on the spikes; the over-deadline ratio
+ *  catches that bimodal shape. */
+export function injectLatencyVerdict(
+  inject: { n?: number; p50_ms?: number; p95_ms?: number; over_deadline_n?: number } | null | undefined,
+  deadlineMs: number,
+): Check | null {
+  if (!inject || typeof inject.n !== 'number') return null;   // older worker — absent, not broken
+  const n = inject.n;
+  if (n < INJECT_MIN_SAMPLES) return null;                    // never assert from no data
+
+  const name = 'hook retrieval latency';
+  const p50 = inject.p50_ms ?? 0;
+  const p95 = inject.p95_ms ?? 0;
+  const over = inject.over_deadline_n ?? 0;
+  const overFrac = over / n;
+  const detail = `p50 ${p50}ms · p95 ${p95}ms · ${over}/${n} over the ${deadlineMs}ms deadline`;
+
+  // The remedy names the two levers that actually help. Raising the timeout is deliberately NOT one
+  // of them: it converts a visible failure into a slower prompt, which is how this went unnoticed.
+  const remedy = 'profile the local search (channel counts, corpus size) and check for engine stalls; '
+               + 'do NOT raise the timeout — that hides the miss instead of fixing it';
+
+  if (p50 >= INJECT_P50_FRACTION * deadlineMs) {
+    return { name, status: 'WARN', detail: `${detail} — median is within 20% of the deadline`, remedy };
+  }
+  if (overFrac >= INJECT_OVER_FRACTION) {
+    return {
+      name, status: 'WARN',
+      detail: `${detail} — ${Math.round(overFrac * 100)}% of injects miss it despite a healthy median`,
+      remedy,
+    };
+  }
+  return { name, status: 'PASS', detail };
+}
 
 /** A hosted endpoint used to PASS on sight — doctor never asked whether it worked.
  *  The default install IS hosted, so the one backend everybody runs was the one
@@ -204,6 +253,14 @@ async function checkWorker(): Promise<void> {
     // Kept for checkEmbedder: a hosted backend is judged by what its queue is doing,
     // and this is the only place that already paid for the fetch.
     lastStats = s.ok ? (b as Record<string, unknown>) : null;
+    // Spec 4.2 — the hook fails OPEN, so a missed deadline is invisible without this.
+    // The deadline is the HOOK's own timeout, read from worker.env, not a server constant.
+    const hookDeadline = Number(readWorkerEnvVar('CAPTAIN_MEMO_HOOK_TIMEOUT_MS') ?? DEFAULT_HOOK_TIMEOUT_MS);
+    const injectCheck = injectLatencyVerdict(
+      (lastStats as { inject_latency?: Parameters<typeof injectLatencyVerdict>[0] } | null)?.inject_latency,
+      hookDeadline,
+    );
+    if (injectCheck) record(injectCheck);   // null = too few samples / older worker: say nothing
     return;
   }
   // /health did not answer. Use the service-manager state to explain why:

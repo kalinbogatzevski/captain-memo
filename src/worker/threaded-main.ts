@@ -11,6 +11,7 @@ import { serializeRequest, deserializeResponse, type WireRequest, type WireRespo
 import { healthFromHeartbeat } from './health-heartbeat.ts';
 import { onEngineCrash, type SupervisorState } from './engine-supervisor.ts';
 import { classifyRoute } from './route-class.ts';
+import { InjectLatencyRing } from './inject-latency.ts';
 import { ReaderPool } from './reader-pool.ts';
 import { startWorker, buildWorkerOptionsFromEnv, type WorkerHandle } from './index.ts';
 
@@ -60,6 +61,40 @@ export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
   // slow KNN scan can never stall the writer's heartbeat. Each reader gets a numeric token used
   // as the ReaderPool key; the maps resolve a token back to its channel/worker. The writer's
   // beat/health path is entirely independent of these — a busy reader never touches /health.
+  // Rolling /inject/context latency window (spec 4.1,
+  // docs/superpowers/specs/2026-08-07-hook-retrieval-latency-design.md). Lives on MAIN because
+  // inject is a READ (reader thread) while /stats is a WRITE (writer) — see route-class.ts — so
+  // only main sees every inject AND can answer /stats without cross-thread aggregation.
+  const injectLatency = new InjectLatencyRing();
+  /** Fold one /inject/context outcome into the window. Defensive throughout: this runs on the hook's
+   *  hot path, so a malformed body must never turn a served request into a failed one — an
+   *  unparseable sample is simply skipped. `reqBody` carries the hook's own deadline_ms, which is
+   *  what makes over_deadline meaningful (the deadline is the CALLER's, not a server constant). */
+  function recordInject(reqBody: string | null, resBody: string | null, elapsedMs: number, failed: boolean): void {
+    try {
+      let deadlineMs: number | null = null;
+      if (reqBody) {
+        const q = JSON.parse(reqBody) as { deadline_ms?: number };
+        if (typeof q.deadline_ms === 'number' && q.deadline_ms > 0) deadlineMs = q.deadline_ms;
+      }
+      let embedMs: number | null = null;
+      let degraded = failed;
+      if (resBody) {
+        const r = JSON.parse(resBody) as { embed_ms?: number; degradation_flags?: unknown };
+        if (typeof r.embed_ms === 'number') embedMs = r.embed_ms;
+        const flags = r.degradation_flags;
+        if (Array.isArray(flags)) degraded ||= flags.length > 0;
+        else if (flags && typeof flags === 'object') degraded ||= Object.keys(flags).length > 0;
+      }
+      injectLatency.record({
+        elapsed_ms: elapsedMs,
+        embed_ms: embedMs,
+        degraded,
+        over_deadline: deadlineMs !== null && elapsedMs >= deadlineMs,
+      });
+    } catch { /* metrics must never break the request they measure */ }
+  }
+
   const pool = new ReaderPool<number>(1);          // 1 in-flight per reader: one KNN scan at a time
   const readerChannels = new Map<number, ThreadChannel>();
   const readerWorkers = new Map<number, Worker>();
@@ -291,9 +326,18 @@ export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
         // would risk the heartbeat); the read degrades to 503 so the caller can retry or skip recall.
         return Response.json({ error: 'readers_saturated' }, { status: 503 });
       }
+      // /inject/context is the hook's hot path and it FAILS OPEN, so a miss is invisible unless we
+      // record it here. The engine already reports elapsed_ms + degradation_flags in the body, which
+      // arrives as a plain string on the wire — read without cloning or consuming a Response.
+      const injectStart = url.pathname === '/inject/context' ? Date.now() : 0;
       try {
-        return deserializeResponse((await readerChannels.get(token)!.request('http', wire)) as WireResponse);
+        const wr = (await readerChannels.get(token)!.request('http', wire)) as WireResponse;
+        if (injectStart) recordInject(wire.body, wr.body, Date.now() - injectStart, false);
+        return deserializeResponse(wr);
       } catch (e) {
+        // FAILURES COUNT TOO (spec 4.1): dropping a thread_rpc_timeout would flatter the p50 at
+        // exactly the moment the hook is actually losing turns.
+        if (injectStart) recordInject(wire.body, null, Date.now() - injectStart, true);
         return Response.json({ error: (e as Error).message }, { status: 503 });
       } finally {
         pool.release(token);
@@ -303,6 +347,19 @@ export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
     // Writes, control-to-writer, /stats, and ALL reads when the pool is disabled (N=0) → the writer.
     // Known-long writes (/reindex) get a much longer RPC deadline so the CLI waits for the real
     // result instead of a premature thread_rpc_timeout on a write the writer is still running.
+    // /stats is answered by the WRITER, but the inject window lives here on main (inject is a read).
+    // Merge it on the way back so the spec's single reporting surface holds.
+    if (url.pathname === '/stats') {
+      const res = await forwardToWriter(wire);
+      try {
+        const body = await res.text();
+        const parsed = JSON.parse(body) as Record<string, unknown>;
+        parsed['inject_latency'] = injectLatency.stats();
+        return Response.json(parsed, { status: res.status });
+      } catch {
+        return forwardToWriter(wire);   // unparseable (error body) — hand back the writer's answer untouched
+      }
+    }
     return forwardToWriter(wire, LONG_WRITE_PATHS.has(url.pathname) ? LONG_WRITE_DEADLINE_MS : undefined);
   };
 
