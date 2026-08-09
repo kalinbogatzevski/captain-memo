@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { schemaDrift, migrationVerdict, workerVerdict, embedderVerdict, injectLatencyVerdict, INJECT_MIN_SAMPLES, captureSourceVerdict } from '../../src/cli/commands/doctor.ts';
+import { schemaDrift, migrationVerdict, workerVerdict, embedderVerdict, injectLatencyVerdict, INJECT_MIN_SAMPLES, captureSourceVerdict, summarizerVerdict } from '../../src/cli/commands/doctor.ts';
 
 // ---------------------------------------------------------------------------
 // schemaDrift — does the live DB actually HAVE what the migrations promise?
@@ -314,4 +314,85 @@ test('injectLatencyVerdict: the observed deadline still WARNs when the median re
     2000,
   );
   expect(check!.status).toBe('WARN');          // 8500 >= 0.8 * 10000
+});
+
+
+// ---------------------------------------------------------------------------
+// summarizerVerdict — the line that must not lie about which provider is serving.
+//
+// Runtime failover added two states doctor had never had to render, and the pre-existing
+// wording got both wrong: a chain exhausted at hour 30 was reported as "the worker built no
+// summarizer" (a boot-time diagnosis for a runtime death), and a worker healthy on its FALLBACK
+// rendered as a plain green PASS — exactly the state an operator needs told.
+// ---------------------------------------------------------------------------
+
+const AT = 1_786_000_000;
+
+test('clean boot pick → PASS, no noise', () => {
+  const c = summarizerVerdict({ provider: 'claude-oauth', enabled: true, cooling_down: false });
+  expect(c.status).toBe('PASS');
+  expect(c.detail).toContain('claude-oauth running');
+  expect(c.remedy).toBeUndefined();
+});
+
+test('healthy but FAILED OVER → WARN naming the provider, the reason and the time', () => {
+  const c = summarizerVerdict({
+    provider: 'agy', enabled: true, cooling_down: false,
+    demoted: [{ provider: 'claude-oauth', reason: 'HTTP 401: unauthorized', at_epoch: AT }],
+  });
+  expect(c.status).toBe('WARN');               // never green: it is serving the fallback
+  expect(c.detail).toContain('agy running');
+  expect(c.detail).toContain('FAILED OVER');
+  expect(c.detail).toContain('claude-oauth');
+  expect(c.detail).toContain('401');
+  expect(c.detail).toContain(new Date(AT * 1000).toLocaleString());
+  expect(c.remedy).toContain('captain-memo restart');
+});
+
+test('chain exhausted at RUNTIME → FAIL that says so, not the boot-time message', () => {
+  const c = summarizerVerdict({
+    provider: 'agy', enabled: false,
+    demoted: [
+      { provider: 'claude-oauth', reason: 'HTTP 401', at_epoch: AT },
+      { provider: 'agy', reason: 'HTTP 403', at_epoch: AT + 60 },
+    ],
+  });
+  expect(c.status).toBe('FAIL');
+  expect(c.detail).toContain('exhausted at runtime');
+  expect(c.detail).not.toContain('built no summarizer');   // the false diagnosis
+  expect(c.detail).toContain('claude-oauth');
+  expect(c.detail).toContain('agy');
+});
+
+test('never built (no demotions) keeps the original boot-time credentials message', () => {
+  const c = summarizerVerdict({ provider: 'claude-oauth', enabled: false });
+  expect(c.status).toBe('FAIL');
+  expect(c.detail).toContain('built no summarizer');
+  expect(c.detail).toContain('claude login');
+});
+
+test('cooling down AFTER a failover says the SUCCESSOR is the one failing', () => {
+  const c = summarizerVerdict({
+    provider: 'agy', enabled: true, cooling_down: true,
+    demoted: [{ provider: 'claude-oauth', reason: 'HTTP 401', at_epoch: AT }],
+  });
+  expect(c.status).toBe('FAIL');
+  expect(c.detail).toContain('SUCCESSOR');
+});
+
+test('boot skips still WARN, and demotions + skips coexist', () => {
+  const skipped = summarizerVerdict({
+    provider: 'claude-oauth', enabled: true, cooling_down: false,
+    skipped: [{ provider: 'codex', reason: '`codex` not on PATH' }],
+  });
+  expect(skipped.status).toBe('WARN');
+  expect(skipped.detail).toContain('skipped');
+
+  const both = summarizerVerdict({
+    provider: 'anthropic', enabled: true, cooling_down: false,
+    skipped: [{ provider: 'codex', reason: 'not on PATH' }],
+    demoted: [{ provider: 'claude-oauth', reason: 'HTTP 401', at_epoch: AT }],
+  });
+  expect(both.detail).toContain('FAILED OVER');
+  expect(both.detail).toContain('PREFERRED provider(s) skipped');
 });

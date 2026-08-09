@@ -5,6 +5,27 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.33.1] — 2026-08-09
+
+### Fixed
+
+- **`doctor`'s `worker config` line reported the CONFIGURED provider chain as though it were the
+  live one.** It reads `worker.env` and never asks the worker, so after a runtime failover it would
+  print `summarizer=claude-oauth` while the worker had been serving `agy` for hours — the same
+  green-line-hides-the-truth failure the 0.33.0 displays were added to close, one check further
+  down the page. It now names the running provider and the demoted ones whenever they disagree, and
+  WARNs instead of PASSing.
+
+### Changed
+
+- **The summarizer verdict is an exported pure function (`summarizerVerdict`) with unit tests.** It
+  had grown to four states — never built, exhausted at runtime, cooling down, running (clean / on a
+  fallback) — inline and untested, in a file whose whole convention is extract-verdict-then-test.
+  Six tests now pin the wording that matters, including that a runtime exhaustion must NOT say "the
+  worker built no summarizer" (a boot-time diagnosis for a death at hour 30), and that a worker
+  healthy on its fallback is never green. Cooling down after a failover now also says the SUCCESSOR
+  is the one failing, rather than reading as the original provider's problem.
+
 ## [0.33.0] — 2026-08-09
 
 ### Added

@@ -84,6 +84,12 @@ async function fetchJson(url: string, timeoutMs = 3000): Promise<{ ok: boolean; 
  *  (which runs first), judged by checkEmbedder. null until fetched / if it failed. */
 let lastStats: Record<string, unknown> | null = null;
 
+/** Which provider is ACTUALLY running, set by checkCapture (which fetches /stats) and read by
+ *  checkConfig (which only sees worker.env). Without it `worker config` prints the configured chain
+ *  as though it were the live state — the exact line that would read green while the worker has
+ *  been serving its fallback since a demotion hours ago. null when /stats was unreachable. */
+let liveSummarizer: { provider?: string; demoted: string[] } | null = null;
+
 /** Spec §4.2 thresholds, in ONE place rather than scattered as magic numbers at the comparison. */
 export const INJECT_P50_FRACTION = 0.8;      // p50 at/above 80% of the deadline = no headroom left
 export const INJECT_OVER_FRACTION = 0.25;    // a quarter of calls already failing
@@ -390,6 +396,85 @@ export function captureSourceVerdict(
   });
 }
 
+/**
+ * The summarizer line, from the worker's own /stats report. Four states, and the point of splitting
+ * them out is that three of them used to render as one green line or one wrong sentence:
+ *
+ *  - exhausted AFTER demotions → the chain ran out at RUNTIME. Must not say "built no summarizer"
+ *    (the boot-time message): it built one, ran on it, and outlived it.
+ *  - never built                → the original boot-time credentials failure.
+ *  - cooling down               → built but in error-backoff.
+ *  - running                    → PASS only when it is running on the provider you ASKED for. A
+ *    worker healthy on its fallback is a WARN, because that is precisely the state a green line
+ *    hides: the configured provider died hours ago and nobody was told.
+ */
+export function summarizerVerdict(sm: {
+  provider?: string; enabled?: boolean; cooling_down?: boolean;
+  skipped?: Array<{ provider: string; reason: string }>;
+  demoted?: Array<{ provider: string; reason: string; at_epoch: number }>;
+}): Check {
+  const demoted = sm.demoted ?? [];
+  const skipped = sm.skipped ?? [];
+  const demotedLine = demoted
+    .map(d => `${d.provider} (${d.reason} — ${new Date(d.at_epoch * 1000).toLocaleString()})`)
+    .join('; ');
+
+  if (sm.enabled === false && demoted.length > 0) {
+    return {
+      name: 'summarizer',
+      status: 'FAIL',
+      detail:
+        `STOPPED — the provider chain was exhausted at runtime. Demoted: ${demotedLine}. No observations ` +
+        `are being created and cross-AI capture is DISABLED. Demoted providers are never retried in a ` +
+        `running worker (deliberate — no flapping), so this stays dead until a restart re-walks the chain.`,
+      remedy: 'fix the provider(s) above (e.g. `claude login` for claude-oauth), then `captain-memo restart`',
+    };
+  }
+  if (sm.enabled === false) {
+    return {
+      name: 'summarizer',
+      status: 'FAIL',
+      detail:
+        `NOT running — provider '${sm.provider ?? '?'}' has no usable credentials, so the worker built no ` +
+        `summarizer. No observations are being created and cross-AI capture is DISABLED. ` +
+        (sm.provider === 'claude-oauth'
+          ? 'The worker found no valid OAuth token at ~/.claude/.credentials.json (as IT resolves home — check the ' +
+            'worker.log line). Fix: run `claude login`, then restart the worker; if it still fails, set ' +
+            'CLAUDE_CODE_OAUTH_TOKEN in worker.env. '
+          : 'Fix: provide credentials for it, or set CAPTAIN_MEMO_SUMMARIZER_PROVIDER to a provider you have creds for. '),
+    };
+  }
+  if (sm.cooling_down) {
+    return {
+      name: 'summarizer',
+      status: 'FAIL',
+      detail:
+        `built, but FAILING — provider '${sm.provider ?? '?'}' is in error-backoff (recent API calls failed), so ` +
+        `observations aren't being distilled. ` +
+        (demoted.length > 0 ? `Already failed over once (${demotedLine}) — this is the SUCCESSOR failing. ` : '') +
+        (sm.provider === 'claude-oauth'
+          ? 'Most often an EXPIRED OAuth token (401) — run `claude login` to refresh, then restart the worker. '
+          : 'Check worker.log for the provider error (bad key / rate-limit / network). '),
+    };
+  }
+  return {
+    name: 'summarizer',
+    status: skipped.length > 0 || demoted.length > 0 ? 'WARN' : 'PASS',
+    detail: `${sm.provider} running — observations + capture enabled`
+      + (demoted.length > 0 ? ` · FAILED OVER — demoted at runtime: ${demotedLine}` : '')
+      + (skipped.length > 0
+          ? ` · PREFERRED provider(s) skipped: ${skipped.map(s => `${s.provider} (${s.reason})`).join('; ')}`
+          : ''),
+    ...((skipped.length > 0 || demoted.length > 0) && {
+      remedy: demoted.length > 0
+        ? `fix the demoted provider(s) above, then \`captain-memo restart\` — a running worker never `
+          + `retries a demoted provider, so ${sm.provider} serves until restart`
+        : `fix the preferred provider, or drop it from CAPTAIN_MEMO_SUMMARIZER_PROVIDER `
+          + `so the chain reflects what this machine can actually run`,
+    }),
+  };
+}
+
 async function checkCapture(): Promise<void> {
   const s = await fetchJson(`http://127.0.0.1:${WORKER_PORT}/stats`);
   if (!s.ok) return; // worker unreachable — the `worker service` check owns that
@@ -407,78 +492,13 @@ async function checkCapture(): Promise<void> {
   // failure previously went ONLY to worker.log — which no user reads — so doctor looked "all green" while the
   // whole pipeline was dead. Surface it loudly here.
   const sm = b.summarizer;
+  liveSummarizer = {
+    ...(sm?.provider !== undefined && { provider: sm.provider }),
+    demoted: (sm?.demoted ?? []).map(d => d.provider),
+  };
   const summarizerOff = sm?.enabled === false;
-  // Providers that were RUNNING and then died (expired token at hour 30, revoked key). Rendered
-  // with the reason and the time, because "running on agy" reads as a clean boot pick otherwise.
-  const demoted = sm?.demoted ?? [];
-  const demotedLine = demoted
-    .map(d => `${d.provider} (${d.reason} — ${new Date(d.at_epoch * 1000).toLocaleString()})`)
-    .join('; ');
-  if (sm && sm.enabled !== undefined) {
-    if (summarizerOff && demoted.length > 0) {
-      // Chain exhausted AT RUNTIME. The generic branch below would say "the worker built no
-      // summarizer", which is false and sends you looking for a boot-time misconfiguration — it
-      // built one, ran on it, and outlived it.
-      record({
-        name: 'summarizer',
-        status: 'FAIL',
-        detail:
-          `STOPPED — the provider chain was exhausted at runtime. Demoted: ${demotedLine}. No observations ` +
-          `are being created and cross-AI capture is DISABLED. Demoted providers are never retried in a ` +
-          `running worker (deliberate — no flapping), so this stays dead until a restart re-walks the chain.`,
-        remedy: 'fix the provider(s) above (e.g. `claude login` for claude-oauth), then `captain-memo restart`',
-      });
-    } else if (summarizerOff) {
-      record({
-        name: 'summarizer',
-        status: 'FAIL',
-        detail:
-          `NOT running — provider '${sm.provider ?? '?'}' has no usable credentials, so the worker built no ` +
-          `summarizer. No observations are being created and cross-AI capture is DISABLED. ` +
-          (sm.provider === 'claude-oauth'
-            ? 'The worker found no valid OAuth token at ~/.claude/.credentials.json (as IT resolves home — check the ' +
-              'worker.log line). Fix: run `claude login`, then restart the worker; if it still fails, set ' +
-              'CLAUDE_CODE_OAUTH_TOKEN in worker.env. '
-            : 'Fix: provide credentials for it, or set CAPTAIN_MEMO_SUMMARIZER_PROVIDER to a provider you have creds for. '),
-      });
-    } else if (sm.cooling_down) {
-      record({
-        name: 'summarizer',
-        status: 'FAIL',
-        detail:
-          `built, but FAILING — provider '${sm.provider ?? '?'}' is in error-backoff (recent API calls failed), so ` +
-          `observations aren't being distilled. ` +
-          (sm.provider === 'claude-oauth'
-            ? 'Most often an EXPIRED OAuth token (401) — run `claude login` to refresh, then restart the worker. '
-            : 'Check worker.log for the provider error (bad key / rate-limit / network). '),
-      });
-    } else {
-      // Name the DEMOTION when there was one. With an ordered provider chain the summarizer can be
-      // perfectly healthy and still not be the one you asked for — "codex,claude-oauth" silently
-      // serving claude-oauth because codex is not installed is exactly the state a green line would
-      // hide, and the operator would only learn it from worker.log.
-      const skipped = sm.skipped ?? [];
-      record({
-        name: 'summarizer',
-        status: skipped.length > 0 || demoted.length > 0 ? 'WARN' : 'PASS',
-        detail: `${sm.provider} running — observations + capture enabled`
-          // A FAILOVER is not a clean boot pick and must never render as a green line: the
-          // summarizer is healthy, but it is healthy on the fallback, and the provider the operator
-          // configured died hours ago with nobody told.
-          + (demoted.length > 0 ? ` · FAILED OVER — demoted at runtime: ${demotedLine}` : '')
-          + (skipped.length > 0
-              ? ` · PREFERRED provider(s) skipped: ${skipped.map(s => `${s.provider} (${s.reason})`).join('; ')}`
-              : ''),
-        ...((skipped.length > 0 || demoted.length > 0) && {
-          remedy: demoted.length > 0
-            ? `fix the demoted provider(s) above, then \`captain-memo restart\` — a running worker never `
-              + `retries a demoted provider, so ${sm.provider} serves until restart`
-            : `fix the preferred provider, or drop it from ${'CAPTAIN_MEMO_SUMMARIZER_PROVIDER'} `
-              + `so the chain reflects what this machine can actually run`,
-        }),
-      });
-    }
-  }
+  const verdict = sm && sm.enabled !== undefined ? summarizerVerdict(sm) : null;
+  if (verdict) record(verdict);
 
   for (const check of captureSourceVerdict(
     b.capture?.sources ?? [], b.capture?.ingested, b.capture?.recent, b.observations?.by_origin,
@@ -576,8 +596,15 @@ function checkConfig(): void {
   const provider = (content.match(/CAPTAIN_MEMO_SUMMARIZER_PROVIDER=(.+)/) ?? [])[1] ?? '?';
   const model = (content.match(/CAPTAIN_MEMO_SUMMARIZER_MODEL=(.+)/) ?? [])[1] ?? '?';
   const watch = (content.match(/CAPTAIN_MEMO_WATCH_MEMORY=(.+)/) ?? [])[1] ?? '(none)';
-  record({ name: 'worker config', status: 'PASS',
-           detail: `summarizer=${provider} model=${model} watch=${watch.slice(0, 60)}${watch.length > 60 ? '…' : ''}` });
+  // worker.env is the CONFIGURED chain, not the live one. Say which entry is actually serving
+  // whenever they disagree — a demotion makes `summarizer=codex,agy` a statement about intent.
+  const live = liveSummarizer;
+  const drift = live?.provider && live.provider !== provider.split(',')[0]!.trim()
+    ? ` · RUNNING ${live.provider}${live.demoted.length > 0 ? ` (demoted: ${live.demoted.join(', ')})` : ''}`
+    : '';
+  record({ name: 'worker config', status: drift ? 'WARN' : 'PASS',
+           detail: `summarizer=${provider} model=${model} watch=${watch.slice(0, 60)}${watch.length > 60 ? '…' : ''}${drift}`,
+           ...(drift && { remedy: 'the chain is doing its job, but the head is not serving — see the summarizer check above' }) });
 }
 
 export function checkRemember(): Check {
