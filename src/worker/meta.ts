@@ -209,8 +209,15 @@ export class MetaStore {
    *  is the doc_id (`memory:<basename>`) printed by search — not the absolute path, which they never
    *  see. `source_path` is unique per PATH, so one basename can legitimately exist in two directories;
    *  this returns EVERY match so the caller can refuse an ambiguous delete rather than guess which
-   *  one was meant. Pass `channel` when the doc_id carries it: that hits
-   *  idx_documents_project_channel and narrows 148k documents to the 813 in `memory`.
+   *  one was meant.
+   *
+   *  MEASURED on a real corpus (148,676 documents): 67 ms, a full SCAN either way. Passing `channel`
+   *  does NOT speed it up, contrary to what this comment first claimed — idx_documents_project_channel
+   *  is on (project_id, channel), so constraining `channel` alone leaves the leading column open and
+   *  the index unusable: 67.08 ms with it, 66.96 ms without, i.e. identical. Keep passing it anyway,
+   *  because it is a CORRECTNESS narrowing (it stops a basename colliding across channels), not an
+   *  optimisation. ponytail: 67 ms is fine for a rare, confirmed, interactive delete; index the
+   *  basename only if forget ever grows a bulk mode.
    *
    *  ESCAPE is not optional here — `_` is a LIKE wildcard and every remember-written name contains
    *  one (`reference_bench-2kb.md`), so an unescaped pattern would match unrelated documents and a

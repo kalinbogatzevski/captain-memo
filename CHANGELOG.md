@@ -5,6 +5,44 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.30.10] — 2026-08-09
+
+### Fixed
+
+- **Corrects 0.30.9's account of why `/remember` was slow, and one wrong claim in a code comment.**
+  The 60 s ceiling itself stands and was necessary — the slow path really does measure 9.3–14.0 s
+  against a 10 s deadline. What 0.30.9 got wrong was the *reason*, and it published a table that
+  invites the wrong conclusion.
+
+  0.30.9 tabulated create-vs-update against **body size**. Size is not the variable. Those "create"
+  figures (1.8 / 2.1 / 2.9 s) were taken with `description` omitted, so every one of them included a
+  `fillFrontmatter` LLM call; the spread between them is model-latency noise, not cost scaling with
+  bytes. Re-measured with `name` + `description` + `slug` all supplied, so no model call runs at all:
+
+  | path | measured |
+  |---|---|
+  | create, frontmatter supplied, 4 back-to-back distinct 12 KB bodies | **0.67 / 0.69 / 0.76 / 0.82 s** |
+  | create, `description` omitted (`fillFrontmatter` runs) | 2.1–10.6 s, high variance |
+  | update (`mergeBody` runs) | 9.3–14.0 s |
+
+  So the storage work — dedup embed, vector search over a 149k-chunk corpus, chunk, embed, index — is
+  **~0.7 s and flat in body size**. Everything above it is one or two model calls.
+
+  **What actually triggers the slow path.** `findUpdateTarget` returns an update target on a filename
+  collision *or* on semantic similarity `>= 0.85` (`DEFAULT_REMEMBER_DEDUP_THRESHOLD`) within the same
+  directory, and an update runs `mergeBody` — an LLM call carrying BOTH bodies and generating up to
+  1200 tokens. A brand-new memory that merely *resembles* an existing one therefore silently becomes a
+  merge into it, at ~9 s. That is the behaviour worth knowing, and it is what the earlier benchmark was
+  really measuring: every body in it was near-identical text, so each write matched its predecessor.
+  With genuinely distinct bodies the alternation vanishes entirely.
+
+  Also corrects `findDocumentsByBasename`'s comment, which claimed passing `channel` "hits
+  idx_documents_project_channel and narrows 148k documents to 813". It does not: that index is on
+  `(project_id, channel)`, so constraining `channel` alone leaves the leading column unconstrained and
+  the index unusable. Measured on 148,676 documents it is a full scan either way — **67.08 ms with the
+  channel filter, 66.96 ms without**. The parameter stays because it is a correctness narrowing across
+  channels; 67 ms is acceptable for a rare, confirmed, interactive delete.
+
 ## [0.30.9] — 2026-08-09
 
 ### Added
