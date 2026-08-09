@@ -56,7 +56,7 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 ### Diagnostics
 
 - `/stats.summarizer` reports the provider running **now** (not the configured head) and gains
-  `demoted[]` — `{provider, reason, at_epoch}` — alongside 0.40.0's `skipped[]`. The two are
+  `demoted[]` — `{provider, reason, at_epoch}` — alongside 0.32.0's `skipped[]`. The two are
   different failures: skipped never started, demoted was working and then died.
 - `doctor` no longer prints a green line for a worker running on its fallback. A failover is a WARN
   naming the demoted provider, the reason and the time; a runtime chain exhaustion is a FAIL that
