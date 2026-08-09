@@ -5,6 +5,65 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.33.0] — 2026-08-09
+
+### Added
+
+- **The summarizer provider chain now fails over at RUNTIME, not only at boot.** 0.32.0 probed
+  `CAPTAIN_MEMO_SUMMARIZER_PROVIDER`'s ordered chain once at startup and committed to the winner for
+  the worker's lifetime — deliberately, because per-call failover on subprocess CLIs is easy to get
+  wrong. The gap that left: an OAuth token that expires at hour 30 turns every later batch into a
+  401, and every one of those observations was dead-lettered even though the next provider in the
+  chain could have summarized them fine. The worker ran for days looking healthy and distilling
+  nothing.
+
+  A provider that fails in a provider-shaped way is now retired and the next entry takes over, with
+  the batch requeued rather than discarded.
+
+### Changed
+
+- **`permanent` is now a verdict about the PROVIDER, not always about the data.** `summarize()`
+  failures classified `permanent` used to go straight to `markPermanent()` — dead-lettered, gone. A
+  failure to *reach* a provider is not a judgement about the observation, so the requeue-or-
+  dead-letter decision moved to AFTER the failover attempt: a replacement provider means requeue
+  **without** a retry increment; an exhausted chain means dead-letter exactly as before, so one
+  genuinely poisoned row still terminates instead of wedging the queue head.
+
+- **The classifier can tell 401 from 400.** `classifySummarizeFailure` lumped every 4xx into
+  `permanent`, which would have retired a working provider over one malformed request. New
+  `isAuthShapedFailure()` splits out the provider-fatal shapes — 401/403, and statusless "no OAuth
+  token" / "command not found" / ENOENT for the subprocess providers — keeping status authoritative
+  exactly as the classifier does (a 400 whose body happens to contain the word "authentication" is a
+  bad request, not an auth failure). Auth-shaped demotes immediately; other permanents demote only
+  after three consecutive batches.
+
+- **The summarizer transport is now a stable indirection.** The theme judge, the promotion judge and
+  `/remember`'s frontmatter `generate` each captured `opts.summarizerTransport` — at boot for the
+  first two, per request for the third. A failover would have swapped the summarizer and left all
+  three calling the dead provider: green dashboard, dead feature. One wrapper that delegates to the
+  current transport makes every existing consumer follow the swap.
+
+### Anti-flap rules (deliberate, not omissions)
+
+- A demoted provider is **never re-selected** in a running worker: no cooldown-then-retry, no health
+  re-check, no re-promotion. A wedge loop between two half-broken providers is worse than one honest
+  dead summarizer. A restart re-walks the whole chain.
+- **Chain exhausted ⇒ summarizer disabled** plus the loud doctor FAIL, rather than looping.
+- `last_error` survives the new provider's first success — the demotion is history worth showing.
+- A failover clears the dead provider's overload backoff: the successor does not inherit a
+  ten-minute cooldown earned by the API it replaced.
+
+### Diagnostics
+
+- `/stats.summarizer` reports the provider running **now** (not the configured head) and gains
+  `demoted[]` — `{provider, reason, at_epoch}` — alongside 0.40.0's `skipped[]`. The two are
+  different failures: skipped never started, demoted was working and then died.
+- `doctor` no longer prints a green line for a worker running on its fallback. A failover is a WARN
+  naming the demoted provider, the reason and the time; a runtime chain exhaustion is a FAIL that
+  says so, instead of the boot-time "no usable credentials" message that would have been false.
+- `/promote/slice` answers 503 with the real reason after an exhaustion, instead of 500ing on a
+  transport that rejects.
+
 ## [0.32.0] — 2026-08-09
 
 ### Added

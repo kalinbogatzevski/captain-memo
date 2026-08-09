@@ -15,6 +15,12 @@
 
 export type SummarizeFailureKind = 'permanent' | 'overloaded' | 'retryable';
 
+/** Statusless failures that mean "this provider cannot work here": no/expired credential, or the
+ *  CLI it shells out to is missing. Shared by the classifier and isAuthShapedFailure so the two
+ *  can never drift apart. */
+const AUTH_SHAPED_RE =
+  /no oauth token|invalid api key|invalid x-api-key|authentication|unauthorized|executable not found|enoent|command not found/;
+
 /**
  * Classify a summarize() failure. `status` (the HTTP status the transport attached
  * to the error) is authoritative when present; the message is only consulted for
@@ -32,11 +38,28 @@ export function classifySummarizeFailure(message: string, status?: number): Summ
     return 'overloaded';
   }
   // Statusless permanent: auth / missing token / missing subprocess.
-  if (/no oauth token|invalid api key|invalid x-api-key|authentication|unauthorized|executable not found|enoent|command not found/.test(m)) {
+  if (AUTH_SHAPED_RE.test(m)) {
     return 'permanent';
   }
   // Everything else (notably "failed to parse JSON" / "failed schema validation").
   return 'retryable';
+}
+
+/**
+ * Within `permanent`, is this the PROVIDER that is broken rather than the request?
+ *
+ * Only meaningful for a failure already classified 'permanent' — the caller (provider failover)
+ * uses it to choose between "retire this provider now" (auth-shaped: 401/403, no token, binary
+ * missing — every future call fails the same way) and "one bad request, keep the provider" (400 /
+ * 404 / 422 — retiring on those would burn a working provider over one malformed batch).
+ *
+ * Status stays AUTHORITATIVE exactly as in classifySummarizeFailure: a 400 whose JSON body happens
+ * to contain the word "authentication" is a bad request, not an auth failure, and must not demote.
+ * The message is consulted ONLY when there is no status (subprocess providers have none).
+ */
+export function isAuthShapedFailure(message: string, status?: number): boolean {
+  if (typeof status === 'number' && Number.isFinite(status)) return status === 401 || status === 403;
+  return AUTH_SHAPED_RE.test(message.toLowerCase());
 }
 
 export interface BackoffOpts {

@@ -2,7 +2,7 @@
 // summarizer DELAY its queries when the Anthropic API is overloaded/down, instead
 // of hammering it every 5s (field 2026-06-02: bursts of HTTP 529 overloaded_error).
 import { test, expect } from 'bun:test';
-import { classifySummarizeFailure, computeBackoffMs } from '../../src/worker/summarizer-backoff.ts';
+import { classifySummarizeFailure, computeBackoffMs, isAuthShapedFailure } from '../../src/worker/summarizer-backoff.ts';
 
 // ---- classifySummarizeFailure ----------------------------------------------
 
@@ -42,6 +42,32 @@ test('statusless auth/token errors → permanent', () => {
 test('schema/JSON parse failures (no status) → retryable (per-item, bounded retries)', () => {
   expect(classifySummarizeFailure('Summarizer: failed to parse JSON: Unexpected end of input')).toBe('retryable');
   expect(classifySummarizeFailure('Summarizer: response failed schema validation: ...')).toBe('retryable');
+});
+
+// ---- isAuthShapedFailure ----------------------------------------------------
+// The granularity provider-failover demotes on. Every case here is already 'permanent';
+// the question is only "is the PROVIDER dead, or was this one request bad?".
+
+test('401 / 403 → auth-shaped (retire the provider now)', () => {
+  expect(isAuthShapedFailure('HTTP 401: unauthorized', 401)).toBe(true);
+  expect(isAuthShapedFailure('HTTP 403: forbidden', 403)).toBe(true);
+});
+
+test('400 / 404 / 422 → NOT auth-shaped, even when the body says "authentication"', () => {
+  // The over-demotion trap: one malformed request must not retire a working provider.
+  expect(isAuthShapedFailure('HTTP 400: {"error":{"message":"authentication scheme"}}', 400)).toBe(false);
+  expect(isAuthShapedFailure('HTTP 404: model not found', 404)).toBe(false);
+  expect(isAuthShapedFailure('HTTP 422: unprocessable', 422)).toBe(false);
+});
+
+test('statusless auth / missing-binary errors → auth-shaped (subprocess providers have no status)', () => {
+  expect(isAuthShapedFailure('claude-oauth: no OAuth token found ...')).toBe(true);
+  expect(isAuthShapedFailure('codex: command not found')).toBe(true);
+  expect(isAuthShapedFailure('spawn agy ENOENT')).toBe(true);
+});
+
+test('statusless per-item failures → NOT auth-shaped', () => {
+  expect(isAuthShapedFailure('Summarizer: failed to parse JSON: Unexpected end of input')).toBe(false);
 });
 
 // ---- computeBackoffMs -------------------------------------------------------

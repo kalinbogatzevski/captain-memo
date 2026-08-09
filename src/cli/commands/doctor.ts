@@ -396,7 +396,8 @@ async function checkCapture(): Promise<void> {
   const b = s.body as {
     capture?: { sources?: string[]; ingested?: Record<string, number>; recent?: Record<string, number> };
     summarizer?: { provider?: string; enabled?: boolean; cooling_down?: boolean;
-                   skipped?: Array<{ provider: string; reason: string }> };
+                   skipped?: Array<{ provider: string; reason: string }>;
+                   demoted?: Array<{ provider: string; reason: string; at_epoch: number }> };
     observations?: { by_origin?: Record<string, number> };
   };
 
@@ -407,8 +408,27 @@ async function checkCapture(): Promise<void> {
   // whole pipeline was dead. Surface it loudly here.
   const sm = b.summarizer;
   const summarizerOff = sm?.enabled === false;
+  // Providers that were RUNNING and then died (expired token at hour 30, revoked key). Rendered
+  // with the reason and the time, because "running on agy" reads as a clean boot pick otherwise.
+  const demoted = sm?.demoted ?? [];
+  const demotedLine = demoted
+    .map(d => `${d.provider} (${d.reason} — ${new Date(d.at_epoch * 1000).toLocaleString()})`)
+    .join('; ');
   if (sm && sm.enabled !== undefined) {
-    if (summarizerOff) {
+    if (summarizerOff && demoted.length > 0) {
+      // Chain exhausted AT RUNTIME. The generic branch below would say "the worker built no
+      // summarizer", which is false and sends you looking for a boot-time misconfiguration — it
+      // built one, ran on it, and outlived it.
+      record({
+        name: 'summarizer',
+        status: 'FAIL',
+        detail:
+          `STOPPED — the provider chain was exhausted at runtime. Demoted: ${demotedLine}. No observations ` +
+          `are being created and cross-AI capture is DISABLED. Demoted providers are never retried in a ` +
+          `running worker (deliberate — no flapping), so this stays dead until a restart re-walks the chain.`,
+        remedy: 'fix the provider(s) above (e.g. `claude login` for claude-oauth), then `captain-memo restart`',
+      });
+    } else if (summarizerOff) {
       record({
         name: 'summarizer',
         status: 'FAIL',
@@ -440,14 +460,21 @@ async function checkCapture(): Promise<void> {
       const skipped = sm.skipped ?? [];
       record({
         name: 'summarizer',
-        status: skipped.length > 0 ? 'WARN' : 'PASS',
+        status: skipped.length > 0 || demoted.length > 0 ? 'WARN' : 'PASS',
         detail: `${sm.provider} running — observations + capture enabled`
+          // A FAILOVER is not a clean boot pick and must never render as a green line: the
+          // summarizer is healthy, but it is healthy on the fallback, and the provider the operator
+          // configured died hours ago with nobody told.
+          + (demoted.length > 0 ? ` · FAILED OVER — demoted at runtime: ${demotedLine}` : '')
           + (skipped.length > 0
               ? ` · PREFERRED provider(s) skipped: ${skipped.map(s => `${s.provider} (${s.reason})`).join('; ')}`
               : ''),
-        ...(skipped.length > 0 && {
-          remedy: `fix the preferred provider, or drop it from ${'CAPTAIN_MEMO_SUMMARIZER_PROVIDER'} `
-                + `so the chain reflects what this machine can actually run`,
+        ...((skipped.length > 0 || demoted.length > 0) && {
+          remedy: demoted.length > 0
+            ? `fix the demoted provider(s) above, then \`captain-memo restart\` — a running worker never `
+              + `retries a demoted provider, so ${sm.provider} serves until restart`
+            : `fix the preferred provider, or drop it from ${'CAPTAIN_MEMO_SUMMARIZER_PROVIDER'} `
+              + `so the chain reflects what this machine can actually run`,
         }),
       });
     }

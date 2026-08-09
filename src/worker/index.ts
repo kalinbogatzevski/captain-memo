@@ -91,7 +91,7 @@ import { resolveRankConfig, type RankConfig } from './search-config.ts';
 import { applyTemporalRerank } from './temporal-intent.ts';
 import { getDreamStats } from './dream-stats.ts';
 import { Summarizer, type SummarizerTransport } from './summarizer.ts';
-import { classifySummarizeFailure, computeBackoffMs } from './summarizer-backoff.ts';
+import { classifySummarizeFailure, computeBackoffMs, isAuthShapedFailure } from './summarizer-backoff.ts';
 import { CaptureState } from './capture/state.ts';
 import { createCodexSource } from './capture/codex-source.ts';
 import { createAgySource } from './capture/agy-source.ts';
@@ -179,6 +179,23 @@ export interface WorkerOptions {
   /** Providers ahead of the winner that could not start, with the reason. Surfaced by doctor so a
    *  silent demotion ("I thought codex was summarizing") is visible without reading worker.log. */
   summarizerSkips?: Array<{ provider: string; reason: string }>;
+  /**
+   * RUNTIME failover seam: re-walk the configured provider chain, skipping `exclude`, and return a
+   * freshly built summarizer — or `null` when the chain is exhausted.
+   *
+   * The WALK is passed, not another transport: boot already resolved the chain, the models each
+   * provider needs and the credentials, and none of that belongs in the worker. `summarize` /
+   * `summarizerTransport` above stay the BOOT result, so a caller that never sets this (every test,
+   * every embedded use) behaves exactly as before — no failover, boot pick for the whole lifetime.
+   */
+  rebuildSummarizer?: (exclude: SummarizerProvider[]) => Promise<{
+    summarize: (events: RawObservationEvent[]) => Promise<SummarizerResult>;
+    transport: SummarizerTransport;
+    provider: SummarizerProvider;
+    /** Providers passed over during THIS walk (not on PATH, no token…) — appended to the
+     *  skipped list doctor prints, so a failover's collateral is visible too. */
+    skips: Array<{ provider: string; reason: string }>;
+  } | null>;
   /** Live co-session count, for the idle gate that guards the semantic pass. Supplied by the
    *  caller that owns the session manager (the federation layer); absent ⇒ 0, which is correct
    *  for a worker that cannot spawn co-sessions in the first place. */
@@ -671,7 +688,38 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     }
   }
 
-  const summarize = opts.summarize ?? null;
+  // The summarizer is MUTABLE from here on: a provider that dies mid-lifetime (an OAuth token
+  // expiring at hour 30) is demoted and the next entry in the chain takes over — see the demotion
+  // block in processBatch. Both start at the boot pick and are null once the chain is exhausted.
+  let summarize = opts.summarize ?? null;
+  let activeTransport = opts.summarizerTransport ?? null;
+  let activeProvider: SummarizerProvider | undefined = opts.summarizerProvider;
+  /** Demoted providers, newest last. NEVER re-selected: no cooldown, no health re-check, no
+   *  re-promotion. A wedge/flap loop between two half-broken providers is worse than one honest
+   *  dead summarizer plus a doctor FAIL, and a restart re-walks the whole chain anyway. */
+  const demoted: Array<{ provider: SummarizerProvider; reason: string; at_epoch: number }> = [];
+  /** Boot skips + any collected during a failover walk, de-duped by provider (doctor prints these). */
+  const summarizerSkips: Array<{ provider: string; reason: string }> = [...(opts.summarizerSkips ?? [])];
+
+  /**
+   * STABLE transport handle. Everything downstream (theme judge, promotion judge, /remember's
+   * frontmatter generate) captures a transport ONCE — at boot, or per request — so handing them
+   * `opts.summarizerTransport` directly would leave them calling the DEAD provider after a
+   * failover: green dashboard, dead feature. This one indirection makes every existing consumer
+   * follow the swap for free. Undefined when boot built no summarizer, so all the
+   * `if (opts.summarizerTransport)` gates keep their original meaning.
+   */
+  const summarizerTransport: SummarizerTransport | undefined = opts.summarizerTransport
+    ? (args) => {
+        if (!activeTransport) {
+          return Promise.reject(new Error(
+            'summarizer unavailable — the provider chain was exhausted at runtime; restart re-walks it',
+          ));
+        }
+        return activeTransport(args);
+      }
+    : undefined;
+
   const tickMs = opts.observationTickMs ?? 5000;
   const batchSize = opts.observationBatchSize ?? 20;
 
@@ -682,6 +730,18 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // wait in the queue and are NOT dead-lettered while the API is down.
   let summarizerCooldownUntil = 0;
   let overloadStreak = 0;
+  /** Consecutive batches that ended in a NON-auth permanent failure (400/404/422…). Reset by any
+   *  clean batch. Auth-shaped failures bypass this entirely — see the demotion block. */
+  let permanentStreak = 0;
+  /**
+   * How many consecutive non-auth-permanent batches retire a provider.
+   *
+   * A judgment constant, not a measured one: 400/404/422 usually means THIS request was bad, so
+   * demoting on the first one would burn a working provider over one malformed batch. But a chain
+   * of them (a model the account lost access to, a renamed endpoint) is the provider. Three batches
+   * is ~15 s at the default tick — long enough to be a pattern, short enough that nobody notices.
+   */
+  const DEMOTE_AFTER_PERMANENT_BATCHES = 3;
   // Last summarize failure, verbatim. Hoisted out of processBatch (where the reason
   // used to be a local that died with the call) so /stats can answer WHY the pipeline
   // stalled — otherwise a 21h outage is only discoverable in journalctl.
@@ -785,8 +845,51 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   let statsGen = 0;
   const invalidateStats = () => { statsCache = null; statsGen++; };
 
+  /**
+   * Retire the current provider and take the next one in the chain.
+   *
+   * Returns true when a replacement is running — the caller then requeues the batch instead of
+   * dead-lettering it. Returns false when the chain is exhausted (summarizer now DISABLED, doctor
+   * FAILs) or when this worker has no failover seam at all, in which case the caller keeps today's
+   * behaviour exactly.
+   *
+   * Requires a known current provider: without one there is nothing to put on the exclusion list,
+   * so the rebuild would hand back the SAME provider and we would "fail over" in a loop.
+   */
+  async function demoteProvider(reason: string): Promise<boolean> {
+    if (!opts.rebuildSummarizer || !activeProvider) return false;
+    const dying = activeProvider;
+    demoted.push({ provider: dying, reason: reason.slice(0, 200), at_epoch: Math.floor(Date.now() / 1000) });
+    const next = await opts.rebuildSummarizer(demoted.map(d => d.provider)).catch((err: unknown) => {
+      console.error(`[obs-batch] provider rebuild FAILED: ${(err as Error).message}`);
+      return null;
+    });
+    if (!next) {
+      summarize = null;
+      activeTransport = null;
+      console.error(
+        `[obs-batch] summarizer provider chain EXHAUSTED after demoting ${dying} — summarizer DISABLED `
+        + `until restart (a restart re-walks the whole chain): ${reason}`,
+      );
+      invalidateStats();
+      return false;
+    }
+    summarize = next.summarize;
+    activeTransport = next.transport;
+    activeProvider = next.provider;
+    for (const s of next.skips) {
+      if (!summarizerSkips.some(x => x.provider === s.provider)) summarizerSkips.push(s);
+    }
+    console.error(`[obs-batch] summarizer provider DEMOTED ${dying} -> ${next.provider}: ${reason}`);
+    invalidateStats();
+    return true;
+  }
+
   async function processBatch(limit: number): Promise<{ processed: number; observations_created: number }> {
     if (!obsQueue || !obsStore || !summarize) return { processed: 0, observations_created: 0 };
+    // Pin the provider for the whole batch: a demotion below swaps `summarize` mid-flight, and a
+    // batch that used two different providers would be impossible to reason about in the log.
+    const summarizeNow = summarize;
     // Summarizer cooldown: the API was overloaded/unreachable recently — skip this
     // pass entirely (no takeBatch, no API call) until the backoff elapses. The tick
     // keeps firing but this early-return makes each one a cheap no-op.
@@ -810,13 +913,15 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     const overloadedIds: number[] = [];
     let retryReason = '';
     let permanentReason = '';
+    // Did any permanent failure this batch look like the PROVIDER rather than the request?
+    let sawAuthShaped = false;
     let overloadReason = '';
     let maxRetryAfterMs = 0;
 
     for (const groupRows of groups.values()) {
       const events = groupRows.map(r => r.payload);
       try {
-        const summary = await summarize(events);
+        const summary = await summarizeNow(events);
         const head = events[0]!;
         const workTokens = summary.usage
           ? summary.usage.input_tokens + summary.usage.output_tokens
@@ -856,6 +961,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         if (kind === 'permanent') {
           permanentIds.push(...ids);
           permanentReason = msg.slice(0, 200);
+          if (isAuthShapedFailure(msg, e.status)) sawAuthShaped = true;
         } else if (kind === 'overloaded') {
           overloadedIds.push(...ids);
           overloadReason = msg.slice(0, 200);
@@ -872,9 +978,41 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     // outage can't dead-letter observations (the cooldown below spaces the retries).
     if (overloadedIds.length > 0) obsQueue.requeue(overloadedIds);
     if (failedIds.length > 0) obsQueue.markFailed(failedIds, 3, retryReason);
-    if (permanentIds.length > 0) obsQueue.markPermanent(permanentIds, permanentReason);
 
-    if (overloadedIds.length > 0) {
+    // PROVIDER FAILOVER, decided BEFORE the permanent rows are disposed of.
+    //
+    // `permanent` is a verdict about the provider at least as often as about the data: an expired
+    // OAuth token 401s on every batch, and dead-lettering those observations throws away data the
+    // NEXT provider in the chain would have summarized fine. So try to demote first, and let the
+    // outcome pick the disposal.
+    let failedOver = false;
+    if (permanentIds.length > 0) {
+      permanentStreak++;
+      if (sawAuthShaped || permanentStreak >= DEMOTE_AFTER_PERMANENT_BATCHES) {
+        failedOver = await demoteProvider(permanentReason);
+        permanentStreak = 0;
+      }
+    } else if (doneIds.length > 0) {
+      permanentStreak = 0;  // a clean batch on this provider breaks the run
+    }
+    if (permanentIds.length > 0) {
+      // A new provider is running: nothing judged this data, it was merely undeliverable. Requeue
+      // WITHOUT a retry increment (same reasoning as an outage). No failover — either the chain is
+      // exhausted, this worker has no failover seam, or we are still under the streak threshold —
+      // dead-letter EXACTLY as before: a genuinely bad observation on a healthy provider still has
+      // to terminate, or one poisoned row wedges the queue head forever.
+      if (failedOver) obsQueue.requeue(permanentIds);
+      else obsQueue.markPermanent(permanentIds, permanentReason);
+    }
+
+    if (failedOver) {
+      // A batch can carry BOTH an overload and a permanent (different groups, different failures),
+      // and the demotion then replaced the very API that was overloading. Backing the NEW provider
+      // off for up to 10 minutes because its predecessor was struggling would stall the pipeline
+      // for no reason — the streak belongs to the provider, so it dies with it.
+      overloadStreak = 0;
+      summarizerCooldownUntil = 0;
+    } else if (overloadedIds.length > 0) {
       // The API looked overloaded/down — back off the whole obs-batch loop so we
       // delay (not hammer) our next attempt. Escalates per consecutive cycle.
       overloadStreak++;
@@ -889,8 +1027,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       overloadStreak = 0;
       summarizerCooldownUntil = 0;
       // Only a FULLY clean cycle clears the reason: a batch that summarized 19 of 20
-      // still has something worth showing for the 20th.
-      if (failedIds.length === 0 && permanentIds.length === 0) lastSummarizerError = null;
+      // still has something worth showing for the 20th. And once a provider has been DEMOTED the
+      // reason is history worth keeping until restart — the new provider's first success must not
+      // erase the only record of why the old one was retired.
+      if (failedIds.length === 0 && permanentIds.length === 0 && demoted.length === 0) lastSummarizerError = null;
     }
 
     if (observations_created > 0) invalidateStats(); // new obs → /stats counts changed
@@ -1337,9 +1477,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   let themeTimer: ReturnType<typeof setInterval> | null = null;
   let themePromise: Promise<unknown> | null = null;
   let startTheme: ((force?: boolean) => Promise<unknown> | null) | null = null;
-  if (!opts.readOnly && obsStore && opts.summarizerTransport && qmConfig.enabled && qmConfig.themeEnabled) {
+  if (!opts.readOnly && obsStore && summarizerTransport && qmConfig.enabled && qmConfig.themeEnabled) {
     const themeStore = obsStore;
-    const judge = buildThemeJudge(opts.summarizerTransport);
+    const judge = buildThemeJudge(summarizerTransport);
     startTheme = (force = false) => {
       // Only a theme run blocks a theme run. Gating on semanticPromise as well starved this
       // pass outright: both timers share semanticCheckIntervalMs, the semantic one is registered
@@ -1470,9 +1610,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // a prior run is still in flight, and yields if ingest/batch work is active.
   let promotionTimer: ReturnType<typeof setInterval> | null = null;
   let promotionPromise: Promise<unknown> | null = null;
-  if (!opts.readOnly && obsStore && opts.summarizerTransport && promotionConfig.mode !== 'off') {
+  if (!opts.readOnly && obsStore && summarizerTransport && promotionConfig.mode !== 'off') {
     const promoStore = obsStore;
-    const transport = opts.summarizerTransport;
+    const transport = summarizerTransport;
     const rememberDir = process.env[ENV_REMEMBER_DIR] ?? DEFAULT_REMEMBER_DIR;
     const dedupThreshold = Number(process.env[ENV_REMEMBER_DEDUP_THRESHOLD]) || DEFAULT_REMEMBER_DEDUP_THRESHOLD;
     const judge = buildPromotionJudge(transport);
@@ -2127,10 +2267,17 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           // running?" — the RESOLVED provider (post-fallback), which is the ground truth the raw
           // worker.env value can't give (a bad "codex,agy" shows here as its real fallback).
           summarizer: {
-            provider: opts.summarizerProvider
+            // The provider running NOW: the boot pick, or whatever a runtime demotion replaced it
+            // with. Re-resolving the env var would name the customer's first preference, which
+            // after a failover is exactly the provider that is no longer running.
+            provider: activeProvider
               ?? resolveSummarizerProvider(process.env[ENV_SUMMARIZER_PROVIDER]).provider,
             // Which preferred providers lost, and why — an empty list is the normal case.
-            skipped: opts.summarizerSkips ?? [],
+            skipped: summarizerSkips,
+            // Providers RETIRED mid-lifetime (auth died at hour 30), newest last. Distinct from
+            // `skipped`: those never started, these were working and then stopped. Excluded from
+            // re-selection until restart, so this list is also "what a restart would retry".
+            demoted,
             model: process.env[ENV_SUMMARIZER_MODEL] ?? null,
             enabled: summarize != null, // summarize is `opts.summarize ?? null`, so it is NEVER undefined — must null-check (a `!== undefined` bug reported this as always-on)
             // In backoff after a recent failure (API 401/429/network). A persistently-failing summarizer
@@ -2561,7 +2708,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           dedupThreshold: Number(process.env[ENV_REMEMBER_DEDUP_THRESHOLD] ?? DEFAULT_REMEMBER_DEDUP_THRESHOLD),
           // Omit `generate` when no transport is configured so writeMemory takes its
           // deterministic frontmatter fallback (name=first line, description=truncated body).
-          ...(opts.summarizerTransport !== undefined && { generate: opts.summarizerTransport }),
+          ...(summarizerTransport !== undefined && { generate: summarizerTransport }),
         } as WriteMemoryDeps;
 
         const input: RememberInput = {
@@ -2592,8 +2739,15 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       // the writer carried on (the /remember bug fixed in 0.38.9), and it would lose all progress on
       // Ctrl-C. Slice-at-a-time means the ledger records exactly how far we got.
       if (req.method === 'POST' && url.pathname === '/promote/slice') {
-        if (!obsStore || !opts.summarizerTransport) {
-          return Response.json({ error: 'unavailable', detail: 'promotion needs an observations store and a summarizer' }, { status: 503 });
+        // activeTransport as well as the boot gate: after a runtime chain exhaustion the wrapper
+        // still exists but every call rejects, and a 500 mid-slice reads as a bug. Say 503 instead.
+        if (!obsStore || !summarizerTransport || !activeTransport) {
+          return Response.json({
+            error: 'unavailable',
+            detail: activeTransport === null && summarizerTransport
+              ? 'promotion needs a summarizer — the provider chain was exhausted at runtime (run `captain-memo doctor`); restart re-walks it'
+              : 'promotion needs an observations store and a summarizer',
+          }, { status: 503 });
         }
         const parsed = PromoteSliceSchema.safeParse(await req.json().catch(() => ({})));
         if (!parsed.success) {
@@ -2601,7 +2755,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         }
         const { mode, limit, min_recall, re_judge } = parsed.data;
         const store = obsStore;
-        const transport = opts.summarizerTransport;
+        const transport = summarizerTransport;
         const sliceCfg = { ...promotionConfig, mode, maxPerRun: limit };
         const result = await runPromotionSlice({
           candidates: () => (mode === 'shadow'
@@ -3248,45 +3402,55 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
     ? summarizerFallbacksRaw.split(',').map(s => s.trim()).filter(Boolean)
     : providerDefaultFallbacks;
 
-  let summarize: ((events: import('../shared/types.ts').RawObservationEvent[]) => Promise<import('./index.ts').SummarizerResult>) | undefined;
-  let summarizerTransport: import('./summarizer.ts').SummarizerTransport | undefined;
-  let activeProvider: SummarizerProvider | undefined;
-  const providerSkips: Array<{ provider: string; reason: string }> = [];
+  // PROBE the chain and pick the FIRST provider that can actually run.
+  //
+  // The probes are deliberately STRUCTURAL and entries AFTER the first success are never probed, so
+  // a healthy first entry costs one cheap check — see buildSummarizerFor's header.
+  //
+  // ONE walk, used twice: at boot with no exclusions, and again at RUNTIME (via rebuildSummarizer
+  // below) with the providers that have since been demoted. Passing the walk rather than a second
+  // transport is what keeps the model-per-provider and credential logic here, in the one place that
+  // resolved the chain, instead of leaking it into the worker.
+  const walkChain = async (
+    exclude: SummarizerProvider[],
+  ): Promise<{
+    built: {
+      summarize: (events: import('../shared/types.ts').RawObservationEvent[]) => Promise<SummarizerResult>;
+      transport: import('./summarizer.ts').SummarizerTransport;
+      provider: SummarizerProvider;
+      note: string;
+    } | null;
+    skips: Array<{ provider: string; reason: string }>;
+  }> => {
+    const skips: Array<{ provider: string; reason: string }> = [];
+    for (const candidate of summarizerProviders) {
+      if (exclude.includes(candidate)) continue;
+      // The pinned model belongs to the provider the customer pinned it FOR. Handing a Claude slug
+      // to `codex exec` is an instant 400 (see the provider-shaped defaults above), so the override
+      // binds to the head of the chain only; every later provider uses its own defaults. NOTE: head
+      // means "what the customer wrote first", not "first one we are still allowed to try" — a
+      // demoted head must not hand its pinned model to its successor.
+      const isHead = candidate === summarizerProviders[0];
+      const mdl = isHead ? summarizerModel : defaultModelFor(candidate);
+      const fbs = isHead ? summarizerFallbacks : defaultFallbacksFor(candidate);
 
-  // PROBE AT BOOT, then commit — not runtime failover.
-  //
-  // Walk the customer's ordered chain and pick the FIRST provider that can actually run; that one
-  // serves for this worker's lifetime. Deliberately NOT per-call failover on auth errors: codex and
-  // agy are subprocess CLIs whose failures are exit codes and stderr strings, where "not logged in"
-  // is not reliably distinguishable from "flag renamed" or "binary missing" — misclassify once and
-  // you either burn the chain on a transient or wedge on a dead provider. A static choice is
-  // honest, and doctor already FAILs loudly when the summarizer is dead; a restart re-walks the list.
-  //
-  // OUT OF SCOPE for this version: switching provider mid-lifetime (e.g. an OAuth token expiring at
-  // hour 30). That needs cooldown and in-flight-batch handling and is its own piece of work.
-  //
-  // COST: entries AFTER the first success are never probed. With a healthy first entry the whole
-  // walk is one cheap check.
-  for (const candidate of summarizerProviders) {
-    // The pinned model belongs to the provider the customer pinned it FOR. Handing a Claude slug to
-    // `codex exec` is an instant 400 (see the provider-shaped defaults above), so the override binds
-    // to the head of the chain only; every later provider uses its own defaults.
-    const isHead = candidate === summarizerProviders[0];
-    const mdl = isHead ? summarizerModel : defaultModelFor(candidate);
-    const fbs = isHead ? summarizerFallbacks : defaultFallbacksFor(candidate);
-
-    const built = await buildSummarizerFor(candidate, mdl, fbs, anthropicKey);
-    if ('skip' in built) {
-      providerSkips.push({ provider: candidate, reason: built.skip });
-      console.error(`[worker] summarizer provider ${candidate} SKIPPED — ${built.skip}`);
-      continue;
+      const built = await buildSummarizerFor(candidate, mdl, fbs, anthropicKey);
+      if ('skip' in built) {
+        skips.push({ provider: candidate, reason: built.skip });
+        console.error(`[worker] summarizer provider ${candidate} SKIPPED — ${built.skip}`);
+        continue;
+      }
+      return { built: { ...built, provider: candidate }, skips };
     }
-    summarize = built.summarize;
-    summarizerTransport = built.transport;
-    activeProvider = candidate;
-    console.error(`[worker] summarizer provider = ${candidate} — ${built.note}`);
-    break;
-  }
+    return { built: null, skips };
+  };
+
+  const boot = await walkChain([]);
+  const summarize = boot.built?.summarize;
+  const summarizerTransport = boot.built?.transport;
+  const activeProvider = boot.built?.provider;
+  const providerSkips = boot.skips;
+  if (boot.built) console.error(`[worker] summarizer provider = ${boot.built.provider} — ${boot.built.note}`);
 
   if (!summarizerTransport) {
     console.error(
@@ -3328,6 +3492,14 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
     observationTickMs,
     ...(summarize !== undefined && { summarize }),
     ...(summarizerTransport !== undefined && { summarizerTransport }),
+    // Only wired when boot actually produced a summarizer: with no provider at all there is nothing
+    // to fail OVER from, and the loud "summarizer disabled" above already covers that case.
+    ...(boot.built !== null && {
+      rebuildSummarizer: async (exclude: SummarizerProvider[]) => {
+        const r = await walkChain(exclude);
+        return r.built ? { ...r.built, skips: r.skips } : null;
+      },
+    }),
   };
 }
 
