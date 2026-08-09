@@ -38,11 +38,30 @@ export const DEFAULT_VOYAGE_ENDPOINT = 'http://localhost:8124/v1/embeddings';
 // each pick what works for them.
 export const DEFAULT_SUMMARIZER_MODEL = 'claude-haiku-4-5';
 
-// Ordered fallback chain — each model is tried on `model_not_found` from the
-// previous one. The first successful model is cached for the worker's lifetime.
-// Default tries the next-newer release for forward-compat, then the safe
-// `haiku` alias as a last resort. Override via CAPTAIN_MEMO_SUMMARIZER_FALLBACKS.
-export const DEFAULT_SUMMARIZER_FALLBACKS: string[] = ['claude-haiku-4-6', 'haiku'];
+// Ordered fallback chain — each model is tried on `model_not_found` from the previous one. The
+// first successful model is cached for the worker's lifetime.
+//
+// BOTH PREVIOUS ENTRIES WERE DEAD, so this chain had no working fallback at all: if the primary
+// became unavailable the summarizer stopped, taking observations and cross-AI capture with it.
+// PROBED against api.anthropic.com with this account's own OAuth credentials (2026-08-09):
+//
+//   claude-haiku-4-5              200  <- primary
+//   claude-haiku-4-5-20251001     200
+//   claude-sonnet-5               200
+//   claude-sonnet-4-5             200
+//   claude-haiku-4-6              404  <- was fallback #1 ("next-newer release"; never shipped)
+//   haiku                         404  <- was fallback #2 ("safe alias"; the API takes no aliases)
+//   sonnet                        404
+//
+// The "safe alias" assumption is the load-bearing error: api.anthropic.com resolves FULL model ids
+// only, so no bare alias can ever serve as a last resort. It is also why the promotion and theme
+// judges — which passed a literal 'haiku' — had never once reached a model.
+//
+// The chain now degrades along two independent axes: a DATE-PINNED build of the same model (survives
+// an alias being retired), then a DIFFERENT FAMILY (survives haiku being unavailable outright).
+// Sonnet costs more per token; it only ever runs when the cheap path is already broken, and a dearer
+// summary beats none. Override via CAPTAIN_MEMO_SUMMARIZER_FALLBACKS.
+export const DEFAULT_SUMMARIZER_FALLBACKS: string[] = ['claude-haiku-4-5-20251001', 'claude-sonnet-5'];
 
 // Env-var names — keep all under CAPTAIN_MEMO_* except ANTHROPIC_API_KEY,
 // which intentionally matches the Anthropic SDK convention.

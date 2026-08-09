@@ -5,6 +5,41 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.31.1] — 2026-08-09
+
+### Fixed
+
+- **The summarizer's fallback chain was entirely dead — it had no fallback at all.** Both entries of
+  `DEFAULT_SUMMARIZER_FALLBACKS` (`claude-haiku-4-6`, then the "safe" `haiku` alias) return **404**.
+  If the primary ever became unavailable the summarizer would build nothing, and with it go
+  observations and all cross-AI capture — the exact failure doctor already FAILs on ("provider has no
+  usable credentials, so the worker built NO summarizer").
+
+  Probed against `api.anthropic.com` with this account's own OAuth credentials:
+
+  | model id | |
+  |---|---|
+  | `claude-haiku-4-5` | 200 — primary |
+  | `claude-haiku-4-5-20251001` | 200 |
+  | `claude-sonnet-5` | 200 |
+  | `claude-sonnet-4-5` | 200 |
+  | `claude-haiku-4-6` | **404** — was fallback #1 |
+  | `haiku` | **404** — was fallback #2 |
+  | `sonnet` | **404** |
+
+  The load-bearing error is the "safe alias" assumption: **api.anthropic.com resolves full model ids
+  only**, so no bare alias can ever serve as a last resort. It is the same root cause as the promotion
+  and theme judges passing a literal `'haiku'` and therefore never once reaching a model (0.39.0).
+
+  The chain now degrades along two independent axes — a **date-pinned build** of the same model
+  (survives an alias being retired), then a **different family** (survives haiku being unavailable
+  outright): `['claude-haiku-4-5-20251001', 'claude-sonnet-5']`. Sonnet costs more per token and only
+  ever runs when the cheap path is already broken; a dearer summary beats none.
+
+  **Known gap, not fixed here:** fallback is within ONE provider. `CAPTAIN_MEMO_SUMMARIZER_PROVIDER`
+  takes a single value, so a claude-oauth token expiry still stops the summarizer even on a host with
+  working `codex` or `agy` transports configured. A provider-level chain is the natural next step.
+
 ## [0.31.0] — 2026-08-09
 
 ### Added
