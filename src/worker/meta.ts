@@ -205,6 +205,26 @@ export class MetaStore {
     this.db.query('DELETE FROM documents WHERE source_path = ?').run(source_path);
   }
 
+  /** Documents whose FILE NAME matches, optionally within one channel. The identifier a user holds
+   *  is the doc_id (`memory:<basename>`) printed by search — not the absolute path, which they never
+   *  see. `source_path` is unique per PATH, so one basename can legitimately exist in two directories;
+   *  this returns EVERY match so the caller can refuse an ambiguous delete rather than guess which
+   *  one was meant. Pass `channel` when the doc_id carries it: that hits
+   *  idx_documents_project_channel and narrows 148k documents to the 813 in `memory`.
+   *
+   *  ESCAPE is not optional here — `_` is a LIKE wildcard and every remember-written name contains
+   *  one (`reference_bench-2kb.md`), so an unescaped pattern would match unrelated documents and a
+   *  delete would take the wrong file. */
+  findDocumentsByBasename(basename: string, channel?: ChannelType): Document[] {
+    const escaped = basename.replace(/[\\%_]/g, (c) => '\\' + c);
+    const sql = 'SELECT * FROM documents WHERE (source_path = ? OR source_path LIKE ? ESCAPE \'\\\')'
+      + (channel ? ' AND channel = ?' : '');
+    const params: string[] = [basename, '%/' + escaped];
+    if (channel) params.push(channel);
+    const rows = this.db.query(sql).all(...params) as Array<Omit<Document, 'metadata'> & { metadata: string }>;
+    return rows.map((r) => ({ ...r, metadata: JSON.parse(r.metadata) }));
+  }
+
   replaceChunksForDocument(documentId: number, chunks: ChunkUpsertInput[]): void {
     const tx = this.db.transaction((docId: number, items: ChunkUpsertInput[]) => {
       this.db.query('DELETE FROM chunks WHERE document_id = ?').run(docId);

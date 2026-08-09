@@ -1,5 +1,5 @@
 import { join, dirname } from 'path';
-import { statSync, readdirSync, chmodSync, existsSync } from 'node:fs';
+import { statSync, readdirSync, chmodSync, existsSync, unlinkSync } from 'node:fs';
 import { detectBranchSyncCached } from './branch.ts';
 import { z } from 'zod';
 import { MetaStore } from './meta.ts';
@@ -281,6 +281,16 @@ const RememberSchema = z.object({
   cwd: z.string().optional(),
   sourceObservationId: z.number().int().positive().optional(),
   targetDirOverride: z.string().optional(),
+});
+
+/** Exactly one of doc_id / path — never both, never neither. `doc_id` is what search prints and what
+ *  a user actually holds; `path` is the unambiguous escape hatch when two files share a basename. */
+const ForgetSchema = z.object({
+  doc_id: z.string().min(1).optional(),
+  path: z.string().min(1).optional(),
+  dry_run: z.boolean().optional().default(false),
+}).refine((d) => (d.doc_id === undefined) !== (d.path === undefined), {
+  message: 'provide exactly one of doc_id or path',
 });
 
 const InjectContextSchema = z.object({
@@ -2533,6 +2543,73 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 
         const result = await writeMemory(input, deps);
         return Response.json(result, { status: result.ok ? 200 : 500 });
+      }
+
+      // The other half of /remember. Until now nothing could FORGET: `ingest.deleteFile()` existed and
+      // did the whole job, but had no route and no command, so the only way to unpublish a memory was
+      // to empty its body via another /remember. Deleting the .md by hand does NOT work — the document,
+      // its chunks and its vectors stay indexed and keep answering searches.
+      //
+      // Deletes the FILE too, deliberately: leaving it on disk under a watched directory means the
+      // watcher re-indexes it on the next tick and the memory comes back.
+      if (req.method === 'POST' && url.pathname === '/forget') {
+        const parsed = ForgetSchema.safeParse(await req.json());
+        if (!parsed.success) {
+          return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
+        }
+        const { doc_id, path: rawPath, dry_run } = parsed.data;
+
+        // Resolve to exactly one indexed document. We only ever delete something the index already
+        // knows about — never an arbitrary path handed to us, which would make this a file-deletion
+        // primitive for anything the worker can reach.
+        let target: string | null = null;
+        if (rawPath !== undefined) {
+          target = meta.getDocument(rawPath) ? rawPath : null;
+          if (!target) return Response.json({ error: 'not_indexed', detail: rawPath }, { status: 404 });
+        } else {
+          // doc_id is `<channel>:<basename-without-.md>`; the channel half narrows the lookup.
+          const sep = doc_id!.indexOf(':');
+          const channel = sep > 0 ? doc_id!.slice(0, sep) : undefined;
+          const stem = sep > 0 ? doc_id!.slice(sep + 1) : doc_id!;
+          const matches = meta.findDocumentsByBasename(
+            stem.endsWith('.md') ? stem : stem + '.md',
+            channel as Parameters<typeof meta.findDocumentsByBasename>[1],
+          );
+          if (matches.length === 0) {
+            return Response.json({ error: 'not_found', detail: doc_id }, { status: 404 });
+          }
+          if (matches.length > 1) {
+            // Refuse rather than pick. Two files can share a basename across directories, and
+            // silently deleting the wrong one is unrecoverable.
+            return Response.json(
+              { error: 'ambiguous', detail: doc_id, candidates: matches.map((m) => m.source_path) },
+              { status: 409 },
+            );
+          }
+          target = matches[0]!.source_path;
+        }
+
+        const doc = meta.getDocument(target);
+        const chunks = doc ? meta.getChunksForDocument(doc.id).length : 0;
+        if (dry_run) {
+          return Response.json({ ok: true, dry_run: true, path: target, chunks, file_exists: existsSync(target) });
+        }
+
+        // Index first, file second. The reverse order can leave the document indexed with its source
+        // already gone if the process dies between the two — which reads to every later search as a
+        // live memory that cannot be opened.
+        await ingest.deleteFile(target);
+        let fileRemoved = false;
+        try {
+          if (existsSync(target)) { unlinkSync(target); fileRemoved = true; }
+        } catch (e) {
+          // De-indexed but the file survived: say so plainly rather than reporting a clean delete.
+          return Response.json({
+            ok: true, path: target, chunks, file_removed: false,
+            warning: `de-indexed, but the file could not be removed: ${(e as Error).message}`,
+          });
+        }
+        return Response.json({ ok: true, path: target, chunks, file_removed: fileRemoved });
       }
 
       if (req.method === 'POST' && url.pathname === '/inject/context') {
