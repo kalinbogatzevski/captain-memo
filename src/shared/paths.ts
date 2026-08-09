@@ -133,7 +133,16 @@ export const ENV_REMEMBER_DEDUP_THRESHOLD = 'CAPTAIN_MEMO_REMEMBER_DEDUP_THRESHO
 export const DEFAULT_REMEMBER_DIR = join(homedir(), '.claude', 'memory');
 export const DEFAULT_PROMOTE_INTERVAL_MS = 21_600_000; // 6h
 export const DEFAULT_PROMOTE_MAX_PER_RUN = 5;
-export const DEFAULT_REMEMBER_DEDUP_THRESHOLD = 0.85;
+/** COSINE similarity at or above which `remember` folds into an existing memory instead of writing
+ *  a new one (findUpdateTarget). A real cosine as of the searchMemory fix — it previously compared
+ *  against `1 - L2distance`, which is monotonic with cosine but is not one, so `0.85` read as
+ *  "85% similar" while actually gating at **cos 0.98875** (d = 1 - 0.85 = 0.15; cos = 1 - d^2/2).
+ *
+ *  0.99 therefore preserves the behaviour that has always shipped, a hair stricter, in the safe
+ *  direction: fewer merges, not more. Near-verbatim is the intent — a merge REWRITES an existing
+ *  memory through an LLM, so a false positive silently edits an entry the caller never named. Do not
+ *  lower this casually; at 0.85 as a true cosine it would fold merely-related memories together. */
+export const DEFAULT_REMEMBER_DEDUP_THRESHOLD = 0.99;
 
 /**
  * Encode an absolute cwd into Claude Code's project-dir slug, matching the

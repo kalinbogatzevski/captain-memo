@@ -45,6 +45,25 @@ const UNCLUSTERED = -1;
  *  for more chunks to walk. */
 export const VEC_CHUNK_SIZE = 128;
 
+
+/** Cosine similarity from a vec0 L2 distance, for UNIT vectors only.
+ *
+ *  vec_chunks is declared `embedding FLOAT[N]` with no `distance_metric`, so vec0 returns L2.
+ *  `1 - L2` is monotonic with cosine and therefore ranks correctly, which is why nothing looked
+ *  broken — but it is NOT a cosine, and any THRESHOLD compared against it means something other
+ *  than it says: a 0.85 gate actually fired at cos 0.98875.
+ *
+ *  d^2 = 2 - 2cos  =>  cos = 1 - d^2/2. Exact, given unit vectors — which holds here because
+ *  voyage-4-lite returns normalized embeddings (verified: 500 random rows from vec_chunks_p,
+ *  L2 norm min = max = 1.000000). If a future embedder returns UNNORMALIZED vectors this becomes
+ *  wrong and silently so, so normalization is a contract of the embedder, not an accident.
+ *
+ *  Clamped: float error can nudge d a hair past 2 (or below 0) at the extremes. */
+export function cosineFromL2(distance: number): number {
+  const cos = 1 - (distance * distance) / 2;
+  return Math.max(-1, Math.min(1, cos));
+}
+
 const SCHEMA = `
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
   chunk_id TEXT PRIMARY KEY,

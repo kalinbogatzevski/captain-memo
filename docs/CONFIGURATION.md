@@ -259,7 +259,7 @@ install path.
 | `CAPTAIN_MEMO_OBSERVATION_BATCH_SIZE` | `20` | Observations summarised per batch. |
 | `CAPTAIN_MEMO_OBSERVATION_TICK_MS` | `5000` | Queue drain interval. |
 | `CAPTAIN_MEMO_OBSERVATION_HALF_LIFE_DAYS` | `90` | Recency half-life in the legacy decay path. |
-| `CAPTAIN_MEMO_REMEMBER_DEDUP_THRESHOLD` | `0.85` | Similarity above which a new curated memory is treated as a duplicate. |
+| `CAPTAIN_MEMO_REMEMBER_DEDUP_THRESHOLD` | `0.99` | **Cosine** similarity at or above which a new curated memory folds into an existing one instead of being written separately. Near-verbatim by design: a fold REWRITES the existing memory through an LLM, so a false positive silently edits an entry you never named. (Was `0.85` before the score became a true cosine — that compared against `1 - L2distance` and actually gated at cos 0.98875, so this is the same behaviour, honestly labelled.) |
 
 ### Search and ranking
 

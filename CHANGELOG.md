@@ -5,6 +5,33 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.30.11] — 2026-08-09
+
+### Changed
+
+- **The dedup threshold is now a real cosine, and says so.** `remember` decides whether to fold into
+  an existing memory by comparing a similarity score against `CAPTAIN_MEMO_REMEMBER_DEDUP_THRESHOLD`.
+  That score was `1 - L2distance` straight out of `vec0` — which is *monotonic* with cosine, so it
+  ranked correctly and nothing ever looked broken, but it is **not** a cosine. On unit vectors L2
+  spans `[0,2]`, so `1 - L2` spans `[-1,1]`, and the documented `0.85` gate was actually firing at
+  **cos 0.98875** (`d = 1 - 0.85 = 0.15`, `cos = 1 - d²/2`). A constant that reads "85% similar" and
+  behaves like 99% is a trap for whoever tunes it next.
+
+  `searchMemory` now converts properly via a named, tested `cosineFromL2()`, and the default moves
+  `0.85 -> 0.99` so the **behaviour is unchanged** — a hair stricter, deliberately in the safe
+  direction. A fold REWRITES an existing memory through an LLM, so a false positive silently edits an
+  entry the caller never named; fewer merges is the right way to be wrong.
+
+  Verified live, gate unchanged: identical text under a new slug still folds (`updated`), genuinely
+  different text still creates. Converted in the query rather than re-declaring the table with
+  `distance_metric=cosine`, which would mean re-inserting all 153,884 vectors and rebuilding the IVF
+  centroids to recover a number that is exactly derivable for free. Safe to change because the score
+  has exactly one consumer — the dedup gate — and is not a search ranking or part of any response.
+
+  The conversion is exact only for **unit** vectors. That holds today (voyage-4-lite returns
+  normalized embeddings; 500 random rows from `vec_chunks_p` all measure L2 norm 1.000000) and is now
+  documented as a contract of the embedder rather than a happy accident.
+
 ## [0.30.10] — 2026-08-09
 
 ### Fixed

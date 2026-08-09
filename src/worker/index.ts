@@ -13,7 +13,7 @@ import { dispatchTool, TOOLS } from '../mcp-server.ts';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { VectorStore } from './vector-store.ts';
+import { VectorStore, cosineFromL2 } from './vector-store.ts';
 import { HybridSearcher } from './search.ts';
 import { IngestPipeline } from './ingest.ts';
 import { writeMemory, type WriteMemoryDeps, type RememberInput } from './memory-writer.ts';
@@ -533,7 +533,16 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       const lookup = meta.getChunkById(r.id);
       if (!lookup || lookup.document.channel !== 'memory') continue;
       if (!lookup.document.source_path.startsWith(dir)) continue;
-      hits.push({ source_path: lookup.document.source_path, score: 1 - r.distance, chunk_id: r.id });
+      // TRUE COSINE, not `1 - distance` — see cosineFromL2. Converting here rather than re-declaring
+      // the table with distance_metric=cosine, which would mean re-inserting all 153,884 vectors and
+      // rebuilding the IVF centroids to recover a number already exactly derivable. Safe because this
+      // score has exactly ONE consumer: the dedup gate in memory-writer.findUpdateTarget. It is not a
+      // search ranking and is not returned by any route.
+      hits.push({
+        source_path: lookup.document.source_path,
+        score: cosineFromL2(r.distance),
+        chunk_id: r.id,
+      });
       if (hits.length >= k) break;
     }
     return hits;

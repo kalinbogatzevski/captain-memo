@@ -22,7 +22,9 @@ test('defaults match spec §8', () => {
   expect(DEFAULT_REMEMBER_DIR).toBe(join(homedir(), '.claude', 'memory'));
   expect(DEFAULT_PROMOTE_INTERVAL_MS).toBe(21_600_000);
   expect(DEFAULT_PROMOTE_MAX_PER_RUN).toBe(5);
-  expect(DEFAULT_REMEMBER_DEDUP_THRESHOLD).toBe(0.85);
+  // 0.99, not 0.85: this is a TRUE cosine now. The old value was compared against
+  // `1 - L2distance`, so it gated at cos 0.98875 while reading as 0.85 — see cosineFromL2.
+  expect(DEFAULT_REMEMBER_DEDUP_THRESHOLD).toBe(0.99);
 });
 
 test('projectSlugFromCwd — real observed dirs: slash→dash, case + digits preserved', () => {
