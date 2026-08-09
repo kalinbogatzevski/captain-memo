@@ -9,6 +9,19 @@ function readJson(rel: string): any {
   return JSON.parse(readFileSync(join(ROOT, rel), 'utf-8'));
 }
 
+/**
+ * `expect(bundle).toContain(x)` on a half-megabyte bundle prints the WHOLE bundle on failure,
+ * which buries the one line that matters. It cost a real debugging session: a stale-dist failure
+ * produced 469 KB of minified ajv, and the actual message ("expected 0.41.2") scrolled away.
+ * Assert on a short label instead, so the failure names the artifact and the fix.
+ */
+function expectBundleHas(bundle: string, needle: string, what: string, fix: string): void {
+  expect(bundle.includes(needle) ? 'ok' : `MISSING ${what} (${JSON.stringify(needle)}) — ${fix}`).toBe('ok');
+}
+function expectBundleLacks(bundle: string, needle: string, what: string, fix: string): void {
+  expect(bundle.includes(needle) ? `UNEXPECTED ${what} (${JSON.stringify(needle)}) — ${fix}` : 'ok').toBe('ok');
+}
+
 // ONE version, everywhere. package.json is the source of truth; plugin.json and
 // marketplace.json must match it exactly. Drift here is what froze the directory
 // marketplace cache (marketplace.json sat at 0.1.0 while plugin.json moved on) —
@@ -54,7 +67,7 @@ test('plugin hooks reference the committed dist bundle, not the deleted symlink'
 test('committed mcp-server bundle embeds the current version (no stale dist after a bump)', () => {
   const pkg = readJson('package.json');
   const bundle = readFileSync(join(ROOT, 'plugin/dist/mcp-server.js'), 'utf-8');
-  expect(bundle).toContain(pkg.version);
+  expectBundleHas(bundle, pkg.version, 'version in plugin/dist/mcp-server.js', 'the dist is STALE: run `bun run build:plugin`');
 });
 
 // Guards the exact regression that silenced EVERY hook (commit 8295f08): the
@@ -68,13 +81,13 @@ test('committed mcp-server bundle embeds the current version (no stale dist afte
 // that specific handler was bundled — not just that *a* file exists.
 test('committed hook bundle is self-contained (handlers inlined, no runtime ../hooks import)', () => {
   const bundle = readFileSync(join(ROOT, 'plugin/dist/captain-memo-hook.js'), 'utf-8');
-  expect(bundle).toContain('silent envelope on each prompt'); // session-start banner
-  expect(bundle).toContain('/observation/enqueue');           // post-tool-use
-  expect(bundle).toContain('/inject/context');                // user-prompt-submit
+  expectBundleHas(bundle, 'silent envelope on each prompt', 'session-start banner', 'rebuild: `bun run build:plugin`');
+  expectBundleHas(bundle, '/observation/enqueue', 'post-tool-use handler', 'rebuild: `bun run build:plugin`');
+  expectBundleHas(bundle, '/inject/context', 'user-prompt-submit handler', 'rebuild: `bun run build:plugin`');
   // The exact bug signature: the buggy shim dispatched via `await import(target)`
   // with the handler paths sitting in a `var EVENTS = { ...: "../hooks/x.ts" }`
   // literal (bun never inlined a variable-specifier import). A correctly bundled
   // file inlines every handler and carries ZERO "../hooks/" references — so the
   // presence of that path fragment is a precise, non-overfit regression signal.
-  expect(bundle).not.toContain('../hooks/');
+  expectBundleLacks(bundle, '../hooks/', 'runtime ../hooks import', 'the handlers must be INLINED by the bundler, not imported at runtime');
 });
