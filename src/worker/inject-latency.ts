@@ -21,6 +21,10 @@ export interface InjectSample {
   embed_ms: number | null;
   degraded: boolean;
   over_deadline: boolean;
+  /** The deadline THIS call was judged against — the caller's own `deadline_ms`, null when it sent
+   *  none. Kept so /stats can report the deadline actually in force rather than leaving doctor to
+   *  guess it; see the note on InjectLatencyStats.deadline_ms. */
+  deadline_ms?: number | null;
 }
 
 export interface InjectLatencyStats {
@@ -31,6 +35,14 @@ export interface InjectLatencyStats {
   embed_p50_ms: number | null;
   over_deadline_n: number;
   degraded_n: number;
+  /** The deadline `over_deadline_n` was counted against, or null if no call in the window carried
+   *  one. REPORTED because doctor cannot derive it: the hook reads CAPTAIN_MEMO_HOOK_TIMEOUT_MS
+   *  from ITS OWN process env (Claude Code's), which the worker never reads, so doctor's old
+   *  worker.env lookup was a different number entirely — 2000 there against 10000 actually being
+   *  sent on this captain, i.e. "0/26 over the 2000ms deadline" for a count taken against 10s.
+   *  Most-recent non-null wins: if the hook's timeout is reconfigured mid-window, the value in
+   *  force now is the honest one to show. */
+  deadline_ms: number | null;
 }
 
 /** Spec §4.1: the last 200 outcomes. Big enough that one slow call cannot swing the p50, small
@@ -65,7 +77,15 @@ export class InjectLatencyRing {
   stats(): InjectLatencyStats {
     const n = this.buf.length;
     if (n === 0) {
-      return { n: 0, p50_ms: 0, p95_ms: 0, max_ms: 0, embed_p50_ms: null, over_deadline_n: 0, degraded_n: 0 };
+      return { n: 0, p50_ms: 0, p95_ms: 0, max_ms: 0, embed_p50_ms: null, over_deadline_n: 0, degraded_n: 0, deadline_ms: null };
+    }
+    // Walk back to the newest call that actually carried a deadline. Scanning (rather than reading
+    // buf[n-1]) because a single caller omitting deadline_ms must not blank out the figure for the
+    // whole window.
+    let deadline: number | null = null;
+    for (let i = this.buf.length - 1; i >= 0; i--) {
+      const d = this.buf[i]!.deadline_ms;
+      if (typeof d === 'number' && d > 0) { deadline = d; break; }
     }
     const elapsed = this.buf.map((s) => s.elapsed_ms).sort((a, b) => a - b);
     const embeds = this.buf.map((s) => s.embed_ms).filter((v): v is number => v !== null).sort((a, b) => a - b);
@@ -77,6 +97,7 @@ export class InjectLatencyRing {
       embed_p50_ms: embeds.length > 0 ? pct(embeds, 50) : null,
       over_deadline_n: this.buf.reduce((acc, s) => acc + (s.over_deadline ? 1 : 0), 0),
       degraded_n: this.buf.reduce((acc, s) => acc + (s.degraded ? 1 : 0), 0),
+      deadline_ms: deadline,
     };
   }
 }

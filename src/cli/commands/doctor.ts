@@ -99,12 +99,25 @@ export const INJECT_MIN_SAMPLES = 20;
  *  survivable while a quarter of calls are still failing on the spikes; the over-deadline ratio
  *  catches that bimodal shape. */
 export function injectLatencyVerdict(
-  inject: { n?: number; p50_ms?: number; p95_ms?: number; over_deadline_n?: number } | null | undefined,
-  deadlineMs: number,
+  inject:
+    | { n?: number; p50_ms?: number; p95_ms?: number; over_deadline_n?: number; deadline_ms?: number | null }
+    | null | undefined,
+  fallbackDeadlineMs: number,
 ): Check | null {
   if (!inject || typeof inject.n !== 'number') return null;   // older worker — absent, not broken
   const n = inject.n;
   if (n < INJECT_MIN_SAMPLES) return null;                    // never assert from no data
+
+  // The deadline the WORKER observed, not the one the caller of this function guessed. over_deadline_n
+  // is counted against the hook's own `deadline_ms`, and the hook resolves that from
+  // CAPTAIN_MEMO_HOOK_TIMEOUT_MS in ITS process env — Claude Code's. The worker never reads that key,
+  // so scraping it out of worker.env answers a different question: on this captain worker.env held
+  // 2000 while the hook sent 10000, and the line read "0/26 over the 2000ms deadline" for a count
+  // taken against 10s, with the 80%-headroom clause scored against a deadline that was not in force.
+  // Fall back only for a worker old enough not to report it.
+  const deadlineMs = typeof inject.deadline_ms === 'number' && inject.deadline_ms > 0
+    ? inject.deadline_ms
+    : fallbackDeadlineMs;
 
   const name = 'hook retrieval latency';
   const p50 = inject.p50_ms ?? 0;
@@ -336,6 +349,7 @@ export function captureSourceVerdict(
   sources: string[],
   ingested: Record<string, number> | undefined,
   recent: Record<string, number> | undefined,
+  byOrigin?: Record<string, number> | undefined,
 ): Check[] {
   // Either field absent (a worker predating them) ⇒ we know nothing. Say nothing.
   if (ingested === undefined || recent === undefined) return [];
@@ -343,6 +357,22 @@ export function captureSourceVerdict(
     const n = ingested[id] ?? 0;
     if (n > 0) {
       return [{ name: `capture:${id}`, status: 'PASS', detail: `${n} session(s) ingested` } as Check];
+    }
+    // `events_ingested` arrived as ALTER TABLE ... NOT NULL DEFAULT 0 (b6903b9, 2026-07-30), so every
+    // row written BEFORE it reads back as "this session produced nothing" — which is precisely what
+    // ingestedSessions() counts. A source last captured before that migration is therefore pinned at
+    // 0 here however well it worked: on this host agy (last 07-26) and gemini (07-30) both showed 0
+    // while the corpus already held 246 and 15 of their observations. The remedy below cannot clear
+    // it either — capture backfill skips any session whose marker is unchanged, so those rows are
+    // never re-extracted and never recounted, and the warning would stand forever.
+    //
+    // observations.by_origin answers the question this check is actually asking ("is capture yielding
+    // observations?") directly, and is immune to that archaeology: if a source put observations in the
+    // corpus, capture works. An additive column default is not neutral — it asserts a value about
+    // history it knows nothing about, so never let one become a diagnostic's ground truth.
+    const obs = byOrigin?.[id] ?? 0;
+    if (obs > 0) {
+      return [{ name: `capture:${id}`, status: 'PASS', detail: `${obs} observation(s) captured` } as Check];
     }
     // "The session directory exists" is NOT "the tool is in use here". A single abandoned
     // rollout from months ago otherwise makes a source permanently active, and doctor nags
@@ -365,6 +395,7 @@ async function checkCapture(): Promise<void> {
   const b = s.body as {
     capture?: { sources?: string[]; ingested?: Record<string, number>; recent?: Record<string, number> };
     summarizer?: { provider?: string; enabled?: boolean; cooling_down?: boolean };
+    observations?: { by_origin?: Record<string, number> };
   };
 
   // Summarizer LIVENESS — the worker's ground truth (whether it actually built a summarizer), not the
@@ -404,7 +435,9 @@ async function checkCapture(): Promise<void> {
     }
   }
 
-  for (const check of captureSourceVerdict(b.capture?.sources ?? [], b.capture?.ingested, b.capture?.recent)) {
+  for (const check of captureSourceVerdict(
+    b.capture?.sources ?? [], b.capture?.ingested, b.capture?.recent, b.observations?.by_origin,
+  )) {
     record(check);
   }
 

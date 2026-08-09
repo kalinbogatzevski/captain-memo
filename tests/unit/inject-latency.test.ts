@@ -1,11 +1,16 @@
 import { test, expect } from 'bun:test';
 import { InjectLatencyRing, INJECT_WINDOW } from '../../src/worker/inject-latency.ts';
 
-const s = (elapsed: number, extra: Partial<{ embed_ms: number | null; degraded: boolean; over_deadline: boolean }> = {}) => ({
+const s = (
+  elapsed: number,
+  extra: Partial<{ embed_ms: number | null; degraded: boolean; over_deadline: boolean; deadline_ms: number | null }> = {},
+) => ({
   elapsed_ms: elapsed,
   embed_ms: extra.embed_ms === undefined ? 100 : extra.embed_ms,
   degraded: extra.degraded ?? false,
   over_deadline: extra.over_deadline ?? false,
+  // null by default, so every pre-existing case keeps asserting the "caller sent no deadline" shape.
+  deadline_ms: extra.deadline_ms === undefined ? null : extra.deadline_ms,
 });
 
 test('InjectLatencyRing — empty window reports zeros and a null embed p50, not a fake number', () => {
@@ -63,4 +68,40 @@ test('InjectLatencyRing — failures and degradations are counted, not dropped',
   expect(st.over_deadline_n).toBe(1);
   expect(st.degraded_n).toBe(1);
   expect(st.max_ms).toBe(9000);
+});
+
+// ---------------------------------------------------------------------------
+// The deadline over_deadline_n was counted against must be REPORTED, because doctor
+// cannot re-derive it: the hook resolves CAPTAIN_MEMO_HOOK_TIMEOUT_MS from its own
+// process env (Claude Code's), which the worker never reads. Doctor used to scrape
+// worker.env for it — a different number entirely (2000 there vs 10000 actually being
+// sent on this captain), so it printed "0/26 over the 2000ms deadline" for a count
+// taken against 10s.
+// ---------------------------------------------------------------------------
+
+test('InjectLatencyRing — reports the deadline the window was judged against', () => {
+  const r = new InjectLatencyRing();
+  r.record(s(300, { deadline_ms: 10_000 }));
+  r.record(s(400, { deadline_ms: 10_000 }));
+  expect(r.stats().deadline_ms).toBe(10_000);
+});
+
+test('InjectLatencyRing — a caller that sent no deadline does not blank out the window', () => {
+  const r = new InjectLatencyRing();
+  r.record(s(300, { deadline_ms: 10_000 }));
+  r.record(s(400, { deadline_ms: null }));   // newest carries none
+  expect(r.stats().deadline_ms).toBe(10_000);
+});
+
+test('InjectLatencyRing — a reconfigured deadline reports the value now in force', () => {
+  const r = new InjectLatencyRing();
+  r.record(s(300, { deadline_ms: 1_500 }));
+  r.record(s(400, { deadline_ms: 10_000 }));
+  expect(r.stats().deadline_ms).toBe(10_000);
+});
+
+test('InjectLatencyRing — no deadline anywhere reports null, not a guess', () => {
+  const r = new InjectLatencyRing();
+  r.record(s(300, { deadline_ms: null }));
+  expect(r.stats().deadline_ms).toBeNull();
 });

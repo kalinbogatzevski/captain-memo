@@ -178,6 +178,37 @@ test('captureSourceVerdict: a source missing from the ingested map counts as zer
   expect(checks[0]!.status).toBe('WARN');
 });
 
+// ---------------------------------------------------------------------------
+// `events_ingested` was added by ALTER TABLE ... NOT NULL DEFAULT 0 (b6903b9), so
+// every row written before it reads back as "produced nothing" — and that is exactly
+// what ingestedSessions() counts. Live on this captain: agy and gemini sat at 0 while
+// the corpus held 246 and 15 of their observations, and the printed remedy could never
+// clear it (capture backfill skips unchanged markers, so those rows never recount).
+// observations.by_origin is the direct, migration-proof answer.
+// ---------------------------------------------------------------------------
+
+test('captureSourceVerdict: zero ingested but observations in the corpus PASSes (pre-migration rows)', () => {
+  const checks = captureSourceVerdict(['agy'], { agy: 0 }, { agy: 1 }, { agy: 246 });
+
+  expect(checks).toHaveLength(1);
+  expect(checks[0]!.status).toBe('PASS');
+  expect(checks[0]!.detail).toContain('246');
+});
+
+test('captureSourceVerdict: zero ingested AND zero observations still WARNs', () => {
+  const checks = captureSourceVerdict(['agy'], { agy: 0 }, { agy: 1 }, { agy: 0 });
+
+  expect(checks).toHaveLength(1);
+  expect(checks[0]!.status).toBe('WARN');
+});
+
+test('captureSourceVerdict: an older worker with no by_origin field behaves as before', () => {
+  const checks = captureSourceVerdict(['agy'], { agy: 0 }, { agy: 1 }, undefined);
+
+  expect(checks).toHaveLength(1);
+  expect(checks[0]!.status).toBe('WARN');
+});
+
 // Fix round 1: an older worker whose /stats predates this feature has NO `ingested` field at
 // all — that is "unknown", not "zero". Treating it as zero FAILed every active source on sight,
 // which is exactly what the live check hit against a not-yet-restarted worker. Field present but
@@ -246,4 +277,41 @@ test('injectLatencyVerdict — the remedy never says "raise the timeout"', () =>
   const v = injectLatencyVerdict({ n: 100, p50_ms: 1900, p95_ms: 2100, over_deadline_n: 40 }, 2000);
   expect(v?.remedy).toMatch(/do NOT raise the timeout/);
   expect(v?.remedy).toMatch(/profile the local search/);
+});
+
+// ---------------------------------------------------------------------------
+// over_deadline_n is counted against the HOOK's deadline_ms, and the hook resolves
+// CAPTAIN_MEMO_HOOK_TIMEOUT_MS from its own process env (Claude Code's) — a key the
+// worker never reads. Doctor's worker.env lookup was therefore a different number:
+// 2000 there against the 10000 the hook was actually sending, so the line read
+// "0/26 over the 2000ms deadline" for a count taken against 10s, and the
+// 80%-headroom clause was scored against a deadline that was not in force.
+// ---------------------------------------------------------------------------
+
+test('injectLatencyVerdict: prefers the deadline the worker observed over the caller fallback', () => {
+  // p50 1454 is 73% of the real 10000 (fine) but 727% of the stale 2000 (would WARN).
+  const check = injectLatencyVerdict(
+    { n: 28, p50_ms: 1454, p95_ms: 2229, over_deadline_n: 0, deadline_ms: 10_000 },
+    2000,
+  );
+  expect(check!.status).toBe('PASS');
+  expect(check!.detail).toContain('10000ms deadline');
+  expect(check!.detail).not.toContain('2000ms deadline');
+});
+
+test('injectLatencyVerdict: falls back to the passed deadline when the worker reports none', () => {
+  const check = injectLatencyVerdict(
+    { n: 28, p50_ms: 1900, p95_ms: 1950, over_deadline_n: 0, deadline_ms: null },
+    2000,
+  );
+  expect(check!.status).toBe('WARN');          // 1900 >= 0.8 * 2000
+  expect(check!.detail).toContain('2000ms deadline');
+});
+
+test('injectLatencyVerdict: the observed deadline still WARNs when the median really is tight', () => {
+  const check = injectLatencyVerdict(
+    { n: 28, p50_ms: 8500, p95_ms: 9900, over_deadline_n: 0, deadline_ms: 10_000 },
+    2000,
+  );
+  expect(check!.status).toBe('WARN');          // 8500 >= 0.8 * 10000
 });

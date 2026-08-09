@@ -32,6 +32,18 @@ const LONG_WRITE_DEADLINE_MS = Number(process.env.CAPTAIN_MEMO_REINDEX_MS ?? 30 
 // /consolidate joins /reindex here because a forced pass is a whole-corpus scan (~50s measured)
 // plus, for themes, a model call per cluster.
 const LONG_WRITE_PATHS = new Set(['/reindex', '/consolidate']);
+// /remember does an LLM frontmatter `generate`, a semantic dedup search AND a chunk-embed pass before
+// it returns — none of which fit the 10s default on a real corpus, and it was never given a ceiling
+// of its own. MEASURED on this captain (149k chunks, external Voyage embedder), wall-clock at the
+// endpoint: create 1.8s @2KB · 2.1s @10KB · 2.9s @30KB, but an UPDATE to an EXISTING memory took
+// 14.0s @10KB — it re-searches, rewrites and re-ingests. So creates always fit and updates do not,
+// which is exactly the reported shape: /remember 503ing three times running on a large-body update
+// while small writes to the same worker succeeded instantly and /health stayed green (2026-08-08).
+// The timeout only abandons MAIN's wait — the writer runs on and completes the write, so the caller
+// was told "failed" about a write that had in fact landed. 60s is ~4x the measured worst case and
+// still short enough that a genuinely wedged write surfaces rather than hanging the CLI.
+// ponytail: one flat ceiling for the path; split per-op only if a slower corpus makes 60s tight.
+const REMEMBER_DEADLINE_MS = Number(process.env.CAPTAIN_MEMO_REMEMBER_MS ?? 60_000);
 // How long to wait for the engine's first heartbeat before declaring the threaded path dead and
 // falling back to single-threaded. Generous on purpose: a healthy engine beats well under a
 // second, so this only fires for an engine that wedges without ever crashing AND never beating.
@@ -91,6 +103,10 @@ export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
         embed_ms: embedMs,
         degraded,
         over_deadline: deadlineMs !== null && elapsedMs >= deadlineMs,
+        // Carried through so /stats can report the deadline these outcomes were judged against.
+        // doctor cannot recover it on its own — the hook takes CAPTAIN_MEMO_HOOK_TIMEOUT_MS from
+        // its own process env, which is Claude Code's, not the worker's.
+        deadline_ms: deadlineMs,
       });
     } catch { /* metrics must never break the request they measure */ }
   }
@@ -360,7 +376,12 @@ export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
         return forwardToWriter(wire);   // unparseable (error body) — hand back the writer's answer untouched
       }
     }
-    return forwardToWriter(wire, LONG_WRITE_PATHS.has(url.pathname) ? LONG_WRITE_DEADLINE_MS : undefined);
+    return forwardToWriter(
+      wire,
+      LONG_WRITE_PATHS.has(url.pathname) ? LONG_WRITE_DEADLINE_MS
+      : url.pathname === '/remember' ? REMEMBER_DEADLINE_MS
+      : undefined,
+    );
   };
 
   // The worker's HTTP API (search, stats, /shutdown) is UNAUTHENTICATED, so it binds to
