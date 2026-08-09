@@ -28,7 +28,7 @@ test('config show — prints promote knobs with defaults', async () => {
   delete process.env.CAPTAIN_MEMO_REMEMBER_DEDUP_THRESHOLD;
   const text = await capture();
   expect(text).toContain('promote_enable');
-  expect(text).toContain('0 (off)');
+  expect(text).toMatch(/promote_enable\s+off \(unset\)/);
   expect(text).toContain('promote_interval_ms');
   expect(text).toContain('21600000');
   expect(text).toContain('promote_max_per_run');
@@ -40,6 +40,7 @@ test('config show — prints promote knobs with defaults', async () => {
 test('config show — env override wins for promote_enable', async () => {
   process.env.CAPTAIN_MEMO_PROMOTE_ENABLE = '1';
   const text = await capture();
-  expect(text).toMatch(/promote_enable\s+1/);
+  expect(text).toMatch(/promote_enable\s+on/);
+  expect(text).toContain('(from "1")');
   delete process.env.CAPTAIN_MEMO_PROMOTE_ENABLE;
 });

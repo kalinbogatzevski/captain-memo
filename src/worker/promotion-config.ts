@@ -11,9 +11,16 @@ import {
   ENV_PROMOTE_MAX_PER_RUN,
 } from '../shared/paths.ts';
 
+export type PromotionMode = 'off' | 'shadow' | 'on';
+
 export interface PromotionConfig {
-  /** Master switch. Default OFF; set CAPTAIN_MEMO_PROMOTE_ENABLE=1 to enable. */
-  enabled: boolean;
+  /** Master switch, ONE knob with three values so two flags can never contradict each other:
+   *   '1' | 'on' -> on      (judges, writes curated memory, stamps promoted/declined)
+   *   'shadow'   -> shadow  (judges, records verdicts to its own ledger, writes NOTHING)
+   *   anything else, including unset/'true'/'yes'/typos -> off
+   *  The asymmetry is deliberate and inherited: a misread env var must fail to "didn't run",
+   *  never to "ran unsupervised against the user's memory dir". */
+  mode: PromotionMode;
   /** ms between promotion ticks. */
   intervalMs: number;
   /** Per-run promotion cap. */
@@ -24,11 +31,21 @@ export interface PromotionConfig {
 }
 
 export const DEFAULT_PROMOTION_CONFIG: PromotionConfig = {
-  enabled: false,
+  mode: 'off',
   intervalMs: DEFAULT_PROMOTE_INTERVAL_MS,
   maxPerRun: DEFAULT_PROMOTE_MAX_PER_RUN,
   minRecall: 1,
 };
+
+/** '1'/'on' -> on, 'shadow' -> shadow, EVERYTHING else -> off. Case/whitespace tolerant on the two
+ *  recognised words, because "SHADOW " failing closed to a live-looking config would be worse than
+ *  useless — but never tolerant enough to turn a typo into a live run. */
+export function parseMode(raw: string | undefined): PromotionMode {
+  const v = (raw ?? '').trim().toLowerCase();
+  if (v === '1' || v === 'on') return 'on';
+  if (v === 'shadow') return 'shadow';
+  return 'off';
+}
 
 /** Build a PromotionConfig from a plain env record. Unparseable numeric values
  *  fall back to the default (never NaN). enabled is ON only on explicit '1'. */
@@ -39,7 +56,7 @@ export function loadPromotionConfig(env: Record<string, string | undefined>): Pr
   };
   const D = DEFAULT_PROMOTION_CONFIG;
   return {
-    enabled: env[ENV_PROMOTE_ENABLE] === '1',
+    mode: parseMode(env[ENV_PROMOTE_ENABLE]),
     intervalMs: num(env[ENV_PROMOTE_INTERVAL_MS], D.intervalMs),
     maxPerRun: num(env[ENV_PROMOTE_MAX_PER_RUN], D.maxPerRun),
     minRecall: D.minRecall,

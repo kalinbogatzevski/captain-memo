@@ -283,6 +283,18 @@ const RememberSchema = z.object({
   targetDirOverride: z.string().optional(),
 });
 
+/** One promotion slice. `mode` is per-request so a shadow pass never depends on the worker's env
+ *  being flipped — and so a shadow run can never be mistaken for arming the live job. */
+const PromoteSliceSchema = z.object({
+  mode: z.enum(['shadow', 'on']).default('shadow'),
+  /** Re-judge rows the shadow ledger ALREADY holds, instead of taking the next unjudged batch.
+   *  The only way to compare two prompts on identical input. Overwrites those ledger rows — snapshot
+   *  first. Shadow-only by construction: it never touches promoted_at or promotion_declines. */
+  re_judge: z.boolean().default(false),
+  limit: z.number().int().positive().max(100).default(20),
+  min_recall: z.number().int().nonnegative().default(1),
+});
+
 /** Exactly one of doc_id / path — never both, never neither. `doc_id` is what search prints and what
  *  a user actually holds; `path` is the unambiguous escape hatch when two files share a basename. */
 const ForgetSchema = z.object({
@@ -1451,7 +1463,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // a prior run is still in flight, and yields if ingest/batch work is active.
   let promotionTimer: ReturnType<typeof setInterval> | null = null;
   let promotionPromise: Promise<unknown> | null = null;
-  if (!opts.readOnly && obsStore && opts.summarizerTransport && promotionConfig.enabled) {
+  if (!opts.readOnly && obsStore && opts.summarizerTransport && promotionConfig.mode !== 'off') {
     const promoStore = obsStore;
     const transport = opts.summarizerTransport;
     const rememberDir = process.env[ENV_REMEMBER_DIR] ?? DEFAULT_REMEMBER_DIR;
@@ -1473,6 +1485,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           dedupThreshold,
         }),
         markPromoted: (id, at) => promoStore.markPromoted(id, at),
+        // v23: a live run must remember its own "no", or it re-judges the same head forever.
+        markDeclined: (id, at) => promoStore.markDeclined(id, at),
+        recordShadow: (v) => promoStore.recordShadowVerdict(v),
         cfg: promotionConfig,
         now: () => Math.floor(Date.now() / 1000),
         log: (line) => console.error(line),
@@ -2552,6 +2567,51 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 
         const result = await writeMemory(input, deps);
         return Response.json(result, { status: result.ok ? 200 : 500 });
+      }
+
+      // Read-side of the shadow ledger: the artifact a human actually reviews.
+      if (req.method === 'POST' && url.pathname === '/promote/shadow-report') {
+        if (!obsStore) return Response.json({ error: 'unavailable' }, { status: 503 });
+        const b = await req.json().catch(() => ({})) as { sample?: number };
+        const n = Math.max(1, Math.min(200, Number(b.sample) || 10));
+        return Response.json({ ok: true, totals: obsStore.shadowTotals(), keeps: obsStore.shadowKeeps(n) });
+      }
+
+      // ONE promotion slice on demand — the CLI loops this rather than holding a single long RPC.
+      // Deliberately per-slice: a marathon request would hit the thread-RPC deadline and 503 while
+      // the writer carried on (the /remember bug fixed in 0.38.9), and it would lose all progress on
+      // Ctrl-C. Slice-at-a-time means the ledger records exactly how far we got.
+      if (req.method === 'POST' && url.pathname === '/promote/slice') {
+        if (!obsStore || !opts.summarizerTransport) {
+          return Response.json({ error: 'unavailable', detail: 'promotion needs an observations store and a summarizer' }, { status: 503 });
+        }
+        const parsed = PromoteSliceSchema.safeParse(await req.json().catch(() => ({})));
+        if (!parsed.success) {
+          return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
+        }
+        const { mode, limit, min_recall, re_judge } = parsed.data;
+        const store = obsStore;
+        const transport = opts.summarizerTransport;
+        const sliceCfg = { ...promotionConfig, mode, maxPerRun: limit };
+        const result = await runPromotionSlice({
+          candidates: () => (mode === 'shadow'
+            ? (re_judge ? store.shadowJudgedCandidates(limit) : store.shadowCandidates({ limit, minRecall: min_recall }))
+            : store.promotionCandidates({ limit, minRecall: min_recall })),
+          judge: buildPromotionJudge(transport),
+          writeMemory: (input) => writeMemory(input, {
+            ingest, embed: (texts) => embedder.embed(texts), searchMemory, registerSelfWrite,
+            rememberDir: process.env[ENV_REMEMBER_DIR] ?? DEFAULT_REMEMBER_DIR,
+            dedupThreshold: Number(process.env[ENV_REMEMBER_DEDUP_THRESHOLD]) || DEFAULT_REMEMBER_DEDUP_THRESHOLD,
+            generate: transport,
+          } as WriteMemoryDeps),
+          markPromoted: (id, at) => store.markPromoted(id, at),
+          markDeclined: (id, at) => store.markDeclined(id, at),
+          recordShadow: (v) => store.recordShadowVerdict(v),
+          cfg: sliceCfg,
+          now: () => Math.floor(Date.now() / 1000),
+          log: (line) => console.error(line),
+        });
+        return Response.json({ ok: true, ...result, totals: store.shadowTotals() });
       }
 
       // The other half of /remember. Until now nothing could FORGET: `ingest.deleteFile()` existed and

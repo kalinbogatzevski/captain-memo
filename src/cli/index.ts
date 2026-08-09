@@ -24,6 +24,7 @@ import { themeCommand } from './commands/theme.ts';
 import { consolidateCommand } from './commands/consolidate.ts';
 import { rememberCommand } from './commands/remember.ts';
 import { forgetCommand } from './commands/forget.ts';
+import { promoteCommand } from './commands/promote.ts';
 import { watchCommand } from './commands/watch.ts';
 import { topCommand } from './commands/top.ts';
 import { workerWatchdogCommand } from './commands/worker-watchdog.ts';
@@ -44,6 +45,7 @@ Commands:
   reindex      Re-embed corpus content (optionally scoped to a channel)
   remember     Persist a curated memory entry (--type, body via --body/--file/stdin)
   forget       Delete a memory and de-index it (<doc_id|path>, --dry-run, --yes)
+  promote      Shadow-run the promotion judge over real observations (--shadow, --report)
   vacuum       Reclaim disk after deletions/reindex (SQLite VACUUM; worker must be stopped)
   upgrade      Bring the corpus up to the current chunker shape (reindex + vacuum, end-to-end)
   observation  list|sunk|flush — manage observations (sunk: list dormant/archived; --archived)
@@ -120,6 +122,9 @@ export async function main(args: string[]): Promise<void> {
       break;
     case 'forget':
       exit = await forgetCommand(args.slice(1));
+      break;
+    case 'promote':
+      exit = await promoteCommand(args.slice(1));
       break;
     case 'vacuum':
       exit = await vacuumCommand(args.slice(1));

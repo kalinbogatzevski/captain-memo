@@ -313,6 +313,43 @@ export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
       declined_at_epoch INTEGER NOT NULL
     )`),
   },
+  {
+    // v23 — promotion gets the memory v22 gave themes, plus a shadow ledger.
+    //
+    // THE SAME DEFECT, unfixed on this path. runPromotionSlice stamps `promoted_at` only on a
+    // successful WRITE, so a judged-and-declined row stays NULL and promotionCandidates —
+    // `ORDER BY created_at_epoch DESC LIMIT n` — hands back the identical head next tick. Measured
+    // on this corpus: 12,103 candidates, 0 promoted, and at 5-per-run on a 6h timer the backlog is
+    // never reached at all; only new arrivals are ever judged, repeatedly. v22's note records the
+    // theme version of this exactly: "279 clusters considered, 279 declined, 0 written — the same 5
+    // clusters judged 56 times".
+    //
+    // TWO tables, deliberately, because they answer to different owners:
+    //  - promotion_declines: a LIVE run's "I considered this and said no". Binding.
+    //  - promotion_shadow:   a DRY run's full distilled verdict, keeps AND declines. It must NOT
+    //    bind live behaviour — the whole point of shadowing an unvalidated judge is that its
+    //    verdicts are evidence, not decisions. Shadow excludes on its own table only.
+    version: 23,
+    name: 'add_promotion_declines_and_shadow',
+    up: (db) => {
+      db.exec(`CREATE TABLE IF NOT EXISTS promotion_declines (
+        observation_id INTEGER PRIMARY KEY,
+        declined_at_epoch INTEGER NOT NULL
+      )`);
+      // The distilled entry is stored in full: it is the artifact a human reviews to decide whether
+      // this judge is trustworthy. Ids alone would answer "how many", never "is it any good".
+      db.exec(`CREATE TABLE IF NOT EXISTS promotion_shadow (
+        observation_id INTEGER PRIMARY KEY,
+        at_epoch INTEGER NOT NULL,
+        verdict TEXT NOT NULL,
+        type TEXT,
+        name TEXT,
+        description TEXT,
+        body TEXT
+      )`);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_promotion_shadow_verdict ON promotion_shadow(verdict)');
+    },
+  },
 ];
 
 export type NewObservation = Omit<
@@ -1134,16 +1171,102 @@ export class ObservationsStore {
   promotionCandidates(opts: { limit: number; minRecall: number }): Observation[] {
     const rows = this.db
       .query(
-        `SELECT * FROM observations
-          WHERE promoted_at IS NULL
-            AND archived = 0
-            AND type IN ('decision', 'feature', 'discovery')
-            AND (from_auto + from_search + from_drill) >= ?
-          ORDER BY created_at_epoch DESC, id DESC
+        `SELECT o.* FROM observations o
+          WHERE o.promoted_at IS NULL
+            AND o.archived = 0
+            AND o.type IN ('decision', 'feature', 'discovery')
+            AND (o.from_auto + o.from_search + o.from_drill) >= ?
+            AND NOT EXISTS (SELECT 1 FROM promotion_declines d WHERE d.observation_id = o.id)
+          ORDER BY (o.from_auto + o.from_search + o.from_drill) DESC, o.created_at_epoch DESC, o.id DESC
           LIMIT ?`,
       )
       .all(opts.minRecall, opts.limit) as Array<Record<string, unknown>>;
     return rows.map(r => this.hydrate(r));
+  }
+
+  /** Candidates for a SHADOW pass: same durability/recall filter, but excluding rows this shadow
+   *  has already judged (its own ledger — never `promoted_at`/`promotion_declines`, which belong to
+   *  live runs). Ordered by RECALL DESC so the highest-signal rows are judged first and the report a
+   *  human reads is front-loaded with the best candidates rather than the newest.
+   *
+   *  The exclusion is the whole point: without it a shadow pass re-judges its own head forever, which
+   *  is the v22/v23 defect this feature exists to avoid repeating. */
+  shadowCandidates(opts: { limit: number; minRecall: number }): Observation[] {
+    const rows = this.db
+      .query(
+        `SELECT o.* FROM observations o
+          WHERE o.promoted_at IS NULL
+            AND o.archived = 0
+            AND o.type IN ('decision', 'feature', 'discovery')
+            AND (o.from_auto + o.from_search + o.from_drill) >= ?
+            AND NOT EXISTS (SELECT 1 FROM promotion_shadow s WHERE s.observation_id = o.id)
+          ORDER BY (o.from_auto + o.from_search + o.from_drill) DESC, o.created_at_epoch DESC, o.id DESC
+          LIMIT ?`,
+      )
+      .all(opts.minRecall, opts.limit) as Array<Record<string, unknown>>;
+    return rows.map(r => this.hydrate(r));
+  }
+
+  /** The rows this shadow has ALREADY judged, oldest-recorded first — for re-judging the identical
+   *  set after changing the prompt. Without this, "re-run the shadow" silently judges the NEXT batch
+   *  (shadowCandidates excludes anything in the ledger), and you end up comparing prompt A on one
+   *  sample against prompt B on a different one — which measures nothing. Snapshot the ledger before
+   *  re-judging: the upsert overwrites the baseline. */
+  shadowJudgedCandidates(limit: number): Observation[] {
+    const rows = this.db
+      .query(
+        `SELECT o.* FROM observations o
+          JOIN promotion_shadow s ON s.observation_id = o.id
+          ORDER BY s.at_epoch ASC, o.id ASC
+          LIMIT ?`,
+      )
+      .all(limit) as Array<Record<string, unknown>>;
+    return rows.map(r => this.hydrate(r));
+  }
+
+  /** Record one shadow verdict — keeps AND declines both, so the ledger doubles as the
+   *  "already judged" marker and the reviewable artifact. */
+  recordShadowVerdict(v: {
+    observationId: number; atEpoch: number; verdict: 'keep' | 'decline';
+    type?: string; name?: string; description?: string; body?: string;
+  }): void {
+    this.db
+      .query(
+        `INSERT INTO promotion_shadow (observation_id, at_epoch, verdict, type, name, description, body)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(observation_id) DO UPDATE SET
+           at_epoch = excluded.at_epoch, verdict = excluded.verdict, type = excluded.type,
+           name = excluded.name, description = excluded.description, body = excluded.body`,
+      )
+      .run(v.observationId, v.atEpoch, v.verdict, v.type ?? null, v.name ?? null,
+           v.description ?? null, v.body ?? null);
+  }
+
+  /** Totals for the shadow report: how many judged, kept, declined. */
+  shadowTotals(): { judged: number; kept: number; declined: number } {
+    const r = this.db.query(
+      `SELECT COUNT(*) AS judged,
+              SUM(CASE WHEN verdict = 'keep' THEN 1 ELSE 0 END) AS kept,
+              SUM(CASE WHEN verdict = 'decline' THEN 1 ELSE 0 END) AS declined
+       FROM promotion_shadow`).get() as { judged: number; kept: number | null; declined: number | null };
+    return { judged: r.judged, kept: r.kept ?? 0, declined: r.declined ?? 0 };
+  }
+
+  /** The kept entries, newest first — what a live run WOULD have written. */
+  shadowKeeps(limit: number): Array<{ observation_id: number; type: string; name: string; description: string; body: string }> {
+    return this.db.query(
+      `SELECT observation_id, type, name, description, body FROM promotion_shadow
+       WHERE verdict = 'keep' ORDER BY at_epoch DESC, observation_id DESC LIMIT ?`)
+      .all(limit) as Array<{ observation_id: number; type: string; name: string; description: string; body: string }>;
+  }
+
+  /** LIVE decline marker — the counterpart of markPromoted, and the thing that makes a live run
+   *  advance instead of re-judging its own head (v23; themes got this in v22). */
+  markDeclined(id: number, atEpoch: number): void {
+    this.db
+      .query('INSERT INTO promotion_declines (observation_id, declined_at_epoch) VALUES (?, ?) ' +
+             'ON CONFLICT(observation_id) DO UPDATE SET declined_at_epoch = excluded.declined_at_epoch')
+      .run(id, atEpoch);
   }
 
   /** Stamp an observation as promoted (epoch seconds) so it is never promoted

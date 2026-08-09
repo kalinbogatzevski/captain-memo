@@ -379,7 +379,12 @@ export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
     return forwardToWriter(
       wire,
       LONG_WRITE_PATHS.has(url.pathname) ? LONG_WRITE_DEADLINE_MS
-      : url.pathname === '/remember' ? REMEMBER_DEADLINE_MS
+      // /promote/slice is one judge call over ~20 observations: ~16k tokens in, a distilled body per
+      // survivor out. Measured Haiku latency on this captain runs 2-10.6s with real variance, so the
+      // 10s default would 503 the caller on a slice that then completed anyway — the same
+      // false-failure shape /remember had. Shares REMEMBER's ceiling; both are "one model call plus
+      // a write", not a corpus scan.
+      : (url.pathname === '/remember' || url.pathname === '/promote/slice') ? REMEMBER_DEADLINE_MS
       : undefined,
     );
   };

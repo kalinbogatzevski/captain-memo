@@ -5,6 +5,73 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.31.0] — 2026-08-09
+
+### Added
+
+- **`captain-memo promote --shadow` — evaluate the promotion judge against real observations, writing
+  nothing.** Promotion has always shipped OFF, modelled on Quartermaster ("opt-in, shadow-test, then
+  decide"), and the soak was never done. Doing it found the feature inert three times over, each
+  failure wearing the mask of a valid negative result.
+
+  1. **No memory of "no".** `runPromotionSlice` stamped `promoted_at` only on a successful WRITE, so a
+     judged-and-declined row stayed NULL and the candidate query — `ORDER BY created_at_epoch DESC
+     LIMIT n` — returned the identical head next tick. Measured: **12,103 candidates, 0 promoted**, and
+     at 5-per-run on a 6h timer the backlog is never reached at all. Migration v22 records the same
+     defect on the *theme* path in its own words: *"279 clusters considered, 279 declined, 0 written —
+     the same 5 clusters judged 56 times."* v23 gives promotion what v22 gave themes.
+  2. **The judge had never called a model.** It passed `model: 'haiku'` — a literal that goes on the
+     wire as a model id and 404s, then walks the chain to `claude-haiku-4-6`, which 404s too.
+     `memory-writer` passes `model: ''` ("transport resolves its own chain") and works. `theme-judge`
+     had the identical bug — so v22's 279 clusters were never declined, they were never judged.
+  3. **Every failure read as "nothing qualified".** Five `return []` paths — transport error, missing
+     text block, unparseable JSON, schema mismatch, genuine empty — collapsed into one value. Harmless
+     while nothing recorded the answer; once a decline is stamped, one truncated response permanently
+     retires 20 observations that were never judged. Now `JudgeOutcome`: `ok:false` means we learned
+     nothing and the slice stamps NOTHING. It earned this on the first live run, surfacing the 404
+     instead of silently declining 60 rows. (`max_tokens` was also 1500 against verdicts carrying full
+     distilled bodies — truncation at ~3 survivors, into that same hole. Now 8000. And
+     `sourceObservationId` is coerced, because the model quotes it and a strict `z.number()` rejected
+     entire batches over one pair of quotes.)
+
+  `POST /promote/slice` (60s ceiling, same as `/remember` — one model call, not a corpus scan) and
+  `POST /promote/shadow-report`. The CLI loops one slice per request, so progress is visible and
+  Ctrl-C loses nothing. `--re-judge` re-runs the rows already in the ledger, which is the only way to
+  compare two prompts on identical input; without it "re-run the shadow" silently judges the *next*
+  batch and measures nothing.
+
+### Changed
+
+- **`CAPTAIN_MEMO_PROMOTE_ENABLE` is one knob with three values** — `'1'`/`'on'`, `'shadow'`, and
+  anything else off. Two flags could contradict each other; this cannot, and a typo still fails to
+  "didn't run" rather than "ran unsupervised against your memory dir".
+- **The promotion judge's prompt is rewritten against measured behaviour.** The original said "MOST
+  observations are NOT worth promoting; be selective" and kept **44%** — so a stronger adjective was
+  never the fix. It now carries one decision test ("useful in six months to someone who doesn't know
+  what happened this week?"), the anti-patterns actually observed in the shadow run, and a base-rate
+  anchor.
+
+### Measured
+
+Paired re-judge over the identical 80 observations, plus a control run of the same prompt twice:
+
+| | keep rate | agreement |
+|---|---|---|
+| original prompt | 35/80 (44%) | — |
+| tuned prompt, run 1 | 33/80 (41%) | **70%** vs original |
+| tuned prompt, run 2 | 36/80 (45%) | **94%** vs run 1 |
+
+The judge is **stable** — 94% self-agreement, so shadow measurements are trustworthy and the 30%
+churn between prompts is a real effect, not noise. The tuning worked on *composition*: every named
+anti-pattern flipped to decline (`hourly SLA-breach monitoring loop`, `schedule async checkpoint for
+Task 2`, `multi-phase investigation workflow`), while durable references stayed (`VSOL driver
+webaccess_ip fields`, `RC-probe gates capability by CLI version`).
+
+It did **not** move the *rate*. ~44% holds against an instruction of 15%, and 44% of 12,103 is ~5,300
+new memories against a curated corpus of 812. **Promotion therefore stays OFF.** Controlling the rate
+needs a structural cap, not better wording — that is the next piece of work, and this harness now
+measures it in an afternoon rather than a week.
+
 ## [0.30.12] — 2026-08-09
 
 ### Changed

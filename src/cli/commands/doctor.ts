@@ -4,6 +4,7 @@
 // remediation hint when something's wrong. Read-only — never changes state.
 
 import { existsSync, readFileSync, statSync, readdirSync } from 'fs';
+import { parseMode as parsePromotionMode } from '../../worker/promotion-config.ts';
 import { join } from 'path';
 import { homedir } from 'os';
 import { spawnSync } from 'child_process';
@@ -539,7 +540,7 @@ export function checkRemember(): Check {
   // Read-only: surfaces the curated-memory WRITE knobs (spec §8). All values come
   // from worker.env, falling back to the contract defaults in src/shared/paths.ts.
   const dir = readWorkerEnvVar(ENV_REMEMBER_DIR) ?? DEFAULT_REMEMBER_DIR;
-  const promote = (readWorkerEnvVar(ENV_PROMOTE_ENABLE) === '1') ? 'on' : 'off';
+  const promote = parsePromotionMode(readWorkerEnvVar(ENV_PROMOTE_ENABLE) ?? undefined);
   const max = readWorkerEnvVar(ENV_PROMOTE_MAX_PER_RUN) ?? String(DEFAULT_PROMOTE_MAX_PER_RUN);
   const dedup = readWorkerEnvVar(ENV_REMEMBER_DEDUP_THRESHOLD) ?? String(DEFAULT_REMEMBER_DEDUP_THRESHOLD);
   const shortDir = dir.replace(homedir(), '~');

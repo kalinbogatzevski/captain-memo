@@ -79,7 +79,13 @@ export function buildThemeJudge(
     let text: string;
     try {
       const res = await generate({
-        model: opts.model ?? 'haiku',
+        // '' = "transport, pick from your resolved chain", exactly as memory-writer does. The old
+        // literal 'haiku' went on the wire as a model id, 404'd, and the chain then walked to
+        // DEFAULT_SUMMARIZER_FALLBACKS' claude-haiku-4-6 which 404s too — so the call ALWAYS failed
+        // and the old `return []` reported it as "nothing qualified". Migration v22's note records
+        // the consequence on the theme path: "279 clusters considered, 279 declined, 0 written".
+        // They were never judged.
+        model: opts.model ?? '',
         system: SYSTEM_PROMPT,
         user: buildUserPrompt(cluster),
         max_tokens: opts.maxTokens ?? 1000,

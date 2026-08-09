@@ -9,6 +9,7 @@ import {
   DEFAULT_PROMOTE_MAX_PER_RUN, DEFAULT_REMEMBER_DEDUP_THRESHOLD,
 } from '../../shared/paths.ts';
 import { loadWorkerEnv } from '../../shared/worker-env.ts';
+import { parseMode } from '../../worker/promotion-config.ts';
 
 function mask(secret: string | undefined): string {
   if (!secret) return '(unset)';
@@ -48,7 +49,8 @@ export async function configCommand(args: string[]): Promise<number> {
     `observation_batch     ${process.env.CAPTAIN_MEMO_OBSERVATION_BATCH_SIZE ?? DEFAULT_OBSERVATION_BATCH_SIZE}`,
     `observation_tick_ms   ${process.env.CAPTAIN_MEMO_OBSERVATION_TICK_MS ?? DEFAULT_OBSERVATION_TICK_MS}`,
     `remember_dir          ${process.env.CAPTAIN_MEMO_REMEMBER_DIR ?? DEFAULT_REMEMBER_DIR}`,
-    `promote_enable        ${process.env.CAPTAIN_MEMO_PROMOTE_ENABLE ?? '0 (off)'}`,
+    `promote_enable        ${parseMode(process.env.CAPTAIN_MEMO_PROMOTE_ENABLE)}` +
+      `${process.env.CAPTAIN_MEMO_PROMOTE_ENABLE ? ` (from ${JSON.stringify(process.env.CAPTAIN_MEMO_PROMOTE_ENABLE)})` : ' (unset)'}`,
     `promote_interval_ms   ${process.env.CAPTAIN_MEMO_PROMOTE_INTERVAL_MS ?? DEFAULT_PROMOTE_INTERVAL_MS}`,
     `promote_max_per_run   ${process.env.CAPTAIN_MEMO_PROMOTE_MAX_PER_RUN ?? DEFAULT_PROMOTE_MAX_PER_RUN}`,
     `remember_dedup_threshold ${process.env.CAPTAIN_MEMO_REMEMBER_DEDUP_THRESHOLD ?? DEFAULT_REMEMBER_DEDUP_THRESHOLD}`,
