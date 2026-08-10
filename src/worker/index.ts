@@ -1560,7 +1560,21 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       // that records the run is chained OUTSIDE the async body below.
       let clusterWalkAborted = false;
       themePromise = (async () => {
-        const dream = await loadDreamInputs(0, opts.projectId).catch(() => null);
+        // NO project filter — deliberately, and it is not the same dimension as it looks.
+        //
+        // loadDreamInputs' projectId filters the recall EVENT's project_id (the project the query
+        // was made from) against what is passed here — the WORKER's id, which is 'default' on a
+        // normal install. Observations carry their own project_id, and findThemeClusters already
+        // partitions candidates by (project_id, branch), so cross-project evidence cannot produce
+        // a cross-project cluster: membership is enforced downstream regardless.
+        //
+        // Passing opts.projectId therefore did not scope the evidence to the cluster's project, it
+        // scoped it to recalls tagged 'default' — 16.4% of the audit log — and threw away the rest,
+        // INCLUDING every erp-platform (16.8%) and captain-memo-fed (3.9%) recall. Measured
+        // 2026-08-10: 20,321 co-occurrence pairs instead of 49,395, so clusters in the busiest
+        // projects were scored on evidence that excluded their own project's recalls. Unfiltered:
+        // 18 clusters instead of 16, and the new ones are erp-platform's.
+        const dream = await loadDreamInputs(0, undefined).catch(() => null);
         const surfaces = themeStore.surfaceCounts();
         const coRetrieval = (a: number, b: number): number => {
           if (!dream) return 0;                       // no audit log ⇒ no evidence ⇒ no themes

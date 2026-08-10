@@ -5,6 +5,32 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.33.6] — 2026-08-10
+
+### Fixed
+
+- **Theme co-retrieval evidence was filtered by the WORKER's project id, not the cluster's.**
+  `loadDreamInputs`' `projectId` filters the recall *event's* `project_id` — the project a query was
+  made from — against whatever the caller passes. The theme pass passed `opts.projectId`, which is
+  the worker's own id and is `default` on a normal install. Observations carry their own
+  `project_id`, and `findThemeClusters` already partitions candidates by `(project_id, branch)`, so
+  cross-project evidence cannot produce a cross-project cluster — membership is enforced downstream
+  either way.
+
+  So the filter never scoped evidence to the cluster's project. It scoped it to recalls tagged
+  `default` (16.4% of the audit log) and discarded everything else, **including every
+  `erp-platform` (16.8%) and `captain-memo-fed` (3.9%) recall** — clusters in the busiest projects
+  were scored on evidence that excluded their own project.
+
+  | co-occurrence pairs | count |
+  |---|---|
+  | `projectId='default'` (before) | 20,321 |
+  | unfiltered (after) | **49,395** |
+
+  On the live corpus: 18 clusters instead of 16, and the new candidates are `erp-platform`'s own
+  (FNB HTTP 425 handling, commission cycle scoping) plus `captain-memo-fed`'s SessionManager and
+  SendMessage work — exactly the projects the filter was suppressing.
+
 ## [0.33.5] — 2026-08-10
 
 ### Fixed
