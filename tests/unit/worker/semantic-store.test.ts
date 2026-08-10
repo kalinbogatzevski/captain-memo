@@ -106,3 +106,35 @@ describe('lastActivityEpoch', () => {
     s.close(); rmSync(dir, { recursive: true, force: true });
   });
 });
+
+// ---------------------------------------------------------------------------
+// The BACKLOG sweep. Steady state scans only surfaced rows (9.9 s on a 135k corpus); the
+// never-surfaced 88% is a one-time backlog worth 4,035 foldable rows but 247 s to walk, which is
+// far too much for a recurring idle pass. So the population is opt-in per run.
+// ---------------------------------------------------------------------------
+describe('sameSessionCandidateRows — backlog sweep', () => {
+  test('includeUnsurfaced reaches rows that have never been recalled', () => {
+    const { s, dir } = store();
+    const a = add(s, 'surfaced one', 's1', 100);
+    const b = add(s, 'surfaced two', 's1', 101);
+    const c = add(s, 'never surfaced one', 's2', 102);
+    const d = add(s, 'never surfaced two', 's2', 103);
+    s.bumpRetrieval([a, b], 'auto');
+
+    // Default: unchanged — only the surfaced session.
+    expect(s.sameSessionCandidateRows(500).map(r => r.id).sort()).toEqual([a, b].sort());
+    // Sweep: the never-surfaced session becomes reachable too.
+    expect(s.sameSessionCandidateRows(500, true).map(r => r.id).sort()).toEqual([a, b, c, d].sort());
+    s.close(); rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('the sweep still excludes archived rows and single-row sessions', () => {
+    const { s, dir } = store();
+    const a = add(s, 'kept', 's1', 100);
+    const b = add(s, 'folded away', 's1', 101);
+    add(s, 'alone in its session', 's9', 102);
+    s.mergeDuplicateGroup(a, [b], 200);
+    expect(s.sameSessionCandidateRows(500, true).map(r => r.id)).toEqual([]);  // a is now solo
+    s.close(); rmSync(dir, { recursive: true, force: true });
+  });
+});

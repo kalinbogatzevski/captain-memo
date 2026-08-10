@@ -5,6 +5,45 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.33.4] — 2026-08-10
+
+### Added
+
+- **`consolidate --semantic --backlog` — a one-off sweep that can reach the 88% of the corpus no
+  pass has ever seen.** Both candidate queries require `surfaced > 0`: folding targets what
+  actually reaches you, and a never-recalled row bloats nobody's context. On a mature corpus that
+  gate hides most of the collection — 118,471 of 135,060 observations on the reference corpus had
+  never surfaced. Measured at cosine 0.94:
+
+  | population | rows | groups | foldable | time |
+  |---|---|---|---|---|
+  | surfaced only (steady state) | 15,565 | 82 | 90 | 9.9 s |
+  | everything (`--backlog`) | 134,016 | 3,005 | 4,035 | 247 s |
+
+  Opt-in per run, never a new default: 247 s is far too much for a recurring idle pass, and it is
+  a one-time backlog — once folded, duplicates accrue only as fast as new observations arrive.
+
+  **Live result:** archived 1,007 → 4,955 — **3,948 duplicate observations folded** against 4,035
+  predicted, with health sampled once a second throughout and **0/300** failures. Reversible with
+  `captain-memo dedup --undo`.
+
+### Fixed
+
+- **The sweep aborted on its first breath, and reported it as "nothing to fold".** `shouldAbort`
+  fires whenever ingest is queued, which on a working machine is nearly always, so the walk gave up
+  32 rows in — every time. A *scheduled* pass should step aside; there is always another tick. An
+  operator-typed sweep over 134k rows never finishes that way, and yielding (321 ms worst stall) is
+  what protects the engine, not abandoning. Worse, the abort happened inside `candidates()`, so the
+  slice's own loop never ran and the run recorded `0 scanned, aborted=false` — indistinguishable
+  from a clean corpus. Both fixed: sweeps are exempt from ingest preemption, and an abort inside
+  the candidate walk is now recorded and logged.
+
+- **Steady-state bounds a sweep must not inherit.** `semanticMaxGroups: 200` made it re-scan 134k
+  rows fifteen times over to fold what a single scan had already found; `semanticWindow: 50,000`
+  silently truncated the backlog to its newest third, so the sweep converged after 1,031 rows with
+  ~3,000 still foldable further back. Both are steady-state safety caps and are now lifted for a
+  sweep only.
+
 ## [0.33.3] — 2026-08-10
 
 ### Fixed

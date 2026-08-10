@@ -1420,6 +1420,11 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
    *  theme pass — including its model calls — every 30 s. The one-shot start already honoured
    *  `pass=`; only the recurring window did not. */
   let forcedPasses: 'all' | 'semantic' | 'theme' = 'all';
+  /** BACKLOG sweep window: while set, the semantic pass also considers never-surfaced rows.
+   *  Shares the forcing window's deadline and expires with it, so a sweep can never become the
+   *  permanent default — the steady-state pass costs 9.9 s, the sweep 247 s. */
+  let backlogUntilEpochMs = 0;
+  const backlogNow = (): boolean => Date.now() < backlogUntilEpochMs;
   const forcedNow = (pass?: 'semantic' | 'theme'): boolean =>
     Date.now() < forceUntilEpochMs && (pass === undefined || forcedPasses === 'all' || forcedPasses === pass);
   if (!opts.readOnly && obsStore && qmConfig.enabled && qmConfig.semanticEnabled) {
@@ -1438,22 +1443,52 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       if (!force && !forcedNow('semantic') && !idle) return null;
 
       const startedAt = nowS;
+      // A BACKLOG sweep does not step aside for ingest.
+      //
+      // The scheduled pass must: it is unasked-for work and there is always another tick. But the
+      // sweep is a bounded, operator-typed command over ~134k rows, and on a working machine the
+      // queue is almost never empty — it aborted on its FIRST breath (32 rows in), every time, and
+      // could never finish. Yielding is what protects the engine here, not abandoning: the walk
+      // breathes every 32 rows and measured a 321 ms worst stall, so ingest keeps running
+      // alongside it rather than being starved by it.
+      const ingestBusy = () => processBatchPromise != null || (obsQueue?.pendingCount() ?? 0) > 0;
+      const sweeping = backlogNow();
+      // An abort inside candidates() used to be INVISIBLE: findSemanticGroups returned [], the
+      // slice's own loop never ran, and the run recorded "0 scanned, aborted=false" — identical to
+      // "there was nothing to fold". Same class of lying diagnostic as the capture/hook-latency
+      // bugs in 0.38.9. Record it.
+      let abortedInCandidates = false;
       semanticPromise = runQmDedupSlice({
         candidates: () => findSemanticGroups({
-          // Same reasoning as the theme walk: breathe, and let ingest preempt.
           yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
-          shouldAbort: () => processBatchPromise != null || (obsQueue?.pendingCount() ?? 0) > 0,
-          rows: semStore.sameSessionCandidateRows(qmConfig.semanticWindow),
+          shouldAbort: () => {
+            if (sweeping || !ingestBusy()) return false;
+            abortedInCandidates = true;
+            return true;
+          },
+          // semanticWindow is the STEADY-STATE safety cap (50k) — it exists so a corpus ten times
+          // this one cannot wedge a scheduled pass. A sweep must not inherit it: the backlog is
+          // 133k rows, so a 50k cap silently truncates to the newest third and the sweep converges
+          // having folded only what was recent. Observed exactly that: 1,031 rows folded, then a
+          // plateau with ~3,000 still foldable further back. The sweep is operator-typed, bounded
+          // by the corpus itself, and measured at 247 s / 321 ms worst stall — let it see everything.
+          rows: semStore.sameSessionCandidateRows(sweeping ? Number.MAX_SAFE_INTEGER : qmConfig.semanticWindow, sweeping),
           representativeVector: repVec,
           cosineThreshold: qmConfig.semanticCosineThreshold,
-          maxGroups: qmConfig.semanticMaxGroups,
+          // The group cap bounds the DOWNSTREAM slice, and for a scheduled pass 200 is right:
+          // there is always another tick. A sweep pays ~90 s to scan 134k rows and would then fold
+          // only 200 of the ~3,000 groups it just found, re-scanning the lot on the next tick —
+          // fifteen times over. The scan is the expensive half; folding is cheap writes with a
+          // yield between each. So a sweep keeps what it finds.
+          maxGroups: sweeping ? 100_000 : qmConfig.semanticMaxGroups,
         }),
         representativeVector: repVec,
         memberIsProtected: (id) => semStore.isProtected(id),
         mergeGroup: (s, m, at) => semStore.mergeDuplicateGroup(s, m, at, 'semantic'),
         // Idleness was checked once at the top; this is the mid-flight guard for work that
-        // ARRIVES during the scan — a prompt landing at minute two must preempt it.
-        shouldAbort: () => processBatchPromise != null || (obsQueue?.pendingCount() ?? 0) > 0,
+        // ARRIVES during the scan — a prompt landing at minute two must preempt it. Exempt during
+        // a sweep, for the same reason as the candidate walk above.
+        shouldAbort: () => !sweeping && ingestBusy(),
         cfg: { ...qmConfig, dedupCosineThreshold: qmConfig.semanticCosineThreshold },
         now: () => Math.floor(Date.now() / 1000),
         yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
@@ -1461,8 +1496,13 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         .then(r => {
           semStore.recordQmRun({ job: 'semantic', startedAt, finishedAt: Math.floor(Date.now() / 1000),
             rowsScanned: r.scanned, merges: r.merges, skippedNoVector: r.skippedNoVector,
-            abortedForIngest: r.aborted, errored: false });
-          if (r.merges > 0) console.error(`[qm-semantic] folded ${r.merges} restatement(s)` + (r.aborted ? ' (aborted for ingest)' : ''));
+            abortedForIngest: r.aborted || abortedInCandidates, errored: false });
+          const gaveUp = r.aborted || abortedInCandidates;
+          if (r.merges > 0 || gaveUp) {
+            console.error(`[qm-semantic] folded ${r.merges} restatement(s) from ${r.scanned} group(s)`
+              + (gaveUp ? ' — ABORTED for ingest before finishing' : '')
+              + (sweeping ? ' (backlog sweep)' : ''));
+          }
         })
         .catch(err => {
           semStore.recordQmRun({ job: 'semantic', startedAt, finishedAt: Math.floor(Date.now() / 1000),
@@ -2181,6 +2221,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             eligible: isIdle(sig, cfg),
             blocked_by: blockingSignals(sig),
             forced_seconds_left: forcedNow() ? Math.ceil((forceUntilEpochMs - Date.now()) / 1000) : 0,
+            backlog_sweep: backlogNow(),
           };
         })();
         // Its own block: same table, different pass. An unscoped read would report whichever
@@ -2517,6 +2558,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         if (forSec > 0) {
           forceUntilEpochMs = Date.now() + forSec * 1000;
           forcedPasses = which as 'all' | 'semantic' | 'theme';
+        }
+        // The backlog sweep rides the forcing window: no window, one sweep and done.
+        if (url.searchParams.get('backlog') === '1') {
+          backlogUntilEpochMs = Math.max(Date.now() + 60_000, forceUntilEpochMs);
         }
         const started: string[] = [];
         const busy: string[] = [];

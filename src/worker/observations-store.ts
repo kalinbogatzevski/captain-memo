@@ -1577,20 +1577,37 @@ export class ObservationsStore {
    * Surfaced-only matches dedup's target: a row that never reached the user is not bloating
    * anything. Ordered newest-activity-first so a truncating `limit` keeps the live end.
    */
-  sameSessionCandidateRows(limit: number): Array<{
+  /**
+   * @param includeUnsurfaced  Drop the "has been surfaced at least once" gate — the BACKLOG sweep.
+   *
+   * Steady state deliberately keeps the gate: dedup targets what actually reaches the user, and a
+   * never-surfaced row is not bloating anyone's context. But on a real corpus that gate hides most
+   * of the collection — measured 2026-08-10, 118,471 of 135,060 observations had never surfaced —
+   * and the duplicates in there are just as real. Measured at cosine 0.94:
+   *
+   *     surfaced only     15,565 rows →     82 groups,    90 foldable,   9.9 s
+   *     everything       134,016 rows →  3,005 groups,  4,035 foldable, 247.2 s
+   *
+   * 247 s is far too much for a recurring idle pass, and it is a ONE-TIME backlog: once folded, new
+   * duplicates only accrue as fast as new observations arrive. So this is opt-in per run
+   * (`captain-memo consolidate --semantic --backlog`), not a new default.
+   */
+  sameSessionCandidateRows(limit: number, includeUnsurfaced = false): Array<{
     id: number; type: string; title: string; session_id: string;
     project_id: string; branch: string | null;
     from_auto: number; from_search: number; from_drill: number;
   }> {
+    // Interpolated, never parameterised: it is a fixed string chosen by a boolean, not user input.
+    const surfacedGate = includeUnsurfaced ? '' : 'AND (from_auto + from_search + from_drill) > 0';
     return this.db
       .query(
         `SELECT id, type, title, session_id, project_id, branch,
                 from_auto, from_search, from_drill
            FROM observations
-          WHERE archived = 0 AND (from_auto + from_search + from_drill) > 0
+          WHERE archived = 0 ${surfacedGate}
             AND session_id IN (
               SELECT session_id FROM observations
-               WHERE archived = 0 AND (from_auto + from_search + from_drill) > 0
+               WHERE archived = 0 ${surfacedGate}
                GROUP BY session_id HAVING COUNT(*) > 1
             )
           ORDER BY COALESCE(last_surfaced_at, created_at_epoch) DESC

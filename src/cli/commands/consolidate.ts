@@ -17,7 +17,7 @@ import { cyan, cyanBold, dim, gold, green, red } from '../../shared/ansi.ts';
 const HELP = `captain-memo consolidate — run a consolidation pass now, skipping the idle wait
 
 Usage:
-  captain-memo consolidate [--semantic | --themes] [--for <30m|2h|900s>] [--json]
+  captain-memo consolidate [--semantic | --themes] [--backlog] [--for <30m|2h|900s>] [--json]
 
 Options:
   (default)     Run both passes: semantic folding, then themes.
@@ -26,6 +26,13 @@ Options:
   --for <dur>   Keep forcing for a WINDOW rather than one pass: every scheduled tick skips
                 the idle gate until it expires, so the backlog is worked down back-to-back.
                 Accepts 45s / 30m / 2h. Capped at 4h. Reverts to idle-gated on its own.
+  --backlog     ONE-OFF: also consider observations that have never been surfaced. Folding
+                normally targets what actually reaches you, so a never-recalled row is skipped —
+                but on a mature corpus that is most of the collection. Measured on a 135k corpus:
+                the normal pass sees 15,565 rows and folds ~90; with --backlog it sees 134,016 and
+                folds ~4,035, taking ~4 min instead of ~10 s. Worth running once, then never again
+                — new duplicates only accrue as fast as new observations. Pair with --for so the
+                sweep gets several ticks. Reversible like everything else (\`dedup --undo\`).
   --json        Machine-readable output.
   -h, --help    Show this help.
 
@@ -74,6 +81,7 @@ export async function consolidateCommand(args: string[]): Promise<number> {
   let pass = 'all';
   let json = false;
   let forSec = 0;
+  let backlog = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     if (a === '--for') {
@@ -85,6 +93,7 @@ export async function consolidateCommand(args: string[]): Promise<number> {
       continue;
     }
     switch (a) {
+      case '--backlog': backlog = true; break;
       case '--semantic': pass = 'semantic'; break;
       case '--themes': case '--theme': pass = 'theme'; break;
       case '--json': json = true; break;
@@ -97,7 +106,7 @@ export async function consolidateCommand(args: string[]): Promise<number> {
   }
 
   const port = process.env.CAPTAIN_MEMO_WORKER_PORT ?? String(DEFAULT_WORKER_PORT);
-  const url = `http://127.0.0.1:${port}/consolidate?pass=${pass}${forSec > 0 ? `&for=${forSec}` : ''}`;
+  const url = `http://127.0.0.1:${port}/consolidate?pass=${pass}${forSec > 0 ? `&for=${forSec}` : ''}${backlog ? '&backlog=1' : ''}`;
   if (!json) {
     console.log(dim(forSec > 0
       ? `Forcing ${pass === 'all' ? 'both passes' : pass} for the next ${Math.round(forSec / 60)} min — waiting on the first run…`
