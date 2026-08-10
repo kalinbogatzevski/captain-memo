@@ -1554,6 +1554,11 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       // which has been accumulating since long before this pass existed — 355k pairs over 20k
       // observations on the reference corpus. Reading it costs I/O, but the pass is rare and
       // already does a whole-corpus scan.
+      // Same reporting trap as the semantic pass: an abort inside clusters() returns [] and
+      // runThemePass never enters its loop, so the run records "0 considered, aborted=false" —
+      // identical to "the corpus had nothing to propose". Declared out here because the .then()
+      // that records the run is chained OUTSIDE the async body below.
+      let clusterWalkAborted = false;
       themePromise = (async () => {
         const dream = await loadDreamInputs(0, opts.projectId).catch(() => null);
         const surfaces = themeStore.surfaceCounts();
@@ -1567,8 +1572,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           // Housekeeping runs on the engine thread: breathe, and let ingest preempt. Without
           // these the walk is one synchronous block that outlives the heartbeat window.
           yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
-          shouldAbort: () => processBatchPromise != null || (obsQueue?.pendingCount() ?? 0) > 0,
-          rows: themeStore.themeCandidateRows(qmConfig.dedupWindow),
+          shouldAbort: () => {
+            if (processBatchPromise == null && (obsQueue?.pendingCount() ?? 0) === 0) return false;
+            clusterWalkAborted = true;
+            return true;
+          },
+          rows: themeStore.themeCandidateRows(qmConfig.themeWindow),
           representativeVector: repVec,
           cosineThreshold: qmConfig.themeCosineThreshold,
           minMembers: qmConfig.themeMinMembers,
@@ -1625,8 +1634,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         .then(r => {
           themeStore.recordQmRun({ job: 'theme', startedAt, finishedAt: Math.floor(Date.now() / 1000),
             rowsScanned: r.clustersConsidered, merges: r.themesWritten, skippedNoVector: r.declined,
-            abortedForIngest: r.aborted, errored: r.failed > 0 });
-          if (r.themesWritten > 0) console.error(`[qm-theme] wrote ${r.themesWritten} theme(s), declined ${r.declined}`);
+            abortedForIngest: r.aborted || clusterWalkAborted, errored: r.failed > 0 });
+          const gaveUp = r.aborted || clusterWalkAborted;
+          if (r.themesWritten > 0 || gaveUp) {
+            console.error(`[qm-theme] considered ${r.clustersConsidered}, wrote ${r.themesWritten}, declined ${r.declined}`
+              + (gaveUp ? ' — ABORTED for ingest before finishing the cluster walk' : ''));
+          }
         })
         .catch(err => {
           themeStore.recordQmRun({ job: 'theme', startedAt, finishedAt: Math.floor(Date.now() / 1000),

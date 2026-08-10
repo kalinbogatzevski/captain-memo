@@ -5,6 +5,40 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.33.5] — 2026-08-10
+
+### Fixed
+
+- **Themes reported "0 considered" on every run, and could never have reported anything else.**
+  Not a quiet corpus and not a broken clusterer — run against live data with production
+  dependencies, `findThemeClusters` returns clusters perfectly well. The pass had converged on a
+  fixed point of its own making: a declined cluster is remembered for a week so the judge is not
+  re-asked the same question every tick, while candidates came from dedup's 5,000-row
+  **global-recency** window — so the only clusters still visible were the ones already refused.
+
+  | window | rows | clusters found | **not already declined** |
+  |---|---|---|---|
+  | 5,000 (before) | 5,000 | 10 | **0** |
+  | 50,000 | 15,585 | 16 | **7** |
+
+  Zero, by construction, permanently. `themeWindow` is now its own setting
+  (`CAPTAIN_MEMO_QM_THEME_WINDOW`, default 50,000) instead of borrowing dedup's. The wider walk
+  costs 30 s against 4 s — coarser than the semantic pass because theme partitions are
+  `(project, branch)` rather than per-session — and is affordable because the clusterer yields.
+
+  **Live result: 4 themes written on the first pass** (5 considered, 1 declined); themes went from
+  2 to 7 live.
+
+- **An abort inside the cluster walk was invisible.** It returned `[]`, `runThemePass` never
+  entered its loop, and the run recorded `0 considered, aborted=false` — indistinguishable from a
+  corpus with nothing to propose. Third instance of that same reporting bug in this release series.
+
+### Notes for tuning
+
+Of 20,040,228 in-scope pairs on the reference corpus, 9,933 pass the co-retrieval gate and only
+**427 pass cosine 0.93** — cosine is the binding constraint for themes, not the evidence gate. 68
+pass both; the merge guard and the cross-session rule reduce that to 12 edges and 16 clusters.
+
 ## [0.33.4] — 2026-08-10
 
 ### Added

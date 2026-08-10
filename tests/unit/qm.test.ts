@@ -23,3 +23,15 @@ test('semanticWindow defaults wide and is independent of dedupWindow', () => {
 
   expect(loadQmConfig({ CAPTAIN_MEMO_QM_SEMANTIC_WINDOW: '2500' }).semanticWindow).toBe(2_500);
 });
+
+// Themes were structurally incapable of proposing anything: a declined cluster is remembered for a
+// week, and a 5,000-row global-recency window could only ever re-find the clusters already
+// refused. Measured live: 10 clusters found / 0 undeclined at 5,000; 16 found / 7 undeclined at
+// full population.
+test('themeWindow defaults wide and is independent of dedupWindow', () => {
+  const d = loadQmConfig({});
+  expect(d.themeWindow).toBe(50_000);
+  expect(d.dedupWindow).toBe(5_000);
+  expect(loadQmConfig({ CAPTAIN_MEMO_QM_DEDUP_WINDOW: '900' }).themeWindow).toBe(50_000);
+  expect(loadQmConfig({ CAPTAIN_MEMO_QM_THEME_WINDOW: '7000' }).themeWindow).toBe(7_000);
+});

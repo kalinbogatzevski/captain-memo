@@ -111,6 +111,25 @@ export interface QmConfig {
   themeMinMembers: number;
   /** Max clusters judged per pass — each one is a model call. */
   themeMaxClusters: number;
+  /**
+   * Rows the THEME clusterer scans. Was dedupWindow, and sharing it made the pass structurally
+   * incapable of ever proposing anything again.
+   *
+   * A declined cluster is remembered for a week so the judge is not asked the same question every
+   * tick. Combine that with a 5,000-row global-recency window and the pass converges on a fixed
+   * point: the only clusters it can still see are the ones it has already been refused.
+   *
+   * MEASURED live, 2026-08-10 (declines: 10 inside the expiry window):
+   *
+   *     window              rows    clusters found    NOT already declined
+   *      5,000            5,000                10                       0     <- "0 considered"
+   *     50,000           15,585                16                       7
+   *
+   * Zero, forever, by construction. The wider walk costs 30 s against 4 s — more than the semantic
+   * pass because theme partitions are (project, branch) rather than per-session, so the O(n^2) is
+   * coarser — and it is affordable only because the clusterer yields.
+   */
+  themeWindow: number;
   /** How often to tick WHILE a forced window is open (`consolidate --for`).
    *
    *  Deliberately far shorter than semanticCheckIntervalMs. Those are two clocks with opposite
@@ -167,6 +186,7 @@ export const DEFAULT_QM_CONFIG: QmConfig = {
   themeCosineThreshold: 0.93,
   themeMinMembers: 2,
   themeMaxClusters: 5,                // 5 model calls per idle pass; themes accrue slowly
+  themeWindow: 50_000,
   forcedTickMs: 30_000,               // while forcing: every 30s, not every 10 min
 };
 
@@ -200,6 +220,7 @@ export function loadQmConfig(env: Record<string, string | undefined>): QmConfig 
     themeCosineThreshold: num(env.CAPTAIN_MEMO_QM_THEME_COSINE, D.themeCosineThreshold),
     themeMinMembers: num(env.CAPTAIN_MEMO_QM_THEME_MIN_MEMBERS, D.themeMinMembers),
     themeMaxClusters: num(env.CAPTAIN_MEMO_QM_THEME_MAX_CLUSTERS, D.themeMaxClusters),
+    themeWindow: num(env.CAPTAIN_MEMO_QM_THEME_WINDOW, D.themeWindow),
     forcedTickMs: num(env.CAPTAIN_MEMO_QM_FORCED_TICK_MS, D.forcedTickMs),
   };
 }
