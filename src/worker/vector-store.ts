@@ -201,6 +201,33 @@ export class VectorStore {
    * The vec0 `embedding` column reads back as a raw little-endian float32 BLOB
    * (a Uint8Array), so we view those bytes directly as a Float32Array.
    */
+  /**
+   * Chunk ids grouped by their IVF cluster, for one collection.
+   *
+   * The assignment is already made at INSERT (nearestCentroid in add()), so this is a read of work
+   * already done — which is what makes cluster-local dedup affordable: 83,980,390 within-cluster
+   * pairs on a 155k-vector corpus against 1,456,906,881 for the (project, branch) cross-product.
+   *
+   * The collection filter is applied in JS rather than as a JOIN: vec_chunks_p is a vec0 virtual
+   * table and joining it is not reliably planned, whereas both reads are a single scan each.
+   */
+  clusterMembership(collection: string): Map<number, string[]> {
+    const mine = new Set<string>();
+    for (const r of this.db
+      .query(`SELECT chunk_id FROM vec_chunk_meta WHERE collection_name = ?`)
+      .all(collection) as Array<{ chunk_id: string }>) mine.add(r.chunk_id);
+
+    const out = new Map<number, string[]>();
+    for (const r of this.db
+      .query(`SELECT cluster_id, chunk_id FROM vec_chunks_p`)
+      .all() as Array<{ cluster_id: number; chunk_id: string }>) {
+      if (!mine.has(r.chunk_id)) continue;
+      const bucket = out.get(r.cluster_id);
+      if (bucket) bucket.push(r.chunk_id); else out.set(r.cluster_id, [r.chunk_id]);
+    }
+    return out;
+  }
+
   getEmbedding(chunkId: string): Float32Array | null {
     const row = this.db
       .query(`SELECT embedding FROM vec_chunks_p WHERE chunk_id = ?`)

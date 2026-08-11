@@ -5,6 +5,36 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.35.0] — 2026-08-11
+
+### Changed
+
+- **Dedup walks the IVF clusters instead of the `(project_id, branch)` cross-product.** Every
+  embedding is already assigned to a cluster on **insert** (469 clusters over 155,223 vectors on
+  the reference corpus), so "which rows might be near this one" is work the index has already done
+  and stored — and dedup was ignoring it, comparing every pair in a partition instead.
+
+  | route | pairs | time | groups | rows folded |
+  |---|---|---|---|---|
+  | `(project, branch)` cross-product | 1,456,906,881 | 452 s | 553 | 1,128 |
+  | one KNN query per row | 130,545 queries | ~3.9 h | — | — |
+  | **within IVF cluster** | **83,980,390** | **28.5 s** | **882** | **1,846** |
+
+  Faster *and* more — not a contradiction: cosine runs inside the loop here, so a pair the
+  title-greedy grouping had claimed into another group is still reachable. Only 23,069 cosine calls
+  against 62,298,009 scope checks, because the gates run cheapest-first (scope, title, merge guard,
+  cosine) and vectors resolve lazily. Every guard the old route applied still applies.
+
+  The per-row KNN variant was built, tested and measured before being **rejected**: 107 ms a query
+  is slower than the cross-product it replaces, and a single query outran the heartbeat at 6,668 ms.
+  Recorded here so it is not retried.
+
+  **Live result:** archived 4,977 → 6,822 — exactly the 1,845 rows the prototype predicted, in 44 s,
+  with no abort and the worker healthy throughout.
+
+  The finder takes an *iterable* of clusters, so a caller can hand over a subset per pass and work
+  the corpus in steps. Pinned by a test.
+
 ## [0.34.1] — 2026-08-11
 
 ### Fixed

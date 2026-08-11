@@ -92,6 +92,7 @@ import { applyTemporalRerank } from './temporal-intent.ts';
 import { getDreamStats } from './dream-stats.ts';
 import { Summarizer, type SummarizerTransport } from './summarizer.ts';
 import { classifySummarizeFailure, computeBackoffMs, isAuthShapedFailure } from './summarizer-backoff.ts';
+import { findDedupGroupsByCluster } from './dedup-candidates.ts';
 import { CaptureState } from './capture/state.ts';
 import { createCodexSource } from './capture/codex-source.ts';
 import { createAgySource } from './capture/agy-source.ts';
@@ -1314,6 +1315,26 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     return c ? Float32Array.from(c) : null;
   };
 
+  /**
+   * IVF cluster membership, as observation ids. Chunk hits are mapped back through their document
+   * because a row's meaning is spread over its chunks and any of them may carry the cluster.
+   * Rebuilt per pass: clusters move as the index grows, and the read is a single scan.
+   */
+  const clusterObservationIds = (): number[][] => {
+    const out: number[][] = [];
+    for (const chunkIds of vector.clusterMembership(collectionName).values()) {
+      const ids = new Set<number>();
+      for (const cid of chunkIds) {
+        const found = meta.getChunkById(cid);
+        if (!found) continue;
+        const m = /^observation:[^:]*:(\d+)$/.exec(found.document.source_path);
+        if (m) ids.add(Number(m[1]));
+      }
+      if (ids.size > 1) out.push([...ids]);
+    }
+    return out;
+  };
+
   // Quartermaster auto-dedup (opt-in, OFF by default). Sibling of the tide sweep:
   // each slice pulls a bounded candidate window of near-dup observations, confirms
   // each fold behind a cosine ≥ threshold check against the survivor's centroid
@@ -1326,12 +1347,36 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     qmDedupTimer = setInterval(() => {
       if (qmDedupPromise) return;
       const startedAt = Math.floor(Date.now() / 1000);
+      const dedupIngestBusy = () => processBatchPromise != null || (obsQueue?.pendingCount() ?? 0) > 0;
+      let dedupAbortedInCandidates = false;
       qmDedupPromise = runQmDedupSlice({
-        candidates: () => qmStore.dedupCandidateWindow(qmConfig.dedupTitleThreshold, qmConfig.dedupWindow),
+        // Cluster-local, not the (project, branch) cross-product. The IVF index already assigned
+        // every embedding to a cluster at INSERT, so "which rows might be near this one" is work
+        // already done. Measured on the live corpus, whole population: 1,456,906,881 pairs / 452 s
+        // / 553 groups the old way, against 83,980,390 pairs / 28.5 s / 882 groups this way —
+        // faster AND more, because cosine runs inside the loop instead of rejecting a
+        // title-greedy grouping afterwards. Per-row KNN was built, measured at ~107 ms a query,
+        // and rejected: slower than what it replaced.
+        candidates: () => findDedupGroupsByCluster({
+          rows: qmStore.allDedupCandidateRows(),
+          clusters: clusterObservationIds(),
+          representativeVector: repVec,
+          cosineThreshold: qmConfig.dedupCosineThreshold,
+          titleThreshold: qmConfig.dedupTitleThreshold,
+          maxGroups: 100_000,
+          yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
+          // An abort inside candidates() must be RECORDED, or the run says "0 scanned" and that
+          // is indistinguishable from a clean corpus — the recurring bug of this release series.
+          shouldAbort: () => {
+            if (!dedupIngestBusy()) return false;
+            dedupAbortedInCandidates = true;
+            return true;
+          },
+        }),
         representativeVector: repVec,
         memberIsProtected: (id) => qmStore.isProtected(id),
         mergeGroup: (s, m, at) => qmStore.mergeDuplicateGroup(s, m, at),
-        shouldAbort: () => processBatchPromise != null || (obsQueue?.pendingCount() ?? 0) > 0,
+        shouldAbort: () => dedupIngestBusy(),
         cfg: qmConfig,
         now: () => Math.floor(Date.now() / 1000),
         yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
@@ -1339,8 +1384,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         .then(r => {
           qmStore.recordQmRun({ job: 'dedup', startedAt, finishedAt: Math.floor(Date.now() / 1000),
             rowsScanned: r.scanned, merges: r.merges, skippedNoVector: r.skippedNoVector,
-            abortedForIngest: r.aborted, errored: false });
-          if (r.merges > 0) console.error(`[qm-dedup] folded ${r.merges} member(s)` + (r.aborted ? ' (aborted for ingest)' : ''));
+            abortedForIngest: r.aborted || dedupAbortedInCandidates, errored: false });
+          const gaveUp = r.aborted || dedupAbortedInCandidates;
+          if (r.merges > 0 || gaveUp) {
+            console.error(`[qm-dedup] folded ${r.merges} member(s) from ${r.scanned} group(s)`
+              + (gaveUp ? ' — ABORTED for ingest before finishing' : ''));
+          }
         })
         .catch(err => {
           // A throwing slice must still leave an audit row, else /stats.qm.last_run
