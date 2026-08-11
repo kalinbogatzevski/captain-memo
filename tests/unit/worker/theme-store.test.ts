@@ -220,3 +220,15 @@ describe('queryRecall themes view', () => {
     s.close(); rmSync(dir, { recursive: true, force: true });
   });
 });
+
+// The backlog sweep reaches themes too, now that the clusterer walks the evidence rather than the
+// cross-product. Steady state still only clusters what has surfaced.
+test('themeCandidateRows: includeUnsurfaced reaches never-recalled rows', () => {
+  const { s, dir } = store();
+  const a = add(s, 'surfaced fact', 's1', 100);
+  const b = add(s, 'never recalled fact', 's2', 101);
+  s.bumpRetrieval([a], 'auto');
+  expect(s.themeCandidateRows(500).map(r => r.id)).toEqual([a]);
+  expect(s.themeCandidateRows(500, true).map(r => r.id).sort()).toEqual([a, b].sort());
+  s.close(); rmSync(dir, { recursive: true, force: true });
+});

@@ -1656,17 +1656,21 @@ export class ObservationsStore {
    * corpus is 1.34 BILLION in-partition comparisons, ~48 minutes per pass. The real fix is k-NN
    * against the vector index instead of brute force — see docs/specs/2026-08-02-theme-reach.md.
    */
-  themeCandidateRows(limit: number): Array<{
+  /** @param includeUnsurfaced  BACKLOG sweep — drop the "has surfaced at least once" gate. Only
+   *  affordable since the clusterer became evidence-driven: the cross-product over the full
+   *  population is 1.46 BILLION pairs, the evidence among it is 44,100. */
+  themeCandidateRows(limit: number, includeUnsurfaced = false): Array<{
     id: number; type: string; title: string; session_id: string; created_at_epoch: number;
     project_id: string; branch: string | null;
     from_auto: number; from_search: number; from_drill: number;
   }> {
+    const themeGate = includeUnsurfaced ? '' : 'AND (from_auto + from_search + from_drill) > 0';
     return this.db
       .query(
         `SELECT id, type, title, session_id, created_at_epoch, project_id, branch,
                 from_auto, from_search, from_drill
            FROM observations
-          WHERE archived = 0 AND (from_auto + from_search + from_drill) > 0
+          WHERE archived = 0 ${themeGate}
             AND session_id != 'theme'
           ORDER BY COALESCE(last_surfaced_at, created_at_epoch) DESC
           LIMIT ?`,

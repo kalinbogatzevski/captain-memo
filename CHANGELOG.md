@@ -5,6 +5,45 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.34.0] — 2026-08-11
+
+### Changed
+
+- **The theme clusterer walks the co-retrieval evidence instead of the candidate cross-product.**
+  Membership requires *both* cosine and co-retrieval, so every possible cluster edge is already a
+  co-retrieval pair — yet the walk iterated the whole `(project_id, branch)` cross-product to
+  rediscover them. Measured on a 135k-observation corpus, full population:
+
+  | | |
+  |---|---|
+  | comparisons the cross-product implies | 1,456,906,881 |
+  | co-retrieval evidence pairs among them | 44,100 |
+  | | **33,036x** |
+
+  Given a neighbour index the clusterer now iterates the evidence. This changes the **route**, not
+  the verdict: a pair with no evidence scores 0, below any non-zero threshold, so it could never
+  have been an edge. The index is deliberately ignored when `coRetrievalThreshold` is 0, where a
+  non-evidence pair *can* pass and the shortcut would genuinely narrow the search rather than
+  merely speed it up.
+
+  Two consequences follow. Vector resolution becomes **lazy** — it was O(n) DB round-trips at
+  0.58 ms/row paid up front, 76 s for a 130k partition before a single pair was compared; only rows
+  appearing in a candidate pair need one now (11,670 resolved instead of 130,335). And a seed with
+  no evidence at all is skipped before its vector is fetched, since it could only ever produce a
+  one-row group.
+
+  | population | before | after |
+  |---|---|---|
+  | surfaced (15.6k rows) | 30 s | **7.0 s** |
+  | full backlog (130,482 rows) | >600 s (timed out) | **6.6 s** |
+
+### Added
+
+- **`consolidate --themes --backlog`.** Themes can now cluster the never-surfaced majority of the
+  corpus — 130,482 rows against 15,610 — which only became affordable with the change above. Like
+  the semantic sweep, it bypasses `themeWindow`: a 50,000 cap over a 130k backlog truncates to the
+  newest third and then looks converged.
+
 ## [0.33.6] — 2026-08-10
 
 ### Fixed

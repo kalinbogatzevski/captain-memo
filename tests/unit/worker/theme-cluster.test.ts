@@ -316,3 +316,63 @@ describe('heartbeat: a big partition must not starve the engine thread', () => {
     expect(out[0]!.members.map(m => m.id).sort()).toEqual([1, 2, 3]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// EVIDENCE-DRIVEN CANDIDATES. Membership needs BOTH cosine and co-retrieval, so every possible
+// cluster edge is already a co-retrieval pair. Scanning the (project, branch) cross-product to
+// rediscover them is the wrong way round: measured on the live corpus, 1,456,906,881 comparisons
+// to find edges among 44,100 evidence pairs — 33,036x more work than the answer needs. Given the
+// neighbour list, the walk iterates the evidence instead. Same verdict, different route.
+// ---------------------------------------------------------------------------
+describe('evidence-driven candidate iteration', () => {
+  const build = (n: number) => {
+    const rows: ThemeRow[] = [];
+    const vm: Record<number, Float32Array> = {};
+    // 1-3 are genuine cross-session restatements; the rest are numbered noise the merge guard
+    // would block anyway, which is exactly the bulk the cross-product wastes its time on.
+    const real = ['update-status skill command verified and available',
+                  'update-status skill registered and callable',
+                  'Confirmed update-status skill availability'];
+    for (let i = 1; i <= n; i++) {
+      rows.push(row(i, real[i - 1] ?? `unrelated note ${i} about something else`, `s${i}`, 1));
+      vm[i] = at(i % 5);
+    }
+    return { rows, vm };
+  };
+  // Only 1-2-3 have evidence with each other; everything else is unrelated noise.
+  const EVIDENCE: Record<number, number[]> = { 1: [2, 3], 2: [1, 3], 3: [1, 2] };
+  const coRet = (a: number, b: number) => (EVIDENCE[a]?.includes(b) ? 1 : 0);
+
+  test('produces exactly the same clusters as the full cross-product scan', async () => {
+    const { rows, vm } = build(60);
+    const common = { ...base, rows, representativeVector: vecs(vm), coRetrieval: coRet, minMembers: 3 };
+    const viaScan = await findThemeClusters(common);
+    const viaEvidence = await findThemeClusters({
+      ...common, coRetrievalNeighbours: (id: number) => EVIDENCE[id] ?? [],
+    });
+    expect(viaEvidence).toEqual(viaScan);
+    expect(viaScan.length).toBe(1);                       // the 1-2-3 cluster, found both ways
+  });
+
+  test('asks about far fewer pairs', async () => {
+    const { rows, vm } = build(60);
+    let scanCalls = 0, evidenceCalls = 0;
+    await findThemeClusters({ ...base, rows, representativeVector: vecs(vm), minMembers: 3,
+      coRetrieval: (a, b) => { scanCalls++; return coRet(a, b); } });
+    await findThemeClusters({ ...base, rows, representativeVector: vecs(vm), minMembers: 3,
+      coRetrieval: (a, b) => { evidenceCalls++; return coRet(a, b); },
+      coRetrievalNeighbours: (id: number) => EVIDENCE[id] ?? [] });
+    expect(evidenceCalls).toBeLessThan(scanCalls / 10);
+  });
+
+  test('a zero threshold admits non-evidence pairs, so the shortcut must not be taken', async () => {
+    const { rows, vm } = build(12);
+    const common = { ...base, rows, representativeVector: vecs(vm), coRetrieval: coRet,
+                     coRetrievalThreshold: 0, minMembers: 3 };
+    const viaScan = await findThemeClusters(common);
+    const viaEvidence = await findThemeClusters({
+      ...common, coRetrievalNeighbours: (id: number) => EVIDENCE[id] ?? [],
+    });
+    expect(viaEvidence).toEqual(viaScan);                  // must fall back, not narrow
+  });
+});

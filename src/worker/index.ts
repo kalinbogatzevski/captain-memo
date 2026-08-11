@@ -1576,6 +1576,19 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // 18 clusters instead of 16, and the new ones are erp-platform's.
         const dream = await loadDreamInputs(0, undefined).catch(() => null);
         const surfaces = themeStore.surfaceCounts();
+        // Evidence adjacency, built once per pass from the same map coRetrieval reads. This is the
+        // index that lets the clusterer walk the 44,100 pairs that could possibly be cluster edges
+        // instead of the 1.46 BILLION comparisons the (project, branch) cross-product implies.
+        const neighbours = new Map<number, number[]>();
+        if (dream) {
+          for (const key of dream.coOccurrence.keys()) {
+            const sep = key.indexOf(':');
+            const a = Number(key.slice(0, sep)), b = Number(key.slice(sep + 1));
+            if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
+            (neighbours.get(a) ?? neighbours.set(a, []).get(a)!).push(b);
+            (neighbours.get(b) ?? neighbours.set(b, []).get(b)!).push(a);
+          }
+        }
         const coRetrieval = (a: number, b: number): number => {
           if (!dream) return 0;                       // no audit log ⇒ no evidence ⇒ no themes
           const n = dream.coOccurrence.get(pairKey(a, b)) ?? 0;
@@ -1591,13 +1604,18 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             clusterWalkAborted = true;
             return true;
           },
-          rows: themeStore.themeCandidateRows(qmConfig.themeWindow),
+          // themeWindow is the steady-state cap; a sweep must not inherit it. The semantic sweep
+          // learned this the hard way — a 50,000 cap over a 130k backlog truncates to the newest
+          // third and then LOOKS converged. Affordable now that the walk is evidence-driven.
+          rows: themeStore.themeCandidateRows(
+            backlogNow() ? Number.MAX_SAFE_INTEGER : qmConfig.themeWindow, backlogNow()),
           representativeVector: repVec,
           cosineThreshold: qmConfig.themeCosineThreshold,
           minMembers: qmConfig.themeMinMembers,
           maxClusters: qmConfig.themeMaxClusters,
           isProtected: (id) => themeStore.isProtected(id),
           coRetrieval,
+          coRetrievalNeighbours: (id) => neighbours.get(id) ?? [],
           // Refusals expire after a week: the corpus moves, a cluster gains members, and a
           // judgement made against two observations may go the other way against four.
           declined: themeStore.recentThemeDeclines(nowS - 7 * 86400),

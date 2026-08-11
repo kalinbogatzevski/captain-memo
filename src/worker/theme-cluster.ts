@@ -65,6 +65,20 @@ export interface ThemeClusterDeps {
   coRetrieval: (a: number, b: number) => number;
   /** Minimum co-retrieval evidence to join a cluster. */
   coRetrievalThreshold?: number;
+  /**
+   * The ids that share ANY co-retrieval evidence with `obsId`. Optional, and purely an index:
+   * supplying it changes the ROUTE, never the verdict.
+   *
+   * Membership requires BOTH cosine and co-retrieval, so every possible cluster edge is already a
+   * co-retrieval pair. Walking the (project, branch) cross-product to rediscover them is the wrong
+   * way round — measured on the live corpus, 1,456,906,881 comparisons to find edges among 44,100
+   * evidence pairs, 33,036x more work than the answer needs, and it timed out past ten minutes.
+   * With this, each seed asks only the rows it has actually been recalled alongside.
+   *
+   * Ignored when coRetrievalThreshold is 0, because a zero threshold admits pairs with NO evidence
+   * and the index would then genuinely narrow the search rather than just speed it up.
+   */
+  coRetrievalNeighbours?: (obsId: number) => Iterable<number>;
   blocked?: (titleA: string, titleB: string) => boolean;
   /**
    * Breathe. This walk runs on the ENGINE thread and its cost is INVERTED: the seed loop breaks
@@ -140,18 +154,51 @@ async function clusterOnePartition(
   const sorted = [...rows0].sort((a, b) => total(b) - total(a) || a.id - b.id);
   const coRetMin = deps.coRetrievalThreshold ?? DEFAULT_CO_RETRIEVAL_MIN;
 
-  // Vector resolution is itself O(n) DB round-trips — measured 0.58 ms/row, so 2.9 s for a
-  // 5,000-row window before a single pair is compared. Breathe here too, not just in the pairs.
-  const vecs = new Map<number, Float32Array>();
-  let resolved = 0;
-  for (const r of sorted) {
-    if (resolved > 0 && resolved % HEARTBEAT_EVERY === 0) {
-      await deps.yieldToLoop?.();
-      if (deps.shouldAbort?.()) return [];
+  // Vector resolution is O(n) DB round-trips at a measured 0.58 ms/row — 76 s for a 130k-row
+  // partition, paid before a single pair is compared. Resolve LAZILY instead: with the evidence
+  // index below, only the rows that actually appear in a candidate pair are ever needed.
+  const vecs = new Map<number, Float32Array | null>();
+  const vecOf = (id: number): Float32Array | null => {
+    const hit = vecs.get(id);
+    if (hit !== undefined) return hit;
+    const v = deps.representativeVector(id) ?? null;
+    vecs.set(id, v);
+    return v;
+  };
+
+  // Evidence index, when it is safe to use (see coRetrievalNeighbours). Restricted to this
+  // partition, since a cluster never spans one.
+  const byId = new Map<number, ThemeRow>();
+  for (const r of sorted) byId.set(r.id, r);
+  const useEvidence = deps.coRetrievalNeighbours !== undefined && coRetMin > 0;
+  const candidatesFor = (seed: ThemeRow): ThemeRow[] => {
+    if (!useEvidence) return sorted;
+    const out: ThemeRow[] = [];
+    const seen = new Set<number>();
+    for (const id of deps.coRetrievalNeighbours!(seed.id)) {
+      if (id === seed.id || seen.has(id)) continue;
+      seen.add(id);
+      const row = byId.get(id);
+      if (row) out.push(row);
     }
-    resolved++;
-    const v = deps.representativeVector(r.id);
-    if (v) vecs.set(r.id, v);
+    // Same order the cross-product would have visited them in, so the greedy result is identical.
+    return out.sort((a, b) => total(b) - total(a) || a.id - b.id);
+  };
+
+  // WITHOUT the index the inner loop is still the whole partition, and lazy resolution would put
+  // an unbounded run of DB round-trips inside it with no breath — worse than the eager loop it
+  // replaced. So pre-resolve for that path, yielding as before. A yield inside the inner loop is
+  // not the answer: on the cross-product that is tens of millions of them.
+  if (!useEvidence) {
+    let resolved = 0;
+    for (const r of sorted) {
+      if (resolved > 0 && resolved % HEARTBEAT_EVERY === 0) {
+        await deps.yieldToLoop?.();
+        if (deps.shouldAbort?.()) return [];
+      }
+      resolved++;
+      vecOf(r.id);
+    }
   }
 
   const out: ThemeCluster[] = [];
@@ -167,13 +214,18 @@ async function clusterOnePartition(
     }
     seedsWalked++;
     if (claimed.has(seed.id)) continue;
-    const sv = vecs.get(seed.id);
+    // A seed with no co-retrieval evidence at all can never gain a member — membership requires
+    // evidence WITH THE SEED — so it could only ever produce a one-row group, which is not a
+    // theme. Checking that before resolving its vector skips the DB round-trip entirely: on the
+    // live backlog population only 15,747 of 130,479 rows have any evidence at all.
+    if (useEvidence && candidatesFor(seed).length === 0) continue;
+    const sv = vecOf(seed.id);
     if (!sv) continue;                                   // fail-closed
 
     const members: ThemeRow[] = [seed];
-    for (const cand of sorted) {
+    for (const cand of candidatesFor(seed)) {
       if (cand.id === seed.id || claimed.has(cand.id)) continue;
-      const cv = vecs.get(cand.id);
+      const cv = vecOf(cand.id);
       if (!cv) continue;                                 // fail-closed
       // BOTH signals required. Cosine says these READ alike; co-retrieval says you have actually
       // used them as one thing. Similarity alone groups every observation that shares a
