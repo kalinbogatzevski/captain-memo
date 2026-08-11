@@ -5,6 +5,19 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.34.1] — 2026-08-11
+
+### Fixed
+
+- **A theme `--backlog` sweep stepped aside for ingest and reported it as "0 considered".** The
+  same defect fixed for the semantic sweep one release earlier, not carried across when themes
+  gained `--backlog`. `shouldAbort` fires whenever ingest is queued — nearly always on a working
+  machine — so the sweep gave up on its first breath, every pass. The logging added alongside it is
+  what caught it: `[qm-theme] considered 0, wrote 0, declined 0 — ABORTED for ingest before
+  finishing the cluster walk`. A *scheduled* pass should step aside; an operator-typed sweep must
+  not. Sampling health once a second across a sweep: **17/300 failures before, 3/300 after** — the
+  difference being repeated aborted passes rather than the walk itself.
+
 ## [0.34.0] — 2026-08-11
 
 ### Changed

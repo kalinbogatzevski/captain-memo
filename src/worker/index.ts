@@ -1559,6 +1559,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       // identical to "the corpus had nothing to propose". Declared out here because the .then()
       // that records the run is chained OUTSIDE the async body below.
       let clusterWalkAborted = false;
+      const themeSweeping = backlogNow();
       themePromise = (async () => {
         // NO project filter — deliberately, and it is not the same dimension as it looks.
         //
@@ -1599,7 +1600,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           // Housekeeping runs on the engine thread: breathe, and let ingest preempt. Without
           // these the walk is one synchronous block that outlives the heartbeat window.
           yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
+          // A BACKLOG sweep does not step aside for ingest — same reasoning as the semantic
+          // sweep, and the same bug when it was missing: it aborted on its first breath on a
+          // working machine and reported "0 considered" for it. Yielding protects the engine here,
+          // not abandoning.
           shouldAbort: () => {
+            if (themeSweeping) return false;
             if (processBatchPromise == null && (obsQueue?.pendingCount() ?? 0) === 0) return false;
             clusterWalkAborted = true;
             return true;
@@ -1608,7 +1614,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           // learned this the hard way — a 50,000 cap over a 130k backlog truncates to the newest
           // third and then LOOKS converged. Affordable now that the walk is evidence-driven.
           rows: themeStore.themeCandidateRows(
-            backlogNow() ? Number.MAX_SAFE_INTEGER : qmConfig.themeWindow, backlogNow()),
+            themeSweeping ? Number.MAX_SAFE_INTEGER : qmConfig.themeWindow, themeSweeping),
           representativeVector: repVec,
           cosineThreshold: qmConfig.themeCosineThreshold,
           minMembers: qmConfig.themeMinMembers,
@@ -1646,7 +1652,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           if (row) await ingestObservation(row);
           return themeId;
         },
-        shouldAbort: () => processBatchPromise != null || (obsQueue?.pendingCount() ?? 0) > 0,
+        shouldAbort: () => !themeSweeping
+          && (processBatchPromise != null || (obsQueue?.pendingCount() ?? 0) > 0),
         // Only a FORCED run waits. A scheduled one steps aside and comes round again shortly;
         // a forced one was explicitly asked for, so abandoning its whole tick to a queue that is
         // almost never empty on a working machine made `--for` report zeros it never earned.
