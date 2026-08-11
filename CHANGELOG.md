@@ -5,6 +5,29 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.35.1] — 2026-08-11
+
+### Changed
+
+- **Docs caught up with the consolidation work**, and two of them were actively wrong:
+  - `USAGE.md` still said a combined value like `codex,agy` was **invalid** and would fall back to
+    `claude-oauth`. It has been an ordered preference chain since 0.40.0. The section now documents
+    the chain, the boot probe, and runtime failover — including that a demoted provider is never
+    retried until restart, and that `doctor` names anything skipped or demoted rather than showing
+    a green line while you run on a fallback.
+  - `CONFIGURATION.md` documented `CAPTAIN_MEMO_QM_DEDUP_WINDOW` as "rows examined per sweep,
+    quadratic per partition". Dedup stopped using a window in 0.43.0, and the knob had quietly
+    become supersede-only. It is now `CAPTAIN_MEMO_QM_SUPERSEDE_WINDOW` (old name still honoured),
+    and described accurately: it caps the version **pairs emitted**, while the scan itself is
+    whole-corpus. The previous wording was wrong about that too.
+  - Added the two windows that shipped without documentation: `CAPTAIN_MEMO_QM_SEMANTIC_WINDOW`
+    and `CAPTAIN_MEMO_QM_THEME_WINDOW`, each with why the shared 5,000 made its pass find nothing.
+
+### Fixed
+
+- `dedupCandidateWindow` had no production caller after 0.43.0 — removed, along with the three
+  tests that were the only thing keeping it reachable.
+
 ## [0.35.0] — 2026-08-11
 
 ### Changed

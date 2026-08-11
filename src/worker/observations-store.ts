@@ -1434,29 +1434,6 @@ export class ObservationsStore {
   }
 
   /**
-   * Like findDuplicateGroups, but over a BOUNDED, recency-limited window — never
-   * a whole-corpus scan. The Quartermaster's auto-dedup job calls this so each
-   * pass touches only the `windowLimit` most-recently-active surfaced rows
-   * (COALESCE(last_surfaced_at, created_at_epoch) DESC). Same partition + group +
-   * map as findDuplicateGroups (shared groupSurfacedRows), so the (project,
-   * branch) scoping and the negation/identifier merge guard apply identically.
-   */
-  dedupCandidateWindow(titleThreshold: number, windowLimit: number): DuplicateGroup[] {
-    const rows = this.surfacedWindowRows(windowLimit);
-    // Recency bounds the WINDOW (the LIMIT above), but count must still pick the
-    // SURVIVOR. groupSurfacedRows is rep-anchored (g[0] survives), so re-sort the
-    // windowed rows count-desc (ties by id asc, matching findDuplicateGroups)
-    // before grouping — otherwise the most-recent row, not the highest-count one,
-    // would lead each group and silently break the survivor invariant.
-    rows.sort((a, b) => {
-      const ta = a.from_auto + a.from_search + a.from_drill;
-      const tb = b.from_auto + b.from_search + b.from_drill;
-      return tb - ta || a.id - b.id;
-    });
-    return this.groupSurfacedRows(rows, titleThreshold);
-  }
-
-  /**
    * Bounded window of supersede candidates: within each (project_id, branch) partition,
    * group surfaced rows by parsed entityKey, and for every entity with ≥2 differing
    * clean-semver versions, emit one pair per strictly-older row → the single newest

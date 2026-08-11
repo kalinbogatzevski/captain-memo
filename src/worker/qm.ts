@@ -145,7 +145,11 @@ export interface QmConfig {
    *  made the safe action inherit the dangerous one's paranoia. Version-supersede pairs measure median
    *  0.932, max 0.986 — 0.98 admitted 1 of 292. */
   supersedeCosineThreshold: number;
-  /** Max rows compared per dedup sweep — the most-recently-surfaced N.
+  /** Max rows compared per SUPERSEDE sweep — the most-recently-surfaced N.
+   *
+   *  Named for dedup because it used to pace both. As of 0.43.0 dedup walks the IVF clusters the
+   *  index assigned at insert and takes no window at all, so this now governs supersede alone.
+   *  CAPTAIN_MEMO_QM_DEDUP_WINDOW is still honoured as a back-compat alias.
    *
    *  MEASURED on the same corpus (14,409 surfaced rows across 211 (project,branch) partitions).
    *  Grouping is O(n²) per partition, so the window buys duplicates at a rising price:
@@ -163,7 +167,7 @@ export interface QmConfig {
    *  just under the ~450 ms whole-corpus scan the supersede pass already runs hourly. Rows below
    *  the cut are the ones that stopped surfacing — which is also the population dedup least needs
    *  to fold, since its target is what keeps reappearing in the envelope. */
-  dedupWindow: number;
+  supersedeWindow: number;
 }
 
 export const DEFAULT_QM_CONFIG: QmConfig = {
@@ -175,7 +179,7 @@ export const DEFAULT_QM_CONFIG: QmConfig = {
   dedupTitleThreshold: DEFAULT_SIMILARITY_THRESHOLD,
   dedupCosineThreshold: 0.95,
   supersedeCosineThreshold: 0.93,
-  dedupWindow: 5_000,
+  supersedeWindow: 5_000,
   semanticEnabled: true,
   semanticCosineThreshold: 0.95,
   semanticMaxGroups: 200,
@@ -209,7 +213,8 @@ export function loadQmConfig(env: Record<string, string | undefined>): QmConfig 
     dedupTitleThreshold: num(env.CAPTAIN_MEMO_QM_DEDUP_TITLE, D.dedupTitleThreshold),
     dedupCosineThreshold: num(env.CAPTAIN_MEMO_QM_DEDUP_COSINE, D.dedupCosineThreshold),
     supersedeCosineThreshold: num(env.CAPTAIN_MEMO_QM_SUPERSEDE_COSINE, D.supersedeCosineThreshold),
-    dedupWindow: num(env.CAPTAIN_MEMO_QM_DEDUP_WINDOW, D.dedupWindow),
+    supersedeWindow: num(env.CAPTAIN_MEMO_QM_SUPERSEDE_WINDOW,
+                        num(env.CAPTAIN_MEMO_QM_DEDUP_WINDOW, D.supersedeWindow)),
     semanticEnabled: env.CAPTAIN_MEMO_QM_SEMANTIC !== '0',
     semanticCosineThreshold: num(env.CAPTAIN_MEMO_QM_SEMANTIC_COSINE, D.semanticCosineThreshold),
     semanticMaxGroups: num(env.CAPTAIN_MEMO_QM_SEMANTIC_MAX_GROUPS, D.semanticMaxGroups),

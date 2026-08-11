@@ -119,9 +119,18 @@ Hooks fail open: a timeout costs you the injection for that turn, never the turn
 ### Make housekeeping more or less aggressive
 
 ```bash
-CAPTAIN_MEMO_QM_DEDUP_WINDOW=10000    # look at more rows per sweep (costs CPU, quadratic)
-CAPTAIN_MEMO_QM_DEDUP_COSINE=0.97     # fold only closer matches
+CAPTAIN_MEMO_QM_DEDUP_COSINE=0.97          # fold only closer matches
 CAPTAIN_MEMO_QM_DEDUP_INTERVAL_MS=1800000  # sweep every 30 minutes instead of hourly
+CAPTAIN_MEMO_QM_SUPERSEDE_WINDOW=10000     # cap on version pairs SUPERSEDE emits per run
+```
+
+Dedup itself has no window knob: it walks the clusters the vector index already assigned when each
+observation was embedded, so its cost tracks the corpus rather than a number you have to tune.
+Measured on a 135k-observation corpus, whole population:
+
+```
+(project, branch) cross-product   1,456,906,881 pairs   452 s   553 groups
+within IVF cluster                   83,980,390 pairs    28 s   882 groups
 ```
 
 The window is quadratic per project/branch partition. Measured on a 14,409-row surfaced set:
@@ -363,7 +372,7 @@ Anchored rows, and any row ever drilled into, are permanently exempt from ebbing
 | `CAPTAIN_MEMO_QM_DEDUP` | ON | Folds near-duplicates into a survivor. Archives, never deletes. |
 | `CAPTAIN_MEMO_QM_DEDUP_TITLE` | `0.5` | Jaccard title similarity to become a candidate. |
 | `CAPTAIN_MEMO_QM_DEDUP_COSINE` | `0.95` | Embedding confirm before folding. Measured, not guessed: identical-title pairs score median 0.947, max 0.990. |
-| `CAPTAIN_MEMO_QM_DEDUP_WINDOW` | `5000` | Most-recently-surfaced rows examined per sweep. Quadratic per partition. |
+| `CAPTAIN_MEMO_QM_SUPERSEDE_WINDOW` | `5000` | Cap on the version pairs the **supersede** sweep emits per run. The scan itself is whole-corpus — every live, not-yet-superseded row, grouped by parsed version — so this bounds the work that follows, not the read. `CAPTAIN_MEMO_QM_DEDUP_WINDOW` is still honoured as an alias: it paced both passes before dedup went cluster-local. |
 | `CAPTAIN_MEMO_QM_DEDUP_INTERVAL_MS` | `3600000` (1h) | Also paces the supersede sweep. |
 | `CAPTAIN_MEMO_QM_SLICE_MS` | `150` | Budget for one housekeeping chunk. |
 | `CAPTAIN_MEMO_QM_SEMANTIC` | ON | Idle-time semantic consolidation: cosine as the FINDER, for same-session pairs. |
@@ -371,10 +380,12 @@ Anchored rows, and any row ever drilled into, are permanently exempt from ebbing
 | `CAPTAIN_MEMO_QM_SEMANTIC_MIN_IDLE_S` | `1800` (30 min) | Quiet time required before a pass may start. |
 | `CAPTAIN_MEMO_QM_SEMANTIC_CHECK_MS` | `600000` (10 min) | How often idleness is *checked* (the pass itself is rare). |
 | `CAPTAIN_MEMO_QM_SEMANTIC_MAX_GROUPS` | `200` | Cap on groups emitted per pass. |
+| `CAPTAIN_MEMO_QM_SEMANTIC_WINDOW` | `50000` | Rows the semantic finder scans. A safety cap, not a target: the eligible population is normally far smaller, and sharing dedup's old 5,000 made this pass find **zero** — duplicates are same-session, so both halves of a pair must land in the window together. |
 | `CAPTAIN_MEMO_QM_THEME` | ON | Idle-time theme building: cross-session clusters become one durable fact. Needs a summarizer. |
 | `CAPTAIN_MEMO_QM_THEME_COSINE` | `0.93` | Cluster membership. Looser than the fold threshold on purpose (see below). |
 | `CAPTAIN_MEMO_QM_THEME_MIN_MEMBERS` | `3` | Minimum observations for a theme. Two is a pair. |
 | `CAPTAIN_MEMO_QM_THEME_MAX_CLUSTERS` | `5` | Clusters judged per pass — each is one model call. |
+| `CAPTAIN_MEMO_QM_THEME_WINDOW` | `50000` | Rows the theme clusterer scans. Also a safety cap. On the old shared 5,000 the pass could only ever re-find clusters the judge had already declined, so it reported "0 considered" forever. |
 | `CAPTAIN_MEMO_QM_SUPERSEDE` | ON | Demotes an older version-fact when a newer one exists. |
 | `CAPTAIN_MEMO_QM_SUPERSEDE_COSINE` | `0.93` | Lower than dedup's on purpose: supersede applies a reversible 0.5x demotion, dedup archives. |
 

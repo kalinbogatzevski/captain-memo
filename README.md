@@ -386,7 +386,7 @@ captain-memo stats               # corpus stats by channel + indexing progress
 captain-memo top                 # interactive live stats (htop-style); press ? for help
 captain-memo dedup               # fold near-duplicate observations (dry-run by default)
 captain-memo supersede           # inspect open supersede links (list) or reverse one (undo <id>)
-captain-memo consolidate         # run a consolidation pass now, skipping the idle wait (--for 30m)
+captain-memo consolidate         # run a consolidation pass now, skipping the idle wait (--for 30m, --backlog)
 captain-memo theme               # list themes written by consolidation (theme undo <id> to reverse)
 captain-memo reindex             # cheap sha-diff reindex (or --force to re-embed)
 captain-memo remember            # persist a curated memory entry (--type, --name, --slug; body via --body/--file/stdin)
@@ -517,6 +517,37 @@ captain-memo dream --dry-run --json       # machine-readable report
 ```
 
 **Preview only for now.** `--dry-run` is required — the write path (theme insertion + member archival) is deliberately not shipped until the dry-run output has been validated against real co-retrieval data. It never contacts the worker, never writes to the DB, and never calls the summarizer, so it is safe to run at any time. The `Dream` section in `stats` / `top` shows the inputs it would read: the audit log's size and entry count, and how many co-retrieval pairs have accumulated.
+
+### Consolidation: what actually runs
+
+Four passes keep the corpus from growing forever. All are reversible, none delete — folding and
+theming **archive** the originals, and supersede applies a demotion you can undo.
+
+| Pass | What it does | Scope |
+|---|---|---|
+| **Dedup** | Folds near-duplicates into the highest-recall survivor. Title similarity **and** an embedding confirm — both must hold. | Walks the clusters the vector index assigned at insert, so its cost tracks the corpus rather than a tuning knob. |
+| **Supersede** | Demotes an older version-fact when a newer one exists. Reversible 0.5x, not an archive. | Whole corpus, hourly. |
+| **Semantic fold** | Collapses same-session restatements — one event the summarizer described twice. | Same-session only: a shared session id is the one signal that says "same moment, same work" without inference. |
+| **Themes** | Turns a cross-session cluster into one durable fact, with the originals archived beneath it. | Needs a summarizer; the model is asked to name the theme and declines most of what it sees. |
+
+A theme needs **both** vector similarity and co-retrieval evidence — two observations you keep
+pulling up in the same breath. Since every possible cluster edge is therefore already a
+co-retrieval pair, the clusterer walks that evidence directly instead of comparing every pair in
+scope: on a 135k-observation corpus that is 44,100 pairs rather than 1.46 billion.
+
+The scheduled passes only run while you are away, so nothing competes with your work:
+
+```bash
+captain-memo consolidate --for 30m     # skip the idle gate for the next 30 minutes
+captain-memo consolidate --semantic --backlog --for 30m   # one-off: include never-recalled rows
+captain-memo theme list                # read what was written
+captain-memo dedup --undo              # reverse a fold
+```
+
+**`--backlog` is a one-off.** Folding normally targets what actually reaches you, so an observation
+that has never been recalled is skipped — on a mature corpus that is most of the collection. The
+sweep drops that gate for a single run; afterwards, new duplicates only accrue as fast as new
+observations do.
 
 ### Knowledge clustering (v0.30.0+)
 

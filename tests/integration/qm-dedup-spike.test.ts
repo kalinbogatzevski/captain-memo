@@ -96,13 +96,13 @@ function qmRuns(): Array<{ aborted_for_ingest: number }> {
   return rows;
 }
 
-// Largest near-dup candidate group the dedup window would yield — used to PROVE the
+// Largest near-dup candidate group the exhaustive title grouper yields — used to PROVE the
 // big same-scope group lands as ONE group (the worst case the heartbeat must survive),
 // not silently split into many small ones by a future title-similarity change.
 function largestCandidateGroupSize(): number {
   const store = new ObservationsStore(join(workDir, 'obs.db'), { readonly: true });
   try {
-    const groups = store.dedupCandidateWindow(DEFAULT_SIMILARITY_THRESHOLD, 500);
+    const groups = store.findDuplicateGroups(DEFAULT_SIMILARITY_THRESHOLD);
     return groups.reduce((max, g) => Math.max(max, g.members.length + 1), 0);
   } finally {
     store.close();

@@ -91,10 +91,28 @@ Haiku-class summarizer on top of the Plan-1 foundation.
 
 ## Summarizer — pick a provider
 
-> **Pick exactly ONE.** There is only ever a single active summarizer. Setting two — two `install` runs, or a combined `codex,agy` value — does **not** run both:
-> - **`captain-memo install --summarizer <x>` REPLACES the previous choice** (it doesn't add). Running it for `codex` and then `agy` leaves you on `agy` only; the wizard prints `summarizer changed: codex → agy (replaces it)` so you can see the swap.
-> - **A combined value like `codex,agy` is invalid** — the worker won't understand it, logs a loud error listing the valid values, and falls back to `claude-oauth` (which needs a Claude login, so on a no-Claude machine that means *nothing gets summarized*).
-> - **To see which one is actually running:** `captain-memo stats` (or `captain-memo top`) now shows a `Summarizer` line with the resolved provider and whether it's actively summarizing. `captain-memo doctor` shows the configured value.
+> **One runs at a time, but you can name a fallback order.** `CAPTAIN_MEMO_SUMMARIZER_PROVIDER`
+> takes a comma-separated **ordered preference**, e.g. `claude-oauth,codex,agy` — "prefer my Claude
+> login, else Codex, else Antigravity". A single value keeps its old meaning exactly.
+> - **At boot** the worker walks the list and commits to the first provider that can actually start.
+>   The probes are structural (token present and unexpired, binary on PATH, endpoint set), so a
+>   healthy first entry costs one cheap check. Entries after the winner are never probed.
+> - **At runtime** a provider that dies is retired and the next one takes over — an OAuth token that
+>   expires at hour 30 no longer means observations are dead-lettered. Auth-shaped failures (401/403,
+>   missing token, missing binary) demote immediately; a plain bad request does not, so one
+>   malformed batch cannot retire a working provider. A demoted provider is never retried until the
+>   worker restarts, deliberately: no cooldown, no flapping between two half-broken providers.
+> - **When the chain runs out**, the summarizer stops and `doctor` FAILs loudly saying so. Restarting
+>   re-walks the whole list.
+> - **`captain-memo install --summarizer <x>` REPLACES the previous choice** (it doesn't add). The
+>   wizard prints `summarizer changed: codex → agy (replaces it)` so you can see the swap.
+> - **To see what is actually running:** `captain-memo stats` shows the live provider;
+>   `captain-memo doctor` names any provider that was skipped at boot or demoted at runtime, with
+>   the reason and the time, and WARNs rather than showing a green line when you are on a fallback.
+>
+> An unrecognised entry is dropped with a warning rather than failing the whole list — one typo in a
+> three-provider chain costs that entry, not your summarizer. If nothing survives, the worker says so
+> loudly and falls back to the default.
 
 The summarizer compresses raw tool-use events into structured observations. Pick how it gets a model via `CAPTAIN_MEMO_SUMMARIZER_PROVIDER`:
 
@@ -188,7 +206,7 @@ bun run worker:start
 
 | Variable | Default | Required for |
 |---|---|---|
-| `CAPTAIN_MEMO_SUMMARIZER_PROVIDER` | `claude-oauth` | `claude-oauth` / `codex` / `agy` / `anthropic` / `claude-code` / `openai-compatible`. |
+| `CAPTAIN_MEMO_SUMMARIZER_PROVIDER` | `claude-oauth` | One of `claude-oauth` / `codex` / `agy` / `anthropic` / `claude-code` / `openai-compatible`, **or a comma-separated ordered chain** like `claude-oauth,codex,agy` (first that can run wins; failover retires a dead one at runtime). |
 | `ANTHROPIC_API_KEY` | — | Required when `provider=anthropic`. Ignored under other providers. |
 | `CAPTAIN_MEMO_OPENAI_ENDPOINT` | — | Required when `provider=openai-compatible`. Full URL to `/v1/chat/completions`. |
 | `CAPTAIN_MEMO_OPENAI_API_KEY` | — | Optional bearer token for `provider=openai-compatible`. Local servers (Ollama, LM Studio) typically don't need it. |

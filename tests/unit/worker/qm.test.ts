@@ -14,7 +14,7 @@ test('defaults: QM enabled, both housekeeping passes ON, cosine reachable by rea
   expect(DEFAULT_QM_CONFIG.supersedeEnabled).toBe(true);
   expect(DEFAULT_QM_CONFIG.dedupCosineThreshold).toBe(0.95);
   expect(DEFAULT_QM_CONFIG.supersedeCosineThreshold).toBe(0.93);
-  expect(DEFAULT_QM_CONFIG.dedupWindow).toBe(5000);
+  expect(DEFAULT_QM_CONFIG.supersedeWindow).toBe(5000);
 });
 test('loadQmConfig with empty env equals defaults', () => { expect(loadQmConfig({})).toEqual(DEFAULT_QM_CONFIG); });
 test('dedup opt-OUT via env', () => {
@@ -57,5 +57,17 @@ test('master kill switch stops both passes', () => { expect(loadQmConfig({ CAPTA
 test('numeric override + invalid falls back to default', () => {
   expect(loadQmConfig({ CAPTAIN_MEMO_QM_DEDUP_COSINE: '0.95' }).dedupCosineThreshold).toBe(0.95);
   expect(loadQmConfig({ CAPTAIN_MEMO_QM_DEDUP_COSINE: 'nonsense' }).dedupCosineThreshold).toBe(0.95);
-  expect(loadQmConfig({ CAPTAIN_MEMO_QM_DEDUP_WINDOW: '500' }).dedupWindow).toBe(500);
+  expect(loadQmConfig({ CAPTAIN_MEMO_QM_DEDUP_WINDOW: '500' }).supersedeWindow).toBe(500);
+});
+
+// Dedup stopped using a window in 0.43.0 — it walks the IVF clusters the index assigned at
+// insert. The old name is still honoured so an operator who set it does not silently lose the
+// supersede pacing it now controls.
+test('CAPTAIN_MEMO_QM_DEDUP_WINDOW survives as a back-compat alias for the supersede window', () => {
+  expect(loadQmConfig({ CAPTAIN_MEMO_QM_SUPERSEDE_WINDOW: '2500' }).supersedeWindow).toBe(2500);
+  expect(loadQmConfig({ CAPTAIN_MEMO_QM_DEDUP_WINDOW: '900' }).supersedeWindow).toBe(900);
+  // the explicit name wins when both are set
+  expect(loadQmConfig({
+    CAPTAIN_MEMO_QM_SUPERSEDE_WINDOW: '2500', CAPTAIN_MEMO_QM_DEDUP_WINDOW: '900',
+  }).supersedeWindow).toBe(2500);
 });

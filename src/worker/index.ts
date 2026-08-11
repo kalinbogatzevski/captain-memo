@@ -1415,7 +1415,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       if (qmSupersedePromise) return;
       const startedAt = Math.floor(Date.now() / 1000);
       qmSupersedePromise = runQmSupersedeSlice({
-        candidates: () => qmStore.supersedeCandidateWindow(qmConfig.dedupWindow),
+        candidates: () => qmStore.supersedeCandidateWindow(qmConfig.supersedeWindow),
         representativeVector: repVec,
         isProtected: (id) => qmStore.isProtected(id),
         linkSupersede: (older, newer, m) => qmStore.linkSupersede(older, newer, m),
