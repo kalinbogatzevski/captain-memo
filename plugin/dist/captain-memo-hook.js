@@ -905,7 +905,7 @@ import { join as join8 } from "path";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.35.1",
+  version: "0.35.2",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -940,10 +940,10 @@ var package_default = {
     "captain-memo": "./bin/captain-memo"
   },
   scripts: {
-    test: "bun test",
-    "test:unit": "bun test tests/unit/",
-    "test:integration": "bun test tests/integration/",
-    "test:hooks": "bun test tests/hooks/",
+    test: "bun test --timeout 15000",
+    "test:unit": "bun test --timeout 15000 tests/unit/",
+    "test:integration": "bun test --timeout 15000 tests/integration/",
+    "test:hooks": "bun test --timeout 15000 tests/hooks/",
     typecheck: "tsc --noEmit",
     "worker:start": "bun src/worker/index.ts",
     "worker:dev": "CAPTAIN_MEMO_DATA_DIR=./.captain-memo.dev bun --watch src/worker/index.ts",

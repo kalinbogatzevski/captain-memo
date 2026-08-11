@@ -1075,6 +1075,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // already summarised, so a short window would blind that repair. Tunable via
   // CAPTAIN_MEMO_QUEUE_RETENTION_DAYS; 0 disables retention entirely.
   let retentionTimer: ReturnType<typeof setInterval> | null = null;
+  // The DEFERRED first sweep needs clearing too. It was a local const, so stop() cleared the hourly
+  // interval and left this one armed: any worker that starts and stops inside 30 s — which is every
+  // test that spins one up — fires it afterwards against a closed database. Harmless (the sweep
+  // catches and logs) but it printed "[queue] retention sweep failed: Cannot use a closed database"
+  // into unrelated suites' output, where it reads like the suite under test broke something.
+  let retentionFirstSweep: ReturnType<typeof setTimeout> | null = null;
   if (!opts.readOnly && obsQueue) {
     const retentionDays = Number(process.env.CAPTAIN_MEMO_QUEUE_RETENTION_DAYS ?? 30);
     if (retentionDays > 0) {
@@ -1102,9 +1108,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       // regression. That was misattributed — the same code passes cleanly when the machine is not
       // loaded, verified across a no-op / delete-only / full-sweep experiment series. The failures were
       // real but environmental. The deferral stayed because it is right, not because it fixed that.)
-      const firstSweep = setTimeout(sweep, 30_000);
-      if (typeof firstSweep === 'object' && firstSweep && 'unref' in firstSweep) {
-        (firstSweep as { unref: () => void }).unref();
+      retentionFirstSweep = setTimeout(sweep, 30_000);
+      if (typeof retentionFirstSweep === 'object' && retentionFirstSweep && 'unref' in retentionFirstSweep) {
+        (retentionFirstSweep as { unref: () => void }).unref();
       }
       retentionTimer = setInterval(sweep, 3_600_000);
       if (typeof retentionTimer === 'object' && retentionTimer && 'unref' in retentionTimer) {
@@ -3256,6 +3262,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     if (tickTimer) clearInterval(tickTimer);
     if (captureTimer) clearInterval(captureTimer);
     if (retentionTimer) clearInterval(retentionTimer);
+    if (retentionFirstSweep) clearTimeout(retentionFirstSweep);
     if (tideSweepTimer) clearInterval(tideSweepTimer);
     if (ivfSweepTimer) clearTimeout(ivfSweepTimer);
     if (qmDedupTimer) clearInterval(qmDedupTimer);

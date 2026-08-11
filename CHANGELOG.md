@@ -5,6 +5,27 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.35.2] — 2026-08-11
+
+### Fixed
+
+- **The deferred retention sweep outlived the worker that armed it.** `stop()` cleared the hourly
+  interval but the first sweep — deliberately deferred 30 s off the boot path — was held in a local
+  `const` and never cleared. Any worker started and stopped inside that window (which is every test
+  that spins one up) left it armed to fire against a closed database. Harmless in itself, since the
+  sweep catches and logs, but it printed **45 copies** of
+  `[queue] retention sweep failed: Cannot use a closed database` into a single suite run, attributed
+  to whichever unrelated test file happened to be running at the time. Now cleared alongside the
+  interval: 45 → 0.
+
+### Changed
+
+- **Per-test timeout raised to 15 s** in the `test*` scripts. Bun's default is 5,000 ms and the
+  integration tests that boot a worker legitimately take 3–5 s, so under load they tipped over and
+  failed at ~5.6 s — a *different* test each run, each passing in isolation. Three separate
+  "mystery failures" this session were this one cause. (`bunfig.toml`'s `[test] timeout` is **not**
+  honoured by this Bun version — verified with a probe — so it has to be the CLI flag.)
+
 ## [0.35.1] — 2026-08-11
 
 ### Changed
