@@ -1,5 +1,20 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test';
-import { dispatchTool } from '../../src/mcp-server.ts';
+import { dispatchTool, resolveWorkBoardSessionId } from '../../src/mcp-server.ts';
+
+// THE SELF-OVERLAP BUG. The PreToolUse auto-claim publishes under CLAUDE_CODE_SESSION_ID; minting an
+// unrelated `mcp-…` id put one session on the board twice, and work-notes.ts excludes self by EXACT
+// session_id — so every auto-claimed edit warned the session about itself.
+test('work-board session id adopts the host session id when Claude Code supplies one', () => {
+  expect(resolveWorkBoardSessionId({ CLAUDE_CODE_SESSION_ID: 'edac35d8-d744-4b54-a0d9-85d793abc9f1' }))
+    .toBe('edac35d8-d744-4b54-a0d9-85d793abc9f1');
+});
+
+// Codex/Gemini/Cursor set no such var. They must still get a stable per-process id — nothing
+// auto-claims for them, so there is no second row to collide with.
+test('work-board session id falls back to a stable mcp- id for non-Claude hosts', () => {
+  expect(resolveWorkBoardSessionId({})).toMatch(/^mcp-[0-9a-z]{10}$/);
+  expect(resolveWorkBoardSessionId({ CLAUDE_CODE_SESSION_ID: '' })).toMatch(/^mcp-/);
+});
 
 let server: ReturnType<typeof Bun.serve> | undefined;
 let port: number;

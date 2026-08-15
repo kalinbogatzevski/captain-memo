@@ -12859,7 +12859,10 @@ var VERSION = package_default.version;
 loadWorkerEnv();
 var WORKER_BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
 var _sid = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 10);
-var PROCESS_SESSION_ID = `mcp-${_sid()}`;
+function resolveWorkBoardSessionId(env = process.env) {
+  return env.CLAUDE_CODE_SESSION_ID || `mcp-${_sid()}`;
+}
+var PROCESS_SESSION_ID = resolveWorkBoardSessionId();
 async function workerPost(base, path, body) {
   const res = await fetch(`${base}${path}`, {
     method: "POST",
@@ -13135,6 +13138,7 @@ if (import.meta.main) {
 }
 export {
   runMcpServer,
+  resolveWorkBoardSessionId,
   formatRememberResult,
   dispatchTool,
   dispatchRemember,

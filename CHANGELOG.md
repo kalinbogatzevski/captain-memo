@@ -5,6 +5,28 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [Unreleased]
+
+### Fixed
+
+- **The work board kept warning you about yourself.** After calling `work_set`, every subsequent edit
+  printed `WORK-BOARD OVERLAP: another captain is editing the same files` and then named your OWN
+  `mcp-…` id. Not a display bug — one session genuinely held two rows: the `PreToolUse` hook auto-claims
+  under Claude Code's session UUID, `mcp-server.ts` minted an unrelated `mcp-${_sid()}` as the fallback
+  id for `work_set`/`work_active`/`work_clear`, and `work-notes.ts` excludes self by EXACT `session_id`
+  — so the worker was right to call them a collision; its data model believed there were two of you.
+
+  Claude Code already hands the answer over: it sets `CLAUDE_CODE_SESSION_ID` in the MCP subprocess
+  environment. `resolveWorkBoardSessionId()` adopts it, the two rows collapse into one, `work_set`
+  overwrites the hook's claim instead of racing it, and the existing self-exclusion starts working —
+  `work-notes.ts` is untouched. Codex, Gemini and Cursor set no such var and keep the random
+  per-process id, which is correct: nothing auto-claims on their behalf, so they never had a second
+  row. A warning that cries wolf on every edit is worse than no warning at all — it trains you to
+  scroll past the one that is real.
+
+  **Takes effect for MCP servers started after the upgrade**: the server is long-lived and keeps its
+  old id until the next session spawns a new one.
+
 ## [0.35.2] — 2026-08-11
 
 ### Fixed

@@ -18,8 +18,23 @@ const WORKER_BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? 
 
 // Fallback session id for work_set/work_active/work_clear when the caller omits session_id —
 // one per MCP server process, so a tool call without an explicit id still has a stable identity.
+//
+// PREFER THE HOST'S OWN SESSION ID when it hands one over. Claude Code sets CLAUDE_CODE_SESSION_ID on
+// the MCP subprocess, and its PreToolUse auto-claim (hooks/pre-tool-use.ts) publishes under that SAME
+// id. Minting an unrelated one put a single session on the board TWICE, and since work-notes.ts
+// excludes self by exact session_id, every auto-claimed edit then warned the session about itself:
+// "WORK-BOARD OVERLAP: another captain is editing the same files", naming your own mcp-… id. A warning
+// that cries wolf on every edit is worse than none — it trains you past the one that is real. Sharing
+// the id is what makes the existing self-exclusion work; work-notes.ts needs no change. Other AIs
+// (Codex, Gemini, Cursor, …) set no such var and keep the random per-process id, which is correct:
+// nothing auto-claims on their behalf, so they never had a second row.
 const _sid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 10);
-const PROCESS_SESSION_ID = `mcp-${_sid()}`;
+
+export function resolveWorkBoardSessionId(env: Record<string, string | undefined> = process.env): string {
+  return env.CLAUDE_CODE_SESSION_ID || `mcp-${_sid()}`;
+}
+
+const PROCESS_SESSION_ID = resolveWorkBoardSessionId();
 
 async function workerPost(base: string, path: string, body: unknown): Promise<unknown> {
   const res = await fetch(`${base}${path}`, {
