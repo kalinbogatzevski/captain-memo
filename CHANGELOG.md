@@ -5,7 +5,7 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
-## [Unreleased]
+## [0.35.3] — 2026-08-15
 
 ### Fixed
 
