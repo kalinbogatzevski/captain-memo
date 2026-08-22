@@ -1,36 +1,14 @@
-import { basename } from 'path';
 import type { ChunkInput } from '../../shared/types.ts';
 import { splitByH2Sections } from './markdown-sections.ts';
-
-const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n?/;
-
-interface SkillFrontmatter {
-  body: string;
-  fields: Record<string, string>;
-}
-
-function parseFrontmatter(content: string): SkillFrontmatter {
-  const match = content.match(FRONTMATTER_RE);
-  if (!match) return { body: content, fields: {} };
-  const raw = match[1] ?? '';
-  const fields: Record<string, string> = {};
-  for (const line of raw.split('\n')) {
-    const idx = line.indexOf(':');
-    if (idx === -1) continue;
-    const key = line.slice(0, idx).trim();
-    const value = line.slice(idx + 1).trim();
-    if (key) fields[key] = value;
-  }
-  return { body: content.slice(match[0].length), fields };
-}
+import { parseSkillDocument } from '../skill-registry.ts';
 
 export function chunkSkill(content: string, sourcePath: string): ChunkInput[] {
   // Normalize CRLF → LF so the LF-only frontmatter regex matches skill files
   // with Windows line endings (same fix as chunkMemoryFile).
-  content = content.replace(/\r\n/g, '\n');
-  const { body, fields } = parseFrontmatter(content);
-  const skillId = basename(sourcePath, '.md');
-  const description = fields.description ?? '';
+  const skill = parseSkillDocument(content, sourcePath);
+  const body = skill.instructions;
+  const skillId = skill.skill_id;
+  const description = skill.description;
 
   const { intro, sections } = splitByH2Sections(body);
 
@@ -46,8 +24,13 @@ export function chunkSkill(content: string, sourcePath: string): ChunkInput[] {
       metadata: {
         doc_type: 'skill_summary',
         skill_id: skillId,
+        skill_ref: skill.skill_ref,
+        skill_name: skill.name,
+        source_agent: skill.source_agent,
         source_path: sourcePath,
         description,
+        content_sha: skill.content_sha,
+        warnings: skill.warnings,
       },
     });
   }
@@ -60,7 +43,13 @@ export function chunkSkill(content: string, sourcePath: string): ChunkInput[] {
       metadata: {
         doc_type: 'skill_section',
         skill_id: skillId,
+        skill_ref: skill.skill_ref,
+        skill_name: skill.name,
+        source_agent: skill.source_agent,
         source_path: sourcePath,
+        description,
+        warnings: skill.warnings,
+        content_sha: skill.content_sha,
         section_title: section.title,
         has_code: section.hasCode,
       },

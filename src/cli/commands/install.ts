@@ -190,6 +190,7 @@ interface WizardConfig {
   embedderApiKey?: string;
   embeddingDimension: number;
   watchMemory: string;
+  watchSkills: string;
   hookTimeoutMs: number;
 }
 
@@ -530,6 +531,7 @@ export function loadExistingConfig(envPath: string): Partial<WizardConfig> {
   // ----- watch (skip == no watch line on one of our files; '' is the skip choice) -----
   if (map['CAPTAIN_MEMO_WATCH_MEMORY']) cfg.watchMemory = map['CAPTAIN_MEMO_WATCH_MEMORY'];
   else if (isOurs) cfg.watchMemory = '';
+  cfg.watchSkills = map['CAPTAIN_MEMO_WATCH_SKILLS'] ?? 'auto';
   const hto = Number(map['CAPTAIN_MEMO_HOOK_TIMEOUT_MS']);
   if (map['CAPTAIN_MEMO_HOOK_TIMEOUT_MS'] && Number.isFinite(hto)) cfg.hookTimeoutMs = hto;
   // NOTE: CAPTAIN_MEMO_DATA_DIR / PROJECT_ID / WORKER_PORT are intentionally NOT
@@ -728,6 +730,7 @@ export function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOpt
     ...(embedderApiKey !== undefined && embedderApiKey !== '' && { embedderApiKey }),
     embeddingDimension,
     watchMemory,
+    watchSkills: existing?.watchSkills ?? 'auto',
     hookTimeoutMs: existing?.hookTimeoutMs ?? 2000, // preserve a tuned value; generous default otherwise
   };
 }
@@ -773,6 +776,7 @@ function workerEnvLines(cfg: WizardConfig, dataDir: string): string[] {
     }
   }
   if (cfg.watchMemory) lines.push(`CAPTAIN_MEMO_WATCH_MEMORY=${cfg.watchMemory}`);
+  if (cfg.watchSkills) lines.push(`CAPTAIN_MEMO_WATCH_SKILLS=${cfg.watchSkills}`);
   return lines;
 }
 
@@ -785,6 +789,7 @@ const MANAGED_ENV_KEYS = new Set<string>([
   'CAPTAIN_MEMO_OPENAI_ENDPOINT', 'CAPTAIN_MEMO_OPENAI_API_KEY',
   'CAPTAIN_MEMO_SKIP_EMBED', 'CAPTAIN_MEMO_EMBEDDER_ENDPOINT', 'CAPTAIN_MEMO_EMBEDDER_MODEL',
   'CAPTAIN_MEMO_EMBEDDING_DIM', 'CAPTAIN_MEMO_EMBEDDER_API_KEY', 'CAPTAIN_MEMO_WATCH_MEMORY',
+  'CAPTAIN_MEMO_WATCH_SKILLS',
 ]);
 
 /**

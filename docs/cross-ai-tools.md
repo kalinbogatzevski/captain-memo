@@ -31,12 +31,17 @@ transcripts to the same `~/.codex/sessions/`, so `connect codex` wires and obser
 
 It's two pieces per tool:
 
-1. **Register the MCP server** → the tool gets `search_all`, `search_observations`, `search_memory`,
-   `get_full`, and the work-coordination tools `work_set`/`work_active`/`work_clear`. The MCP server is a
+1. **Register the MCP server** → the tool gets memory recall, `recommend_skills` / `load_skill`,
+   and the work-coordination tools `work_set`/`work_active`/`work_clear`. The MCP server is a
    thin stdio bridge that talks to your running worker on `http://localhost:39888`, so every tool reuses
    the **same worker and corpus** — nothing is duplicated.
 2. **Install the skill** (`skills/captain-memo/SKILL.md`) into the tool's skills/rules directory → it
-   tells the model *when* to recall (search at task start; "have we decided/hit this before?").
+   tells the model *when* to recall and when to ask Captain Memo for a specialized skill.
+
+Captain Memo imports each discovered `SKILL.md` losslessly into a first-class SQLite registry while
+also indexing searchable chunks. The row keeps its CLI provenance, content hash, and portability
+warnings. Because it lives in `meta.sqlite3`, ordinary backup/restore includes it automatically;
+merge-import of two corpora remains a separate, future operation.
 
 The MCP tools are **read-only/recall** (search + drill). Capture is automatic where the tool has
 lifecycle hooks (Claude Code today); other tools recall the shared memory that Claude Code and the

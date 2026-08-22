@@ -9,6 +9,7 @@ export type RouteClass = 'read' | 'write' | 'control';
 // falls through to the writer.
 const READ_PATHS = new Set<string>([
   '/search/all', '/search/memory', '/search/skill', '/search/observations',
+  '/skills/recommend',
   '/get_full', '/observation/full', '/inject/context',
   '/observations/recent', '/recall/list',
 ]);

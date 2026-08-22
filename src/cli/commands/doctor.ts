@@ -596,6 +596,7 @@ function checkConfig(): void {
   const provider = (content.match(/CAPTAIN_MEMO_SUMMARIZER_PROVIDER=(.+)/) ?? [])[1] ?? '?';
   const model = (content.match(/CAPTAIN_MEMO_SUMMARIZER_MODEL=(.+)/) ?? [])[1] ?? '?';
   const watch = (content.match(/CAPTAIN_MEMO_WATCH_MEMORY=(.+)/) ?? [])[1] ?? '(none)';
+  const skills = (content.match(/CAPTAIN_MEMO_WATCH_SKILLS=(.+)/) ?? [])[1] ?? '(none)';
   // worker.env is the CONFIGURED chain, not the live one. Say which entry is actually serving
   // whenever they disagree — a demotion makes `summarizer=codex,agy` a statement about intent.
   const live = liveSummarizer;
@@ -603,7 +604,7 @@ function checkConfig(): void {
     ? ` · RUNNING ${live.provider}${live.demoted.length > 0 ? ` (demoted: ${live.demoted.join(', ')})` : ''}`
     : '';
   record({ name: 'worker config', status: drift ? 'WARN' : 'PASS',
-           detail: `summarizer=${provider} model=${model} watch=${watch.slice(0, 60)}${watch.length > 60 ? '…' : ''}${drift}`,
+           detail: `summarizer=${provider} model=${model} watch=${watch.slice(0, 50)}${watch.length > 50 ? '…' : ''} skills=${skills.slice(0, 30)}${skills.length > 30 ? '…' : ''}${drift}`,
            ...(drift && { remedy: 'the chain is doing its job, but the head is not serving — see the summarizer check above' }) });
 }
 

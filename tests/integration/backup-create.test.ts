@@ -18,8 +18,10 @@ function seedCorpus(dir: string) {
   meta.exec('PRAGMA journal_mode = WAL;');
   meta.exec('CREATE TABLE documents(id INTEGER PRIMARY KEY);');
   meta.exec('CREATE TABLE chunks(id INTEGER PRIMARY KEY, text TEXT);');
+  meta.exec('CREATE TABLE skills(id INTEGER PRIMARY KEY, name TEXT);');
   meta.exec("INSERT INTO documents(id) VALUES (1);");
   meta.exec("INSERT INTO chunks(text) VALUES ('a'),('b');");
+  meta.exec("INSERT INTO skills(name) VALUES ('review');");
   meta.close();
   // observations.db with 3 rows
   const obs = new Database(join(dir, 'observations.db'));
@@ -60,6 +62,7 @@ test('createBackup writes an archive with correct counts and durable files only'
   const res = await createBackup({ outPath: out, includeVectors: false });
   expect(existsSync(out)).toBe(true);
   expect(res.manifest.counts.chunks).toBe(2);
+  expect(res.manifest.counts.skills).toBe(1);
   expect(res.manifest.counts.observations).toBe(3);
   expect(res.manifest.includes_secrets).toBe(true);
   expect(res.manifest.includes_vectors).toBe(false);

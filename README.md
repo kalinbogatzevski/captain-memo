@@ -359,7 +359,7 @@ After install + a full Claude Code restart, the plugin exposes two layers to eve
 /captain-memo:doctor              # health probe inline in chat
 ```
 
-### 12 MCP tools the model calls automatically
+### 14 MCP tools the model calls automatically
 
 These fire when the model decides retrieval would help your prompt — no slash command required. List them anytime with `/mcp`:
 
@@ -369,6 +369,8 @@ These fire when the model decides retrieval would help your prompt — no slash 
 | `search_memory` | Curated memory only (filter: type, project) |
 | `remember` | Persist a durable decision / preference / fact into curated memory (create or update-in-place) |
 | `search_skill` | Skill bodies only (filter: skill_id) |
+| `recommend_skills` | Recommend installed cross-AI skills for a task (descriptors first) |
+| `load_skill` | Load one recommended skill's complete advisory instructions |
 | `search_observations` | Past session observations (filter: type, files, since) |
 | `get_full` | Full content of a hit by `doc_id` |
 | `reindex` | Trigger re-embed |
@@ -693,11 +695,11 @@ Schema migrations:
 | **Worker** (`:39888`) | Long-lived HTTP daemon. Owns the SQLite + sqlite-vec stores, file watcher, observation queue, summarizer + embedder wiring. |
 | **Embedder** | Pluggable: hosted Voyage API (default), local voyage-4-nano sidecar (`:8124`), or any OpenAI-compatible `/v1/embeddings` endpoint. |
 | **Summarizer** | Pluggable: Claude Max via OAuth (default, no API key), Anthropic API, `claude -p` subprocess, or any OpenAI-compatible `/v1/chat/completions`. |
-| **MCP server** (stdio) | Exposes 12 tools to Claude Code (`search_all`, `search_memory`, `remember`, `search_skill`, `search_observations`, `get_full`, `reindex`, `stats`, `status`, `work_set`, `work_active`, `work_clear`). |
+| **MCP server** (stdio) | Exposes 14 tools, including memory recall plus `recommend_skills` / `load_skill` for the synchronized skill registry. |
 | **Six hooks** | `SessionStart` (corpus banner), `UserPromptSubmit` (inject memory envelope, ≤1.5 s budget), `PreToolUse` (work-board claim + overlap/git warning, advisory only), `PostToolUse` (queue tool-use events), `Stop` (drain → summarize → index), `PreCompact` (capture before context compaction). |
 | **CLI** | The commands above. |
 
-Channels indexed: `memory` (curated user memory files), `skill` (Claude Code skill bodies, section-level), `observation` (summarized session events). Observations age at search time: Tide (on by default) demotes stale hits with a bounded multiplier that never falls below a 0.30 relevance floor, so newer truth ranks above stale truth without losing history. (`CAPTAIN_MEMO_TIDE_ENABLED=0` falls back to the older flat exponential decay, 90-day half-life.)
+Channels indexed: `memory` (curated user memory files), `skill` (cross-AI Agent Skills, section-level plus a first-class lossless registry), `observation` (summarized session events). Observations age at search time: Tide (on by default) demotes stale hits with a bounded multiplier that never falls below a 0.30 relevance floor, so newer truth ranks above stale truth without losing history. (`CAPTAIN_MEMO_TIDE_ENABLED=0` falls back to the older flat exponential decay, 90-day half-life.)
 
 Detailed docs: [`docs/USAGE.md`](docs/USAGE.md).
 

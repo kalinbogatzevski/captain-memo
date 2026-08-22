@@ -5,6 +5,7 @@ import { newChunkId } from '../shared/id.ts';
 import { chunkMemoryFile } from './chunkers/memory-file.ts';
 import { chunkSkill } from './chunkers/skill.ts';
 import { splitForEmbed } from './chunkers/safe-split.ts';
+import { parseSkillDocument, type ParsedSkill } from './skill-registry.ts';
 import type { ChannelType, ChunkInput } from '../shared/types.ts';
 import type { MetaStore } from './meta.ts';
 import type { VectorStore } from './vector-store.ts';
@@ -64,7 +65,16 @@ export class IngestPipeline {
     const mtime_epoch = Math.floor(stat.mtimeMs / 1000);
 
     const existing = this.meta.getDocument(filePath);
+    const parsedSkill: ParsedSkill | null = channel === 'skill'
+      ? parseSkillDocument(content, filePath)
+      : null;
     if (existing && existing.sha === sha) {
+      // A schema upgrade can encounter an already-indexed skill before its
+      // first-class registry row exists. Backfill it without paying to embed
+      // unchanged chunks again.
+      if (parsedSkill && !this.meta.getSkillBySourcePath(filePath)) {
+        this.meta.upsertSkill({ document_id: existing.id, ...parsedSkill });
+      }
       this.onIndexResult?.('skipped');
       return;
     }
@@ -93,7 +103,7 @@ export class IngestPipeline {
       return;
     }
 
-    const sourceKey = basename(filePath, '.md');
+    const sourceKey = parsedSkill?.skill_id ?? basename(filePath, '.md');
     const chunksWithIds = chunks.map(c => ({
       chunk_id: newChunkId(channel, sourceKey),
       text: c.text,
@@ -114,6 +124,7 @@ export class IngestPipeline {
     });
 
     this.meta.replaceChunksForDocument(documentId, chunksWithIds);
+    if (parsedSkill) this.meta.upsertSkill({ document_id: documentId, ...parsedSkill });
 
     await this.vector.add(
       this.collection,

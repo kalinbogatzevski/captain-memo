@@ -24,7 +24,7 @@ export function formatBackupInfo(m: BackupManifest): string {
     `  created:     ${sanitize(m.created_at)}  on ${sanitize(m.platform)}`,
     `  app version: ${sanitize(m.captain_memo_version)}`,
     `  embedder:    ${sanitize(e.model)}  dim=${e.dimension}${e.endpoint ? `  (${sanitize(e.endpoint)})` : ''}`,
-    `  counts:      ${m.counts.documents} docs · ${m.counts.chunks} chunks · ` +
+    `  counts:      ${m.counts.documents} docs · ${m.counts.chunks} chunks · ${m.counts.skills ?? 0} skills · ` +
       `${m.counts.observations} observations · ${m.counts.vectors} vectors`,
     `  vectors:     ${m.includes_vectors ? 'included' : 'not included (restore re-embeds)'}`,
     `  secrets:     ${m.includes_secrets ? 'INCLUDED (worker.env — contains API keys)' : 'not included'}`,

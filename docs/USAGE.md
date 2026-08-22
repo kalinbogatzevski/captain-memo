@@ -42,7 +42,7 @@ captain-memo reindex --force            # ignore sha cache, re-embed all
 
 ## Use the MCP server (manual)
 
-The stdio MCP server connects to the worker over HTTP and exposes 8 tools to Claude Code.
+The stdio MCP server connects to the worker over HTTP and exposes Captain Memo's recall, skill-broker, and coordination tools.
 
 ```bash
 bun run mcp:start
@@ -62,11 +62,11 @@ Expose to Claude Code via `.mcp.json`:
 }
 ```
 
-Tools exposed: `search_memory`, `search_skill`, `search_observations`, `search_all`, `get_full`, `reindex`, `stats`, `status`.
+Skill-broker tools: `recommend_skills` returns lightweight descriptors; `load_skill` retrieves the selected skill's complete advisory instructions. The remaining tools cover memory search, persistence, observations, reindexing, health, and work coordination.
 
 ## Watch paths
 
-Set the env vars `CAPTAIN_MEMO_WATCH_MEMORY` or `CAPTAIN_MEMO_WATCH_SKILLS` to comma-separated globs. Patterns are passed to Bun's native glob — typical forms like `~/.claude/memory/*.md` work after shell expansion (note: env-passed values won't expand `~`, so prefer absolute paths in env).
+Set `CAPTAIN_MEMO_WATCH_MEMORY` or `CAPTAIN_MEMO_WATCH_SKILLS` to comma-separated globs. New installs set `CAPTAIN_MEMO_WATCH_SKILLS=auto`, which discovers user-level Claude, Codex/Agent Skills, Gemini, Cursor, opencode, Vibe, and Kimi `SKILL.md` roots. Changes and deletions are synchronized while the worker runs. Explicit environment globs should use absolute paths because `~` is not expanded there.
 
 Example:
 

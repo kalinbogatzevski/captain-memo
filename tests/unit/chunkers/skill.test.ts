@@ -44,3 +44,11 @@ test('chunkSkill — preserves position ordering', () => {
     expect(chunks[i]!.position).toBeGreaterThan(chunks[i - 1]!.position);
   }
 });
+
+test('chunkSkill — standard SKILL.md uses its parent directory and folded description', () => {
+  const chunks = chunkSkill(`---\nname: review\ndescription: >-\n  Review code across\n  several languages.\n---\n\n# Review\n`, '/home/u/.agents/skills/review/SKILL.md');
+  const summary = chunks[0]!;
+  expect(summary.metadata.skill_id).toBe('review');
+  expect(summary.metadata.source_agent).toBe('codex');
+  expect(summary.text).toContain('Review code across several languages.');
+});

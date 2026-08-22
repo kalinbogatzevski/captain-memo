@@ -14,6 +14,26 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 CREATE INDEX IF NOT EXISTS idx_documents_project_channel ON documents(project_id, channel);
 
+CREATE TABLE IF NOT EXISTS skills (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  document_id INTEGER NOT NULL UNIQUE REFERENCES documents(id) ON DELETE CASCADE,
+  skill_ref TEXT NOT NULL UNIQUE,
+  skill_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  instructions TEXT NOT NULL,
+  raw_content TEXT NOT NULL,
+  source_path TEXT NOT NULL UNIQUE,
+  source_agent TEXT NOT NULL,
+  content_sha TEXT NOT NULL,
+  frontmatter TEXT NOT NULL DEFAULT '{}',
+  warnings TEXT NOT NULL DEFAULT '[]',
+  imported_at_epoch INTEGER NOT NULL,
+  updated_at_epoch INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_skills_id ON skills(skill_id);
+CREATE INDEX IF NOT EXISTS idx_skills_source_agent ON skills(source_agent);
+
 CREATE TABLE IF NOT EXISTS chunks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
@@ -86,6 +106,26 @@ export interface ChunkUpsertInput {
   position: number;
   metadata: Record<string, unknown>;
 }
+
+export interface SkillRecord {
+  id: number;
+  document_id: number;
+  skill_ref: string;
+  skill_id: string;
+  name: string;
+  description: string;
+  instructions: string;
+  raw_content: string;
+  source_path: string;
+  source_agent: string;
+  content_sha: string;
+  frontmatter: Record<string, string>;
+  warnings: string[];
+  imported_at_epoch: number;
+  updated_at_epoch: number;
+}
+
+export type UpsertSkillInput = Omit<SkillRecord, 'id' | 'imported_at_epoch' | 'updated_at_epoch'>;
 
 export interface KeywordHit {
   chunk_id: string;
@@ -203,6 +243,67 @@ export class MetaStore {
 
   deleteDocument(source_path: string): void {
     this.db.query('DELETE FROM documents WHERE source_path = ?').run(source_path);
+  }
+
+  upsertSkill(input: UpsertSkillInput): void {
+    const now = Math.floor(Date.now() / 1000);
+    this.db.query(
+      `INSERT INTO skills (
+         document_id, skill_ref, skill_id, name, description, instructions, raw_content,
+         source_path, source_agent, content_sha, frontmatter, warnings,
+         imported_at_epoch, updated_at_epoch
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(source_path) DO UPDATE SET
+         document_id = excluded.document_id,
+         skill_ref = excluded.skill_ref,
+         skill_id = excluded.skill_id,
+         name = excluded.name,
+         description = excluded.description,
+         instructions = excluded.instructions,
+         raw_content = excluded.raw_content,
+         source_agent = excluded.source_agent,
+         content_sha = excluded.content_sha,
+         frontmatter = excluded.frontmatter,
+         warnings = excluded.warnings,
+         updated_at_epoch = excluded.updated_at_epoch`,
+    ).run(
+      input.document_id, input.skill_ref, input.skill_id, input.name, input.description,
+      input.instructions, input.raw_content, input.source_path, input.source_agent,
+      input.content_sha, JSON.stringify(input.frontmatter), JSON.stringify(input.warnings), now, now,
+    );
+  }
+
+  private decodeSkill(row: Omit<SkillRecord, 'frontmatter' | 'warnings'> & {
+    frontmatter: string; warnings: string;
+  }): SkillRecord {
+    return { ...row, frontmatter: JSON.parse(row.frontmatter), warnings: JSON.parse(row.warnings) };
+  }
+
+  getSkillBySourcePath(sourcePath: string): SkillRecord | null {
+    const row = this.db.query('SELECT * FROM skills WHERE source_path = ?').get(sourcePath) as
+      | (Omit<SkillRecord, 'frontmatter' | 'warnings'> & { frontmatter: string; warnings: string })
+      | undefined;
+    return row ? this.decodeSkill(row) : null;
+  }
+
+  getSkillByDocumentId(documentId: number): SkillRecord | null {
+    const row = this.db.query('SELECT * FROM skills WHERE document_id = ?').get(documentId) as
+      | (Omit<SkillRecord, 'frontmatter' | 'warnings'> & { frontmatter: string; warnings: string })
+      | undefined;
+    return row ? this.decodeSkill(row) : null;
+  }
+
+  getSkillByRef(skillRef: string): SkillRecord | null {
+    const row = this.db.query('SELECT * FROM skills WHERE skill_ref = ?').get(skillRef) as
+      | (Omit<SkillRecord, 'frontmatter' | 'warnings'> & { frontmatter: string; warnings: string })
+      | undefined;
+    return row ? this.decodeSkill(row) : null;
+  }
+
+  listSkills(limit = 100): SkillRecord[] {
+    const rows = this.db.query('SELECT * FROM skills ORDER BY name, source_agent LIMIT ?').all(limit) as
+      Array<Omit<SkillRecord, 'frontmatter' | 'warnings'> & { frontmatter: string; warnings: string }>;
+    return rows.map((row) => this.decodeSkill(row));
   }
 
   /** Documents whose FILE NAME matches, optionally within one channel. The identifier a user holds

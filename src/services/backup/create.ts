@@ -110,6 +110,9 @@ export async function createBackup(opts: CreateBackupOptions = {}): Promise<Crea
       counts: {
         documents: countRows(join(dataDir, 'meta.sqlite3'), 'SELECT count(*) AS n FROM documents'),
         chunks: countRows(join(dataDir, 'meta.sqlite3'), 'SELECT count(*) AS n FROM chunks'),
+        skills: countRows(join(dataDir, 'meta.sqlite3'), "SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='skills'")
+          ? countRows(join(dataDir, 'meta.sqlite3'), 'SELECT count(*) AS n FROM skills')
+          : 0,
         observations: countRows(join(dataDir, 'observations.db'), 'SELECT count(*) AS n FROM observations'),
         vectors: vectorsIncluded ? readVecCount(vecDbPath) : 0,
       },

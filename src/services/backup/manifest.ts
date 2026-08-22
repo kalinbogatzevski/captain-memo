@@ -9,7 +9,14 @@ export interface EmbedderIdentity {
   endpoint?: string;
 }
 export interface BackupFileEntry { path: string; size: number; sha256: string }
-export interface BackupCounts { documents: number; chunks: number; observations: number; vectors: number }
+export interface BackupCounts {
+  documents: number;
+  chunks: number;
+  observations: number;
+  vectors: number;
+  /** First-class imported skill records. Optional when reading pre-registry v1 archives. */
+  skills?: number;
+}
 
 export interface BackupManifest {
   format_version: number;
