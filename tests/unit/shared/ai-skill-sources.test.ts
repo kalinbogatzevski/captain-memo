@@ -3,8 +3,14 @@ import { mkdtempSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
-  allSkillSources, discoverSkillGlobs, skillToolFromPath,
+  allSkillSources, discoverSkillGlobs, resolveSkillWatchSetting, skillToolFromPath,
 } from '../../../src/shared/ai-skill-sources.ts';
+
+test('skill watching defaults to auto but an explicit empty value opts out', () => {
+  expect(resolveSkillWatchSetting(undefined)).toBe('auto');
+  expect(resolveSkillWatchSetting('auto')).toBe('auto');
+  expect(resolveSkillWatchSetting('')).toBe('');
+});
 
 test('skill source globs are structurally limited to SKILL.md', () => {
   const sources = allSkillSources('/home/tester');

@@ -526,7 +526,7 @@ export function parseOllamaList(stdout: string): string[] {
  *  src/mcp-server.ts so the CLI does not pull in the MCP SDK just to read names — a test asserts it
  *  stays identical to that server's `TOOLS`, so it cannot drift silently. */
 export const CODEX_TOOL_NAMES = [
-  'search_memory', 'remember', 'search_skill', 'recommend_skills', 'load_skill',
+  'search_memory', 'remember', 'search_skill', 'list_skills', 'recommend_skills', 'load_skill',
   'search_observations', 'search_all', 'get_full',
   'reindex', 'stats', 'status', 'work_set', 'work_active', 'work_clear',
 ] as const;

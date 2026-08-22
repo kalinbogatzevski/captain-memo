@@ -34,7 +34,22 @@ var init_paths = __esm(() => {
 // src/hooks/shared.ts
 import { appendFileSync, mkdirSync, statSync, renameSync, existsSync } from "fs";
 import { homedir as homedir2 } from "os";
-import { join as join2 } from "path";
+import { join as join2, resolve } from "path";
+import { fileURLToPath } from "url";
+function isMainModule(meta) {
+  if (meta.main)
+    return true;
+  const entry = process.argv[1];
+  if (!entry)
+    return false;
+  try {
+    const actual = resolve(entry);
+    const expected = resolve(fileURLToPath(meta.url));
+    return process.platform === "win32" ? actual.toLowerCase() === expected.toLowerCase() : actual === expected;
+  } catch {
+    return false;
+  }
+}
 function rotateIfNeeded() {
   try {
     if (!existsSync(HOOK_LOG_FILE))
@@ -218,7 +233,7 @@ async function probeHealthyWithRetries(probeOnce, attempts = 3, gapMs = 2000, sl
 // src/services/service-manager/systemd.ts
 import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, rmSync, writeFileSync } from "fs";
 import { homedir as homedir3 } from "os";
-import { join as join4, resolve } from "path";
+import { join as join4, resolve as resolve2 } from "path";
 import { spawnSync } from "child_process";
 function unitName(name) {
   return name.endsWith(".service") ? name : `${name}.service`;
@@ -321,14 +336,14 @@ function createSystemdServiceManager() {
 var REPO_ROOT, USER_SYSTEMD_DIR;
 var init_systemd = __esm(() => {
   init_paths();
-  REPO_ROOT = resolve(import.meta.dir, "../../..");
+  REPO_ROOT = resolve2(import.meta.dir, "../../..");
   USER_SYSTEMD_DIR = join4(homedir3(), ".config/systemd/user");
 });
 
 // src/services/service-manager/launchd.ts
 import { existsSync as existsSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync3, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "fs";
 import { homedir as homedir4, userInfo } from "os";
-import { join as join5, resolve as resolve2 } from "path";
+import { join as join5, resolve as resolve3 } from "path";
 import { spawnSync as spawnSync2 } from "child_process";
 function bareName(name) {
   return name.replace(/\.service$/, "");
@@ -485,7 +500,7 @@ function createLaunchdServiceManager() {
 var REPO_ROOT2, LAUNCH_AGENTS_DIR, DEFAULT_LOG_DIR, LAUNCHCTL_TIMEOUT_MS = 90000;
 var init_launchd = __esm(() => {
   init_paths();
-  REPO_ROOT2 = resolve2(import.meta.dir, "../../..");
+  REPO_ROOT2 = resolve3(import.meta.dir, "../../..");
   LAUNCH_AGENTS_DIR = join5(homedir4(), "Library/LaunchAgents");
   DEFAULT_LOG_DIR = LOGS_DIR;
 });
@@ -895,7 +910,14 @@ async function main() {
   }
   writeStdout(prompt);
 }
-if (false) {}
+if (isMainModule(import.meta)) {
+  try {
+    await main();
+  } catch (err) {
+    logHookError("UserPromptSubmit", err);
+    process.exit(0);
+  }
+}
 
 // src/hooks/session-start.ts
 init_shared();
@@ -905,7 +927,7 @@ import { join as join8 } from "path";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.37.0",
+  version: "0.37.1",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -1440,7 +1462,14 @@ ${banner}` : banner;
     }));
   }
 }
-if (false) {}
+if (isMainModule(import.meta)) {
+  try {
+    await main2();
+  } catch (err) {
+    logHookError("SessionStart", err);
+    process.exit(0);
+  }
+}
 
 // src/hooks/pre-tool-use.ts
 init_shared();
@@ -1503,7 +1532,14 @@ async function main3() {
   const warning = `WORK-BOARD OVERLAP: another captain is ${parts.join("; and is ")}. Check the captain-memo work board (work_active) and coordinate, or pick a different area, before continuing.`;
   writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: warning } }));
 }
-if (false) {}
+if (isMainModule(import.meta)) {
+  try {
+    await main3();
+  } catch (err) {
+    logHookError("PreToolUse", err);
+    process.exit(0);
+  }
+}
 
 // src/hooks/post-tool-use.ts
 init_shared();
@@ -1587,7 +1623,14 @@ async function main4() {
   });
   logWorkerFailure("PostToolUse", "/observation/enqueue", res);
 }
-if (false) {}
+if (isMainModule(import.meta)) {
+  try {
+    await main4();
+  } catch (err) {
+    logHookError("PostToolUse", err);
+    process.exit(0);
+  }
+}
 
 // src/hooks/stop.ts
 init_shared();
@@ -1609,7 +1652,14 @@ async function main5() {
   });
   logWorkerFailure("Stop", "/observation/flush", res);
 }
-if (false) {}
+if (isMainModule(import.meta)) {
+  try {
+    await main5();
+  } catch (err) {
+    logHookError("Stop", err);
+    process.exit(0);
+  }
+}
 
 // src/hooks/pre-compact.ts
 init_shared();
@@ -1644,7 +1694,14 @@ async function main6() {
   });
   logWorkerFailure("PreCompact", "/observation/enqueue", res);
 }
-if (false) {}
+if (isMainModule(import.meta)) {
+  try {
+    await main6();
+  } catch (err) {
+    logHookError("PreCompact", err);
+    process.exit(0);
+  }
+}
 
 // src/hooks/dispatcher.ts
 var EVENTS = {

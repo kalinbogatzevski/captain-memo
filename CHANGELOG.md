@@ -5,6 +5,28 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.37.1] — 2026-08-23
+
+### Added
+
+- **Virtual skills can now introduce themselves.** The new `list_skills` MCP tool and
+  `captain-memo skill list` CLI command enumerate the synchronized repository with provenance,
+  descriptors, and loadable document ids; both support source and count filters, plus JSON output
+  from the CLI.
+
+### Changed
+
+- **Skill discovery is AUTO when configuration is absent.** A fresh or upgraded captain now
+  discovers installed AI skills without requiring `CAPTAIN_MEMO_WATCH_SKILLS`; an explicitly empty
+  value remains the opt-out. `config` and `doctor` report the effective default honestly.
+
+### Fixed
+
+- **Windows skill synchronization and hooks are reliable under current Bun releases.** Windows
+  path separators no longer break nested `SKILL.md` glob expansion or basename lookup, direct hook
+  entrypoints await their work before Bun exits, and literal `SKILL.md` watchers no longer ingest a
+  neighboring `NOTES.md`. The fixes were reproduced and validated natively under Bun 1.3 and 1.4.
+
 ## [0.37.0] — 2026-08-22
 
 ### Added

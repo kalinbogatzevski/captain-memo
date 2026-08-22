@@ -12781,7 +12781,7 @@ function loadWorkerEnv() {
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.37.0",
+  version: "0.37.1",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -12915,6 +12915,17 @@ var TOOLS = [
         top_k: { type: "number", default: 3 }
       },
       required: ["query"]
+    }
+  },
+  {
+    name: "list_skills",
+    description: "List the virtual skills installed on this captain. Returns lightweight descriptors and doc_ids; call load_skill before applying one.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        source_agent: { type: "string", description: "Optional provenance filter such as claude-code or codex." },
+        limit: { type: "number", default: 100 }
+      }
     }
   },
   {
@@ -13079,6 +13090,9 @@ async function dispatchTool(name, args, deps = defaultDispatchDeps()) {
         break;
       case "search_skill":
         result = await workerPost(workerBase, "/search/skill", args);
+        break;
+      case "list_skills":
+        result = await workerPost(workerBase, "/skills/list", args);
         break;
       case "recommend_skills":
         result = await workerPost(workerBase, "/skills/recommend", args);

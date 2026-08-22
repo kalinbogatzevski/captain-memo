@@ -162,7 +162,7 @@ one recall re-floats it. Rows that were ever drilled into, or explicitly anchore
 | `CAPTAIN_MEMO_REMEMBER_DIR` | `~/.claude/memory` | Where curated memories are written. |
 | `CAPTAIN_MEMO_TRANSCRIPTS_DIR` | `~/.claude/projects` | Where native session transcripts are read. |
 | `CAPTAIN_MEMO_WATCH_MEMORY` | unset | Glob of markdown files to index as the memory channel. |
-| `CAPTAIN_MEMO_WATCH_SKILLS` | unset | Glob of skill files to index as the skill channel. |
+| `CAPTAIN_MEMO_WATCH_SKILLS` | `auto` | Skill globs to index. Missing auto-discovers installed AI skills; explicitly empty opts out. |
 
 ### Worker runtime
 

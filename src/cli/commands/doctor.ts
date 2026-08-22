@@ -596,7 +596,7 @@ function checkConfig(): void {
   const provider = (content.match(/CAPTAIN_MEMO_SUMMARIZER_PROVIDER=(.+)/) ?? [])[1] ?? '?';
   const model = (content.match(/CAPTAIN_MEMO_SUMMARIZER_MODEL=(.+)/) ?? [])[1] ?? '?';
   const watch = (content.match(/CAPTAIN_MEMO_WATCH_MEMORY=(.+)/) ?? [])[1] ?? '(none)';
-  const skills = (content.match(/CAPTAIN_MEMO_WATCH_SKILLS=(.+)/) ?? [])[1] ?? '(none)';
+  const skills = (content.match(/CAPTAIN_MEMO_WATCH_SKILLS=(.*)/) ?? [])[1] ?? 'auto (default)';
   // worker.env is the CONFIGURED chain, not the live one. Say which entry is actually serving
   // whenever they disagree — a demotion makes `summarizer=codex,agy` a statement about intent.
   const live = liveSummarizer;

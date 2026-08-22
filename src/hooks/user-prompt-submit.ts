@@ -1,4 +1,4 @@
-import { readStdinJson, writeStdout, workerFetch, logHookError, logWorkerFailure, resolveProjectId } from './shared.ts';
+import { readStdinJson, writeStdout, workerFetch, logHookError, logWorkerFailure, resolveProjectId, isMainModule } from './shared.ts';
 import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS, DEFAULT_WORKER_PORT } from '../shared/paths.ts';
 import type { EnvelopePayload } from '../shared/types.ts';
 
@@ -80,9 +80,11 @@ export async function main(): Promise<void> {
   writeStdout(prompt);
 }
 
-if (import.meta.main) {
-  main().catch((err) => {
+if (isMainModule(import.meta)) {
+  try {
+    await main();
+  } catch (err) {
     logHookError('UserPromptSubmit', err);
     process.exit(0);
-  });
+  }
 }

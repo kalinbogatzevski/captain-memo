@@ -15,6 +15,12 @@ export interface AiSkillSource {
   glob: string;
 }
 
+/** Missing means the zero-config fleet repository is ON. An explicitly empty
+ * value remains the opt-out, so operators can still disable skill watching. */
+export function resolveSkillWatchSetting(value: string | undefined): string {
+  return value ?? 'auto';
+}
+
 /** Known user-level skill roots. Project roots and plugin caches stay opt-in:
  *  a global worker cannot infer which repositories/plugins the user wants to
  *  publish to every connected AI, and caches contain many duplicate versions. */

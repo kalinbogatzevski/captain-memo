@@ -4,7 +4,7 @@ import { classifyRoute } from '../../src/worker/route-class.ts';
 test('reads route to the pool', () => {
   for (const [m, p] of [
     ['POST', '/search/all'], ['POST', '/search/memory'], ['POST', '/search/skill'],
-    ['POST', '/search/observations'], ['POST', '/skills/recommend'], ['POST', '/get_full'], ['GET', '/observation/full'],
+    ['POST', '/search/observations'], ['POST', '/skills/list'], ['POST', '/skills/recommend'], ['POST', '/get_full'], ['GET', '/observation/full'],
     ['POST', '/inject/context'], ['GET', '/observations/recent'], ['GET', '/recall/list'],
   ] as const) {
     expect(classifyRoute(m, p)).toBe('read');

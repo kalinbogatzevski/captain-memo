@@ -1,4 +1,4 @@
-import { readStdinJson, workerFetch, summarize, resolveProjectId, logHookError, logWorkerFailure } from './shared.ts';
+import { readStdinJson, workerFetch, summarize, resolveProjectId, logHookError, logWorkerFailure, isMainModule } from './shared.ts';
 import type { RawObservationEvent } from '../shared/types.ts';
 import { detectBranchSync } from '../worker/branch.ts';
 import { detectOriginAgent } from '../shared/origin-agent.ts';
@@ -42,9 +42,11 @@ export async function main(): Promise<void> {
   logWorkerFailure('PreCompact', '/observation/enqueue', res);
 }
 
-if (import.meta.main) {
-  main().catch((err) => {
+if (isMainModule(import.meta)) {
+  try {
+    await main();
+  } catch (err) {
     logHookError('PreCompact', err);
     process.exit(0);
-  });
+  }
 }

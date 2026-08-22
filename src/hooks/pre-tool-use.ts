@@ -8,7 +8,7 @@
 // Fail-open contract (shared.ts): NEVER block an edit. workerFetch is bounded and never throws, every path
 // returns cleanly, and the only stdout is an advisory additionalContext note — never a deny. A worker outage,
 // bad payload, or timeout is a silent no-op.
-import { readStdinJson, workerFetch, writeStdout, resolveProjectId, logHookError, logWorkerFailure } from './shared.ts';
+import { readStdinJson, workerFetch, writeStdout, resolveProjectId, logHookError, logWorkerFailure, isMainModule } from './shared.ts';
 
 interface PreToolUsePayload {
   session_id?: string;
@@ -85,9 +85,11 @@ export async function main(): Promise<void> {
   writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: warning } }));
 }
 
-if (import.meta.main) {
-  main().catch((err) => {
+if (isMainModule(import.meta)) {
+  try {
+    await main();
+  } catch (err) {
     logHookError('PreToolUse', err);
     process.exit(0);
-  });
+  }
 }

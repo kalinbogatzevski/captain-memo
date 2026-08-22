@@ -1,5 +1,5 @@
 import chokidar, { type FSWatcher } from 'chokidar';
-import { dirname, basename, extname, join } from 'path';
+import { dirname, basename, join } from 'path';
 
 export type WatcherEvent = 'add' | 'change' | 'unlink';
 
@@ -13,6 +13,7 @@ export interface FileWatcherOptions {
 interface WatchTarget {
   dir: string;
   extFilter: string | null; // e.g. '.md', or null = watch all
+  exactFile: string | null; // e.g. 'SKILL.md'
 }
 
 /**
@@ -26,11 +27,16 @@ interface WatchTarget {
  */
 function resolveTargets(paths: string[]): WatchTarget[] {
   const targets: WatchTarget[] = [];
-  for (const p of paths) {
+  for (const rawPath of paths) {
+    // Bun.Glob patterns use forward slashes on every platform. `path.join()`
+    // produces backslashes on Windows, and leaving them intact makes both the
+    // wildcard-segment scan and Bun.Glob parse the pattern incorrectly.
+    const p = process.platform === 'win32' ? rawPath.replace(/\\/g, '/') : rawPath;
     const base = basename(p);
     const extFilter = base.startsWith('*')
       ? (base.replace(/^\*/, '') || null) // "*.md" → ".md"
-      : (extname(p) || null);
+      : null;
+    const exactFile = base.includes('*') ? null : base;
 
     const dir = dirname(p);
 
@@ -38,7 +44,7 @@ function resolveTargets(paths: string[]): WatchTarget[] {
     // already concrete — watch it directly. New files matching the extFilter
     // will fire on chokidar's `add` event even if the dir was empty at start.
     if (!dir.includes('*')) {
-      targets.push({ dir, extFilter });
+      targets.push({ dir, extFilter, exactFile });
       continue;
     }
 
@@ -68,19 +74,19 @@ function resolveTargets(paths: string[]): WatchTarget[] {
         dirs.add(dirname(join(root, rel)));
       }
     } catch (err) {
-      console.error(`[FileWatcher] glob expansion failed for ${p}:`, err);
+      console.error(`[FileWatcher] glob expansion failed for ${rawPath}:`, err);
       continue;
     }
 
     if (dirs.size === 0) {
       console.error(
-        `[FileWatcher] glob ${p} matched no files at startup — ` +
+        `[FileWatcher] glob ${rawPath} matched no files at startup — ` +
         `nothing to watch yet (will need a worker restart once files exist)`,
       );
       continue;
     }
 
-    for (const d of dirs) targets.push({ dir: d, extFilter });
+    for (const d of dirs) targets.push({ dir: d, extFilter, exactFile });
   }
   return targets;
 }
@@ -104,9 +110,12 @@ export class FileWatcher {
     const extFilters = targets
       .map(t => t.extFilter)
       .filter((e): e is string => e !== null);
-    const hasFilter = extFilters.length > 0;
+    const exactFiles = targets
+      .map(t => t.exactFile)
+      .filter((name): name is string => name !== null);
+    const hasFilter = extFilters.length > 0 || exactFiles.length > 0;
     const matchesFilter = (p: string) =>
-      !hasFilter || extFilters.some(ext => p.endsWith(ext));
+      !hasFilter || exactFiles.includes(basename(p)) || extFilters.some(ext => p.endsWith(ext));
 
     this.watcher = chokidar.watch(dirs, {
       ignoreInitial: false,

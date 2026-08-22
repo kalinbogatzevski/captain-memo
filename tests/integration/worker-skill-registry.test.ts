@@ -26,6 +26,7 @@ beforeAll(async () => {
   mkdirSync(skillDir, { recursive: true });
   skillPath = join(skillDir, 'SKILL.md');
   writeFileSync(skillPath, `---\nname: release\ndescription: Safely publish a moonbeam package\n---\n\n# Release\n\nVerify the moonbeam checksum.\n`);
+  writeFileSync(join(skillDir, 'NOTES.md'), '# Companion notes are not a skill\n');
   worker = await startWorker({
     port: 0, projectId: 'skill-test', metaDbPath: ':memory:',
     embedderEndpoint: 'http://localhost:0/unused', embedderModel: 'voyage-4-nano',
@@ -50,6 +51,17 @@ test('skill registry recommends, loads full instructions, and follows CLI update
     return body.skills[0] ?? null;
   });
   expect(first.description).toContain('Safely publish');
+
+  const listed = await fetch(`http://localhost:${port}/skills/list`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source_agent: 'codex', limit: 10 }),
+  }).then((res) => res.json()) as {
+    count: number;
+    skills: Array<{ name: string; source_agent: string; doc_id: string }>;
+  };
+  expect(listed.count).toBe(1);
+  expect(listed.skills[0]).toMatchObject({ name: 'release', source_agent: 'codex' });
+  expect(listed.skills[0]!.doc_id).toStartWith('skill:');
 
   const loaded = await fetch(`http://localhost:${port}/get_full`, {
     method: 'POST', headers: { 'content-type': 'application/json' },

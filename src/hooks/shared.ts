@@ -11,12 +11,29 @@
 
 import { appendFileSync, mkdirSync, statSync, renameSync, existsSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, resolve } from 'path';
+import { fileURLToPath } from 'url';
 import { DEFAULT_WORKER_PORT } from '../shared/paths.ts';
 
 const HOOK_LOG_DIR = join(homedir(), '.captain-memo', 'logs');
 const HOOK_LOG_FILE = join(HOOK_LOG_DIR, 'hook.log');
 const HOOK_LOG_ROTATE_BYTES = 10 * 1024 * 1024; // 10 MB
+
+/** True when a hook module was executed directly, including Bun on Windows. */
+export function isMainModule(meta: ImportMeta): boolean {
+  if (meta.main) return true;
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    const actual = resolve(entry);
+    const expected = resolve(fileURLToPath(meta.url));
+    return process.platform === 'win32'
+      ? actual.toLowerCase() === expected.toLowerCase()
+      : actual === expected;
+  } catch {
+    return false;
+  }
+}
 
 function rotateIfNeeded(): void {
   try {

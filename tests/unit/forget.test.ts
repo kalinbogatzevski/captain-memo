@@ -70,6 +70,14 @@ test('findDocumentsByBasename: finds the document by its file name', () => {
   expect(hits[0]!.source_path).toBe('/memories/reference_alpha.md');
 });
 
+test('findDocumentsByBasename: finds a stored Windows path', () => {
+  const m = store();
+  add(m, 'C:\\Users\\captain\\memory\\reference_alpha.md');
+  const hits = m.findDocumentsByBasename('reference_alpha.md');
+  expect(hits).toHaveLength(1);
+  expect(hits[0]!.source_path).toBe('C:\\Users\\captain\\memory\\reference_alpha.md');
+});
+
 test('findDocumentsByBasename: underscore is escaped, not treated as a wildcard', () => {
   const m = store();
   add(m, '/memories/reference_alpha.md');

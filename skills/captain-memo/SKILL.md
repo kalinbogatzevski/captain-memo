@@ -28,6 +28,8 @@ It is local-first: the corpus lives on this machine, not in a vendor cloud.
 - **`search_memory`** — curated user/project memory files.
 - **`get_full`** — open the full content of a hit by its `doc_id`. Search returns *truncated snippets*;
   when a hit looks relevant, drill in with `get_full` before relying on it.
+- **`list_skills`** — browse the synchronized virtual skill catalog (optionally by source AI), then
+  use `load_skill` with a returned `doc_id` when one is relevant.
 - **`recommend_skills`** — ask Captain Memo which installed Agent Skills fit the current task. It
   returns descriptions and provenance only; call it when a specialized workflow could help.
 - **`load_skill`** — load one recommended skill's complete instructions using its `doc_id`, then

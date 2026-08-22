@@ -55,7 +55,7 @@ export async function configCommand(args: string[]): Promise<number> {
     `promote_max_per_run   ${process.env.CAPTAIN_MEMO_PROMOTE_MAX_PER_RUN ?? DEFAULT_PROMOTE_MAX_PER_RUN}`,
     `remember_dedup_threshold ${process.env.CAPTAIN_MEMO_REMEMBER_DEDUP_THRESHOLD ?? DEFAULT_REMEMBER_DEDUP_THRESHOLD}`,
     `watch_memory          ${process.env.CAPTAIN_MEMO_WATCH_MEMORY ?? '(unset)'}`,
-    `watch_skills          ${process.env.CAPTAIN_MEMO_WATCH_SKILLS ?? '(unset)'}`,
+    `watch_skills          ${process.env.CAPTAIN_MEMO_WATCH_SKILLS ?? 'auto (default)'}`,
     `capture_tick_ms       ${process.env.CAPTAIN_MEMO_CAPTURE_TICK_MS ?? '60000 (default)'}`,
     `capture_opt_outs      ${['codex', 'agy', 'gemini', 'kimi', 'opencode'].filter(t => process.env[`CAPTAIN_MEMO_CAPTURE_${t.toUpperCase()}`] === '0').join(',') || '(none — all sources on where detected)'}`,
   ];

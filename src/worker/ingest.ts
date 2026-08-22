@@ -59,6 +59,14 @@ export class IngestPipeline {
   }
 
   async indexFile(filePath: string, channel: ChannelType): Promise<void> {
+    // The virtual skill registry only accepts canonical Agent Skill entry
+    // files. This is a second structural gate behind discovery/watcher filters:
+    // companion docs, transcripts and credentials beside a skill cannot be
+    // imported merely because an event source hands us their path.
+    if (channel === 'skill' && basename(filePath) !== 'SKILL.md') {
+      await this.deleteFile(filePath); // also removes rows imported by older watcher behavior
+      return;
+    }
     const content = readFileSync(filePath, 'utf-8');
     const sha = sha256Hex(content);
     const stat = statSync(filePath);

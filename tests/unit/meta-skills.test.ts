@@ -15,6 +15,8 @@ test('MetaStore keeps skills as first-class rows and cascades document deletion'
   });
   expect(meta.getSkillByRef('codex:review:abc')?.description).toBe('Review code');
   expect(meta.listSkills()).toHaveLength(1);
+  expect(meta.listSkills(100, 'codex')).toHaveLength(1);
+  expect(meta.listSkills(100, 'claude-code')).toHaveLength(0);
   meta.deleteDocument('/h/.agents/skills/review/SKILL.md');
   expect(meta.listSkills()).toHaveLength(0);
   meta.close();

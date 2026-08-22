@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { readStdinJson, writeStdout, workerFetch, logHookError, workerFailureMessage } from './shared.ts';
+import { readStdinJson, writeStdout, workerFetch, logHookError, workerFailureMessage, isMainModule } from './shared.ts';
 import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS, DEFAULT_WORKER_PORT, DATA_DIR } from '../shared/paths.ts';
 import { VERSION } from '../shared/version.ts';
 import { consumeUpgradeNotice, formatAutoUpdateBanner, formatRollbackBanner, writeMarker } from '../shared/self-update.ts';
@@ -320,9 +320,11 @@ export async function main(): Promise<void> {
   }
 }
 
-if (import.meta.main) {
-  main().catch((err) => {
+if (isMainModule(import.meta)) {
+  try {
+    await main();
+  } catch (err) {
     logHookError('SessionStart', err);
     process.exit(0);
-  });
+  }
 }

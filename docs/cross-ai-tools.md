@@ -31,7 +31,7 @@ transcripts to the same `~/.codex/sessions/`, so `connect codex` wires and obser
 
 It's two pieces per tool:
 
-1. **Register the MCP server** → the tool gets memory recall, `recommend_skills` / `load_skill`,
+1. **Register the MCP server** → the tool gets memory recall, `list_skills` / `recommend_skills` / `load_skill`,
    and the work-coordination tools `work_set`/`work_active`/`work_clear`. The MCP server is a
    thin stdio bridge that talks to your running worker on `http://localhost:39888`, so every tool reuses
    the **same worker and corpus** — nothing is duplicated.
@@ -42,6 +42,10 @@ Captain Memo imports each discovered `SKILL.md` losslessly into a first-class SQ
 also indexing searchable chunks. The row keeps its CLI provenance, content hash, and portability
 warnings. Because it lives in `meta.sqlite3`, ordinary backup/restore includes it automatically;
 merge-import of two corpora remains a separate, future operation.
+
+Humans can browse the same repository with `captain-memo skill list` (or add `--source codex` and
+`--json`). Connected AIs call `list_skills` for the local catalog, then `load_skill` with a returned
+`doc_id`; `recommend_skills` is the task-ranked route when browsing everything would be wasteful.
 
 This is also a project milestone: it is the first Captain Memo feature built with Codex rather than
 Claude, with Captain Memo's shared memory supplying the accumulated architecture, decisions,

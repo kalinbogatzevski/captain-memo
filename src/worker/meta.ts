@@ -300,8 +300,10 @@ export class MetaStore {
     return row ? this.decodeSkill(row) : null;
   }
 
-  listSkills(limit = 100): SkillRecord[] {
-    const rows = this.db.query('SELECT * FROM skills ORDER BY name, source_agent LIMIT ?').all(limit) as
+  listSkills(limit = 100, sourceAgent?: string): SkillRecord[] {
+    const rows = (sourceAgent
+      ? this.db.query('SELECT * FROM skills WHERE source_agent = ? ORDER BY name, source_agent LIMIT ?').all(sourceAgent, limit)
+      : this.db.query('SELECT * FROM skills ORDER BY name, source_agent LIMIT ?').all(limit)) as
       Array<Omit<SkillRecord, 'frontmatter' | 'warnings'> & { frontmatter: string; warnings: string }>;
     return rows.map((row) => this.decodeSkill(row));
   }
@@ -325,9 +327,11 @@ export class MetaStore {
    *  delete would take the wrong file. */
   findDocumentsByBasename(basename: string, channel?: ChannelType): Document[] {
     const escaped = basename.replace(/[\\%_]/g, (c) => '\\' + c);
-    const sql = 'SELECT * FROM documents WHERE (source_path = ? OR source_path LIKE ? ESCAPE \'\\\')'
+    const sql = 'SELECT * FROM documents WHERE (source_path = ? OR source_path LIKE ? ESCAPE \'\\\' OR source_path LIKE ? ESCAPE \'\\\')'
       + (channel ? ' AND channel = ?' : '');
-    const params: string[] = [basename, '%/' + escaped];
+    // Match both POSIX and Windows separators. With `\\` as LIKE's escape,
+    // two backslashes in the bound pattern represent one literal separator.
+    const params: string[] = [basename, '%/' + escaped, '%\\\\' + escaped];
     if (channel) params.push(channel);
     const rows = this.db.query(sql).all(...params) as Array<Omit<Document, 'metadata'> & { metadata: string }>;
     return rows.map((r) => ({ ...r, metadata: JSON.parse(r.metadata) }));
