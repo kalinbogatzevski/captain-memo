@@ -5,6 +5,35 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [0.37.0] — 2026-08-22
+
+### Added
+
+- **Captain Memo is now a synchronized cross-AI skill repository.** The worker discovers user-level
+  `SKILL.md` files from Claude Code, Codex, Gemini CLI, Cursor, OpenCode, and supported fleet tools,
+  then stores each document losslessly in `meta.sqlite3` with its parsed instructions, source CLI,
+  content hash, and portability warnings. The same watchers that keep memory current now update or
+  delete skill rows as their native files change; `CAPTAIN_MEMO_WATCH_SKILLS=auto` enables the
+  standard roots without replacing explicitly configured memory paths.
+
+- **Two MCP tools make those skills reusable by every connected AI.** `recommend_skills` returns
+  lightweight task-matched descriptors, and `load_skill` retrieves the selected skill's complete
+  advisory instructions. Imported instructions remain data: they never outrank system, user,
+  repository, or a CLI's native skill rules.
+
+### Changed
+
+- **Backup/restore now carries the skill registry with the rest of Captain Memo's SQLite state.**
+  Backup manifests and `backup info` report skill rows, so exported corpora retain the repository
+  without inventing a separate skill archive format.
+
+### Milestone
+
+- **This is the first Captain Memo feature built with Codex rather than Claude, using Captain Memo
+  itself throughout.** Shared memory supplied the accumulated architecture, prior decisions,
+  conventions, and two-channel release process, so the maintainer did not have to explain them
+  again—the continuity this feature extends is the continuity that made it possible.
+
 ## [0.35.3] — 2026-08-15
 
 ### Fixed

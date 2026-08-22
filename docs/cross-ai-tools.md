@@ -43,6 +43,10 @@ also indexing searchable chunks. The row keeps its CLI provenance, content hash,
 warnings. Because it lives in `meta.sqlite3`, ordinary backup/restore includes it automatically;
 merge-import of two corpora remains a separate, future operation.
 
+This is also a project milestone: it is the first Captain Memo feature built with Codex rather than
+Claude, with Captain Memo's shared memory supplying the accumulated architecture, decisions,
+conventions, and release process instead of requiring the maintainer to explain them again.
+
 The MCP tools are **read-only/recall** (search + drill). Capture is automatic where the tool has
 lifecycle hooks (Claude Code today); other tools recall the shared memory that Claude Code and the
 session hooks write.

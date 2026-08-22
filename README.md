@@ -380,6 +380,11 @@ These fire when the model decides retrieval would help your prompt — no slash 
 | `work_active` | Coordination board: list live claims, and which overlap yours |
 | `work_clear` | Coordination board: drop your claim early (task done) |
 
+> **Project milestone:** the synchronized skill repository is Captain Memo's first feature built
+> with Codex rather than Claude, using Captain Memo's own shared memory throughout. The prior
+> architecture, decisions, conventions, and release rules were recalled from the corpus instead of
+> being re-explained by the maintainer.
+
 ## CLI commands (any terminal)
 
 ```bash
