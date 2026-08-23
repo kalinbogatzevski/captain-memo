@@ -183,7 +183,7 @@ export function formatEnvelope(opts: FormatEnvelopeOptions): FormatEnvelopeResul
 
   // Group by channel, preserving relative score order within each.
   const byChannel: Record<ChannelType, EnvelopeHit[]> = {
-    memory: [], skill: [], observation: [], remote: [],
+    memory: [], skill: [], capability: [], observation: [], remote: [],
   };
   for (const h of hits) {
     if (h.metadata.inbox === true) continue;

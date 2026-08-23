@@ -34,6 +34,27 @@ CREATE TABLE IF NOT EXISTS skills (
 CREATE INDEX IF NOT EXISTS idx_skills_id ON skills(skill_id);
 CREATE INDEX IF NOT EXISTS idx_skills_source_agent ON skills(source_agent);
 
+CREATE TABLE IF NOT EXISTS capabilities (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  document_id INTEGER NOT NULL UNIQUE REFERENCES documents(id) ON DELETE CASCADE,
+  capability_ref TEXT NOT NULL UNIQUE,
+  capability_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  version TEXT NOT NULL DEFAULT '',
+  source_path TEXT NOT NULL UNIQUE,
+  source_agent TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  operations TEXT NOT NULL DEFAULT '[]',
+  interfaces TEXT NOT NULL DEFAULT '[]',
+  content_sha TEXT NOT NULL,
+  warnings TEXT NOT NULL DEFAULT '[]',
+  imported_at_epoch INTEGER NOT NULL,
+  updated_at_epoch INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_capabilities_id ON capabilities(capability_id);
+CREATE INDEX IF NOT EXISTS idx_capabilities_source_agent ON capabilities(source_agent);
+
 CREATE TABLE IF NOT EXISTS chunks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
@@ -126,6 +147,27 @@ export interface SkillRecord {
 }
 
 export type UpsertSkillInput = Omit<SkillRecord, 'id' | 'imported_at_epoch' | 'updated_at_epoch'>;
+
+export interface CapabilityRecord {
+  id: number;
+  document_id: number;
+  capability_ref: string;
+  capability_id: string;
+  name: string;
+  description: string;
+  version: string;
+  source_path: string;
+  source_agent: string;
+  provider: string;
+  operations: string[];
+  interfaces: string[];
+  content_sha: string;
+  warnings: string[];
+  imported_at_epoch: number;
+  updated_at_epoch: number;
+}
+
+export type UpsertCapabilityInput = Omit<CapabilityRecord, 'id' | 'imported_at_epoch' | 'updated_at_epoch'>;
 
 export interface KeywordHit {
   chunk_id: string;
@@ -306,6 +348,81 @@ export class MetaStore {
       : this.db.query('SELECT * FROM skills ORDER BY name, source_agent LIMIT ?').all(limit)) as
       Array<Omit<SkillRecord, 'frontmatter' | 'warnings'> & { frontmatter: string; warnings: string }>;
     return rows.map((row) => this.decodeSkill(row));
+  }
+
+  upsertCapability(input: UpsertCapabilityInput): void {
+    const now = Math.floor(Date.now() / 1000);
+    this.db.query(
+      `INSERT INTO capabilities (
+         document_id, capability_ref, capability_id, name, description, version,
+         source_path, source_agent, provider, operations, interfaces, content_sha,
+         warnings, imported_at_epoch, updated_at_epoch
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(source_path) DO UPDATE SET
+         document_id = excluded.document_id,
+         capability_ref = excluded.capability_ref,
+         capability_id = excluded.capability_id,
+         name = excluded.name,
+         description = excluded.description,
+         version = excluded.version,
+         source_agent = excluded.source_agent,
+         provider = excluded.provider,
+         operations = excluded.operations,
+         interfaces = excluded.interfaces,
+         content_sha = excluded.content_sha,
+         warnings = excluded.warnings,
+         updated_at_epoch = excluded.updated_at_epoch`,
+    ).run(
+      input.document_id, input.capability_ref, input.capability_id, input.name,
+      input.description, input.version, input.source_path, input.source_agent,
+      input.provider, JSON.stringify(input.operations), JSON.stringify(input.interfaces),
+      input.content_sha, JSON.stringify(input.warnings), now, now,
+    );
+  }
+
+  private decodeCapability(row: Omit<CapabilityRecord, 'operations' | 'interfaces' | 'warnings'> & {
+    operations: string; interfaces: string; warnings: string;
+  }): CapabilityRecord {
+    return {
+      ...row,
+      operations: JSON.parse(row.operations),
+      interfaces: JSON.parse(row.interfaces),
+      warnings: JSON.parse(row.warnings),
+    };
+  }
+
+  getCapabilityBySourcePath(sourcePath: string): CapabilityRecord | null {
+    const row = this.db.query('SELECT * FROM capabilities WHERE source_path = ?').get(sourcePath) as
+      | (Omit<CapabilityRecord, 'operations' | 'interfaces' | 'warnings'> & { operations: string; interfaces: string; warnings: string })
+      | undefined;
+    return row ? this.decodeCapability(row) : null;
+  }
+
+  getCapabilityByDocumentId(documentId: number): CapabilityRecord | null {
+    const row = this.db.query('SELECT * FROM capabilities WHERE document_id = ?').get(documentId) as
+      | (Omit<CapabilityRecord, 'operations' | 'interfaces' | 'warnings'> & { operations: string; interfaces: string; warnings: string })
+      | undefined;
+    return row ? this.decodeCapability(row) : null;
+  }
+
+  getCapabilityByRef(capabilityRef: string): CapabilityRecord | null {
+    const row = this.db.query('SELECT * FROM capabilities WHERE capability_ref = ?').get(capabilityRef) as
+      | (Omit<CapabilityRecord, 'operations' | 'interfaces' | 'warnings'> & { operations: string; interfaces: string; warnings: string })
+      | undefined;
+    return row ? this.decodeCapability(row) : null;
+  }
+
+  listCapabilities(limit = 100, sourceAgent?: string, provider?: string): CapabilityRecord[] {
+    const rows = (sourceAgent && provider
+      ? this.db.query('SELECT * FROM capabilities WHERE source_agent = ? AND provider = ? ORDER BY name, source_agent LIMIT ?').all(sourceAgent, provider, limit)
+      : sourceAgent
+        ? this.db.query('SELECT * FROM capabilities WHERE source_agent = ? ORDER BY name, source_agent LIMIT ?').all(sourceAgent, limit)
+        : provider
+          ? this.db.query('SELECT * FROM capabilities WHERE provider = ? ORDER BY name, source_agent LIMIT ?').all(provider, limit)
+          : this.db.query('SELECT * FROM capabilities ORDER BY name, source_agent LIMIT ?').all(limit)) as Array<
+        Omit<CapabilityRecord, 'operations' | 'interfaces' | 'warnings'> & { operations: string; interfaces: string; warnings: string }
+      >;
+    return rows.map(row => this.decodeCapability(row));
   }
 
   /** Documents whose FILE NAME matches, optionally within one channel. The identifier a user holds

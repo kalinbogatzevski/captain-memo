@@ -42,6 +42,7 @@ So I sat down to build that "something different" for myself, and ended up with 
 - **Cross-AI — one corpus, many tools.** Claude Code, Codex, Gemini CLI, Antigravity (`agy`, the Gemini-CLI successor), goose, Cursor, opencode, Mistral Vibe, Kimi CLI, VS Code (Copilot), and JetBrains (AI Assistant) all share the same local memory through Captain Memo's MCP server + a portable skill. `captain-memo install` (or `captain-memo connect`) auto-detects the AI tools on your machine and wires each one — no manual setup. Verified live: Codex *and* Gemini CLI recalling an observation Claude Code captured, from the same worker; the rest are supported via their standard MCP config (JetBrains is IDE-only config, so `connect` drops a paste-ready snippet instead of auto-wiring). See [docs/cross-ai-tools.md](docs/cross-ai-tools.md).
 - **Auto-discovered memory — every assistant, not just Claude.** `CAPTAIN_MEMO_WATCH_MEMORY=auto` (the install default) probes the machine and indexes whichever AI memory files actually exist: `~/.claude/CLAUDE.md`, per-project Claude memories, `~/.codex/`, `~/.gemini/`, `~/.cursor/rules/`, repo-level `AGENTS.md` / `CLAUDE.md` / `.github/copilot-instructions.md`. Each doc is tagged with the `tool` it came from. Composes with your own globs (`auto,/my/notes/*.md`). Credentials and session logs are structurally unindexable — every discovery glob must end in `.md`/`.mdc`, which is enforced by a test, not a blocklist.
 - **Virtual Skills — one synchronized skill repository for every AI.** Captain Memo mirrors the user-level `SKILL.md` files installed for Claude Code, Codex, Gemini, Cursor, opencode, Vibe, Kimi and more into its local SQLite corpus, preserving complete instructions, provenance, hashes and portability warnings. Discovery is **AUTO when `CAPTAIN_MEMO_WATCH_SKILLS` is missing**; set it to an explicitly empty value to opt out. Native files remain canonical and edits/deletions synchronize live. Humans can browse with `captain-memo skill list`; connected assistants use `list_skills`, `recommend_skills` and `load_skill`. Imported instructions remain advisory, and the existing backup/restore path carries the repository with the rest of Captain Memo.
+- **Virtual Capabilities — the fleet knows where work can actually run.** Captain Memo auto-discovers installed Gemini/Agy extensions plus Claude and Codex plugins, then stores a sanitized descriptor in the same SQLite corpus: name, description, version, operation names, interface names, and owning runtime. It never imports command bodies, executable configuration, environment values, or credentials. Use `captain-memo capability list`, `capability recommend`, or the `list_capabilities` / `recommend_capabilities` / `get_capability` MCP tools. A result says “delegate this to Gemini on this captain,” not “pretend this plugin runs in every CLI.” Missing `CAPTAIN_MEMO_WATCH_CAPABILITIES` means **AUTO**; explicitly empty opts out.
 - **Hybrid search.** Voyage embeddings (default) + SQLite FTS5 keyword index, fused by weighted cosine + BM25 scoring (RRF still available via the `legacy` rank profile), with a recency-aware re-rank on observations. Multilingual (BG/EN/etc.) — your non-English memory is searchable too.
 - **Six summarizer providers**, picked at install time — *three of them need no API key at all*:
   - `claude-oauth` *(default)* — direct Anthropic API using the OAuth token Claude Code already stored. No API key. ~700 ms/call. Just works on a Max plan.
@@ -360,7 +361,7 @@ After install + a full Claude Code restart, the plugin exposes two layers to eve
 /captain-memo:doctor              # health probe inline in chat
 ```
 
-### 15 MCP tools the model calls automatically
+### 18 MCP tools the model calls automatically
 
 These fire when the model decides retrieval would help your prompt — no slash command required. List them anytime with `/mcp`:
 
@@ -373,6 +374,9 @@ These fire when the model decides retrieval would help your prompt — no slash 
 | `list_skills` | List synchronized virtual skills, optionally filtered by source AI |
 | `recommend_skills` | Recommend installed cross-AI skills for a task (descriptors first) |
 | `load_skill` | Load one recommended skill's complete advisory instructions |
+| `list_capabilities` | List sanitized installed plugin/extension capabilities and their owning runtimes |
+| `recommend_capabilities` | Find a runtime-owned capability for a task |
+| `get_capability` | Get one capability descriptor and delegation route |
 | `search_observations` | Past session observations (filter: type, files, since) |
 | `get_full` | Full content of a hit by `doc_id` |
 | `reindex` | Trigger re-embed |
@@ -703,7 +707,7 @@ Schema migrations:
 | **Worker** (`:39888`) | Long-lived HTTP daemon. Owns the SQLite + sqlite-vec stores, file watcher, observation queue, summarizer + embedder wiring. |
 | **Embedder** | Pluggable: hosted Voyage API (default), local voyage-4-nano sidecar (`:8124`), or any OpenAI-compatible `/v1/embeddings` endpoint. |
 | **Summarizer** | Pluggable: Claude Max via OAuth (default, no API key), Anthropic API, `claude -p` subprocess, or any OpenAI-compatible `/v1/chat/completions`. |
-| **MCP server** (stdio) | Exposes 15 tools, including memory recall plus `list_skills` / `recommend_skills` / `load_skill` for the synchronized skill registry. |
+| **MCP server** (stdio) | Exposes 18 tools, including virtual skills plus `list_capabilities` / `recommend_capabilities` / `get_capability` for runtime-aware plugin routing. |
 | **Six hooks** | `SessionStart` (corpus banner), `UserPromptSubmit` (inject memory envelope, ≤1.5 s budget), `PreToolUse` (work-board claim + overlap/git warning, advisory only), `PostToolUse` (queue tool-use events), `Stop` (drain → summarize → index), `PreCompact` (capture before context compaction). |
 | **CLI** | The commands above. |
 

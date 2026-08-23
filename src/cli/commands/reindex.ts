@@ -12,7 +12,7 @@ const WORKER_SERVICE = 'captain-memo-worker';
 interface ReindexResult { indexed: number; skipped: number; errors: number }
 
 export async function reindexCommand(args: string[]): Promise<number> {
-  let channel: 'memory' | 'skill' | 'observation' | 'all' = 'all';
+  let channel: 'memory' | 'skill' | 'capability' | 'observation' | 'all' = 'all';
   let force = false;
   let redim: number | undefined;
 
@@ -20,7 +20,7 @@ export async function reindexCommand(args: string[]): Promise<number> {
     const arg = args[i];
     if (arg === '--channel') {
       const next = args[++i];
-      if (!next || !['memory', 'skill', 'observation', 'all'].includes(next)) {
+      if (!next || !['memory', 'skill', 'capability', 'observation', 'all'].includes(next)) {
         console.error(`Invalid --channel value: ${next ?? '(missing)'}`);
         return 2;
       }

@@ -126,6 +126,40 @@ export const TOOLS = [
     },
   },
   {
+    name: 'list_capabilities',
+    description: 'List sanitized plugin/extension capabilities installed on this captain, including the runtime that can execute each one.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source_agent: { type: 'string', description: 'Optional owning runtime filter such as gemini, claude-code, codex, or agy.' },
+        provider: { type: 'string', description: 'Optional manifest kind filter.' },
+        limit: { type: 'number', default: 100 },
+      },
+    },
+  },
+  {
+    name: 'recommend_capabilities',
+    description: 'Find installed plugin/extension capabilities for a task. Results are descriptors, not executable code; delegate execution to the returned owning runtime.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task: { type: 'string' },
+        source_agent: { type: 'string' },
+        provider: { type: 'string' },
+        top_k: { type: 'number', default: 5 },
+      },
+      required: ['task'],
+    },
+  },
+  {
+    name: 'get_capability',
+    description: 'Get one sanitized capability descriptor and its execution-routing metadata by capability_ref or doc_id.',
+    inputSchema: {
+      type: 'object',
+      properties: { capability_ref: { type: 'string' }, doc_id: { type: 'string' } },
+    },
+  },
+  {
     name: 'search_observations',
     description: 'Search across captured session observations.',
     inputSchema: {
@@ -147,7 +181,7 @@ export const TOOLS = [
       type: 'object',
       properties: {
         query: { type: 'string' },
-        channels: { type: 'array', items: { type: 'string', enum: ['memory', 'skill', 'observation', 'remote'] } },
+        channels: { type: 'array', items: { type: 'string', enum: ['memory', 'skill', 'capability', 'observation', 'remote'] } },
         top_k: { type: 'number', default: 10 },
       },
       required: ['query'],
@@ -168,7 +202,7 @@ export const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        channel: { type: 'string', enum: ['memory', 'skill', 'observation', 'all'], default: 'all' },
+        channel: { type: 'string', enum: ['memory', 'skill', 'capability', 'observation', 'all'], default: 'all' },
         force: { type: 'boolean', default: false },
       },
     },
@@ -319,6 +353,9 @@ export async function dispatchTool(
       case 'list_skills':         result = await workerPost(workerBase, '/skills/list', args); break;
       case 'recommend_skills':    result = await workerPost(workerBase, '/skills/recommend', args); break;
       case 'load_skill':          result = await workerPost(workerBase, '/get_full', args); break;
+      case 'list_capabilities':   result = await workerPost(workerBase, '/capabilities/list', args); break;
+      case 'recommend_capabilities': result = await workerPost(workerBase, '/capabilities/recommend', args); break;
+      case 'get_capability':      result = await workerPost(workerBase, '/capabilities/get', args); break;
       case 'search_observations': result = await workerPost(workerBase, '/search/observations', args); break;
       case 'search_all':          result = await workerPost(workerBase, '/search/all', args); break;
       case 'get_full':            result = await workerPost(workerBase, '/get_full', args); break;

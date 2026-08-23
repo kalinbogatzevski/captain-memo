@@ -5,6 +5,18 @@ All notable changes to captain-memo are documented here. The format follows
 semantic-ish versioning while pre-1.0. Full notes for each release live on the
 [GitHub releases page](https://github.com/kalinbogatzevski/captain-memo/releases).
 
+## [Unreleased]
+
+## [0.38.0] — 2026-08-23
+
+### Added
+
+- **Virtual Capabilities publish what each AI runtime can actually execute.** Captain Memo now
+  auto-discovers Gemini/Agy extensions plus Claude and Codex plugins, stores only sanitized
+  descriptors in its normal backup-ready SQLite corpus, and exposes CLI/MCP list, recommend, and
+  detail flows. Command bodies, executable configuration, environment values, and credentials are
+  never imported; recommendations explicitly route execution to the owning runtime.
+
 ## [0.37.1] — 2026-08-23
 
 ### Added

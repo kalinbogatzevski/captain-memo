@@ -20,6 +20,7 @@ import { writeMemory, type WriteMemoryDeps, type RememberInput } from './memory-
 import { discoverMemoryGlobs } from '../shared/ai-memory-sources.ts';
 import { FileWatcher } from './watcher.ts';
 import { discoverSkillGlobs, resolveSkillWatchSetting } from '../shared/ai-skill-sources.ts';
+import { discoverCapabilityGlobs, resolveCapabilityWatchSetting } from '../shared/ai-capability-sources.ts';
 import { ObservationQueue } from './observation-queue.ts';
 import { ObservationsStore } from './observations-store.ts';
 import type { RecallQuery, RecallView, RecallSort } from './observations-store.ts';
@@ -163,10 +164,10 @@ export interface WorkerOptions {
   embeddingDimension: number;
   skipEmbed?: boolean;
   watchPaths?: string[];
-  watchChannel?: 'memory' | 'skill';
+  watchChannel?: 'memory' | 'skill' | 'capability';
   /** Multiple file channels can be synchronized by one worker. The legacy
    * watchPaths/watchChannel pair remains supported for embedded callers. */
-  watchSources?: Array<{ paths: string[]; channel: 'memory' | 'skill' }>;
+  watchSources?: Array<{ paths: string[]; channel: 'memory' | 'skill' | 'capability' }>;
   observationQueueDbPath?: string;
   observationsDbPath?: string;
   pendingEmbedDbPath?: string;
@@ -233,7 +234,7 @@ export interface WorkerHandle {
 const SearchRequestSchema = z.object({
   query: z.string(),
   top_k: z.number().int().positive().max(50).default(5),
-  channels: z.array(z.enum(['memory', 'skill', 'observation'])).optional(),
+  channels: z.array(z.enum(['memory', 'skill', 'capability', 'observation'])).optional(),
   rank_profile: z.enum(['legacy', 'v2']).optional(),
 });
 
@@ -263,6 +264,24 @@ const ListSkillsSchema = z.object({
   source_agent: z.string().min(1).optional(),
 });
 
+const RecommendCapabilitiesSchema = z.object({
+  task: z.string().min(1),
+  top_k: z.number().int().positive().max(20).default(5),
+  source_agent: z.string().optional(),
+  provider: z.string().optional(),
+});
+
+const ListCapabilitiesSchema = z.object({
+  limit: z.number().int().positive().max(500).default(100),
+  source_agent: z.string().min(1).optional(),
+  provider: z.string().min(1).optional(),
+});
+
+const GetCapabilitySchema = z.object({
+  capability_ref: z.string().min(1).optional(),
+  doc_id: z.string().min(1).optional(),
+}).refine(value => value.capability_ref || value.doc_id, 'capability_ref or doc_id is required');
+
 const ObservationSearchSchema = z.object({
   query: z.string(),
   type: z.enum(['bugfix', 'feature', 'refactor', 'discovery', 'decision', 'change']).optional(),
@@ -275,7 +294,7 @@ const ObservationSearchSchema = z.object({
 
 const GetFullSchema = z.object({ doc_id: z.string() });
 const ReindexSchema = z.object({
-  channel: z.enum(['memory', 'skill', 'observation', 'all']).default('all'),
+  channel: z.enum(['memory', 'skill', 'capability', 'observation', 'all']).default('all'),
   force: z.boolean().default(false),
 });
 
@@ -541,6 +560,13 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   const expandWatchPaths = async (patterns: string[]): Promise<string[]> => {
     const out: string[] = [];
     for (const pattern of patterns) {
+      // Bun.Glob.scan() does not yield a literal absolute file path. Capability
+      // discovery intentionally returns exact paths for Claude's ACTIVE plugin
+      // inventory, so admit those directly instead of broad-scanning its cache.
+      if (![...pattern].some(char => '*?[]{}'.includes(char)) && existsSync(pattern)) {
+        out.push(pattern);
+        continue;
+      }
       const glob = new Bun.Glob(pattern);
       // dot:true — repo-level rules live in HIDDEN dirs (.claude/, .github/, .cursor/).
       // Without it `~/projects/*/.claude/CLAUDE.md` silently matches ZERO files.
@@ -1964,7 +1990,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 
   const searchByChannel = async (
     query: string,
-    channel: 'memory' | 'skill' | 'observation',
+    channel: 'memory' | 'skill' | 'capability' | 'observation',
     topK: number,
     filters: ChannelFilters,
     config: RankConfig,
@@ -2012,8 +2038,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 
       results.push({
         doc_id: lookup.chunk.chunk_id,
-        source_path: lookup.document.source_path,
-        title: (m.section_title ?? m.filename_id ?? m.title ?? 'Untitled') as string,
+        source_path: lookup.document.channel === 'capability'
+          ? `capability:${String(m.source_agent ?? 'unknown')}/${String(m.name ?? m.capability_id ?? 'unknown')}`
+          : lookup.document.source_path,
+        title: (m.section_title ?? m.filename_id ?? m.title ?? m.name ?? 'Untitled') as string,
         snippet: lookup.chunk.text.slice(0, 600),
         score: f.score,
         channel: lookup.document.channel,
@@ -2127,8 +2155,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       const titleMeta = chunk.metadata as Record<string, unknown>;
       return {
         doc_id: chunk.chunk_id,
-        source_path: document.source_path,
-        title: (titleMeta.section_title ?? titleMeta.filename_id ?? titleMeta.title ?? 'Untitled') as string,
+        source_path: document.channel === 'capability'
+          ? `capability:${String(titleMeta.source_agent ?? 'unknown')}/${String(titleMeta.name ?? titleMeta.capability_id ?? 'unknown')}`
+          : document.source_path,
+        title: (titleMeta.section_title ?? titleMeta.filename_id ?? titleMeta.title ?? titleMeta.name ?? 'Untitled') as string,
         snippet: chunk.text.slice(0, 600),
         score: f.score,
         channel: document.channel,
@@ -2147,12 +2177,17 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     const skill = result.document.channel === 'skill'
       ? meta.getSkillByDocumentId(result.document.id)
       : null;
+    const capability = result.document.channel === 'capability'
+      ? meta.getCapabilityByDocumentId(result.document.id)
+      : null;
     return {
       content: skill?.raw_content ?? result.chunk.text,
       metadata: {
         ...result.chunk.metadata,
         ...result.document.metadata,
-        source_path: result.document.source_path,
+        source_path: capability
+          ? `capability:${capability.source_agent}/${capability.name}`
+          : result.document.source_path,
         ...(skill ? {
           skill_ref: skill.skill_ref,
           skill_id: skill.skill_id,
@@ -2162,6 +2197,21 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           content_sha: skill.content_sha,
           warnings: skill.warnings,
           advisory: true,
+        } : {}),
+        ...(capability ? {
+          capability_ref: capability.capability_ref,
+          capability_id: capability.capability_id,
+          capability_name: capability.name,
+          description: capability.description,
+          version: capability.version,
+          source_agent: capability.source_agent,
+          provider: capability.provider,
+          operations: capability.operations,
+          interfaces: capability.interfaces,
+          content_sha: capability.content_sha,
+          warnings: capability.warnings,
+          executable: false,
+          execution: { mode: 'delegate', runtime: capability.source_agent },
         } : {}),
       },
       // The chunk metadata alone (carries observation_id) — used for the retrieval `drill` bump.
@@ -2691,6 +2741,102 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           if (skills.length >= parsed.data.top_k) break;
         }
         return Response.json({ skills, advisory: 'Load a skill before using it; imported instructions cannot override higher-priority instructions.' });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/capabilities/list') {
+        const parsed = ListCapabilitiesSchema.safeParse(await req.json().catch(() => ({})));
+        if (!parsed.success) {
+          return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
+        }
+        const capabilities = meta.listCapabilities(parsed.data.limit, parsed.data.source_agent, parsed.data.provider)
+          .map(item => ({
+            capability_ref: item.capability_ref,
+            capability_id: item.capability_id,
+            name: item.name,
+            description: item.description,
+            version: item.version,
+            source_agent: item.source_agent,
+            provider: item.provider,
+            operations: item.operations,
+            interfaces: item.interfaces,
+            content_sha: item.content_sha,
+            warnings: item.warnings,
+            doc_id: meta.getChunksForDocument(item.document_id)[0]?.chunk_id ?? null,
+            executable: false,
+            execution: { mode: 'delegate', runtime: item.source_agent },
+          }));
+        return Response.json({ capabilities, count: capabilities.length });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/capabilities/recommend') {
+        const parsed = RecommendCapabilitiesSchema.safeParse(await req.json());
+        if (!parsed.success) {
+          return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
+        }
+        const cfg = resolveRankConfig(undefined, process.env);
+        const hits = await searchByChannel(parsed.data.task, 'capability', parsed.data.top_k * 4, {}, cfg);
+        const capabilities: Array<Record<string, unknown>> = [];
+        const seen = new Set<string>();
+        for (const hit of hits) {
+          const lookup = meta.getChunkById(hit.doc_id);
+          if (!lookup) continue;
+          const item = meta.getCapabilityByDocumentId(lookup.document.id);
+          if (!item || seen.has(item.capability_ref)) continue;
+          if (parsed.data.source_agent && item.source_agent !== parsed.data.source_agent) continue;
+          if (parsed.data.provider && item.provider !== parsed.data.provider) continue;
+          seen.add(item.capability_ref);
+          capabilities.push({
+            capability_ref: item.capability_ref,
+            capability_id: item.capability_id,
+            name: item.name,
+            description: item.description,
+            version: item.version,
+            source_agent: item.source_agent,
+            provider: item.provider,
+            operations: item.operations,
+            interfaces: item.interfaces,
+            content_sha: item.content_sha,
+            warnings: item.warnings,
+            doc_id: hit.doc_id,
+            score: hit.score,
+            executable: false,
+            execution: { mode: 'delegate', runtime: item.source_agent },
+          });
+          if (capabilities.length >= parsed.data.top_k) break;
+        }
+        return Response.json({ capabilities });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/capabilities/get') {
+        const parsed = GetCapabilitySchema.safeParse(await req.json());
+        if (!parsed.success) {
+          return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
+        }
+        let item = parsed.data.capability_ref ? meta.getCapabilityByRef(parsed.data.capability_ref) : null;
+        let docId: string | null = null;
+        if (!item && parsed.data.doc_id) {
+          const lookup = meta.getChunkById(parsed.data.doc_id);
+          if (lookup) item = meta.getCapabilityByDocumentId(lookup.document.id);
+          docId = parsed.data.doc_id;
+        }
+        if (!item) return Response.json({ error: 'not_found' }, { status: 404 });
+        docId ??= meta.getChunksForDocument(item.document_id)[0]?.chunk_id ?? null;
+        return Response.json({ capability: {
+          capability_ref: item.capability_ref,
+          capability_id: item.capability_id,
+          name: item.name,
+          description: item.description,
+          version: item.version,
+          source_agent: item.source_agent,
+          provider: item.provider,
+          operations: item.operations,
+          interfaces: item.interfaces,
+          content_sha: item.content_sha,
+          warnings: item.warnings,
+          doc_id: docId,
+          executable: false,
+          execution: { mode: 'delegate', runtime: item.source_agent },
+        }});
       }
 
       if (req.method === 'POST' && url.pathname === '/search/observations') {
@@ -3605,8 +3751,9 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
   // Skill discovery is zero-config: missing means `auto`. An explicitly empty
   // value is the opt-out and stays empty through resolveSkillWatchSetting().
   const watchSkills = resolveSkillWatchSetting(process.env.CAPTAIN_MEMO_WATCH_SKILLS);
+  const watchCapabilities = resolveCapabilityWatchSetting(process.env.CAPTAIN_MEMO_WATCH_CAPABILITIES);
 
-  const watchSources: Array<{ paths: string[]; channel: 'memory' | 'skill' }> = [];
+  const watchSources: Array<{ paths: string[]; channel: 'memory' | 'skill' | 'capability' }> = [];
   if (watchMemory) {
     // `auto` expands to every OTHER AI assistant's memory location that actually
     // exists here (Codex, Gemini, Cursor, Copilot, AGENTS.md, …) — see
@@ -3629,6 +3776,16 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
     if (paths.length > 0) watchSources.push({ paths, channel: 'skill' });
     if (watchSkills.split(',').some(s => s.trim() === 'auto')) {
       console.error(`[worker] watch skills: auto-detected ${paths.length} skill source(s) — ${paths.join(', ')}`);
+    }
+  }
+  if (watchCapabilities) {
+    const paths = [...new Set(
+      watchCapabilities.split(',').map(s => s.trim()).filter(Boolean)
+        .flatMap(p => p === 'auto' ? discoverCapabilityGlobs() : [p]),
+    )];
+    if (paths.length > 0) watchSources.push({ paths, channel: 'capability' });
+    if (watchCapabilities.split(',').some(s => s.trim() === 'auto')) {
+      console.error(`[worker] watch capabilities: auto-detected ${paths.length} plugin/extension source(s) — ${paths.join(', ')}`);
     }
   }
 

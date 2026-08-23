@@ -4,8 +4,10 @@ import { sha256Hex } from '../shared/sha.ts';
 import { newChunkId } from '../shared/id.ts';
 import { chunkMemoryFile } from './chunkers/memory-file.ts';
 import { chunkSkill } from './chunkers/skill.ts';
+import { chunkCapability } from './chunkers/capability.ts';
 import { splitForEmbed } from './chunkers/safe-split.ts';
 import { parseSkillDocument, type ParsedSkill } from './skill-registry.ts';
+import { parseCapabilityManifest, type ParsedCapability } from './capability-registry.ts';
 import type { ChannelType, ChunkInput } from '../shared/types.ts';
 import type { MetaStore } from './meta.ts';
 import type { VectorStore } from './vector-store.ts';
@@ -52,9 +54,10 @@ export class IngestPipeline {
     this.onIndexResult = opts.onIndexResult;
   }
 
-  private chunkerFor(channel: ChannelType, content: string, sourcePath: string): ChunkInput[] {
+  private chunkerFor(channel: ChannelType, content: string, sourcePath: string, capability?: ParsedCapability | null): ChunkInput[] {
     if (channel === 'memory') return chunkMemoryFile(content, sourcePath);
     if (channel === 'skill') return chunkSkill(content, sourcePath);
+    if (channel === 'capability' && capability) return chunkCapability(capability);
     throw new Error(`No file-based chunker for channel: ${channel}`);
   }
 
@@ -67,8 +70,11 @@ export class IngestPipeline {
       await this.deleteFile(filePath); // also removes rows imported by older watcher behavior
       return;
     }
+    if (channel === 'capability' && !['plugin.json', 'gemini-extension.json'].includes(basename(filePath))) {
+      await this.deleteFile(filePath);
+      return;
+    }
     const content = readFileSync(filePath, 'utf-8');
-    const sha = sha256Hex(content);
     const stat = statSync(filePath);
     const mtime_epoch = Math.floor(stat.mtimeMs / 1000);
 
@@ -76,6 +82,12 @@ export class IngestPipeline {
     const parsedSkill: ParsedSkill | null = channel === 'skill'
       ? parseSkillDocument(content, filePath)
       : null;
+    const parsedCapability: ParsedCapability | null = channel === 'capability'
+      ? parseCapabilityManifest(content, filePath)
+      : null;
+    // Capability manifests may contain executable configuration and env. Only
+    // the sanitized projection participates in storage/dedup.
+    const sha = parsedCapability?.content_sha ?? sha256Hex(content);
     if (existing && existing.sha === sha) {
       // A schema upgrade can encounter an already-indexed skill before its
       // first-class registry row exists. Backfill it without paying to embed
@@ -83,11 +95,14 @@ export class IngestPipeline {
       if (parsedSkill && !this.meta.getSkillBySourcePath(filePath)) {
         this.meta.upsertSkill({ document_id: existing.id, ...parsedSkill });
       }
+      if (parsedCapability && !this.meta.getCapabilityBySourcePath(filePath)) {
+        this.meta.upsertCapability({ document_id: existing.id, ...parsedCapability });
+      }
       this.onIndexResult?.('skipped');
       return;
     }
 
-    const rawChunks = this.chunkerFor(channel, content, filePath);
+    const rawChunks = this.chunkerFor(channel, content, filePath, parsedCapability);
     // Pre-split anything that would overflow the embedder's per-input token
     // limit. Without this, a single oversized chunk would either silently
     // tail-truncate at the API (legacy bug) or throw EmbedderInputTooLarge
@@ -111,7 +126,7 @@ export class IngestPipeline {
       return;
     }
 
-    const sourceKey = parsedSkill?.skill_id ?? basename(filePath, '.md');
+    const sourceKey = parsedSkill?.skill_id ?? parsedCapability?.capability_id ?? basename(filePath, '.md');
     const chunksWithIds = chunks.map(c => ({
       chunk_id: newChunkId(channel, sourceKey),
       text: c.text,
@@ -133,6 +148,7 @@ export class IngestPipeline {
 
     this.meta.replaceChunksForDocument(documentId, chunksWithIds);
     if (parsedSkill) this.meta.upsertSkill({ document_id: documentId, ...parsedSkill });
+    if (parsedCapability) this.meta.upsertCapability({ document_id: documentId, ...parsedCapability });
 
     await this.vector.add(
       this.collection,

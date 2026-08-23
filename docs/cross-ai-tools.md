@@ -32,6 +32,7 @@ transcripts to the same `~/.codex/sessions/`, so `connect codex` wires and obser
 It's two pieces per tool:
 
 1. **Register the MCP server** → the tool gets memory recall, `list_skills` / `recommend_skills` / `load_skill`,
+   `list_capabilities` / `recommend_capabilities` / `get_capability`,
    and the work-coordination tools `work_set`/`work_active`/`work_clear`. The MCP server is a
    thin stdio bridge that talks to your running worker on `http://localhost:39888`, so every tool reuses
    the **same worker and corpus** — nothing is duplicated.
@@ -50,6 +51,11 @@ Humans can browse the same repository with `captain-memo skill list` (or add `--
 This is also a project milestone: it is the first Captain Memo feature built with Codex rather than
 Claude, with Captain Memo's shared memory supplying the accumulated architecture, decisions,
 conventions, and release process instead of requiring the maintainer to explain them again.
+
+Plugin wrappers remain runtime-specific. Captain Memo publishes only a secret-free capability card
+(descriptions, operation/interface names, and runtime ownership), never executable plugin content or
+environment values. That lets Codex discover that Nano Banana can generate an image on Gemini, for
+example, and route/delegate the task there instead of claiming the extension was imported into Codex.
 
 The MCP tools are **read-only/recall** (search + drill). Capture is automatic where the tool has
 lifecycle hooks (Claude Code today); other tools recall the shared memory that Claude Code and the

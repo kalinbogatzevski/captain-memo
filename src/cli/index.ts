@@ -30,6 +30,7 @@ import { topCommand } from './commands/top.ts';
 import { workerWatchdogCommand } from './commands/worker-watchdog.ts';
 import { restartCommand } from './commands/restart.ts';
 import { skillCommand } from './commands/skill.ts';
+import { capabilityCommand } from './commands/capability.ts';
 import { gatewayCommand } from './commands/gateway.ts';
 import { evalCommand } from './commands/eval.ts';
 import { printBanner } from './banner.ts';
@@ -46,6 +47,7 @@ Commands:
   reindex      Re-embed corpus content (optionally scoped to a channel)
   remember     Persist a curated memory entry (--type, body via --body/--file/stdin)
   skill        list — browse synchronized virtual skills (--source, --limit, --json)
+  capability   list | recommend — discover runtime-owned plugin capabilities
   forget       Delete a memory and de-index it (<doc_id|path>, --dry-run, --yes)
   promote      Shadow-run the promotion judge over real observations (--shadow, --report)
   vacuum       Reclaim disk after deletions/reindex (SQLite VACUUM; worker must be stopped)
@@ -124,6 +126,9 @@ export async function main(args: string[]): Promise<void> {
       break;
     case 'skill':
       exit = await skillCommand(args.slice(1));
+      break;
+    case 'capability':
+      exit = await capabilityCommand(args.slice(1));
       break;
     case 'forget':
       exit = await forgetCommand(args.slice(1));

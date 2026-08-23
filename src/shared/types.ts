@@ -1,6 +1,6 @@
 import type { OriginAgent } from './origin-agent.ts';
 
-export type ChannelType = 'memory' | 'skill' | 'observation' | 'remote';
+export type ChannelType = 'memory' | 'skill' | 'capability' | 'observation' | 'remote';
 
 export type MemoryType = 'user' | 'feedback' | 'project' | 'reference';
 
@@ -10,7 +10,7 @@ export type ObservationType =
   | 'theme';   // produced by Local Dreaming — see docs/specs/2026-05-27-local-dreaming-design.md
 
 export type DocType =
-  | 'memory_file' | 'skill_section' | 'skill_summary'
+  | 'memory_file' | 'skill_section' | 'skill_summary' | 'capability_summary'
   | 'observation' | 'session_summary' | 'mem_md_stub';
 
 export interface Document {

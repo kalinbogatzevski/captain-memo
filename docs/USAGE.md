@@ -26,9 +26,10 @@ Default port: `39888`. Override via env:
 | `CAPTAIN_MEMO_VOYAGE_API_KEY` | — | Optional bearer token for Voyage. |
 | `CAPTAIN_MEMO_WATCH_MEMORY` | — | Comma-separated globs to watch for memory files (channel = `memory`). The sentinel **`auto`** expands to every installed assistant's memory location that exists on this machine (Claude, Codex, Gemini, Cursor, Copilot, repo `AGENTS.md`). Composes: `auto,/my/notes/*.md`. |
 | `CAPTAIN_MEMO_WATCH_SKILLS` | `auto` | Comma-separated globs to watch for skill files (channel = `skill`). Missing means auto-discover installed AI skills; an explicitly empty value opts out. |
+| `CAPTAIN_MEMO_WATCH_CAPABILITIES` | `auto` | Known plugin/extension manifests (channel = `capability`). Missing auto-discovers installed Gemini/Agy, Claude, and Codex capabilities; explicitly empty opts out. Only sanitized descriptors are stored. |
 | `CAPTAIN_MEMO_DATA_DIR` | `~/.captain-memo` | Where the meta SQLite + vector SQLite + logs live. |
 
-> Plan-1 supports **one watch channel per worker process**. If both `CAPTAIN_MEMO_WATCH_MEMORY` and `CAPTAIN_MEMO_WATCH_SKILLS` are set, the worker uses memory and warns. Multi-channel watch is on the Plan-2 backlog.
+The worker watches memory, skill, and capability sources together.
 
 ## Use the CLI
 
@@ -40,6 +41,8 @@ captain-memo reindex --channel memory   # restrict to one channel
 captain-memo reindex --force            # ignore sha cache, re-embed all
 captain-memo skill list                 # browse synchronized virtual skills
 captain-memo skill list --source codex  # filter by source AI (--json is available)
+captain-memo capability list            # installed plugin/extension capabilities
+captain-memo capability recommend "generate an image"
 ```
 
 ## Use the MCP server (manual)
@@ -64,11 +67,11 @@ Expose to Claude Code via `.mcp.json`:
 }
 ```
 
-Skill-broker tools: `list_skills` browses the synchronized catalog, `recommend_skills` returns task-relevant descriptors, and `load_skill` retrieves the selected skill's complete advisory instructions. The remaining tools cover memory search, persistence, observations, reindexing, health, and work coordination.
+Skill-broker tools: `list_skills` browses the synchronized catalog, `recommend_skills` returns task-relevant descriptors, and `load_skill` retrieves the selected skill's complete advisory instructions. Capability tools (`list_capabilities`, `recommend_capabilities`, `get_capability`) advertise which runtime owns an installed plugin/extension so another AI can route work there. The remaining tools cover memory search, persistence, observations, reindexing, health, and work coordination.
 
 ## Watch paths
 
-Set `CAPTAIN_MEMO_WATCH_MEMORY` or `CAPTAIN_MEMO_WATCH_SKILLS` to comma-separated globs. `CAPTAIN_MEMO_WATCH_SKILLS` is `auto` when missing, discovering user-level Claude, Codex/Agent Skills, Gemini, Cursor, opencode, Vibe, and Kimi `SKILL.md` roots. Set it to an explicitly empty value to opt out. Changes and deletions synchronize while the worker runs. Explicit environment globs should use absolute paths because `~` is not expanded there.
+Set `CAPTAIN_MEMO_WATCH_MEMORY`, `CAPTAIN_MEMO_WATCH_SKILLS`, or `CAPTAIN_MEMO_WATCH_CAPABILITIES` to comma-separated globs. Skill and capability discovery are `auto` when missing; set either to an explicitly empty value to opt out. Changes and deletions synchronize while the worker runs. Explicit environment globs should use absolute paths because `~` is not expanded there.
 
 Example:
 

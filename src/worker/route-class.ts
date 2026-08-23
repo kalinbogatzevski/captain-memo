@@ -10,6 +10,7 @@ export type RouteClass = 'read' | 'write' | 'control';
 const READ_PATHS = new Set<string>([
   '/search/all', '/search/memory', '/search/skill', '/search/observations',
   '/skills/list', '/skills/recommend',
+  '/capabilities/list', '/capabilities/recommend', '/capabilities/get',
   '/get_full', '/observation/full', '/inject/context',
   '/observations/recent', '/recall/list',
 ]);
