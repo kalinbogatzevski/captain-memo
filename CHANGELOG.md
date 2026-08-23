@@ -7,6 +7,14 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.38.1] — 2026-08-23
+
+### Fixed
+
+- **Virtual Capability discovery tests are portable across operating systems.** The test suite now
+  validates manifest names and installed-runtime paths with platform-native path helpers, keeping
+  Windows CI aligned with the already-portable runtime implementation.
+
 ## [0.38.0] — 2026-08-23
 
 ### Added
