@@ -4,13 +4,15 @@
 
 <h1 align="center">Captain Memo</h1>
 
-<p align="center"><em>Your AI coding agent's logbook — local memory, kept in sync, retrieved on every prompt.</em></p>
+<p align="center"><em>Your AI fleet's local memory, shared skill library, and runtime capability map.</em></p>
 
 <p align="center">
   <a href="https://captain-memo.ispcq.com"><b>captain-memo.ispcq.com</b></a> · Built by <a href="https://github.com/kalinbogatzevski">Kalin Bogatzevski</a> · <a href="LICENSE">Apache-2.0</a> · <a href="https://github.com/kalinbogatzevski/captain-memo/issues">Issues</a>
 </p>
 
-Captain Memo is a Claude Code plugin — and a **cross-AI local-memory layer**: one local corpus shared by every MCP-speaking coding agent on your machine (Claude Code, Codex, Gemini CLI, Antigravity, goose, Cursor, opencode, Kimi CLI), so what one tool learns, the others recall. Every session leaves a wake; Captain Memo keeps the log so the next session — in any of your AI tools — sails with what was learned in the last one.
+Captain Memo is a Claude Code plugin — and a **cross-AI local intelligence layer**: one local corpus shared by every MCP-speaking coding agent on your machine (Claude Code, Codex, Gemini CLI, Antigravity, goose, Cursor, opencode, Kimi CLI). What one tool learns, the others recall; skill instructions installed for one AI become reusable **Virtual Skills**; and sanitized **Virtual Capabilities** tell the crew which runtime owns a plugin or extension that can execute a task.
+
+> **Memory is only the beginning.** Captain Memo automatically synchronizes complete skill instructions, lists them for every connected AI, and maps runtime-specific plugins without copying commands, credentials, or executable configuration. An AI can learn a shared method locally, or discover that (for example) an image tool lives on Gemini and delegate the work there. [See how Virtual Skills & Capabilities work →](https://captain-memo.ispcq.com/skills.html)
 
 <p align="center">
   <img src="docs/demo.gif" alt="Terminal recording: `captain-memo connect` wires six installed AI tools to one shared worker, then `captain-memo stats` shows four of them writing into the same local corpus" width="820">
