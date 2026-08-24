@@ -23,6 +23,13 @@ export class CaptureState {
         source TEXT PRIMARY KEY,
         cutoff_epoch INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS native_capture_sessions (
+        source TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        first_seen_epoch INTEGER NOT NULL,
+        last_seen_epoch INTEGER NOT NULL,
+        PRIMARY KEY (source, session_id)
+      );
     `);
     // EVENT CURSOR (additive, guarded like every other column here). Without it the driver could only
     // ask "has this marker changed?", and a live session's marker (mtime:size) changes on every append —
@@ -105,6 +112,30 @@ export class CaptureState {
                        events_ingested = excluded.events_ingested`,
       )
       .run(source, sessionId, marker, nowEpoch, eventsIngested);
+  }
+
+  /** Record proof that a vendor-native hook is active for this session. Rollout
+   *  capture consults this before parsing, preventing the same work from being
+   *  summarized twice while retaining fallback for every unmarked session. */
+  markNativeSession(source: string, sessionId: string, nowEpoch: number): void {
+    this.db.query(
+      `INSERT INTO native_capture_sessions (source, session_id, first_seen_epoch, last_seen_epoch)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(source, session_id) DO UPDATE SET last_seen_epoch = excluded.last_seen_epoch`,
+    ).run(source, sessionId, nowEpoch, nowEpoch);
+  }
+
+  hasNativeSession(source: string, sessionId: string): boolean {
+    return this.db.query(
+      'SELECT 1 AS found FROM native_capture_sessions WHERE source = ? AND session_id = ?',
+    ).get(source, sessionId) != null;
+  }
+
+  nativeSessions(source: string): number {
+    const row = this.db.query(
+      'SELECT COUNT(*) AS n FROM native_capture_sessions WHERE source = ?',
+    ).get(source) as { n: number } | null;
+    return row?.n ?? 0;
   }
 
   close(): void {

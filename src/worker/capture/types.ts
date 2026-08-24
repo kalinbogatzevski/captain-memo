@@ -4,8 +4,9 @@
 // agy, …) and turns each transcript into RawObservationEvent[]. The worker-side
 // driver enqueues those events; the existing summarizer→embed→store pipeline
 // (origin_agent-agnostic) does the rest. Claude Code already feeds this pipeline
-// via its plugin hooks — this is the equivalent capture path for tools that have
-// no hook system, reading the transcripts they persist to disk.
+// via its plugin hooks — this is the compatibility path for tools without a
+// useful native hook contract and for native-hook sessions that have not yet
+// proved delivery, reading the transcripts they persist to disk.
 
 import type { RawObservationEvent } from '../../shared/types.ts';
 

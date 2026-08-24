@@ -56,6 +56,25 @@ test('ingests a session newer than the cutoff, exactly once (dedup on unchanged 
   expect(enq).toHaveLength(1);
 });
 
+test('a proven native-hook session is not re-ingested from its rollout', async () => {
+  const state = tmpState();
+  state.ensureCutoff('codex', 100);
+  state.markNativeSession('codex', 'native-s1', 120);
+  const ref: SessionRef = { sessionId: 'native-s1', path: '/x', marker: 'm1', mtimeEpoch: 150 };
+  let extracted = 0;
+  const source = fakeSource([ref]);
+  source.extract = () => { extracted++; return [ev('native-s1')]; };
+  const enqueued: RawObservationEvent[] = [];
+
+  const result = await runCaptureTick({
+    sources: [source], state, enqueue: (event) => enqueued.push(event), now: () => 200_000,
+  });
+
+  expect(result.ingested).toBe(0);
+  expect(extracted).toBe(0);
+  expect(enqueued).toHaveLength(0);
+});
+
 test('a source that becomes available only on a LATER tick seeds its cutoff then — no bulk backfill', async () => {
   // Regression for the boot-frozen-capture fix: sources are no longer filtered by availability at boot, so
   // a tool first used AFTER the worker started must (a) be skipped while absent, (b) seed its cutoff the

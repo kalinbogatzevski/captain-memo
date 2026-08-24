@@ -2562,6 +2562,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             recent: Object.fromEntries(
               captureSourceIds.map((id) => [id, captureRecent[id] ?? 0]),
             ) as Record<string, number>,
+            // Sessions whose vendor-native hook actually reached this worker.
+            // Presence here — not mere hooks.json installation — is what suppresses
+            // the rollout fallback for that exact session.
+            native: Object.fromEntries(
+              ['codex', 'gemini', 'kimi'].map((id) => [id, captureState?.nativeSessions(id) ?? 0]),
+            ) as Record<string, number>,
           },
           worker: {
             started_at_epoch: workerStartedAtEpoch,
@@ -3429,6 +3435,13 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           ...(origin_agent !== undefined && { origin_agent }),
           ...(source !== undefined && { source }),
         });
+        // PostToolUse is also a heartbeat. If SessionStart raced worker startup,
+        // this still proves the Codex hook path before the rollout becomes
+        // quiescent and eligible for fallback capture.
+        const nativeAgent = source?.match(/^hook:(codex|gemini|kimi)$/)?.[1];
+        if (nativeAgent) {
+          captureState?.markNativeSession(nativeAgent, parsed.data.session_id, Math.floor(Date.now() / 1000));
+        }
         return Response.json({ id, queued: true });
       }
 

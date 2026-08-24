@@ -9,7 +9,19 @@ interface UserPromptSubmitPayload {
   hook_event_name?: string;
 }
 
-export async function main(): Promise<void> {
+export interface UserPromptSubmitOptions {
+  /** Native hook hosts retain the submitted prompt and treat hook stdout as
+   *  additional context. Claude Code's legacy transform contract expects the
+   *  original prompt echoed after the envelope. */
+  emitOriginalPrompt?: boolean;
+  /** Emit the structured additionalContext contract shared by the supported
+   *  native hook hosts instead of Claude's prompt-transform stdout. */
+  structuredContextJson?: boolean;
+  /** Event name required inside the native CLI's structured hook output. */
+  contextEventName?: 'UserPromptSubmit' | 'BeforeAgent';
+}
+
+export async function main(options: UserPromptSubmitOptions = {}): Promise<void> {
   let payload: UserPromptSubmitPayload = {};
   try {
     payload = await readStdinJson<UserPromptSubmitPayload>();
@@ -74,10 +86,19 @@ export async function main(): Promise<void> {
   }
 
   if (result.ok && result.body && result.body.envelope) {
-    writeStdout(result.body.envelope);
-    writeStdout('\n\n');
+    if (options.structuredContextJson) {
+      writeStdout(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: options.contextEventName ?? 'UserPromptSubmit',
+          additionalContext: result.body.envelope,
+        },
+      }));
+    } else {
+      writeStdout(result.body.envelope);
+      writeStdout('\n\n');
+    }
   }
-  writeStdout(prompt);
+  if (options.emitOriginalPrompt !== false) writeStdout(prompt);
 }
 
 if (isMainModule(import.meta)) {

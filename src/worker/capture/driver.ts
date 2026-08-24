@@ -48,6 +48,10 @@ export async function runCaptureTick(
 
     for (const ref of refs) {
       if (!deps.ignoreCutoff && ref.mtimeEpoch <= cutoff) continue;           // backfill guard
+      // A native lifecycle hook has already claimed this exact vendor session.
+      // Keep the rollout reader armed globally as the compatibility fallback,
+      // but never parse/summarize a proven-native session a second time.
+      if (deps.state.hasNativeSession(src.id, ref.sessionId)) continue;
       if (deps.state.wasIngested(src.id, ref.sessionId, ref.marker)) continue; // dedup (marker unchanged)
 
       let evs: RawObservationEvent[];

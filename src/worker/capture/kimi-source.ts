@@ -2,7 +2,8 @@
 // ~/.kimi/sessions/<workdir-hash>/<session-uuid>/context.jsonl (verified live).
 // Plain JSONL, one { role, content } object per line:
 //   role ∈ { _system_prompt, user, assistant, tool, ... }, content = text.
-// Same read-after-session model as codex.
+// Kimi 1.28+ can use native hooks. This read-after-session path remains the
+// compatibility fallback for older or not-yet-proven native sessions.
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { homedir } from 'os';

@@ -26,6 +26,20 @@ const EVENTS: Record<string, () => Promise<void>> = {
   PostToolUse:      postToolUse,
   Stop:             stop,
   PreCompact:       preCompact,
+  // Native Codex uses the same lifecycle event names but not identical stdout
+  // semantics. Installer-owned aliases keep the vendor behavior explicit while
+  // reusing the same single-file hook bundle.
+  CodexUserPromptSubmit: () => userPromptSubmit({ emitOriginalPrompt: false, structuredContextJson: true }),
+  CodexPostToolUse: () => postToolUse({ originAgent: 'codex', source: 'hook:codex' }),
+  CodexStop: () => stop({ emitJson: true }),
+  GeminiBeforeAgent: () => userPromptSubmit({ emitOriginalPrompt: false, structuredContextJson: true, contextEventName: 'BeforeAgent' }),
+  GeminiAfterTool: () => postToolUse({ originAgent: 'gemini', source: 'hook:gemini' }),
+  GeminiAfterAgent: () => stop({ emitJson: true }),
+  // Kimi treats plain successful stdout as added context; it documents
+  // structured JSON only for permission decisions, so keep recall human-readable.
+  KimiUserPromptSubmit: () => userPromptSubmit({ emitOriginalPrompt: false }),
+  KimiPostToolUse: () => postToolUse({ originAgent: 'kimi', source: 'hook:kimi' }),
+  KimiStop: () => stop(),
 };
 
 export async function main(): Promise<void> {

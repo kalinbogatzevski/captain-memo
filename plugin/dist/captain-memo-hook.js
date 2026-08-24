@@ -37,9 +37,11 @@ import { homedir as homedir2 } from "os";
 import { join as join2, resolve } from "path";
 import { fileURLToPath } from "url";
 function isMainModule(meta) {
+  const entry = process.argv[1];
+  if (entry && /(?:^|[\\/])captain-memo-hook(?:\.(?:js|ts))?$/.test(entry))
+    return false;
   if (meta.main)
     return true;
-  const entry = process.argv[1];
   if (!entry)
     return false;
   try {
@@ -860,7 +862,7 @@ init_shared();
 // src/hooks/user-prompt-submit.ts
 init_shared();
 init_paths();
-async function main() {
+async function main(options = {}) {
   let payload = {};
   try {
     payload = await readStdinJson();
@@ -903,12 +905,22 @@ async function main() {
     }
   }
   if (result.ok && result.body && result.body.envelope) {
-    writeStdout(result.body.envelope);
-    writeStdout(`
+    if (options.structuredContextJson) {
+      writeStdout(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: options.contextEventName ?? "UserPromptSubmit",
+          additionalContext: result.body.envelope
+        }
+      }));
+    } else {
+      writeStdout(result.body.envelope);
+      writeStdout(`
 
 `);
+    }
   }
-  writeStdout(prompt);
+  if (options.emitOriginalPrompt !== false)
+    writeStdout(prompt);
 }
 if (isMainModule(import.meta)) {
   try {
@@ -927,7 +939,7 @@ import { join as join8 } from "path";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.38.2",
+  version: "0.39.0",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -1577,22 +1589,55 @@ function detectOriginAgent(env = process.env) {
 
 // src/hooks/post-tool-use.ts
 var HOOK_TIMEOUT_MS3 = Number(process.env.CAPTAIN_MEMO_POST_TOOL_USE_TIMEOUT_MS ?? 1000);
-var WRITING_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
+var WRITING_TOOLS = new Set([
+  "edit",
+  "write",
+  "multiedit",
+  "notebookedit",
+  "apply_patch",
+  "write_file",
+  "writefile",
+  "replace",
+  "replace_file",
+  "strreplacefile"
+]);
+function promptNumberFromTurnId(turnId) {
+  if (!turnId)
+    return 0;
+  let hash = 2166136261;
+  for (let i = 0;i < turnId.length; i++) {
+    hash ^= turnId.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+function patchFiles(input) {
+  const value = typeof input === "string" ? input : input && typeof input === "object" ? String(input.patch ?? input.input ?? "") : "";
+  const files = [];
+  for (const line of value.split(/\r?\n/)) {
+    const match = /^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/.exec(line);
+    if (match?.[1])
+      files.push(match[1].trim());
+  }
+  return files;
+}
 function extractFiles(toolName, input, _response) {
   const read = [];
   const modified = [];
   const ip = input ?? {};
   if (typeof ip.file_path === "string") {
-    if (WRITING_TOOLS.has(toolName))
+    if (WRITING_TOOLS.has(toolName.toLowerCase()))
       modified.push(ip.file_path);
     else
       read.push(ip.file_path);
   }
   if (typeof ip.notebook_path === "string")
     modified.push(ip.notebook_path);
+  if (toolName.toLowerCase() === "apply_patch")
+    modified.push(...patchFiles(input));
   return { read, modified };
 }
-async function main4() {
+async function main4(options = {}) {
   let payload = {};
   try {
     payload = await readStdinJson();
@@ -1602,19 +1647,21 @@ async function main4() {
   }
   if (!payload.tool_name)
     return;
-  const { read, modified } = extractFiles(payload.tool_name, payload.tool_input, payload.tool_response);
+  const toolResponse = payload.tool_response ?? payload.tool_output;
+  const { read, modified } = extractFiles(payload.tool_name, payload.tool_input, toolResponse);
   const event = {
     session_id: payload.session_id ?? "unknown",
     project_id: resolveProjectId(payload.cwd),
-    prompt_number: payload.prompt_number ?? 0,
+    prompt_number: payload.prompt_number ?? promptNumberFromTurnId(payload.turn_id),
     tool_name: payload.tool_name,
     tool_input_summary: summarize(payload.tool_input, 1500),
-    tool_result_summary: summarize(payload.tool_response, 1500),
+    tool_result_summary: summarize(toolResponse, 1500),
     files_read: read,
     files_modified: modified,
     ts_epoch: Math.floor(Date.now() / 1000),
-    branch: detectBranchSync(process.cwd()),
-    origin_agent: detectOriginAgent()
+    branch: detectBranchSync(payload.cwd ?? process.cwd()),
+    origin_agent: options.originAgent ?? detectOriginAgent(),
+    ...options.source ? { source: options.source } : {}
   };
   const res = await workerFetch("/observation/enqueue", {
     method: "POST",
@@ -1635,22 +1682,29 @@ if (isMainModule(import.meta)) {
 // src/hooks/stop.ts
 init_shared();
 init_paths();
-async function main5() {
+async function main5(options = {}) {
   let payload = {};
   try {
     payload = await readStdinJson();
   } catch (err) {
     logHookError("Stop", err);
+    if (options.emitJson)
+      writeStdout("{}");
     return;
   }
-  if (!payload.session_id)
+  if (!payload.session_id) {
+    if (options.emitJson)
+      writeStdout("{}");
     return;
+  }
   const res = await workerFetch("/observation/flush", {
     method: "POST",
     body: { session_id: payload.session_id, max: 200 },
     timeoutMs: DEFAULT_STOP_DRAIN_BUDGET_MS
   });
   logWorkerFailure("Stop", "/observation/flush", res);
+  if (options.emitJson)
+    writeStdout("{}");
 }
 if (isMainModule(import.meta)) {
   try {
@@ -1710,7 +1764,16 @@ var EVENTS = {
   PreToolUse: main3,
   PostToolUse: main4,
   Stop: main5,
-  PreCompact: main6
+  PreCompact: main6,
+  CodexUserPromptSubmit: () => main({ emitOriginalPrompt: false, structuredContextJson: true }),
+  CodexPostToolUse: () => main4({ originAgent: "codex", source: "hook:codex" }),
+  CodexStop: () => main5({ emitJson: true }),
+  GeminiBeforeAgent: () => main({ emitOriginalPrompt: false, structuredContextJson: true, contextEventName: "BeforeAgent" }),
+  GeminiAfterTool: () => main4({ originAgent: "gemini", source: "hook:gemini" }),
+  GeminiAfterAgent: () => main5({ emitJson: true }),
+  KimiUserPromptSubmit: () => main({ emitOriginalPrompt: false }),
+  KimiPostToolUse: () => main4({ originAgent: "kimi", source: "hook:kimi" }),
+  KimiStop: () => main5()
 };
 async function main7() {
   const event = process.argv[2] ?? process.env.CLAUDE_HOOK_EVENT_NAME ?? process.env.CAPTAIN_MEMO_HOOK_EVENT;

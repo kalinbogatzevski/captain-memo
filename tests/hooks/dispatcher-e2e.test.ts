@@ -106,6 +106,66 @@ test('dispatcher → SessionStart pings /health', async () => {
   // contract here.
 });
 
+test('dispatcher → native Codex aliases use Codex semantics and provenance', async () => {
+  const prompt = await runDispatcher('CodexUserPromptSubmit', JSON.stringify({
+    session_id: 'codex-session', turn_id: 'turn-1', cwd: '/tmp', prompt: 'original prompt',
+  }));
+  const promptOutput = JSON.parse(prompt.stdout);
+  expect(promptOutput).toMatchObject({
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: '<memory-context></memory-context>',
+    },
+  });
+  expect(prompt.stdout).not.toContain('original prompt');
+
+  const post = await runDispatcher('CodexPostToolUse', JSON.stringify({
+    session_id: 'codex-session', turn_id: 'turn-1', cwd: '/tmp',
+    tool_name: 'apply_patch',
+    tool_input: { patch: '*** Begin Patch\n*** Update File: src/a.ts\n*** End Patch' },
+    tool_response: { output: 'Done' },
+  }));
+  expect(post.exitCode).toBe(0);
+  expect(received[0]?.body).toMatchObject({
+    origin_agent: 'codex', source: 'hook:codex', tool_name: 'apply_patch',
+    files_modified: ['src/a.ts'],
+  });
+  expect(received[0]?.body.prompt_number).toBeGreaterThan(0);
+
+  const stop = await runDispatcher('CodexStop', JSON.stringify({ session_id: 'codex-session' }));
+  expect(stop.exitCode).toBe(0);
+  expect(stop.stdout).toBe('{}');
+});
+
+test('dispatcher → Gemini and Kimi native aliases normalize their vendor payloads', async () => {
+  const geminiPrompt = await runDispatcher('GeminiBeforeAgent', JSON.stringify({
+    session_id: 'gemini-session', cwd: '/tmp', prompt: 'remember this',
+  }));
+  expect(JSON.parse(geminiPrompt.stdout).hookSpecificOutput.hookEventName).toBe('BeforeAgent');
+
+  await runDispatcher('GeminiAfterTool', JSON.stringify({
+    session_id: 'gemini-session', cwd: '/tmp', tool_name: 'write_file',
+    tool_input: { file_path: '/tmp/gemini.ts' }, tool_response: { output: 'ok' },
+  }));
+  expect(received[0]?.body).toMatchObject({ origin_agent: 'gemini', source: 'hook:gemini' });
+
+  const kimiPrompt = await runDispatcher('KimiUserPromptSubmit', JSON.stringify({
+    session_id: 'kimi-session', cwd: '/tmp', prompt: 'remember this too',
+  }));
+  expect(kimiPrompt.stdout).toBe('<memory-context></memory-context>\n\n');
+  expect(kimiPrompt.stdout).not.toContain('remember this too');
+
+  await runDispatcher('KimiPostToolUse', JSON.stringify({
+    session_id: 'kimi-session', cwd: '/tmp', tool_name: 'WriteFile',
+    tool_input: { file_path: '/tmp/kimi.ts' }, tool_output: 'written',
+  }));
+  expect(received[0]?.body).toMatchObject({
+    origin_agent: 'kimi', source: 'hook:kimi', tool_result_summary: 'written',
+  });
+  const kimiStop = await runDispatcher('KimiStop', JSON.stringify({ session_id: 'kimi-session' }));
+  expect(kimiStop.stdout).toBe('');
+});
+
 test('dispatcher → unknown event → exit 0 silently', async () => {
   const { exitCode } = await runDispatcher('NotARealEvent', '{}');
   expect(exitCode).toBe(0);

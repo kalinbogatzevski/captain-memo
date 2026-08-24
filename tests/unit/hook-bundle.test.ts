@@ -60,6 +60,40 @@ test('SessionStart emits a degraded banner (not silence) when the worker is unre
   expect(out).toContain('worker unreachable');
 });
 
+test('committed bundle dispatches exactly one native PostToolUse handler', async () => {
+  const received: Array<{ path: string; body: Record<string, unknown> }> = [];
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      received.push({ path: new URL(req.url).pathname, body: await req.json() as Record<string, unknown> });
+      return Response.json({ id: 1, queued: true });
+    },
+  });
+  try {
+    const proc = Bun.spawn(['bun', BUNDLE, 'CodexPostToolUse'], {
+      stdin: new TextEncoder().encode(JSON.stringify({
+        session_id: 'native-bundle', turn_id: 'turn-1', cwd: ROOT,
+        tool_name: 'apply_patch', tool_input: { patch: '*** Begin Patch\n*** Update File: src/a.ts\n*** End Patch' },
+        tool_response: { output: 'Done' },
+      })),
+      env: { ...process.env, CAPTAIN_MEMO_WORKER_PORT: String(server.port) },
+      stdout: 'pipe', stderr: 'pipe',
+    });
+    const stdout = await new Response(proc.stdout).text();
+    const stderr = await new Response(proc.stderr).text();
+    expect(await proc.exited).toBe(0);
+    expect(stdout).toBe('');
+    expect(stderr).toBe('');
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({
+      path: '/observation/enqueue',
+      body: { session_id: 'native-bundle', origin_agent: 'codex', source: 'hook:codex' },
+    });
+  } finally {
+    server.stop();
+  }
+});
+
 // Drift guard: the COMMITTED bundle could rot relative to src/hooks/dispatcher.ts
 // if someone edits the source and forgets `bun run build:plugin`. The committed-
 // bundle test catches a stale/broken artifact; this one catches a regressed

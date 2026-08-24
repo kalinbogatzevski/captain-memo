@@ -5,7 +5,9 @@
 //         thoughts?, toolCalls?: [{ name, args, result, status }] } ] }
 // A single JSON object rewritten each turn (not append-only) — fully readable.
 // NOTE: distinct from agy, which uses ~/.gemini/antigravity-cli/conversations/*.db.
-// Gemini CLI has no hook system, so we read the file after the session goes idle.
+// Gemini CLI 0.25+ can use native hooks. This reader remains armed for older,
+// hooks-disabled, or not-yet-trusted installations and yields once that exact
+// session proves its native hook path.
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { homedir } from 'os';

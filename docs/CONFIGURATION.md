@@ -244,7 +244,10 @@ Read by `services/embed/`, not by the worker. Set these where the service starts
 ### Cross-AI capture
 
 Each source is ON by default and auto-detects its directory. Set `_DIR` only for a non-standard
-install path.
+install path. These switches control the transcript/rollout compatibility readers. `captain-memo
+connect` separately installs native observation hooks for supported Codex, Gemini, and Kimi releases;
+the reader stays armed until each exact session proves native delivery, then skips that session to
+avoid duplicate observations. No extra environment setting is required.
 
 | Setting | Default | Notes |
 |---|---|---|

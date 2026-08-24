@@ -479,7 +479,7 @@ async function checkCapture(): Promise<void> {
   const s = await fetchJson(`http://127.0.0.1:${WORKER_PORT}/stats`);
   if (!s.ok) return; // worker unreachable — the `worker service` check owns that
   const b = s.body as {
-    capture?: { sources?: string[]; ingested?: Record<string, number>; recent?: Record<string, number> };
+    capture?: { sources?: string[]; ingested?: Record<string, number>; recent?: Record<string, number>; native?: Record<string, number> };
     summarizer?: { provider?: string; enabled?: boolean; cooling_down?: boolean;
                    skipped?: Array<{ provider: string; reason: string }>;
                    demoted?: Array<{ provider: string; reason: string; at_epoch: number }> };

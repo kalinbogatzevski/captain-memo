@@ -21,8 +21,13 @@ const HOOK_LOG_ROTATE_BYTES = 10 * 1024 * 1024; // 10 MB
 
 /** True when a hook module was executed directly, including Bun on Windows. */
 export function isMainModule(meta: ImportMeta): boolean {
-  if (meta.main) return true;
+  // Bun flattens every imported hook module into the distributable dispatcher.
+  // Inside that bundle each module sees the entry's `import.meta.main=true`, so
+  // without this exclusion all six handlers race to consume the same stdin.
+  // The dispatcher entry calls its selected handler explicitly.
   const entry = process.argv[1];
+  if (entry && /(?:^|[\\/])captain-memo-hook(?:\.(?:js|ts))?$/.test(entry)) return false;
+  if (meta.main) return true;
   if (!entry) return false;
   try {
     const actual = resolve(entry);

@@ -39,9 +39,9 @@ export function asOriginAgent(v: unknown): OriginAgent | null {
  *  3. `CLAUDE_CODE_ENTRYPOINT` set to a non-empty value → 'claude-code'.
  *  4. Otherwise → 'unknown'.
  *
- * The other 7 vendors (codex/cursor/gemini/opencode/vibe/vscode/jetbrains) have
- * no verified env-var signal today — none has a hook path that calls this
- * function yet — so they're reachable only via the explicit AI_AGENT override.
+ * Vendor-native hook dispatchers pass their agent explicitly. Other hosts without
+ * a verified hook signal (cursor/opencode/vibe/vscode/jetbrains) are reachable
+ * through transcript provenance or the explicit AI_AGENT override.
  *
  * `env` is injected (defaults to process.env) purely so callers/tests stay
  * hermetic; production hooks call detectOriginAgent() with no args.

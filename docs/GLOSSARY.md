@@ -38,6 +38,14 @@ One bar per originating tool, showing **which AI authored each observation**:
 `claude-code`, `codex`, `agy`, `gemini`, `kimi`, `opencode`. Observations from before
 cross-AI capture existed (no recorded origin) are attributed to `claude-code`.
 
+### Cross-AI capture paths
+
+| Term | Meaning |
+|---|---|
+| **Native capture** | A vendor lifecycle hook delivered PostToolUse directly to Captain Memo. Codex, supported Gemini CLI versions, and Kimi 1.28+ can use this low-latency path. `/stats.capture.native` counts sessions that have actually proved delivery. |
+| **Transcript/rollout fallback** | Captain Memo reads the CLI's persisted local session after it becomes idle. This covers older or disabled native hooks and remains the primary path for Agy and opencode. |
+| **Proven native session** | A session whose native PostToolUse event was accepted by the worker. Hook installation alone is not proof. The fallback reader skips only this exact session, preventing duplicate observations without weakening compatibility. |
+
 ## Recall — *how memory actually gets used*
 
 The payoff metrics: of everything stored, how much is actually being pulled back into

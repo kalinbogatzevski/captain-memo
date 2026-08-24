@@ -62,6 +62,40 @@ test('POST /observation/enqueue accepts a raw event and returns id', async () =>
   expect(body.queued).toBe(true);
 });
 
+test('a successfully enqueued native Codex event is reflected in capture stats', async () => {
+  const nativeEvent = await fetch(`http://localhost:${port}/observation/enqueue`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      session_id: 'native-codex-session', project_id: 'p1', prompt_number: 42,
+      tool_name: 'apply_patch', tool_input_summary: 'patch', tool_result_summary: 'ok',
+      files_read: [], files_modified: ['a.ts'], ts_epoch: 1_700_000_000,
+      origin_agent: 'codex', source: 'hook:codex',
+    }),
+  });
+  expect(nativeEvent.status).toBe(200);
+  const stats = await fetch(`http://localhost:${port}/stats`).then((response) => response.json()) as any;
+  expect(stats.capture.native.codex).toBe(1);
+});
+
+test('native session accounting recognizes Gemini and Kimi hook sources', async () => {
+  for (const agent of ['gemini', 'kimi']) {
+    const response = await fetch(`http://localhost:${port}/observation/enqueue`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        session_id: `${agent}-native`, project_id: 'p1', prompt_number: 0,
+        tool_name: 'write', tool_input_summary: 'input', tool_result_summary: 'ok',
+        files_read: [], files_modified: [], ts_epoch: 1_700_000_000,
+        origin_agent: agent, source: `hook:${agent}`,
+      }),
+    });
+    expect(response.status).toBe(200);
+  }
+  const stats = await fetch(`http://localhost:${port}/stats`).then((response) => response.json()) as any;
+  expect(stats.capture.native.gemini).toBe(1);
+  expect(stats.capture.native.kimi).toBe(1);
+});
+
 test('POST /observation/flush drains queued events into observations', async () => {
   for (let i = 0; i < 3; i++) {
     await fetch(`http://localhost:${port}/observation/enqueue`, {

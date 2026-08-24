@@ -1,5 +1,6 @@
-// agy (Antigravity CLI) CaptureSource — agy has NO hook system, but it persists
-// every session as a SQLite "trajectory" db under
+// agy (Antigravity CLI) CaptureSource — agy 1.1.11 exposes lifecycle hooks, but
+// its documented PostToolUse payload omits the tool input/result Captain Memo
+// needs for useful observations. It persists every session as a SQLite "trajectory" db under
 // ~/.gemini/antigravity-cli/conversations/<uuid>.db. The step payloads are an
 // undocumented protobuf BLOB, so we recover the human-readable transcript with a
 // printable-run extractor (verified: recovers prompts, tool-call JSON, outputs,

@@ -65,8 +65,8 @@ export interface SearchOptions {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Raw event captured by the PostToolUse hook. Lossless echo of what Claude
- * Code passed to the hook; the worker is responsible for any redaction.
+ * Raw event captured by a vendor PostToolUse hook or reconstructed from a
+ * local transcript. The worker is responsible for any redaction.
  */
 export interface RawObservationEvent {
   session_id: string;

@@ -7,6 +7,41 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.39.0] — 2026-08-24
+
+### Added
+
+- **Native memory and observation hooks for Codex, Gemini CLI, and Kimi CLI.** `captain-memo
+  connect` now capability-probes each installed CLI and, where supported, installs prompt injection,
+  PostToolUse capture, and turn-end flushing without replacing foreign hooks. Codex follows its
+  effective `hooks` feature value, Gemini follows its experimental hooks command and settings, and
+  Kimi is gated at the vendor's 1.28.0 hook introduction.
+- **Native delivery is visible in worker stats.** `/stats.capture.native` counts proven Codex,
+  Gemini, and Kimi sessions, while native hook events carry explicit vendor provenance into the same
+  observation pipeline used by Claude Code and transcript capture.
+
+### Changed
+
+- **Native hooks and transcript readers now form one backwards-compatible capture path.** Installing
+  a hook never disables fallback by itself. Only a native PostToolUse event successfully accepted by
+  the worker marks that exact session native, after which the transcript/rollout reader skips it to
+  prevent duplicate observations. Older, disabled, untrusted, and failed hook installations continue
+  working through their existing readers automatically.
+- **Agy and Ollama use the capture layer that owns the useful evidence.** Agy 1.1.11's documented
+  native PostToolUse payload lacks tool input/results, so Captain Memo retains its richer conversation
+  capture. Ollama is a model/tool-calling server rather than the agent lifecycle owner, so Captain
+  Memo observes whichever connected agent hosts the Ollama loop.
+
+### Fixed
+
+- **The distributable hook bundle dispatches exactly one handler.** Bun flattens imported hook
+  modules into the bundle and reports the entry as `import.meta.main` inside each one; their legacy
+  direct-run guards could therefore race to consume the same stdin. Dispatcher bundles are now
+  excluded from those guards, with an end-to-end native PostToolUse regression test.
+- **Cold-starting Gemini installs its supported hooks reliably.** The capability check now uses the
+  existing CLI wiring deadline rather than the fast PATH-probe ceiling; a live 0.25.0 install took
+  just over five seconds and previously degraded to transcript capture despite supporting hooks.
+
 ## [0.38.2] — 2026-08-24
 
 ### Fixed

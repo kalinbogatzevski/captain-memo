@@ -90,6 +90,9 @@ export interface ConnectResult {
   mcp: 'added' | 'present' | 'failed' | 'skipped';
   // 'installed' = skill copied into place; 'failed' = copy errored; 'skipped' = not attempted.
   skill: 'installed' | 'failed' | 'skipped';
+  // Native lifecycle hooks where the installed CLI exposes a usable contract.
+  // Transcript/rollout capture stays armed until a hook actually reaches the worker.
+  capture?: 'native-hooks' | 'rollout-fallback' | 'hook-install-failed';
   detail?: string;
 }
 
@@ -500,6 +503,47 @@ export function mergeKimiConfig(existingToml: string | null, opts: { models: str
   return prefix + (merged === '' ? block : merged + '\n\n' + block);
 }
 
+export const CAPTAIN_MEMO_KIMI_HOOK_BEGIN = '# >>> captain-memo native hooks (managed) >>>';
+export const CAPTAIN_MEMO_KIMI_HOOK_END = '# <<< captain-memo native hooks <<<';
+
+/** Kimi introduced its Beta lifecycle hooks in 1.28.0 and has no feature-list
+ *  command, so this is the one adapter where a semver capability gate is the
+ *  vendor-supported signal. Unknown output fails closed to transcript capture. */
+export function kimiHooksSupported(result: RunResult): boolean {
+  if (result.status !== 0) return false;
+  const match = /(\d+)\.(\d+)\.(\d+)/.exec(`${result.stdout ?? ''}\n${result.stderr ?? ''}`);
+  if (!match) return false;
+  const [, major, minor] = match.map(Number);
+  return major! > 1 || (major === 1 && minor! >= 28);
+}
+
+export function mergeKimiHooks(existingToml: string | null, hookCommand: string, hookBundle: string): string {
+  const escapedBegin = CAPTAIN_MEMO_KIMI_HOOK_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escapedEnd = CAPTAIN_MEMO_KIMI_HOOK_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const base = (existingToml ?? '')
+    .replace(new RegExp(`${escapedBegin}[\\s\\S]*?${escapedEnd}\\n?`), '')
+    .replace(/\s+$/, '');
+  const command = (alias: string) =>
+    `${quoteHookArg(hookCommand)} ${quoteHookArg(hookBundle)} ${alias}`;
+  const hook = (event: string, alias: string, timeout: number) => [
+    '[[hooks]]',
+    `event = ${JSON.stringify(event)}`,
+    `command = ${JSON.stringify(command(alias))}`,
+    `timeout = ${timeout}`,
+  ].join('\n');
+  const block = [
+    CAPTAIN_MEMO_KIMI_HOOK_BEGIN,
+    hook('UserPromptSubmit', 'KimiUserPromptSubmit', 5),
+    '',
+    hook('PostToolUse', 'KimiPostToolUse', 5),
+    '',
+    hook('Stop', 'KimiStop', 30),
+    CAPTAIN_MEMO_KIMI_HOOK_END,
+    '',
+  ].join('\n');
+  return base ? `${base}\n\n${block}` : block;
+}
+
 /** The model bare `kimi` should default to: the first that isn't obviously an embedder (`ollama list` returns
  *  those too — captain-memo's own README tells users to pull one — and an embedder cannot chat). undefined ⇒
  *  nothing chat-like is installed. Every model is still emitted as a [models.*] alias, so `-m` reaches them all.
@@ -557,6 +601,144 @@ export function mergeCodexToolApprovals(existingToml: string, tools: readonly st
   return out;
 }
 
+export const CAPTAIN_MEMO_CODEX_HOOK_MARKER = 'captain-memo-codex-hook-managed';
+
+type CommandHookEntry = {
+  type?: string;
+  command?: string;
+  timeout?: number;
+  async?: boolean;
+  [key: string]: unknown;
+};
+type CommandHookGroup = { hooks?: CommandHookEntry[]; [key: string]: unknown };
+type CodexHooksFile = {
+  hooks?: Record<string, CommandHookGroup[]>;
+  [key: string]: unknown;
+};
+
+/** Read `codex features list` rather than guessing support from a version. The
+ *  last column is the effective value, so an explicit `[features] hooks=false`
+ *  correctly keeps Captain Memo on rollout capture. */
+export function codexHooksEnabled(result: RunResult): boolean {
+  if (result.status !== 0) return false;
+  return (result.stdout ?? '').split(/\r?\n/).some((line) => {
+    const cols = line.trim().split(/\s+/);
+    return cols[0] === 'hooks' && cols.at(-1) === 'true';
+  });
+}
+
+function quoteHookArg(value: string): string {
+  return `"${value.replace(/(["\\])/g, '\\$1')}"`;
+}
+
+/** Merge Captain Memo's native Codex hooks while preserving every foreign
+ *  top-level key, event group, and command. Managed entries are replaced in
+ *  place on reconnect so a moved checkout never leaves stale executable refs. */
+export function mergeCodexHooks(existingJson: string | null, hookCommand: string, hookBundle: string): string {
+  let root: CodexHooksFile = {};
+  if (existingJson && existingJson.trim()) {
+    const parsed = JSON.parse(existingJson) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('hooks.json must contain a JSON object');
+    }
+    root = parsed as CodexHooksFile;
+  }
+  const hooks = root.hooks && typeof root.hooks === 'object' && !Array.isArray(root.hooks)
+    ? root.hooks
+    : {};
+
+  // Strip only our prior command entries. If a group also contains a foreign
+  // command, keep the group and all its matcher/metadata intact.
+  for (const [event, groups] of Object.entries(hooks)) {
+    if (!Array.isArray(groups)) continue;
+    hooks[event] = groups.flatMap((group) => {
+      const entries = Array.isArray(group?.hooks)
+        ? group.hooks.filter((entry) => !entry.command?.includes(CAPTAIN_MEMO_CODEX_HOOK_MARKER))
+        : [];
+      return entries.length > 0 ? [{ ...group, hooks: entries }] : [];
+    });
+  }
+
+  const command = (alias: string) =>
+    `${quoteHookArg(hookCommand)} ${quoteHookArg(hookBundle)} ${alias} # ${CAPTAIN_MEMO_CODEX_HOOK_MARKER}`;
+  const managed: Record<string, CommandHookEntry> = {
+    UserPromptSubmit: {
+      type: 'command', command: command('CodexUserPromptSubmit'), timeout: 5,
+      // Captain Memo's default injection budget is 4k tokens; Codex otherwise
+      // truncates command-hook context at its lower 2.5k default.
+      additionalContextLimit: 5_000,
+    },
+    // Keep observation delivery synchronous: marking a session native suppresses
+    // its rollout fallback, so Codex must know enqueue completed before moving on.
+    PostToolUse: { type: 'command', command: command('CodexPostToolUse'), timeout: 5 },
+    Stop: { type: 'command', command: command('CodexStop'), timeout: 30 },
+  };
+  for (const [event, entry] of Object.entries(managed)) {
+    (hooks[event] ??= []).push({ hooks: [entry] });
+  }
+  root.hooks = hooks;
+  return JSON.stringify(root, null, 2) + '\n';
+}
+
+export const CAPTAIN_MEMO_GEMINI_HOOK_MARKER = 'captain-memo-gemini-hook-managed';
+
+export function geminiHooksSupported(result: RunResult): boolean {
+  if (result.status !== 0) return false;
+  return /Manage Gemini CLI hooks|gemini hooks migrate/i.test(`${result.stdout ?? ''}\n${result.stderr ?? ''}`);
+}
+
+/** Enable and merge Gemini's experimental user-level lifecycle hooks. The
+ *  user's foreign settings and hook groups survive byte-for-structure; only
+ *  Captain Memo commands carrying our marker are replaced. */
+export function mergeGeminiHooks(existingJson: string | null, hookCommand: string, hookBundle: string): string {
+  let root: Record<string, unknown> = {};
+  if (existingJson && existingJson.trim()) {
+    const parsed = JSON.parse(existingJson) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('settings.json must contain a JSON object');
+    }
+    root = parsed as Record<string, unknown>;
+  }
+  const tools = root.tools && typeof root.tools === 'object' && !Array.isArray(root.tools)
+    ? root.tools as Record<string, unknown>
+    : {};
+  tools.enableHooks = true;
+  root.tools = tools;
+  const hooks = root.hooks && typeof root.hooks === 'object' && !Array.isArray(root.hooks)
+    ? root.hooks as Record<string, unknown>
+    : {};
+  hooks.enabled = true;
+
+  for (const [event, value] of Object.entries(hooks)) {
+    if (!Array.isArray(value)) continue;
+    hooks[event] = value.flatMap((group: CommandHookGroup) => {
+      const entries = Array.isArray(group?.hooks)
+        ? group.hooks.filter((entry) => !entry.command?.includes(CAPTAIN_MEMO_GEMINI_HOOK_MARKER))
+        : [];
+      return entries.length > 0 ? [{ ...group, hooks: entries }] : [];
+    });
+  }
+  const command = (alias: string) =>
+    `${quoteHookArg(hookCommand)} ${quoteHookArg(hookBundle)} ${alias} # ${CAPTAIN_MEMO_GEMINI_HOOK_MARKER}`;
+  const add = (event: string, alias: string, timeout: number, matcher?: string) => {
+    const groups = Array.isArray(hooks[event]) ? hooks[event] as CommandHookGroup[] : [];
+    groups.push({
+      ...(matcher !== undefined ? { matcher } : {}),
+      hooks: [{
+        name: `captain-memo-${event.toLowerCase()}`,
+        type: 'command', command: command(alias), timeout,
+        description: 'Captain Memo native memory and observation capture',
+      }],
+    });
+    hooks[event] = groups;
+  };
+  add('BeforeAgent', 'GeminiBeforeAgent', 5_000);
+  add('AfterTool', 'GeminiAfterTool', 5_000, '*');
+  add('AfterAgent', 'GeminiAfterAgent', 30_000);
+  root.hooks = hooks;
+  return JSON.stringify(root, null, 2) + '\n';
+}
+
 const codexAdapter: ToolAdapter = {
   id: 'codex',
   label: 'Codex CLI',
@@ -592,7 +774,31 @@ const codexAdapter: ToolAdapter = {
     }
 
     const skill = copySkill(ctx.skillSource, join(ctx.home, '.codex', 'skills', 'captain-memo', 'SKILL.md'));
-    return withDetail({ tool: 'codex', mcp, skill }, detail);
+
+    // Native hooks landed after Captain Memo's rollout reader. Capability-probe
+    // them so old CLIs remain untouched and a user-disabled hooks feature is
+    // respected. A hook that actually fires marks its session in capture-state;
+    // until then the worker continues reading rollout JSONL as the fallback.
+    let capture: NonNullable<ConnectResult['capture']> = 'rollout-fallback';
+    const featureProbe = ctx.run('codex', ['features', 'list'], PROBE_TIMEOUT_MS);
+    if (codexHooksEnabled(featureProbe)) {
+      const hooksPath = join(ctx.home, '.codex', 'hooks.json');
+      const hookBundle = join(dirname(mcpServerPath(ctx.mcpCommand)), 'captain-memo-hook.js');
+      try {
+        const before = existsSync(hooksPath) ? readFileSync(hooksPath, 'utf-8') : null;
+        const after = mergeCodexHooks(before, ctx.mcpCommand[0] ?? 'bun', hookBundle);
+        if (after !== before) {
+          mkdirSync(dirname(hooksPath), { recursive: true });
+          writeFileSync(hooksPath, after);
+        }
+        capture = 'native-hooks';
+      } catch (e) {
+        capture = 'hook-install-failed';
+        const hookError = `native hook install failed (${(e as Error).message}); rollout capture remains active`;
+        detail = detail ? `${detail}; ${hookError}` : hookError;
+      }
+    }
+    return withDetail({ tool: 'codex', mcp, skill, capture }, detail);
   },
 };
 
@@ -617,7 +823,29 @@ const geminiAdapter: ToolAdapter = {
     else if (looksAlreadyPresent(r)) mcp = 'present';
     else detail = errDetail(r, 'gemini mcp add failed');
     const skill = copySkill(ctx.skillSource, join(ctx.home, '.gemini', 'skills', 'captain-memo', 'SKILL.md'));
-    return withDetail({ tool: 'gemini', mcp, skill }, detail);
+    let capture: NonNullable<ConnectResult['capture']> = 'rollout-fallback';
+    // Gemini's Node-based CLI can take >5s on a cold start (the MCP wiring call
+    // already has the same behavior), so this is capability work, not a PATH
+    // detection probe. Reuse the wiring ceiling to avoid a false old-CLI result.
+    const hookProbe = ctx.run('gemini', ['hooks', '--help'], WIRE_TIMEOUT_MS);
+    if (geminiHooksSupported(hookProbe)) {
+      const settingsPath = join(ctx.home, '.gemini', 'settings.json');
+      const hookBundle = join(dirname(mcpServerPath(ctx.mcpCommand)), 'captain-memo-hook.js');
+      try {
+        const before = existsSync(settingsPath) ? readFileSync(settingsPath, 'utf-8') : null;
+        const after = mergeGeminiHooks(before, ctx.mcpCommand[0] ?? 'bun', hookBundle);
+        if (after !== before) {
+          mkdirSync(dirname(settingsPath), { recursive: true });
+          writeFileSync(settingsPath, after);
+        }
+        capture = 'native-hooks';
+      } catch (e) {
+        capture = 'hook-install-failed';
+        const hookError = `native hook install failed (${(e as Error).message}); transcript capture remains active`;
+        detail = detail ? `${detail}; ${hookError}` : hookError;
+      }
+    }
+    return withDetail({ tool: 'gemini', mcp, skill, capture }, detail);
   },
 };
 
@@ -859,7 +1087,23 @@ const kimiAdapter: ToolAdapter = {
     else details.push(errDetail(r, 'kimi mcp add failed'));
 
     const skill = copySkill(ctx.skillSource, join(ctx.home, '.kimi', 'skills', 'captain-memo', 'SKILL.md'));
-    return withDetail({ tool: 'kimi', mcp, skill }, details.length ? details.join('; ') : undefined);
+    let capture: NonNullable<ConnectResult['capture']> = 'rollout-fallback';
+    if (kimiHooksSupported(ctx.run('kimi', ['--version'], PROBE_TIMEOUT_MS))) {
+      const hookBundle = join(dirname(mcpServerPath(ctx.mcpCommand)), 'captain-memo-hook.js');
+      try {
+        const before = existsSync(cfgPath) ? readFileSync(cfgPath, 'utf-8') : null;
+        const after = mergeKimiHooks(before, ctx.mcpCommand[0] ?? 'bun', hookBundle);
+        if (after !== before) {
+          mkdirSync(dirname(cfgPath), { recursive: true });
+          writeFileSync(cfgPath, after);
+        }
+        capture = 'native-hooks';
+      } catch (e) {
+        capture = 'hook-install-failed';
+        details.push(`native hook install failed (${(e as Error).message}); transcript capture remains active`);
+      }
+    }
+    return withDetail({ tool: 'kimi', mcp, skill, capture }, details.length ? details.join('; ') : undefined);
   },
 };
 
@@ -1081,7 +1325,13 @@ export function printConnectReport(results: ConnectResult[]): void {
     const skillLabel = r.skill === 'installed' ? 'skill installed'
       : r.skill === 'failed' ? 'skill copy failed'
       : 'skill skipped';
-    const line = `${r.tool}: ${mcpLabel}, ${skillLabel}${r.detail ? ` — ${r.detail}` : ''}`;
+    const captureLabel = r.capture === 'native-hooks' && r.tool === 'codex'
+      ? ', native observation hooks installed (review once in /hooks)'
+      : r.capture === 'native-hooks' ? ', native observation hooks installed'
+      : r.capture === 'rollout-fallback' ? ', transcript/rollout observation fallback'
+      : r.capture === 'hook-install-failed' ? ', native hook install failed'
+      : '';
+    const line = `${r.tool}: ${mcpLabel}, ${skillLabel}${captureLabel}${r.detail ? ` — ${r.detail}` : ''}`;
     if (r.mcp === 'failed') warn(line);
     else if (r.mcp === 'skipped') info(line);
     else ok(line);

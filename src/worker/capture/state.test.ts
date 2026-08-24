@@ -58,3 +58,13 @@ test('ingestedCursor returns the persisted marker and event count', () => {
   state.markIngested('codex', 's1', '123:456', 1000, 7);
   expect(state.ingestedCursor('codex', 's1')).toEqual({ marker: '123:456', eventsIngested: 7 });
 });
+
+test('native session markers are source-scoped and idempotent', () => {
+  const state = tmpState();
+  expect(state.hasNativeSession('codex', 's1')).toBe(false);
+  state.markNativeSession('codex', 's1', 1000);
+  state.markNativeSession('codex', 's1', 1001);
+  expect(state.hasNativeSession('codex', 's1')).toBe(true);
+  expect(state.hasNativeSession('agy', 's1')).toBe(false);
+  expect(state.nativeSessions('codex')).toBe(1);
+});

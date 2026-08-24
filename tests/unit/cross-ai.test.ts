@@ -2,7 +2,7 @@ import { test, expect, beforeEach, afterEach, describe } from 'bun:test';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { mergeCursorMcpConfig, mergeVibeMcpConfig, mergeKimiConfig, mergeClaudeDesktopConfig, mergeGooseConfig, toBlockYaml, mergeCodexToolApprovals, CODEX_TOOL_NAMES, gooseConfigPath, gooseConfigCandidates, extractGooseEntry, gooseExtensionEntry, parseOllamaList, connectCrossAi, type Runner } from '../../src/cli/cross-ai.ts';
+import { mergeCursorMcpConfig, mergeVibeMcpConfig, mergeKimiConfig, mergeKimiHooks, kimiHooksSupported, mergeClaudeDesktopConfig, mergeGooseConfig, mergeGeminiHooks, geminiHooksSupported, toBlockYaml, mergeCodexToolApprovals, mergeCodexHooks, codexHooksEnabled, CAPTAIN_MEMO_CODEX_HOOK_MARKER, CAPTAIN_MEMO_GEMINI_HOOK_MARKER, CAPTAIN_MEMO_KIMI_HOOK_BEGIN, CODEX_TOOL_NAMES, gooseConfigPath, gooseConfigCandidates, extractGooseEntry, gooseExtensionEntry, parseOllamaList, connectCrossAi, type Runner } from '../../src/cli/cross-ai.ts';
 
 // Bun's native YAML, typed locally so this compiles against an @types/bun predating `Bun.YAML`.
 const YAML = (globalThis as { Bun: { YAML: { parse(s: string): any; stringify(v: unknown): string } } }).Bun.YAML;
@@ -137,6 +137,131 @@ test('mergeCodexToolApprovals — idempotent, and never rewrites what is already
   expect(once.match(/\[mcp_servers\.captain-memo\.tools\.status\]/g)).toHaveLength(1);
   expect(once).toContain('[mcp_servers.other-server]');
   expect(once).toContain('model = "gpt-5.6-sol"');
+});
+
+test('codexHooksEnabled — follows the effective feature value and fails closed', () => {
+  expect(codexHooksEnabled({ status: 0, stdout: 'hooks stable true\nplugins stable true\n' })).toBe(true);
+  expect(codexHooksEnabled({ status: 0, stdout: 'hooks stable false\n' })).toBe(false);
+  expect(codexHooksEnabled({ status: 1, stdout: 'hooks stable true\n' })).toBe(false);
+});
+
+test('mergeCodexHooks — preserves foreign hooks and replaces managed entries idempotently', () => {
+  const existing = JSON.stringify({
+    custom: { keep: true },
+    hooks: {
+      PostToolUse: [{ matcher: 'foreign', hooks: [
+        { type: 'command', command: 'foreign-tool' },
+        { type: 'command', command: `old-bundle CodexPostToolUse # ${CAPTAIN_MEMO_CODEX_HOOK_MARKER}` },
+      ] }],
+    },
+  });
+  const once = mergeCodexHooks(existing, '/opt/bun', '/new/captain-memo-hook.js');
+  const twice = mergeCodexHooks(once, '/opt/bun', '/new/captain-memo-hook.js');
+  const parsed = JSON.parse(once);
+  expect(twice).toBe(once);
+  expect(parsed.custom).toEqual({ keep: true });
+  expect(JSON.stringify(parsed)).toContain('foreign-tool');
+  expect(JSON.stringify(parsed).match(new RegExp(CAPTAIN_MEMO_CODEX_HOOK_MARKER, 'g'))).toHaveLength(3);
+  expect(parsed.hooks.PostToolUse.at(-1).hooks[0].async).toBeUndefined();
+  expect(JSON.stringify(parsed)).not.toContain('old-bundle');
+});
+
+test('connectCrossAi — Codex installs native hooks only when the effective feature is on', () => {
+  const run: Runner = (cmd, args) => {
+    if (cmd === 'codex' && args[0] === 'mcp') return { status: 0, stdout: '' };
+    if (cmd === 'codex' && args[0] === 'features') return { status: 0, stdout: 'hooks stable true\n' };
+    return { status: 1, stdout: '' };
+  };
+  const [result] = connectCrossAi({
+    only: ['codex'], mcpCommand: ['bun', MCP_PATH], skillSource, home, run,
+  });
+  expect(result?.capture).toBe('native-hooks');
+  const hooksPath = join(home, '.codex', 'hooks.json');
+  expect(existsSync(hooksPath)).toBe(true);
+  const hooks = JSON.parse(readFileSync(hooksPath, 'utf-8'));
+  expect(hooks.hooks.UserPromptSubmit[0].hooks[0].command).toContain('CodexUserPromptSubmit');
+  expect(hooks.hooks.PostToolUse[0].hooks[0].command).toContain('captain-memo-hook.js');
+});
+
+test('connectCrossAi — old or hooks-disabled Codex stays on rollout fallback', () => {
+  const run: Runner = (cmd, args) => {
+    if (cmd === 'codex' && args[0] === 'mcp') return { status: 0, stdout: '' };
+    if (cmd === 'codex' && args[0] === 'features') return { status: 0, stdout: 'hooks stable false\n' };
+    return { status: 1, stdout: '' };
+  };
+  const [result] = connectCrossAi({
+    only: ['codex'], mcpCommand: ['bun', MCP_PATH], skillSource, home, run,
+  });
+  expect(result?.capture).toBe('rollout-fallback');
+  expect(existsSync(join(home, '.codex', 'hooks.json'))).toBe(false);
+});
+
+test('Gemini hooks — capability probe and merge preserve foreign settings', () => {
+  expect(geminiHooksSupported({ status: 0, stdout: 'Manage Gemini CLI hooks.\n' })).toBe(true);
+  expect(geminiHooksSupported({ status: 1, stdout: 'Manage Gemini CLI hooks.\n' })).toBe(false);
+  const existing = JSON.stringify({ theme: 'dark', hooks: {
+    AfterTool: [{ matcher: 'foreign', hooks: [{ type: 'command', command: 'foreign-hook' }] }],
+  } });
+  const once = mergeGeminiHooks(existing, 'bun', '/repo/hook.js');
+  const twice = mergeGeminiHooks(once, 'bun', '/repo/hook.js');
+  const parsed = JSON.parse(once);
+  expect(twice).toBe(once);
+  expect(parsed.theme).toBe('dark');
+  expect(parsed.tools.enableHooks).toBe(true);
+  expect(parsed.hooks.enabled).toBe(true);
+  expect(JSON.stringify(parsed)).toContain('foreign-hook');
+  expect(JSON.stringify(parsed).match(new RegExp(CAPTAIN_MEMO_GEMINI_HOOK_MARKER, 'g'))).toHaveLength(3);
+});
+
+test('connectCrossAi — Gemini installs supported hooks and keeps transcript fallback for old CLIs', () => {
+  let hookProbeTimeout = 0;
+  const supported: Runner = (cmd, args, timeoutMs) => {
+    if (cmd === 'gemini' && args[0] === 'mcp') return { status: 0, stdout: '' };
+    if (cmd === 'gemini' && args[0] === 'hooks') {
+      hookProbeTimeout = timeoutMs ?? 0;
+      return { status: 0, stdout: 'Manage Gemini CLI hooks.\n' };
+    }
+    return { status: 1, stdout: '' };
+  };
+  const [native] = connectCrossAi({ only: ['gemini'], mcpCommand: ['bun', MCP_PATH], skillSource, home, run: supported });
+  expect(native?.capture).toBe('native-hooks');
+  expect(hookProbeTimeout).toBe(60_000);
+  expect(readFileSync(join(home, '.gemini', 'settings.json'), 'utf-8')).toContain('GeminiAfterTool');
+
+  const oldHome = mkdtempSync(join(tmpdir(), 'captain-memo-gemini-old-'));
+  const unsupported: Runner = (cmd, args) => cmd === 'gemini' && args[0] === 'mcp'
+    ? { status: 0, stdout: '' }
+    : { status: 1, stdout: '' };
+  const [fallback] = connectCrossAi({ only: ['gemini'], mcpCommand: ['bun', MCP_PATH], skillSource, home: oldHome, run: unsupported });
+  expect(fallback?.capture).toBe('rollout-fallback');
+  expect(existsSync(join(oldHome, '.gemini', 'settings.json'))).toBe(false);
+  rmSync(oldHome, { recursive: true, force: true });
+});
+
+test('Kimi hooks — version gate and managed TOML block are idempotent', () => {
+  expect(kimiHooksSupported({ status: 0, stdout: 'kimi-cli 1.28.0' })).toBe(true);
+  expect(kimiHooksSupported({ status: 0, stdout: 'kimi-cli 1.27.9' })).toBe(false);
+  const once = mergeKimiHooks('theme = "dark"\n', 'bun', '/repo/hook.js');
+  const twice = mergeKimiHooks(once, 'bun', '/repo/hook.js');
+  expect(twice).toBe(once);
+  expect(once).toContain('theme = "dark"');
+  expect(once).toContain(CAPTAIN_MEMO_KIMI_HOOK_BEGIN);
+  expect(once.match(/\[\[hooks\]\]/g)).toHaveLength(3);
+  expect(once).toContain('KimiPostToolUse');
+});
+
+test('connectCrossAi — Kimi 1.28+ installs hooks alongside its managed Ollama config', () => {
+  const run: Runner = (cmd, args) => {
+    if (cmd === 'ollama') return { status: 0, stdout: 'NAME ID SIZE MODIFIED\nqwen3:8b abc 5GB now\n' };
+    if (cmd === 'kimi' && args[0] === 'mcp') return { status: 0, stdout: '' };
+    if (cmd === 'kimi' && args[0] === '--version') return { status: 0, stdout: 'kimi-cli 1.48.0\n' };
+    return { status: 1, stdout: '' };
+  };
+  const [result] = connectCrossAi({ only: ['kimi'], mcpCommand: ['bun', MCP_PATH], skillSource, home, run });
+  expect(result?.capture).toBe('native-hooks');
+  const config = readFileSync(join(home, '.kimi', 'config.toml'), 'utf-8');
+  expect(config).toContain('[providers.ollama]');
+  expect(config).toContain('KimiPostToolUse');
 });
 
 // ---- mergeGooseConfig — same pure, disk-free merge, over goose's config.yaml -
