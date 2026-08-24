@@ -51,3 +51,10 @@ test('ingestedSessions: scoped per source', () => {
   expect(state.ingestedSessions('agy')).toBe(1);
   expect(state.ingestedSessions('gemini')).toBe(0);
 });
+
+test('ingestedCursor returns the persisted marker and event count', () => {
+  const state = tmpState();
+  expect(state.ingestedCursor('codex', 'missing')).toBeNull();
+  state.markIngested('codex', 's1', '123:456', 1000, 7);
+  expect(state.ingestedCursor('codex', 's1')).toEqual({ marker: '123:456', eventsIngested: 7 });
+});

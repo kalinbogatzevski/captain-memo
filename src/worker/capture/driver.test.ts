@@ -130,6 +130,27 @@ test('a growing session enqueues only its NEW turns, not the whole file again', 
   expect(enqueued.length).toBe(8);
 });
 
+test('a parser upgrade reconstructs the old byte-marker count before slicing a resumed session', async () => {
+  const state = tmpState();
+  state.ensureCutoff('codex', 0);
+  // The old parser collapsed a three-turn prefix into one aggregate event.
+  state.markIngested('codex', 's1', '1000:300', 1000, 1);
+  const events = [1, 2, 3, 4].map((prompt_number) => ({ ...ev('s1'), prompt_number }));
+  const src: CaptureSource = {
+    id: 'codex', available: () => true, enabled: () => true, describe: () => '/x',
+    discover: () => [{ sessionId: 's1', path: '/x/s1.jsonl', marker: '2000:400', mtimeEpoch: 2000 }],
+    extract: () => events,
+    eventCountAtMarker: (_ref, marker) => marker === '1000:300' ? 3 : null,
+  };
+  const enqueued: RawObservationEvent[] = [];
+
+  const result = await runCaptureTick({ sources: [src], state, enqueue: (e) => enqueued.push(e), log: () => {} });
+
+  expect(result.events).toBe(1);
+  expect(enqueued.map((e) => e.prompt_number)).toEqual([4]);
+  expect(state.ingestedCursor('codex', 's1')).toEqual({ marker: '2000:400', eventsIngested: 4 });
+});
+
 test('a session REWRITTEN shorter re-ingests from scratch rather than silently skipping', async () => {
   const state = tmpState();
   state.ensureCutoff('codex', 0);

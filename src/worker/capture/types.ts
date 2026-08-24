@@ -34,4 +34,9 @@ export interface CaptureSource {
   discover(): SessionRef[];
   /** Parse a session transcript into events (origin_agent already stamped). */
   extract(ref: SessionRef): RawObservationEvent[];
+  /** Optional append-only cursor repair. Return how many events the current
+   *  transcript contained at a previously persisted marker, or null when the
+   *  source cannot reconstruct that boundary. This keeps parser upgrades from
+   *  replaying an already-processed prefix of a resumed session. */
+  eventCountAtMarker?(ref: SessionRef, marker: string): number | null;
 }

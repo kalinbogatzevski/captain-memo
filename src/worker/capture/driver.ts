@@ -63,7 +63,16 @@ export async function runCaptureTick(
       // SHORTER result means the file was rewritten or rotated: re-ingest the whole thing rather than
       // silently skipping its contents — the same rule the digest accumulators use when a file turns up
       // smaller than their cached offset.
-      const already = deps.state.ingestedCount(src.id, ref.sessionId);
+      const cursor = deps.state.ingestedCursor(src.id, ref.sessionId);
+      let already = cursor?.eventsIngested ?? 0;
+      // A parser upgrade can reveal more turns in a prefix that an older parser
+      // recorded as one aggregate event. For append-only sources, reconstruct
+      // the event count at the PREVIOUS byte marker before slicing the current
+      // extract. Otherwise the upgrade would replay almost the whole session.
+      if (cursor && cursor.marker !== ref.marker && src.eventCountAtMarker) {
+        const reconstructed = src.eventCountAtMarker(ref, cursor.marker);
+        if (reconstructed !== null) already = reconstructed;
+      }
       const fresh = evs.length >= already ? evs.slice(already) : evs;
 
       // Record even an empty extract so we don't re-open the same unchanged file every tick.

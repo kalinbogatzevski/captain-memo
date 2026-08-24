@@ -42,6 +42,54 @@ test('codex extract: one event per user turn, stamped origin_agent=codex', () =>
   expect(events[1]!.tool_result_summary).toContain('Added test_foo.ts');
 });
 
+test('codex extract: current response_item messages form turns without counting generated context or mirrored answers', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-codex-current-'));
+  const path = join(dir, `rollout-2026-08-24T10-00-00-${UUID}.jsonl`);
+  const lines = [
+    { timestamp: '2026-08-24T10:00:00.000Z', type: 'session_meta', payload: { id: UUID, cwd: '/tmp/proj' } },
+    { timestamp: '2026-08-24T10:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '<environment_context>generated</environment_context>' }] } },
+    { timestamp: '2026-08-24T10:00:02.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'fix the current parser' }] } },
+    { timestamp: '2026-08-24T10:00:03.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Parser fixed.' }] } },
+    { timestamp: '2026-08-24T10:00:04.000Z', type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'Parser fixed.' } },
+    { timestamp: '2026-08-24T10:00:05.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'add regression coverage' }] } },
+    { timestamp: '2026-08-24T10:00:06.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'apply_patch', input: 'tests' } },
+    { timestamp: '2026-08-24T10:00:07.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Coverage added.' }] } },
+  ].map((o) => JSON.stringify(o)).join('\n') + '\n';
+  writeFileSync(path, lines);
+
+  const src = createCodexSource({ projectId: 'proj' });
+  const events = src.extract({ sessionId: UUID, path, marker: 'm', mtimeEpoch: 1 });
+
+  expect(events).toHaveLength(2);
+  expect(events[0]!.tool_input_summary).toBe('fix the current parser');
+  expect(events[0]!.tool_result_summary).toBe('assistant: Parser fixed.');
+  expect(events[1]!.tool_input_summary).toBe('add regression coverage');
+  expect(events[1]!.tool_result_summary).toContain('apply_patch(');
+  expect(events[1]!.tool_result_summary).toContain('assistant: Coverage added.');
+});
+
+test('codex cursor repair counts turns at a previous append-only byte marker', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-codex-marker-'));
+  const path = join(dir, `rollout-2026-08-24T10-00-00-${UUID}.jsonl`);
+  const line = (o: object) => JSON.stringify(o) + '\n';
+  const prefix = [
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ text: 'first' }] } },
+    { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ text: 'done' }] } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ text: 'second' }] } },
+    { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ text: 'done too' }] } },
+  ].map(line).join('');
+  const tail = [
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ text: 'third' }] } },
+    { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ text: 'done three' }] } },
+  ].map(line).join('');
+  writeFileSync(path, prefix + tail);
+  const src = createCodexSource({ projectId: 'proj' });
+  const ref = { sessionId: UUID, path, marker: `2000:${Buffer.byteLength(prefix + tail)}`, mtimeEpoch: 2 };
+
+  expect(src.extract(ref)).toHaveLength(3);
+  expect(src.eventCountAtMarker?.(ref, `1000:${Buffer.byteLength(prefix)}`)).toBe(2);
+});
+
 test('codex discover: finds a quiescent rollout by its uuid', () => {
   const { dir, path } = fixture();
   const src = createCodexSource({ projectId: 'proj', dir, quiesceMs: 0, now: () => Date.now() + 10_000 });

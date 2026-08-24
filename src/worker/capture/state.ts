@@ -68,6 +68,14 @@ export class CaptureState {
     return row?.events_ingested ?? 0;
   }
 
+  /** Persisted marker plus event count for append-only cursor reconstruction. */
+  ingestedCursor(source: string, sessionId: string): { marker: string; eventsIngested: number } | null {
+    const row = this.db
+      .query('SELECT marker, events_ingested FROM capture_ingested WHERE source = ? AND session_id = ?')
+      .get(source, sessionId) as { marker: string; events_ingested: number } | undefined;
+    return row ? { marker: row.marker, eventsIngested: row.events_ingested } : null;
+  }
+
   /** How many sessions of `source` actually PRODUCED something — `events_ingested > 0`.
    *  This is doctor's question: "is capture actually yielding observations?" A session marked
    *  ingested with events_ingested=0 (extract ran, decompressed fine, but the file matched a

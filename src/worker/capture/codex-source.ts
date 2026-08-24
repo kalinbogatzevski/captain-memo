@@ -3,8 +3,9 @@
 //
 // Verified line shapes (codex-cli 0.144.6):
 //   session_meta                → { payload.id, payload.cwd }
-//   event_msg/user_message      → { payload.message } — a real user turn boundary
-//   event_msg|response_item/agent_message → assistant text (payload.message or content[].text)
+//   event_msg/user_message      → { payload.message } — legacy user turn boundary
+//   response_item/message       → { payload.role, payload.content[].text } — current user/assistant messages
+//   event_msg/agent_message     → assistant text in the legacy mirrored event stream
 //   response_item/custom_tool_call | function_call → { payload.name, payload.input|arguments }
 //   event_msg/mcp_tool_call_end  → { payload.invocation.{server,tool,arguments} }
 //   event_msg/patch_apply_end    → { payload.stdout } lists "Updated the following files: M /path"
@@ -57,12 +58,49 @@ function parseUpdatedFiles(stdout: string): string[] {
   return out;
 }
 
+/** Count turns with the same boundary rules as extract(). Used only against an
+ *  earlier byte marker of the SAME append-only rollout, so a parser upgrade can
+ *  repair its persisted cursor without replaying the already-seen prefix. */
+function countTurns(text: string): number {
+  let turns = 0;
+  let started = false;
+  let hasParts = false;
+  const userBoundary = (message: string) => {
+    if (!message.trim()) return;
+    if (started && !hasParts) return; // generated context followed by the real prompt, or a mirrored legacy prompt
+    turns++;
+    started = true;
+    hasParts = false;
+  };
+  const part = (message = 'present') => {
+    if (!message.trim()) return;
+    if (!started) { turns++; started = true; }
+    hasParts = true;
+  };
+
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let o: { type?: string; payload?: Record<string, unknown> };
+    try { o = JSON.parse(line); } catch { continue; }
+    const p = o.payload ?? {};
+    const pt = (p.type as string | undefined) ?? undefined;
+    if (pt === 'user_message') userBoundary(String(p.message ?? ''));
+    else if (pt === 'message' && p.role === 'user') userBoundary(textOf(p.content));
+    else if (pt === 'message' && p.role === 'assistant') part(textOf(p.content));
+    else if (pt === 'agent_message') part(typeof p.message === 'string' ? p.message : textOf(p.content));
+    else if (pt === 'task_complete') part(String(p.last_agent_message ?? ''));
+    else if (pt === 'custom_tool_call' || pt === 'function_call' || pt === 'mcp_tool_call_end' || pt === 'patch_apply_end') part();
+  }
+  return turns;
+}
+
 interface Turn {
   promptNumber: number;
   userText: string;
   parts: string[];
   files: Set<string>;
   tsEpoch: number;
+  lastAssistantText?: string;
 }
 
 export function createCodexSource(opts: CodexSourceOptions): CaptureSource {
@@ -130,6 +168,28 @@ export function createCodexSource(opts: CodexSourceOptions): CaptureSource {
         turns.push(cur);
       };
       const ensureTurn = () => { if (!cur) startTurn(''); return cur!; };
+      // Current Codex rollouts can place generated context (for example an
+      // <environment_context> message) immediately before the real prompt. No
+      // assistant work separates them, so the last consecutive user message is
+      // the actual turn boundary. This also collapses the legacy pair where the
+      // same prompt appears as response_item/message and event_msg/user_message.
+      const startOrReplaceTurn = (userText: string) => {
+        if (cur && cur.parts.length === 0 && cur.files.size === 0) {
+          cur.userText = userText;
+          cur.tsEpoch = lastTs;
+          return;
+        }
+        startTurn(userText);
+      };
+      // Legacy rollouts mirror an assistant message in both event_msg and
+      // response_item, while task_complete repeats the final answer once more.
+      // Preserve distinct assistant updates but never store the same text twice.
+      const appendAssistant = (turn: Turn, message: string, label: 'assistant' | 'result') => {
+        const normalized = message.trim();
+        if (!normalized || turn.lastAssistantText === normalized) return;
+        turn.lastAssistantText = normalized;
+        turn.parts.push(`${label}: ${message}`);
+      };
 
       for (const line of text.split(/\r?\n/)) {
         if (!line.trim()) continue;
@@ -143,17 +203,27 @@ export function createCodexSource(opts: CodexSourceOptions): CaptureSource {
         if (o.type === 'session_meta') continue; // sessionId/cwd handled via ref/projectId
 
         if (pt === 'user_message') {
-          startTurn(String(p.message ?? ''));
+          const msg = String(p.message ?? '');
+          if (msg.trim()) startOrReplaceTurn(msg);
+          continue;
+        }
+        if (pt === 'message' && p.role === 'user') {
+          const msg = textOf(p.content);
+          if (msg.trim()) startOrReplaceTurn(msg);
+          continue;
+        }
+        if (pt === 'message' && p.role === 'assistant') {
+          appendAssistant(ensureTurn(), textOf(p.content), 'assistant');
           continue;
         }
         if (pt === 'agent_message') {
           const msg = typeof p.message === 'string' ? p.message : textOf(p.content);
-          if (msg.trim()) ensureTurn().parts.push(`assistant: ${msg}`);
+          appendAssistant(ensureTurn(), msg, 'assistant');
           continue;
         }
         if (pt === 'task_complete') {
           const msg = String(p.last_agent_message ?? '');
-          if (msg.trim()) ensureTurn().parts.push(`result: ${msg}`);
+          appendAssistant(ensureTurn(), msg, 'result');
           continue;
         }
         if (pt === 'custom_tool_call' || pt === 'function_call') {
@@ -207,6 +277,20 @@ export function createCodexSource(opts: CodexSourceOptions): CaptureSource {
       }
 
       return events;
+    },
+
+    eventCountAtMarker(ref, marker): number | null {
+      if (ref.path.endsWith('.zst')) return null; // compressed rollouts are immutable; a byte prefix is not independently decodable
+      const m = /:(\d+)$/.exec(marker);
+      const size = Number(m?.[1]);
+      if (!Number.isSafeInteger(size) || size < 0) return null;
+      try {
+        const bytes = readFileSync(ref.path);
+        if (size > bytes.length) return null; // rewritten/truncated: let the driver's shorter-session rule re-ingest it
+        return countTurns(bytes.subarray(0, size).toString('utf8'));
+      } catch {
+        return null;
+      }
     },
   };
 }

@@ -7,6 +7,15 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.38.2] — 2026-08-24
+
+### Fixed
+
+- **Codex observations follow the current rollout format without replaying old turns.** Capture now
+  reads `response_item` user and assistant messages emitted by current Codex CLI releases, filters
+  generated context and mirrored events, and repairs old byte cursors before ingesting only genuinely
+  new conversations.
+
 ## [0.38.1] — 2026-08-23
 
 ### Fixed
