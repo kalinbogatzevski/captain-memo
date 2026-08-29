@@ -26,6 +26,8 @@ import {
 import { isWindows } from '../../shared/platform.ts';
 import { VERSION } from '../../shared/version.ts';
 import { decideWorkerDrift, pickUpgradeTarget, parseRemoteCandidates } from '../../shared/version-drift.ts';
+import { compareSemver } from '../../shared/self-update.ts';
+import { describeSessionOf, readLivePluginPins, readPluginManifest } from '../../shared/plugin-cache.ts';
 
 // Lookup a single key from worker.env (CONFIG_DIR per platform, then the /etc
 // system-mode fallback on Linux — workerEnvPaths() supplies the right list).
@@ -828,7 +830,82 @@ function checkPluginEntries(): void {
       record({ name: 'plugin entry (cache)', status: 'PASS',
                detail: `installed cache copy entries resolve (${cachedRoot})` });
     }
+
+    // Installed-vs-source version gap. A `directory`-source install is snapshotted into the cache by
+    // `captain-memo install`; a git pull alone does not refresh it, and neither does the opt-in
+    // self-updater (which does git + bun install + restart and nothing else). So a clone updated by
+    // hand leaves the cache copy behind at the version it was last installed at. New CLI sessions read
+    // the checkout and never notice; anything reading the CACHE gets the older code, silently.
+    const cachedVersion = readPluginManifest(cachedRoot)?.version ?? null;
+    if (cachedVersion && compareSemver(cachedVersion, VERSION) === -1) {
+      record({
+        name: 'plugin cache version', status: 'WARN',
+        detail: `cache copy is v${cachedVersion}, this checkout is v${VERSION} — the cache did not follow the last update`,
+        remedy: 're-run `captain-memo install` to re-snapshot the checkout into the cache',
+      });
+    }
   }
+}
+
+// A session loads its plugin ONCE, at start, and goes on running that copy for its whole life — so an
+// upgrade underneath a running session leaves it on the old code, silently, indefinitely. Verified
+// 2026-08-29: seven MCP servers up for days were serving captain-memo 0.20.0 while the checkout had
+// been on 0.49.0 since that morning. Claude Code exports CLAUDE_PLUGIN_ROOT into every plugin child
+// process, so the version a live session actually loaded is readable from the outside.
+//
+// Nothing here can fix it — a loaded plugin cannot be swapped under a live session — so this check
+// exists to make it SAYABLE. Restarting the session is the whole remedy, and naming WHICH sessions is
+// the point: "restart those sessions" alone sends an operator to the wrong lever.
+function checkStalePluginRoots(): void {
+  const pins = readLivePluginPins();
+  if (pins === null) {
+    record({ name: 'live plugin version', status: 'PASS',
+             detail: 'no /proc on this platform — running-session plugin versions are not inspectable here' });
+    return;
+  }
+  const behind = new Map<string, number>();   // older version → how many live plugin roots are on it
+  const stalePids: number[] = [];             // the processes on those roots, for naming their sessions
+  const byRoot = new Map<string, number[]>();
+  for (const pin of pins) (byRoot.get(pin.root) ?? byRoot.set(pin.root, []).get(pin.root)!).push(pin.pid);
+  let ours = 0, unreadable = 0;
+  for (const [root, rootPids] of byRoot) {
+    const m = readPluginManifest(root);
+    if (m?.name !== 'captain-memo') continue;
+    ours++;
+    if (!m.version) { unreadable++; continue; }   // counted, never folded into a clean bill of health
+    if (compareSemver(m.version, VERSION) === -1) {
+      behind.set(m.version, (behind.get(m.version) ?? 0) + 1);
+      stalePids.push(...rootPids);
+    }
+  }
+  if (ours === 0) {
+    record({ name: 'live plugin version', status: 'PASS', detail: 'no running process is loaded from a captain-memo plugin root' });
+    return;
+  }
+  if (behind.size === 0) {
+    // "none behind", not "all on vVERSION" — a root can be NEWER than this checkout, and one with an
+    // unreadable manifest was never compared at all.
+    record({ name: 'live plugin version', status: 'PASS',
+             detail: `${ours} live plugin root(s), none behind v${VERSION}`
+               + (unreadable > 0 ? ` (${unreadable} with no readable version — not compared)` : '') });
+    return;
+  }
+  const list = [...behind.entries()].map(([v, n]) => `${n}× v${v}`).join(', ');
+  const byEntrypoint = new Map<string, string[]>();
+  for (const pid of stalePids) {
+    const sess = describeSessionOf(pid);
+    if (!sess) continue;
+    (byEntrypoint.get(sess.entrypoint) ?? byEntrypoint.set(sess.entrypoint, []).get(sess.entrypoint)!).push(sess.name);
+  }
+  const who = [...byEntrypoint.entries()]
+    .map(([entry, names]) => `${names.length} ${entry} (${[...new Set(names)].sort().join(', ')})`)
+    .join('; ');
+  record({
+    name: 'live plugin version', status: 'WARN',
+    detail: `${list} — older than this checkout (v${VERSION}); sessions loaded from those roots keep running the old code`,
+    remedy: (who ? `restart: ${who}.` : 'restart those sessions.')
+      + ' A plugin upgrade never reaches an already-running session — a loaded plugin cannot be swapped under it.',
+  });
 }
 
 function statusIcon(s: Status): string {
@@ -996,6 +1073,7 @@ export async function doctorCommand(_args: string[]): Promise<number> {
   checkPluginRegistration();
   checkPluginManifest();
   checkPluginEntries();
+  checkStalePluginRoots();
 
   const dataDir = process.env.CAPTAIN_MEMO_DATA_DIR ?? join(homedir(), '.captain-memo');
   checkMigrations(dataDir);

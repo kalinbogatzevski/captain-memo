@@ -4,13 +4,13 @@
     "name": "Kalin Bogatzevski"
   },
   "metadata": {
-    "description": "Captain Memo — local memory layer for AI coding agents. Hybrid search, three summarizer providers, self-hosted embedder.",
+    "description": "Captain Memo \u2014 local memory layer for AI coding agents. Hybrid search, three summarizer providers, self-hosted embedder.",
     "homepage": "https://github.com/kalinbogatzevski/captain-memo"
   },
   "plugins": [
     {
       "name": "captain-memo",
-      "version": "0.39.0",
+      "version": "0.40.0",
       "source": "./plugin",
       "description": "Local memory layer that auto-injects context into every Claude Code prompt. Watches your memory files, captures session observations, persists across reboots, indefinite retention. Replaces claude-mem."
     }

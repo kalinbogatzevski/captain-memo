@@ -7,6 +7,48 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.40.0] — 2026-08-30
+
+### Added
+
+- **`captain-memo maintenance` reclaims superseded plugin-cache trees.** Claude Code marks a
+  superseded version directory with `.orphaned_at` and documents a 7-day grace period after which it
+  collects it — but it does not collect: trees marked 12 and 13 days earlier were still on disk. The
+  prune keys on that marker rather than a version sort, because it is Claude Code's own timestamped
+  statement about its own cache and it orders the hash-named version directories that no semver
+  comparison can. Dry-run like the rest of the command; `--apply` deletes, `--grace-days N` widens the
+  window. Four vetoes run before any removal: the tree `installed_plugins.json` points at, any tree a
+  live process is loaded from (`CLAUDE_PLUGIN_ROOT`, read from `/proc/*/environ`), anything unmarked,
+  and anything still inside the grace window. Where there is no `/proc` the live check cannot run, so
+  it deletes nothing rather than deleting blind. Scoped to captain-memo's own trees; other plugins'
+  are reported and never touched.
+- **`captain-memo doctor` names the sessions running old code.** A session loads its plugin once and
+  runs that copy for its whole life, so an upgrade never reaches an already-running session. The new
+  `live plugin version` check reads `CLAUDE_PLUGIN_ROOT` from every live plugin child, walks it to its
+  parent in Claude Code's session registry, and names the stale sessions by entrypoint — because
+  "restart those sessions" without saying which sends you to the wrong lever: restarting one host's
+  session daemon covers only the sessions that daemon hosts, and leaves every Claude Desktop session
+  running its old copy.
+- **`plugin cache version`** reports a cache copy older than the checkout — the cache did not follow
+  the last update.
+
+### Fixed
+
+- **The plugin cache now follows the checkout.** A clone advances by git — a plain `git pull`, or the
+  opt-in self-updater fast-forwarding to a release tag — and neither re-copies the plugin into Claude
+  Code's cache, which only `captain-memo install` does. Measured: a checkout on 0.49.0 with a cache
+  copy still on 0.20.0 from July 8, and a Claude Desktop plugin snapshot that came out 0.20.0 on a day
+  the repo said 0.49.0 and the cache said 0.20.0. The cache is not a spare copy; it is what the next
+  Desktop session is built from. A SessionStart step now watches the RESULT — cache version ≠
+  `VERSION` — so it fires whichever path moved the checkout, including the commonest one, a human
+  `git pull`. Gated on drift, so the normal path is one manifest read and no spawn; locked against
+  concurrent session starts; and it refuses anything but a directory marketplace on this checkout,
+  since re-running `marketplace add <path>` against a git-source install would silently repoint it.
+- **Reclaimable-disk figures are hardlink-aware.** Claude Code populates a new version directory by
+  hardlinking what it shares with the old one — 2056 of 2151 files in one measured tree — so summing
+  file sizes reported 1424 MB of reclaimable disk where the true figure was 21.2 MB. Each inode is now
+  counted once, and only when every one of its links falls inside the set being deleted.
+
 ## [0.39.0] — 2026-08-24
 
 ### Added

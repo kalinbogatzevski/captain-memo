@@ -45,6 +45,37 @@ captain-memo capability list            # installed plugin/extension capabilitie
 captain-memo capability recommend "generate an image"
 ```
 
+## Upkeep — disk and staleness
+
+```bash
+captain-memo maintenance                    # what could be reclaimed (changes nothing)
+captain-memo maintenance --apply            # reclaim it
+captain-memo maintenance --retention-days 7 # spent queue rows older than N days (default 30)
+captain-memo maintenance --grace-days 14    # plugin-cache trees orphaned longer than N days (default 7)
+```
+
+Three sweeps: finished queue rows past the retention window, embeddings whose chunk is gone, and
+superseded plugin-cache trees. Dry-run by default — it deletes, so it shows its work first.
+
+**About the plugin cache.** Upgrading re-points Claude Code at a new version directory under
+`~/.claude/plugins/cache/` and marks the old one `.orphaned_at`. Claude Code documents a 7-day grace
+period after which it collects the old tree; in practice trees survive well past it. This prunes only
+what carries that marker, only past the grace window, and never the active tree, a tree a running
+process is loaded from, or another plugin's. Reported sizes are hardlink-aware — version directories
+share most of their files, so `du` and a naive byte-sum both overstate what a delete would free.
+
+**Two staleness checks in `captain-memo doctor`:**
+
+| check | means |
+|---|---|
+| `plugin cache version` | the cache copy is older than this checkout — the cache did not follow the last update. Re-run `captain-memo install`. |
+| `live plugin version` | a running session is on an older plugin than this checkout, and names which. |
+
+A session loads its plugin **once**, at start, and runs that copy for its whole life — so an upgrade
+never reaches an already-running session, and restarting it is the only remedy. The check names the
+sessions by entrypoint because it matters which: restarting the `claude rc` daemon covers only the
+sessions that daemon hosts, and leaves every Claude Desktop session running its old copy.
+
 ## Use the MCP server (manual)
 
 The stdio MCP server connects to the worker over HTTP and exposes Captain Memo's recall, skill-broker, and coordination tools.

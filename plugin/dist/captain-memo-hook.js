@@ -766,14 +766,248 @@ async function restartWorker(sm, name, opts) {
   await sm.restart(name, { graceful: opts.graceful ?? false, port: opts.port, force: true });
 }
 
-// src/worker/branch.ts
+// src/shared/plugin-cache.ts
+import { existsSync as existsSync4, readFileSync as readFileSync5, readdirSync, statSync as statSync2 } from "fs";
+import { homedir as homedir5 } from "os";
+import { join as join8 } from "path";
+function normalizePath(p) {
+  return p.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+function parseInstalledPaths(json) {
+  let parsed;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  const plugins = parsed?.plugins;
+  if (!plugins || typeof plugins !== "object")
+    return null;
+  const out = new Set;
+  for (const installs of Object.values(plugins)) {
+    if (!Array.isArray(installs))
+      continue;
+    for (const install of installs) {
+      const p = install?.installPath;
+      if (typeof p === "string" && p.length > 0)
+        out.add(normalizePath(p));
+    }
+  }
+  if (out.size === 0 && Object.keys(plugins).length > 0)
+    return null;
+  return out;
+}
+function readPluginManifest(root) {
+  try {
+    const m = JSON.parse(readFileSync5(join8(root, ".claude-plugin", "plugin.json"), "utf-8"));
+    if (typeof m.name !== "string")
+      return null;
+    return { name: m.name, version: typeof m.version === "string" ? m.version : null };
+  } catch {
+    return null;
+  }
+}
+function readInstalledPaths(file = INSTALLED_PLUGINS_PATH) {
+  try {
+    return parseInstalledPaths(readFileSync5(file, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+var CACHE_ROOT, INSTALLED_PLUGINS_PATH;
+var init_plugin_cache = __esm(() => {
+  CACHE_ROOT = join8(homedir5(), ".claude", "plugins", "cache");
+  INSTALLED_PLUGINS_PATH = join8(homedir5(), ".claude", "plugins", "installed_plugins.json");
+});
+
+// src/shared/ansi.ts
+var init_ansi = () => {};
+
+// src/cli/banner.ts
+var init_banner = __esm(() => {
+  init_ansi();
+});
+
+// src/shared/platform.ts
+var isWindows, isMac, isLinux;
+var init_platform = __esm(() => {
+  isWindows = process.platform === "win32";
+  isMac = process.platform === "darwin";
+  isLinux = process.platform === "linux";
+});
+
+// src/shared/sqlite-extensions.ts
+var MACOS_SQLITE_REMEDY;
+var init_sqlite_extensions = __esm(() => {
+  init_platform();
+  MACOS_SQLITE_REMEDY = `macOS ships SQLite without extension support, so the vector index cannot load.
+` + `  Fix:  brew install sqlite
+` + `  Then: captain-memo restart
+` + '  (Or install with the embedder set to "skip" for keyword-only retrieval, which needs no extension.)';
+});
+
+// src/cli/commands/install-hooks.ts
+var init_install_hooks = () => {};
+
+// src/services/embedder-installer/bash.ts
+import { join as join9, resolve as resolve4 } from "path";
+var REPO_ROOT3, SCRIPT;
+var init_bash = __esm(() => {
+  REPO_ROOT3 = resolve4(import.meta.dir, "../../..");
+  SCRIPT = join9(REPO_ROOT3, "scripts/install-embedder.sh");
+});
+
+// src/services/embedder-installer/powershell.ts
+import { join as join10, resolve as resolve5 } from "path";
+var REPO_ROOT4, SCRIPT2;
+var init_powershell = __esm(() => {
+  REPO_ROOT4 = resolve5(import.meta.dir, "../../..");
+  SCRIPT2 = join10(REPO_ROOT4, "scripts/install-embedder.ps1");
+});
+
+// src/services/embedder-installer/index.ts
+var init_embedder_installer = __esm(() => {
+  init_platform();
+  init_bash();
+  init_powershell();
+});
+
+// src/cli/cross-ai.ts
+var PROBE_CLEAR, bunYaml, OPENCODE_LOCAL_PROVIDERS, OPENCODE_LOCAL_PROVIDER_KEYS;
+var init_cross_ai = __esm(() => {
+  init_platform();
+  PROBE_CLEAR = process.stdout.isTTY === true ? "\r\x1B[2K" : "\r";
+  bunYaml = globalThis.Bun?.YAML;
+  OPENCODE_LOCAL_PROVIDERS = {
+    ollama: { name: "Ollama (local)", baseURL: "http://localhost:11434/v1" },
+    vllm: { name: "vLLM (local)", baseURL: "http://localhost:8000/v1" },
+    lmstudio: { name: "LM Studio (local)", baseURL: "http://127.0.0.1:1234/v1" }
+  };
+  OPENCODE_LOCAL_PROVIDER_KEYS = Object.keys(OPENCODE_LOCAL_PROVIDERS);
+});
+
+// src/shared/ai-memory-sources.ts
+import { homedir as homedir6 } from "os";
+var H;
+var init_ai_memory_sources = __esm(() => {
+  H = homedir6();
+});
+
+// src/cli/commands/install.ts
+import { dirname, join as join11, resolve as resolve6 } from "path";
+import { homedir as homedir7 } from "os";
+function pluginRegistrationSteps(repoRoot) {
+  return [
+    ["plugin", "marketplace", "remove", "captain-memo", "--scope", "user"],
+    ["plugin", "marketplace", "add", repoRoot],
+    ["plugin", "install", "captain-memo@captain-memo"]
+  ];
+}
+var REPO_ROOT5, PLUGIN_LINK, MANAGED_ENV_KEYS;
+var init_install = __esm(() => {
+  init_banner();
+  init_platform();
+  init_sqlite_extensions();
+  init_paths();
+  init_service_manager();
+  init_install_hooks();
+  init_embedder_installer();
+  init_cross_ai();
+  init_ai_memory_sources();
+  REPO_ROOT5 = resolve6(import.meta.dir, "../../..");
+  PLUGIN_LINK = join11(homedir7(), ".claude", "plugins", "captain-memo");
+  MANAGED_ENV_KEYS = new Set([
+    "CAPTAIN_MEMO_DATA_DIR",
+    "CAPTAIN_MEMO_PROJECT_ID",
+    "CAPTAIN_MEMO_WORKER_PORT",
+    "CAPTAIN_MEMO_HOOK_TIMEOUT_MS",
+    "CAPTAIN_MEMO_SUMMARIZER_PROVIDER",
+    "CAPTAIN_MEMO_SUMMARIZER_MODEL",
+    "ANTHROPIC_API_KEY",
+    "CAPTAIN_MEMO_OPENAI_ENDPOINT",
+    "CAPTAIN_MEMO_OPENAI_API_KEY",
+    "CAPTAIN_MEMO_SKIP_EMBED",
+    "CAPTAIN_MEMO_EMBEDDER_ENDPOINT",
+    "CAPTAIN_MEMO_EMBEDDER_MODEL",
+    "CAPTAIN_MEMO_EMBEDDING_DIM",
+    "CAPTAIN_MEMO_EMBEDDER_API_KEY",
+    "CAPTAIN_MEMO_WATCH_MEMORY",
+    "CAPTAIN_MEMO_WATCH_SKILLS"
+  ]);
+});
+
+// src/cli/plugin-cache-refresh.ts
+var exports_plugin_cache_refresh = {};
+__export(exports_plugin_cache_refresh, {
+  refreshPluginCacheIfStale: () => refreshPluginCacheIfStale,
+  needsCacheRefresh: () => needsCacheRefresh,
+  marketplacePointsAtCheckout: () => marketplacePointsAtCheckout,
+  activeCachedVersion: () => activeCachedVersion,
+  REPO_ROOT: () => REPO_ROOT6,
+  CACHE_REFRESH_LOCK: () => CACHE_REFRESH_LOCK
+});
 import { spawnSync as spawnSync3 } from "child_process";
-import { existsSync as existsSync4 } from "fs";
+import { readFileSync as readFileSync6 } from "fs";
+import { homedir as homedir8 } from "os";
+import { join as join12 } from "path";
+function marketplacePointsAtCheckout(repoRoot, home = homedir8()) {
+  try {
+    const file = join12(home, ".claude", "plugins", "known_marketplaces.json");
+    const parsed = JSON.parse(readFileSync6(file, "utf-8"));
+    const src = parsed["captain-memo"]?.source;
+    return src?.source === "directory" && typeof src.path === "string" && normalizePath(src.path) === normalizePath(repoRoot);
+  } catch {
+    return false;
+  }
+}
+function activeCachedVersion(home = homedir8()) {
+  const installed = readInstalledPaths(join12(home, ".claude", "plugins", "installed_plugins.json"));
+  if (installed === null)
+    return null;
+  for (const path of installed) {
+    const m = readPluginManifest(path);
+    if (m?.name === "captain-memo")
+      return m.version;
+  }
+  return null;
+}
+function needsCacheRefresh(cachedVersion, runningVersion) {
+  return cachedVersion !== null && cachedVersion !== runningVersion;
+}
+function refreshPluginCacheIfStale(runningVersion, repoRoot = REPO_ROOT6, deps = {}) {
+  const cachedVersion = (deps.cachedVersion ?? activeCachedVersion)();
+  if (!needsCacheRefresh(cachedVersion, runningVersion))
+    return { refreshed: false, skipped: "cache is in step" };
+  const pointsAt = deps.pointsAtCheckout ?? ((r) => marketplacePointsAtCheckout(r));
+  if (!pointsAt(repoRoot))
+    return { refreshed: false, skipped: "not a directory marketplace on this checkout" };
+  const run = deps.run ?? ((args) => {
+    const r = spawnSync3("claude", args, { stdio: "pipe", timeout: 120000 });
+    return r.status ?? 1;
+  });
+  const steps = pluginRegistrationSteps(repoRoot);
+  run(steps[0]);
+  if (run(steps[1]) !== 0)
+    return { refreshed: false, skipped: "marketplace add failed" };
+  if (run(steps[2]) !== 0)
+    return { refreshed: false, skipped: "plugin install failed" };
+  return { refreshed: true, from: cachedVersion };
+}
+var REPO_ROOT6, CACHE_REFRESH_LOCK = ".plugin-cache-refresh.lock";
+var init_plugin_cache_refresh = __esm(() => {
+  init_plugin_cache();
+  init_install();
+  REPO_ROOT6 = join12(import.meta.dir, "..", "..");
+});
+
+// src/worker/branch.ts
+import { spawnSync as spawnSync4 } from "child_process";
+import { existsSync as existsSync5 } from "fs";
 function detectBranchSync(cwd) {
-  if (!existsSync4(cwd))
+  if (!existsSync5(cwd))
     return null;
   try {
-    const result = spawnSync3("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf-8", timeout: 2000 });
+    const result = spawnSync4("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf-8", timeout: 2000 });
     if (result.status !== 0)
       return null;
     const out = result.stdout.trim();
@@ -783,10 +1017,10 @@ function detectBranchSync(cwd) {
   }
 }
 function detectRepoRootSync(cwd) {
-  if (!existsSync4(cwd))
+  if (!existsSync5(cwd))
     return null;
   try {
-    const result = spawnSync3("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf-8", timeout: 2000 });
+    const result = spawnSync4("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf-8", timeout: 2000 });
     if (result.status !== 0)
       return null;
     const out = result.stdout.trim();
@@ -870,12 +1104,12 @@ async function main(options = {}) {
     logHookError("UserPromptSubmit", err);
     return;
   }
-  const prompt = payload.prompt ?? "";
+  const prompt2 = payload.prompt ?? "";
   const timeoutMs = Number(process.env[ENV_HOOK_TIMEOUT_MS] ?? DEFAULT_HOOK_TIMEOUT_MS);
   const result = await workerFetch("/inject/context", {
     method: "POST",
     body: {
-      prompt,
+      prompt: prompt2,
       top_k: 5,
       session_id: payload.session_id,
       project_id: resolveProjectId(payload.cwd)
@@ -920,7 +1154,7 @@ async function main(options = {}) {
     }
   }
   if (options.emitOriginalPrompt !== false)
-    writeStdout(prompt);
+    writeStdout(prompt2);
 }
 if (isMainModule(import.meta)) {
   try {
@@ -934,12 +1168,12 @@ if (isMainModule(import.meta)) {
 // src/hooks/session-start.ts
 init_shared();
 init_paths();
-import { mkdirSync as mkdirSync5, readFileSync as readFileSync5, statSync as statSync2, writeFileSync as writeFileSync5 } from "fs";
-import { join as join8 } from "path";
+import { mkdirSync as mkdirSync5, readFileSync as readFileSync7, statSync as statSync3, writeFileSync as writeFileSync5 } from "fs";
+import { join as join13 } from "path";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.39.0",
+  version: "0.40.0",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -1256,7 +1490,7 @@ async function ensureWorkerHealthy(deps) {
 init_worker_heal_lock();
 function readPkgField(dir, field) {
   try {
-    return JSON.parse(readFileSync5(join8(dir, "package.json"), "utf-8"))[field] ?? null;
+    return JSON.parse(readFileSync7(join13(dir, "package.json"), "utf-8"))[field] ?? null;
   } catch {
     return null;
   }
@@ -1348,7 +1582,7 @@ async function main2() {
   let autoUpdateNotice = "";
   let updatedThisSession = false;
   if (process.env.CAPTAIN_MEMO_AUTO_UPDATE === "1") {
-    const AUTO_UPDATE_LOCK = join8(DATA_DIR, ".auto-update.lock");
+    const AUTO_UPDATE_LOCK = join13(DATA_DIR, ".auto-update.lock");
     try {
       const port = {
         run: (argv, cwd, timeoutMs2) => {
@@ -1368,10 +1602,10 @@ async function main2() {
       try {
         mkdirSync5(DATA_DIR, { recursive: true });
       } catch {}
-      const stampPath = join8(DATA_DIR, ".last-update-check");
+      const stampPath = join13(DATA_DIR, ".last-update-check");
       let lastCheck = null;
       try {
-        lastCheck = statSync2(stampPath).mtimeMs;
+        lastCheck = statSync3(stampPath).mtimeMs;
       } catch {}
       if (isUpdateCheckDue(lastCheck, Date.now(), intervalMs) && acquireHealLock(AUTO_UPDATE_LOCK)) {
         try {
@@ -1453,6 +1687,24 @@ async function main2() {
     } catch (err) {
       logHookError("SessionStart", err);
     }
+  }
+  try {
+    const { refreshPluginCacheIfStale: refreshPluginCacheIfStale2, CACHE_REFRESH_LOCK: CACHE_REFRESH_LOCK2 } = await Promise.resolve().then(() => (init_plugin_cache_refresh(), exports_plugin_cache_refresh));
+    const lock = join13(DATA_DIR, CACHE_REFRESH_LOCK2);
+    if (acquireHealLock(lock)) {
+      try {
+        const r = refreshPluginCacheIfStale2(VERSION);
+        if (r.refreshed)
+          logHookError("SessionStart", new Error(`plugin cache re-snapshotted from v${r.from} to v${VERSION}`));
+        else if (r.skipped && r.skipped !== "cache is in step") {
+          logHookError("SessionStart", new Error(`plugin cache is stale and was not refreshed: ${r.skipped}`));
+        }
+      } finally {
+        releaseHealLock(lock);
+      }
+    }
+  } catch (err) {
+    logHookError("SessionStart", err);
   }
   const upgradeNotice = consumeUpgradeNotice(DATA_DIR, VERSION);
   const notices = [autoUpdateNotice, upgradeNotice].filter(Boolean).join(`

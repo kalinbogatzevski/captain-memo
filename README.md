@@ -409,6 +409,7 @@ captain-memo observation list    # recent captured observations
 captain-memo observation flush   # force-drain the queue
 captain-memo config show         # effective config (secrets masked)
 captain-memo doctor              # component health probe
+captain-memo maintenance         # reclaim what nothing needs: spent queue rows, orphaned vectors, superseded plugin-cache trees (dry-run; --apply)
 captain-memo install             # interactive install wizard
 captain-memo connect             # wire other AI tools (Codex, Gemini, Cursor, opencode…) to this worker (--list)
 captain-memo skill list          # list virtual skills (--source AGENT, --limit N, --json)

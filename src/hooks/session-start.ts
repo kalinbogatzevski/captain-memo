@@ -285,6 +285,29 @@ export async function main(): Promise<void> {
     }
   }
 
+  // Re-snapshot the plugin CACHE copy when the checkout has moved past it. A clone advances by git —
+  // a plain `git pull`, or the opt-in updater above fast-forwarding to a release tag — and neither
+  // re-copies the plugin into Claude Code's cache, which is what the next Claude Desktop snapshot is
+  // built from. Measured 2026-08-29: checkout 0.49.0, cache copy 0.20.0 from July, Desktop snapshot
+  // 0.20.0. Deliberately NOT inside the auto-update success branch above: gating it there would make
+  // it conditional on an env var, an interval, a lock, a clean ff AND a healthy restart, so the
+  // commonest way a clone moves — a human `git pull` — would never trigger it. Watching the RESULT
+  // (cache version ≠ VERSION) catches every path. Gated on drift, so the normal path is one manifest
+  // read and no spawn; locked so concurrent session starts do not all re-register at once.
+  try {
+    const { refreshPluginCacheIfStale, CACHE_REFRESH_LOCK } = await import('../cli/plugin-cache-refresh.ts');
+    const lock = join(DATA_DIR, CACHE_REFRESH_LOCK);
+    if (acquireHealLock(lock)) {
+      try {
+        const r = refreshPluginCacheIfStale(VERSION);
+        if (r.refreshed) logHookError('SessionStart', new Error(`plugin cache re-snapshotted from v${r.from} to v${VERSION}`));
+        else if (r.skipped && r.skipped !== 'cache is in step') {
+          logHookError('SessionStart', new Error(`plugin cache is stale and was not refreshed: ${r.skipped}`));
+        }
+      } finally { releaseHealLock(lock); }
+    }
+  } catch (err) { logHookError('SessionStart', err); }
+
   // Self-upgrade notice: if the plugin VERSION advanced since the last
   // session (Claude Code auto-fetched a newer marketplace version, or a re-install landed),
   // announce it once. The existing self-heal above already restarted the now-stale worker;
