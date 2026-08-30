@@ -856,6 +856,26 @@ function checkPluginEntries(): void {
 // Nothing here can fix it — a loaded plugin cannot be swapped under a live session — so this check
 // exists to make it SAYABLE. Restarting the session is the whole remedy, and naming WHICH sessions is
 // the point: "restart those sessions" alone sends an operator to the wrong lever.
+/** How a session of this entrypoint is restarted — the actionable half of the remedy.
+ *
+ *  The trap this encodes: BOTH remote kinds are hosted by long-lived daemons on THIS host, but by
+ *  DIFFERENT ones, so the obvious lever fixes only half the fleet. Verified 2026-08-30 by walking the
+ *  process tree: a `claude-desktop` session is `ccd-cli`, child of `~/.claude/remote/srv/<hash>/server
+ *  --serve` (up 20 days, parented to init); an `sdk-cli` session is a child of the `claude rc` daemon.
+ *  Restarting `claude rc` therefore leaves every Desktop session running its old plugin — which is
+ *  exactly what happened here before this hint existed.
+ *
+ *  A Desktop session's plugin is pinned in its ARGV at spawn (`--plugin-dir <snapshot>`), so it is
+ *  fixed for the life of that process no matter what the cache later says. */
+function restartHint(entrypoint: string): string {
+  if (entrypoint === 'claude-desktop') {
+    return 'hosted on THIS host by the Claude Desktop SSH helper (`claude-ssh`, ~/.claude/remote/srv/<hash>/server) — '
+      + 'NOT the `claude rc` daemon, which does not touch them; reopen them from the Desktop app, or restart that helper to drop all of them at once';
+  }
+  if (entrypoint === 'sdk-cli') return 'hosted by the `claude rc` daemon — restarting it replaces them';
+  return 'restart it wherever it was started';
+}
+
 function checkStalePluginRoots(): void {
   const pins = readLivePluginPins();
   if (pins === null) {
@@ -898,13 +918,13 @@ function checkStalePluginRoots(): void {
     (byEntrypoint.get(sess.entrypoint) ?? byEntrypoint.set(sess.entrypoint, []).get(sess.entrypoint)!).push(sess.name);
   }
   const who = [...byEntrypoint.entries()]
-    .map(([entry, names]) => `${names.length} ${entry} (${[...new Set(names)].sort().join(', ')})`)
+    .map(([entry, names]) => `${names.length} ${entry} (${[...new Set(names)].sort().join(', ')}) — ${restartHint(entry)}`)
     .join('; ');
   record({
     name: 'live plugin version', status: 'WARN',
     detail: `${list} — older than this checkout (v${VERSION}); sessions loaded from those roots keep running the old code`,
     remedy: (who ? `restart: ${who}.` : 'restart those sessions.')
-      + ' A plugin upgrade never reaches an already-running session — a loaded plugin cannot be swapped under it.',
+      + ' A plugin upgrade never reaches an already-running session — the plugin root is fixed in the process argv at spawn.',
   });
 }
 
