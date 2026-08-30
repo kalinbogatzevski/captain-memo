@@ -1,8 +1,7 @@
 import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'fs';
-import { homedir } from 'os';
 import { join, basename } from 'path';
 import { z } from 'zod';
-import { projectSlugFromCwd } from '../shared/paths.ts';
+import { claudeProjectsDir, projectSlugFromCwd } from '../shared/paths.ts';
 import type { IngestPipeline } from './ingest.ts';
 import type { SummarizerTransport } from './summarizer.ts';
 
@@ -109,7 +108,7 @@ type = echo the given type.`;
 export function resolveTargetDir(input: RememberInput, rememberDir: string): string {
   if (input.targetDirOverride) return input.targetDirOverride;
   const cwd = input.projectContext.cwd;
-  if (cwd) return join(homedir(), '.claude', 'projects', projectSlugFromCwd(cwd), 'memory');
+  if (cwd) return join(claudeProjectsDir(), projectSlugFromCwd(cwd), 'memory');
   return rememberDir;
 }
 

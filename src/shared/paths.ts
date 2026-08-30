@@ -187,6 +187,24 @@ export const DEFAULT_REMEMBER_DEDUP_THRESHOLD = 0.93;
  * replacement, not run-collapse. '_' and '.' both map to '-' (e.g. the real
  * dir -home-kalin-projects-123net-aelita came from .../123net_aelita).
  */
+export const ENV_CLAUDE_PROJECTS_DIR = 'CAPTAIN_MEMO_CLAUDE_PROJECTS_DIR';
+
+/** Root that per-project curated memory is written under: <root>/<project-slug>/memory.
+ *
+ *  Overridable for ONE reason: test isolation. A `remember` carrying a cwd resolves its file path from
+ *  this root, and that path used to be a hardcoded homedir() — so a test that spun up a worker with
+ *  `:memory:` databases still wrote a REAL markdown file into the developer's own
+ *  ~/.claude/projects/<slug>/memory, where a live worker's watcher would index it. In-memory databases
+ *  isolate the INDEX; they do not isolate a file write. Measured on the sibling line 2026-08-30: a
+ *  suite run planted six fixture entries in the real corpus, which then surfaced in an unrelated
+ *  session's auto-recall.
+ *
+ *  Same shape as the CAPTAIN_MEMO_CONFIG_DIR fix that stopped tests inheriting the developer's real
+ *  worker.env. Production never sets this. */
+export function claudeProjectsDir(): string {
+  return process.env[ENV_CLAUDE_PROJECTS_DIR] ?? join(homedir(), '.claude', 'projects');
+}
+
 export function projectSlugFromCwd(cwd: string): string {
   return cwd.replace(/[^A-Za-z0-9]/g, '-');
 }
