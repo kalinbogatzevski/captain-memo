@@ -7,6 +7,21 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.40.2] — 2026-08-30
+
+### Fixed
+
+- **The per-project memory root is redirectable, so a test can no longer write into the developer's
+  real corpus.** `resolveTargetDir()` resolved a cwd-bearing `remember` to a **hardcoded**
+  `homedir()/.claude/projects/<slug>/memory`, ignoring the `rememberDir` it is passed — so a test that
+  isolates its databases still wrote a real markdown file into the developer's own memory tree, where
+  a live worker's watcher would index it. An in-memory database isolates the INDEX, not a file write.
+  Measured on the sibling line: a suite run planted six fixture entries in the real corpus, which then
+  surfaced in an unrelated session's auto-recall. Now redirectable via
+  `CAPTAIN_MEMO_CLAUDE_PROJECTS_DIR` / `claudeProjectsDir()`, the same shape as the
+  `CAPTAIN_MEMO_CONFIG_DIR` fix that stopped tests inheriting the developer's real `worker.env`.
+  Production never sets it, so behaviour is unchanged.
+
 ## [0.40.1] — 2026-08-30
 
 ### Fixed
