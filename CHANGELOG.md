@@ -7,6 +7,21 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.40.1] — 2026-08-30
+
+### Fixed
+
+- **`doctor` names the daemon that actually hosts a stale session.** The remedy said a
+  `claude-desktop` session "must be restarted from the Desktop app", which implied it was not
+  something running here. It is: walking the process tree, such a session is `ccd-cli`, a child of the
+  Claude Desktop SSH helper (`claude-ssh`, `~/.claude/remote/srv/<hash>/server`) — a separate
+  long-lived daemon from `claude rc`, which hosts the `sdk-cli` sessions. Restarting `claude rc`
+  therefore leaves every Desktop session on its old plugin, which is exactly what happened before the
+  check named them. Per-entrypoint hints now say which daemon owns the session and how to clear it,
+  including the restart-them-all lever, and the remedy states WHY no upgrade can reach a live session:
+  the plugin root is pinned in the process argv at spawn (`--plugin-dir <snapshot>`), not read from
+  the cache at use time.
+
 ## [0.40.0] — 2026-08-30
 
 ### Added

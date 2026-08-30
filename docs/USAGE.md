@@ -71,10 +71,18 @@ share most of their files, so `du` and a naive byte-sum both overstate what a de
 | `plugin cache version` | the cache copy is older than this checkout — the cache did not follow the last update. Re-run `captain-memo install`. |
 | `live plugin version` | a running session is on an older plugin than this checkout, and names which. |
 
-A session loads its plugin **once**, at start, and runs that copy for its whole life — so an upgrade
-never reaches an already-running session, and restarting it is the only remedy. The check names the
-sessions by entrypoint because it matters which: restarting the `claude rc` daemon covers only the
-sessions that daemon hosts, and leaves every Claude Desktop session running its old copy.
+A session's plugin root is fixed in its **process argv at spawn** (`--plugin-dir <path>`), not read
+from the cache when used — so an upgrade can never reach an already-running session, and restarting it
+is the only remedy. The check names the sessions by entrypoint because it matters which daemon owns
+them: on a machine you connect to remotely there are typically two, and they do not overlap.
+
+| entrypoint | hosted by | how to clear it |
+|---|---|---|
+| `claude-desktop` | the Claude Desktop SSH helper (`claude-ssh`, `~/.claude/remote/srv/<hash>/server`) | reopen from the Desktop app, or restart that helper |
+| `sdk-cli` | the `claude rc` daemon | restart it |
+
+Restarting `claude rc` therefore leaves every Desktop session running its old copy — the trap this
+check exists to name.
 
 ## Use the MCP server (manual)
 
