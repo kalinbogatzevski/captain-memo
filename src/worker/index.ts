@@ -6,6 +6,7 @@ import { MetaStore } from './meta.ts';
 import { Embedder } from './embedder.ts';
 import { embedderMaxTokens } from '../shared/embedder-limits.ts';
 import { loadWorkerEnv } from '../shared/worker-env.ts';
+import { markTransition, clearTransition } from '../shared/worker-transition.ts';
 import { ensureExtensionCapableSqlite } from '../shared/sqlite-extensions.ts';
 import { resolveSummarizerProviders, resolveSummarizerProvider } from '../shared/summarizer-provider.ts';
 import { loadGatewayConfig, verifyToken } from '../shared/gateway-tokens.ts';
@@ -3989,6 +3990,10 @@ export async function runWorkerCli(): Promise<void> {
   // boot. (The meta DB file itself is additionally chmod'd 0600 in startWorker.)
   chmodSecret(DATA_DIR, 0o700);
 
+  // "I am coming up" — from here until the port is open this worker is unreachable but ALIVE, and a
+  // hook that finds no HTTP must wait rather than hard-kill it mid-boot (see shared/worker-transition.ts).
+  markTransition({ phase: 'booting' });
+
   const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
   if (process.env.CAPTAIN_MEMO_WORKER_THREADED === '1') {
     const { startThreadedWorker } = await import('./threaded-main.ts');
@@ -3996,6 +4001,7 @@ export async function runWorkerCli(): Promise<void> {
     // single-threaded-fallback line if the engine can't come up — so the message always
     // reflects the path that actually bound the port.
     const handle = await startThreadedWorker(port);
+    clearTransition();                 // listening — no longer in transition
     const shutdown = async () => { await handle.stop(); process.exit(0); };
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
@@ -4004,6 +4010,7 @@ export async function runWorkerCli(): Promise<void> {
 
   const opts = await buildWorkerOptionsFromEnv();
   const handle = await startWorker(opts);
+  clearTransition();                   // listening — no longer in transition
   console.log(`[worker] listening on http://localhost:${handle.port}`);
 
   const shutdown = async () => {

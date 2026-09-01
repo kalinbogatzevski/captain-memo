@@ -1,5 +1,6 @@
 import { readStdinJson, writeStdout, workerFetch, logHookError, logWorkerFailure, isMainModule } from './shared.ts';
 import { DEFAULT_STOP_DRAIN_BUDGET_MS } from '../shared/paths.ts';
+import { consumeSessionDegraded } from '../shared/worker-transition.ts';
 
 interface StopPayload {
   session_id?: string;
@@ -28,7 +29,21 @@ export async function main(options: StopOptions = {}): Promise<void> {
     timeoutMs: DEFAULT_STOP_DRAIN_BUDGET_MS,
   });
   logWorkerFailure('Stop', '/observation/flush', res);
+
+  // The other half of the "worker unreachable" story. SessionStart's banner is a ONE-SHOT statement —
+  // a session that opened while the worker was restarting keeps reading "memory is paused" long after
+  // it came back, which is why sessions were being closed and reopened by hand. This flush is already
+  // a live round-trip to the worker on every turn end, so an OK result IS the recovery signal: no
+  // extra probe, and the flag (raised by SessionStart, per session) makes it fire exactly once.
+  // Vendor hosts (Codex/Gemini, emitJson) keep their verified '{}' — their systemMessage contract
+  // is not confirmed, and the flag is consumed either way so it can't fire later out of context.
+  const backOnline = res.ok && consumeSessionDegraded(payload.session_id);
   if (options.emitJson) writeStdout('{}');
+  else if (backOnline) {
+    writeStdout(JSON.stringify({
+      systemMessage: '⚓ Captain Memo is back online — memory is active again for this session.',
+    }));
+  }
 }
 
 if (isMainModule(import.meta)) {

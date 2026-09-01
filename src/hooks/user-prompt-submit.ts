@@ -1,6 +1,7 @@
 import { readStdinJson, writeStdout, workerFetch, logHookError, logWorkerFailure, resolveProjectId, isMainModule } from './shared.ts';
 import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS, DEFAULT_WORKER_PORT } from '../shared/paths.ts';
 import type { EnvelopePayload } from '../shared/types.ts';
+import { readTransition } from '../shared/worker-transition.ts';
 
 interface UserPromptSubmitPayload {
   prompt?: string;
@@ -63,7 +64,12 @@ export async function main(options: UserPromptSubmitOptions = {}): Promise<void>
   // pays the full confirm. On Windows restartWorker force-kills the port owner first
   // (IgnoreNew makes a bare start a no-op against a zombie). The heal lock keeps
   // concurrent prompts from stampeding. Opt out with CAPTAIN_MEMO_DISABLE_SELF_HEAL=1.
-  if (!result.ok && process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL !== '1') {
+  // …and never against a worker that is BOOTING or restarting onto a new version: it left a breadcrumb
+  // saying the outage is deliberate, and a reclaim there hard-kills a worker seconds from healthy (on
+  // win32 racing the updater's own relauncher for the port). Short-circuits after !result.ok, so the
+  // normal path never touches the filesystem. The breadcrumb's TTL bounds this: a relaunch that never
+  // lands stops shielding the worker within 2 minutes and the usual heal takes over.
+  if (!result.ok && process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL !== '1' && !readTransition()) {
     try {
       const { acquireHealLock, releaseHealLock } = await import('../shared/worker-heal-lock.ts');
       if (acquireHealLock()) {

@@ -6,6 +6,7 @@ import { VERSION } from '../shared/version.ts';
 import { consumeUpgradeNotice, formatAutoUpdateBanner, formatRollbackBanner, writeMarker } from '../shared/self-update.ts';
 import { runAutoUpdate, rollbackTo, isUpdateCheckDue, DEFAULT_UPDATE_CHECK_INTERVAL_MS, type UpdaterPort } from '../worker/self-updater.ts';
 import { ensureWorkerHealthy } from '../shared/worker-health.ts';
+import { markTransition, readTransition, markSessionDegraded, type WorkerTransition } from '../shared/worker-transition.ts';
 import { restartWorker } from '../shared/worker-control.ts';
 import { acquireHealLock, releaseHealLock } from '../shared/worker-heal-lock.ts';
 
@@ -115,10 +116,32 @@ function formatDegradedBanner(detail: string): string {
   ].join('\n');
 }
 
+// Shown when the worker is unreachable but LEFT A NOTE saying why: it is restarting itself onto a
+// new version, or it is still opening its port. Both end on their own in seconds, so this must not
+// read like the degraded banner — nothing is broken, and closing Claude (what people did before this
+// existed) only makes the wait longer.
+function formatTransitionBanner(t: WorkerTransition, now: number = Date.now()): string {
+  const secs = Math.max(1, Math.round((now - t.ts) / 1000));
+  const versions = t.from && t.to ? ` (v${t.from} → v${t.to})` : t.to ? ` (→ v${t.to})` : '';
+  return [
+    '',
+    '',
+    t.phase === 'updating' ? `⚓ Captain Memo — updating${versions}` : '⚓ Captain Memo — worker still starting up',
+    '─'.repeat(60),
+    t.phase === 'updating'
+      ? `  The worker restarted itself onto the new version ${secs}s ago and is coming back up.`
+      : `  The worker started ${secs}s ago and hasn't opened its port yet (a cold start takes ~10s).`,
+    '  Memory resumes by itself — no need to restart Claude. This session says so when it is back.',
+    '',
+  ].join('\n');
+}
+
 export async function main(): Promise<void> {
-  // Payload is unused (the banner needs no input) — we only drain stdin. A parse
-  // failure is non-fatal but worth a log line so a payload-shape change is visible.
-  try { await readStdinJson<SessionStartPayload>(); } catch (err) { logHookError('SessionStart', err); }
+  // Only session_id is read (to flag a session that was told memory is down, so the Stop hook can
+  // say when it comes back). A parse failure is non-fatal but worth a log line so a payload-shape
+  // change is visible; the banner itself needs no input.
+  let payload: SessionStartPayload = {};
+  try { payload = await readStdinJson<SessionStartPayload>(); } catch (err) { logHookError('SessionStart', err); }
 
   // SessionStart isn't on a hot path — it fires once per session, not per
   // prompt. Use a generous timeout so the banner appears even when the
@@ -188,6 +211,9 @@ export async function main(): Promise<void> {
             const { getServiceManager } = await import('../services/service-manager/index.ts');
             const sm = getServiceManager();
             const wport = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
+            // Same breadcrumb the worker leaves when it replaces itself: a CONCURRENT session starting
+            // during this replacement must wait it out, not reclaim the port from under us.
+            markTransition({ phase: 'updating', from: res.from, ...(res.to ? { to: res.to } : {}) });
             await restartWorker(sm, 'captain-memo-worker', { port: wport, graceful: true });
             const healthy = await waitWorkerHealthy();
             if (healthy) {
@@ -198,6 +224,7 @@ export async function main(): Promise<void> {
               // New code didn't boot (bad deps / crash-loop). Roll the checkout back to the prior
               // sha and restart the OLD, known-good code rather than strand the worker dead.
               const rolled = res.priorSha ? rollbackTo(port, installDir, res.priorSha, process.execPath) : false;
+              markTransition({ phase: 'updating', to: res.from });   // rolling BACK to the known-good version
               await restartWorker(sm, 'captain-memo-worker', { port: wport });
               await waitWorkerHealthy();
               stats = await probeStats();
@@ -228,12 +255,25 @@ export async function main(): Promise<void> {
   // on entry is worth the wait. Fully fail-open: any error → degraded banner
   // below, never a thrown hook. Opt out with CAPTAIN_MEMO_DISABLE_SELF_HEAL=1.
   const selfHealOff = process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL === '1';
-  const running = stats.ok && !!stats.body;
+  let running = stats.ok && !!stats.body;
+  // A worker that is BOOTING, or deliberately restarting onto a new version, is NOT a dead worker —
+  // it left a breadcrumb before going quiet. Reclaiming on top of that hard-kills a worker seconds
+  // from healthy and, on win32, races the updater's own detached relauncher for the port: that is how
+  // "⚓ worker unreachable (worker timed out)" was manufactured for a captain that was merely updating.
+  // So wait it out INSTEAD of healing — never both, stacking the two waits would push this hook past
+  // its own timeout — then re-judge on the refreshed stats.
+  const transition = running ? null : readTransition();
+  if (transition) {
+    await waitWorkerHealthy(Number(process.env.CAPTAIN_MEMO_SESSION_START_TRANSITION_WAIT_MS ?? 20_000));
+    running = stats.ok && !!stats.body;
+  }
+  // Still down, and we know why → hands off (and say so in the banner instead of "unreachable").
+  const inTransition = running ? null : transition;
   // `stale` compares the worker's version to VERSION — the hook's frozen constant. After an
   // auto-update this session, the worker is NEWER than VERSION (which was loaded pre-pull), so the
   // stale check would false-fire and bounce the just-restarted worker a second time. Suppress it.
   const stale = !updatedThisSession && running && stats.body!.version !== undefined && stats.body!.version !== VERSION;
-  if (!selfHealOff && (!running || stale)) {
+  if (!selfHealOff && !inTransition && (!running || stale)) {
     try {
       const { getServiceManager } = await import('../services/service-manager/index.ts');
       const sm = getServiceManager();
@@ -329,6 +369,14 @@ export async function main(): Promise<void> {
       continue: true,
       systemMessage: withNotice(formatBanner(stats.body)),
     }));
+  } else if (inTransition) {
+    // Unreachable, but the worker told us why before it went quiet: it is updating or still booting.
+    // Name that, promise the recovery, and flag the session so the Stop hook can confirm it happened.
+    markSessionDegraded(payload.session_id ?? '');
+    writeStdout(JSON.stringify({
+      continue: true,
+      systemMessage: withNotice(formatTransitionBanner(inTransition)),
+    }));
   } else {
     // Worker unreachable / timed out / errored / empty body: log it AND tell the
     // user, rather than emitting nothing (which reads as "memory broke"). We log
@@ -336,6 +384,7 @@ export async function main(): Promise<void> {
     // log line and the banner always stay in lockstep — including the near-dead
     // ok-but-no-body corner. Still fail-open: a systemMessage never blocks the session.
     logHookError('SessionStart', new Error(workerFailureMessage('/stats', stats) ?? 'worker /stats returned no body'));
+    markSessionDegraded(payload.session_id ?? '');
     writeStdout(JSON.stringify({
       continue: true,
       systemMessage: withNotice(formatDegradedBanner(stats.timedOut ? 'worker timed out' : 'worker not reachable')),

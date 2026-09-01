@@ -17,6 +17,7 @@ import { restartWorker } from '../../shared/worker-control.ts';
 import { acquireHealLock, releaseHealLock } from '../../shared/worker-heal-lock.ts';
 import { getServiceManager } from '../../services/service-manager/index.ts';
 import { probeHealthOnce, probeHealthyWithRetries } from '../../shared/worker-health-probe.ts';
+import { readTransition } from '../../shared/worker-transition.ts';
 
 const WORKER = 'captain-memo-worker';
 
@@ -37,6 +38,14 @@ function logWatchdog(line: string): void {
 export async function workerWatchdogCommand(_args: string[]): Promise<number> {
   const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
   const sm = getServiceManager();
+  // A worker that is booting or restarting onto a new version is not a zombie — reclaiming it would
+  // hard-kill a worker seconds from healthy. Report the skip instead of doing damage; the breadcrumb's
+  // TTL (2 min) means a relaunch that never lands stops shielding it and the next kick reclaims.
+  const transition = readTransition();
+  if (transition) {
+    logWatchdog(`worker is ${transition.phase} - skipping reclaim`);
+    return 0;
+  }
   try {
     const outcome = await runWorkerWatchdog({
       // Confirm a real outage (3 spaced probes) before the destructive reclaim, so
