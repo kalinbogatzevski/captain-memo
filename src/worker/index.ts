@@ -3832,14 +3832,28 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
   // always wins — the user may be on a plan with a different allowed model set.
   // claude-code is the CLI, not the API: it takes the 'haiku' alias (always the current release)
   // and can be handed no model at all. The API providers must name a full id — aliases 404 there.
-  const defaultModelFor = (pv: SummarizerProvider): string =>
-    pv === 'codex'       ? DEFAULT_CODEX_MODEL :
-    pv === 'agy'         ? DEFAULT_AGY_MODEL   :
-    pv === 'claude-code' ? DEFAULT_CLAUDE_CODE_MODEL : DEFAULT_SUMMARIZER_MODEL;
-  const defaultFallbacksFor = (pv: SummarizerProvider): string[] =>
-    pv === 'codex'       ? DEFAULT_CODEX_FALLBACKS :
-    pv === 'agy'         ? DEFAULT_AGY_FALLBACKS   :
-    pv === 'claude-code' ? DEFAULT_CLAUDE_CODE_FALLBACKS : DEFAULT_SUMMARIZER_FALLBACKS;
+  // A Record, not a ternary chain: a provider added to SummarizerProvider and forgotten here is a
+  // TYPE ERROR, not a silent fall-through to the trailing arm. That fall-through is not theoretical
+  // — it is how claude-code shipped pointing at a Claude API slug with dated API fallbacks, when the
+  // CLI it actually drives takes aliases (fixed 0.41.2). The union has six members and will grow.
+  const DEFAULT_MODEL_BY_PROVIDER: Record<SummarizerProvider, string> = {
+    'codex': DEFAULT_CODEX_MODEL,
+    'agy': DEFAULT_AGY_MODEL,
+    'claude-code': DEFAULT_CLAUDE_CODE_MODEL,
+    'claude-oauth': DEFAULT_SUMMARIZER_MODEL,
+    'anthropic': DEFAULT_SUMMARIZER_MODEL,
+    'openai-compatible': DEFAULT_SUMMARIZER_MODEL,
+  };
+  const DEFAULT_FALLBACKS_BY_PROVIDER: Record<SummarizerProvider, string[]> = {
+    'codex': DEFAULT_CODEX_FALLBACKS,
+    'agy': DEFAULT_AGY_FALLBACKS,
+    'claude-code': DEFAULT_CLAUDE_CODE_FALLBACKS,
+    'claude-oauth': DEFAULT_SUMMARIZER_FALLBACKS,
+    'anthropic': DEFAULT_SUMMARIZER_FALLBACKS,
+    'openai-compatible': DEFAULT_SUMMARIZER_FALLBACKS,
+  };
+  const defaultModelFor = (pv: SummarizerProvider): string => DEFAULT_MODEL_BY_PROVIDER[pv];
+  const defaultFallbacksFor = (pv: SummarizerProvider): string[] => DEFAULT_FALLBACKS_BY_PROVIDER[pv];
   const providerDefaultModel = defaultModelFor(provider);
   const providerDefaultFallbacks = defaultFallbacksFor(provider);
   const summarizerModel = process.env[ENV_SUMMARIZER_MODEL] ?? providerDefaultModel;
@@ -3998,7 +4012,11 @@ export async function runWorkerCli(): Promise<void> {
 
   // "I am coming up" — from here until the port is open this worker is unreachable but ALIVE, and a
   // hook that finds no HTTP must wait rather than hard-kill it mid-boot (see shared/worker-transition.ts).
-  markTransition({ phase: 'booting' });
+  // Say so if it fails: silently, this reinstates the original bug (a session opening during the boot
+  // reclaims the port from under us) with nothing in the log to explain why.
+  if (!markTransition({ phase: 'booting' })) {
+    console.error('[worker] could not write the transition breadcrumb — a session starting now may reclaim the port mid-boot');
+  }
 
   const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
   if (process.env.CAPTAIN_MEMO_WORKER_THREADED === '1') {

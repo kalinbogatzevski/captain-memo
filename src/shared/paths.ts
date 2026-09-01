@@ -63,17 +63,27 @@ export const DEFAULT_SUMMARIZER_MODEL = 'claude-haiku-4-5';
 // summary beats none. Override via CAPTAIN_MEMO_SUMMARIZER_FALLBACKS.
 export const DEFAULT_SUMMARIZER_FALLBACKS: string[] = ['claude-haiku-4-5-20251001', 'claude-sonnet-5'];
 
-// `claude-code` shells out to the CLI, and the CLI is the one Anthropic surface that takes
-// family ALIASES ('haiku', 'sonnet', 'opus', 'fable') and resolves them to the CURRENT release —
-// verified in the shipped CLI's own accepted-alias list. api.anthropic.com does NOT (full ids
-// only; every alias 404s — probed 2026-08-09, see DEFAULT_SUMMARIZER_FALLBACKS above), which is
-// why the two paths need different defaults and why the API providers keep a dated id.
+// THE ONE PLACE THE MODEL-NAMING RULE LIVES. Agent-CLI providers name no model at all; the HTTP
+// APIs must name a full id. Both defaults below, and the alias default for claude-code further
+// down, follow from that single split — the transports and the installer point here rather than
+// re-arguing it.
 //
-// So this line never has to be maintained: 'haiku' is always the current cheapest tier, and the
-// chain floors at the sentinel (= pass no --model, summarizer-claude-code.ts) so even a retired
-// alias cannot leave the summarizer with nothing to call.
+// Agent CLIs (codex, agy) gate models SERVER-SIDE and PER PLAN, the names turn over every few
+// months, and nothing offline can enumerate them. So any name we ship ages into a wrong one, and
+// re-pinning only resets the clock — see CHANGELOG 0.41.1 for the install that was handed a slug
+// retired months earlier. The sentinel means "pass no model flag": it cannot rot and cannot 400.
+// It also stays in each fallback chain as the floor under a model the user pins deliberately via
+// CAPTAIN_MEMO_SUMMARIZER_MODEL, and de-dups away when it IS the primary (summarizer.ts).
+export const ACCOUNT_DEFAULT_MODEL = 'default';
+
+// `claude-code` shells out to the CLI, and the CLI is the one Anthropic surface that takes family
+// ALIASES ('haiku', 'sonnet', 'opus', 'fable') and resolves them to the CURRENT release — verified
+// in the shipped CLI's own `--model` help. api.anthropic.com does NOT: it resolves FULL ids only
+// and 404s every bare alias (probed 2026-08-09, see DEFAULT_SUMMARIZER_FALLBACKS above), which is
+// why the API providers keep a full id and this one does not. So 'haiku' is always the current
+// cheapest tier and never needs maintaining, with the sentinel below it as the floor.
 export const DEFAULT_CLAUDE_CODE_MODEL = 'haiku';
-export const DEFAULT_CLAUDE_CODE_FALLBACKS: string[] = ['default'];
+export const DEFAULT_CLAUDE_CODE_FALLBACKS: string[] = [ACCOUNT_DEFAULT_MODEL];
 
 // Env-var names — keep all under CAPTAIN_MEMO_* except ANTHROPIC_API_KEY,
 // which intentionally matches the Anthropic SDK convention.
@@ -110,34 +120,15 @@ export const ENV_OBSERVATION_TICK_MS = 'CAPTAIN_MEMO_OBSERVATION_TICK_MS';
 export type SummarizerProvider = 'claude-oauth' | 'anthropic' | 'claude-code' | 'openai-compatible' | 'codex' | 'agy';
 export const DEFAULT_SUMMARIZER_PROVIDER: SummarizerProvider = 'claude-oauth';
 
-// Codex model defaults. Deliberately separate from DEFAULT_SUMMARIZER_MODEL —
-// that one is a Claude slug, and handing a Claude slug to `codex exec` is an
-// instant 400. The worker substitutes these when provider=codex and the user
-// hasn't pinned CAPTAIN_MEMO_SUMMARIZER_MODEL themselves.
-//
-// The default is the SENTINEL 'default' — "send no -m at all", so Codex uses the
-// account's own model (summarizer-codex.ts:CODEX_ACCOUNT_DEFAULT). It used to name a
-// slug: gpt-5.4-mini, picked as the cheapest Haiku-tier model a ChatGPT account would
-// accept. That rots. A ChatGPT account gates models SERVER-SIDE and PER PLAN, the slugs
-// turn over every few months, and nothing offline can enumerate them (there is no
-// `codex models`, and `-m` documents no values) — so the installer was handing new
-// captains a retired slug (field 2026-09-01: gpt-5.4-mini, gone) that cost a wasted
-// ~6-7s `codex exec` boot per rejected candidate on every worker start before the chain
-// walked down to this sentinel anyway. Naming no model is the only choice that cannot
-// rot and cannot 400. Pin CAPTAIN_MEMO_SUMMARIZER_MODEL yourself if your plan gives you
-// a cheaper tier worth saving quota on — the sentinel stays in the fallback chain as the
-// floor under that pin (it de-dups away when it IS the primary).
-export const DEFAULT_CODEX_MODEL = 'default';
-export const DEFAULT_CODEX_FALLBACKS: string[] = ['default'];
+// Codex — the rule above, applied. Deliberately separate from DEFAULT_SUMMARIZER_MODEL: that one
+// is a Claude id, and handing a Claude id to `codex exec` is an instant 400.
+export const DEFAULT_CODEX_MODEL = ACCOUNT_DEFAULT_MODEL;
+export const DEFAULT_CODEX_FALLBACKS: string[] = [ACCOUNT_DEFAULT_MODEL];
 
-// Antigravity (`agy`): same reasoning as codex above, same sentinel (= pass no --model,
-// summarizer-agy.ts:AGY_ACCOUNT_DEFAULT). Its names are DISPLAY names, not slugs — what
-// `agy models` prints and what `--model` accepts — and they turn over with the model
-// line ('Gemini 3.5 Flash (Low)' was the measured cheapest-and-fastest pick). agy at
-// least fails loudly on an unknown value (exits 1, lists the valid ones), but a default
-// nobody can keep current is still a default that ages into a wrong one.
-export const DEFAULT_AGY_MODEL = 'default';
-export const DEFAULT_AGY_FALLBACKS: string[] = ['default'];
+// Antigravity (`agy`). Same rule; its names are DISPLAY names, not slugs — what `agy models`
+// prints and what `--model` accepts, so an unknown one exits 1 and lists the valid ones.
+export const DEFAULT_AGY_MODEL = ACCOUNT_DEFAULT_MODEL;
+export const DEFAULT_AGY_FALLBACKS: string[] = [ACCOUNT_DEFAULT_MODEL];
 
 /** Endpoint URL for openai-compatible provider. Required when provider=openai-compatible. */
 export const ENV_OPENAI_ENDPOINT = 'CAPTAIN_MEMO_OPENAI_ENDPOINT';

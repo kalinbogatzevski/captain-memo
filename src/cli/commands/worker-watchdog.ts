@@ -38,12 +38,14 @@ function logWatchdog(line: string): void {
 export async function workerWatchdogCommand(_args: string[]): Promise<number> {
   const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
   const sm = getServiceManager();
-  // A worker that is booting or restarting onto a new version is not a zombie — reclaiming it would
-  // hard-kill a worker seconds from healthy. Report the skip instead of doing damage; the breadcrumb's
-  // TTL (2 min) means a relaunch that never lands stops shielding it and the next kick reclaims.
+  // A worker that is booting or replacing itself is not a zombie — reclaiming it would hard-kill a
+  // worker seconds from healthy. Report the skip instead of doing damage. Checked before the probe
+  // rather than inside the policy: refusing the lock would report this as 'lock-held', which is a
+  // different thing, and this command is a human typing it (the periodic task was removed in
+  // 0.2.17), so a skipped kick costs one line of output, not a lost recovery window.
   const transition = readTransition();
   if (transition) {
-    logWatchdog(`worker is ${transition.phase} - skipping reclaim`);
+    logWatchdog(`worker is ${transition.phase} - skipping reclaim (breadcrumb is fresh; re-run once it clears)`);
     return 0;
   }
   try {

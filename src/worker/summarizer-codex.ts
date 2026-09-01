@@ -32,6 +32,7 @@
 //                         from stdin" when stdin is an open pipe (i.e. the worker).
 
 import type { SummarizerTransport, SummarizerTransportArgs, SummarizerTransportResult } from './summarizer.ts';
+import { ACCOUNT_DEFAULT_MODEL } from '../shared/paths.ts';
 
 /**
  * Sentinel model meaning "don't pass -m; let Codex use the account default".
@@ -46,7 +47,7 @@ import type { SummarizerTransport, SummarizerTransportArgs, SummarizerTransportR
  * It is a real string (not '') because Summarizer drops falsy entries from the
  * fallback chain (summarizer.ts:100).
  */
-export const CODEX_ACCOUNT_DEFAULT = 'default';
+export const CODEX_ACCOUNT_DEFAULT = ACCOUNT_DEFAULT_MODEL;
 
 /** JSONL events emitted by `codex exec --json`. Only the fields we consume. */
 interface CodexEvent {

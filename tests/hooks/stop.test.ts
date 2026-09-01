@@ -1,5 +1,13 @@
 import { test, expect, beforeAll, afterAll } from 'bun:test';
 import { join } from 'path';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+
+// Each hook runs in a THROWAWAY data dir. These hooks write state (the .degraded-<session_id> flag,
+// the .worker-transition breadcrumb, .install-version) and default to the real ~/.captain-memo —
+// which is how test litter reached a developer's live data dir once already.
+const TEST_DATA_DIR = mkdtempSync(join(tmpdir(), 'captain-memo-hooktest-'));
+
 import { readFileSync } from 'fs';
 import { spawn } from 'bun';
 
@@ -36,7 +44,7 @@ async function runHook(env: Record<string, string> = {}) {
   const proc = spawn({
     cmd: ['bun', HOOK_PATH],
     stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
-    env: { ...process.env, CAPTAIN_MEMO_WORKER_PORT: String(port), ...env },
+    env: { ...process.env, CAPTAIN_MEMO_DATA_DIR: TEST_DATA_DIR, CAPTAIN_MEMO_WORKER_PORT: String(port), ...env },
   });
   proc.stdin.write(FIXTURE);
   proc.stdin.end();
@@ -66,4 +74,30 @@ test('Stop — completes within ~5s budget when worker unreachable', async () =>
   const elapsed = Date.now() - start;
   expect(exitCode).toBe(0);
   expect(elapsed).toBeLessThan(7_000);
+});
+
+// The other half of the one-shot banner: a session told "memory is paused" must hear when it is back.
+const DEGRADED_FLAG = '.degraded-ses_2026-05-07T12-00-00_abc123';
+
+test('Stop — announces the recovery once for a session that was told memory was down', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'captain-memo-degraded-'));
+  try {
+    writeFileSync(join(dir, DEGRADED_FLAG), new Date().toISOString(), 'utf-8');
+    const first = await runHook({ CAPTAIN_MEMO_DATA_DIR: dir });
+    expect(first.exitCode).toBe(0);
+    expect(first.stdout).toContain('back online');
+    // Consumed: a second turn must not repeat it.
+    const second = await runHook({ CAPTAIN_MEMO_DATA_DIR: dir });
+    expect(second.stdout).not.toContain('back online');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('Stop — a failed flush KEEPS the flag, so the notice is not burned on a still-down worker', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'captain-memo-degraded-'));
+  try {
+    writeFileSync(join(dir, DEGRADED_FLAG), new Date().toISOString(), 'utf-8');
+    const { stdout } = await runHook({ CAPTAIN_MEMO_DATA_DIR: dir, CAPTAIN_MEMO_WORKER_PORT: '1' });
+    expect(stdout).not.toContain('back online');
+    expect(existsSync(join(dir, DEGRADED_FLAG))).toBe(true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

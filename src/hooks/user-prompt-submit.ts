@@ -69,7 +69,14 @@ export async function main(options: UserPromptSubmitOptions = {}): Promise<void>
   // win32 racing the updater's own relauncher for the port). Short-circuits after !result.ok, so the
   // normal path never touches the filesystem. The breadcrumb's TTL bounds this: a relaunch that never
   // lands stops shielding the worker within 2 minutes and the usual heal takes over.
-  if (!result.ok && process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL !== '1' && !readTransition()) {
+  const transition = result.ok ? null : readTransition();
+  if (transition) {
+    // Log the NON-action too. The /inject/context failure above is already in hook.log; without this
+    // line the reader sees repeated failures and no recovery attempt, and goes hunting the heal lock
+    // or a broken service manager. TTL-bounded, so this can log a handful of times at most.
+    logHookError('UserPromptSubmit', new Error(`worker is ${transition.phase} — skipping the reclaim`));
+  }
+  if (!result.ok && process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL !== '1' && !transition) {
     try {
       const { acquireHealLock, releaseHealLock } = await import('../shared/worker-heal-lock.ts');
       if (acquireHealLock()) {

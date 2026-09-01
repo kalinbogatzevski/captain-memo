@@ -217,8 +217,8 @@ Auth comes from your existing Claude Code login. Trade-off: ~1-2 s subprocess ov
 
 The model defaults to the alias `haiku`, which the CLI resolves to the current Haiku release —
 so there is no model name to keep current here. (`claude-oauth` and `anthropic` talk to
-api.anthropic.com, which resolves FULL ids only and 404s every alias, so those keep a dated
-default.) The chain floors at the sentinel `default`, meaning "pass no `--model` at all".
+api.anthropic.com, which resolves FULL ids only and 404s every alias, so those keep a full model
+id.) The chain floors at the sentinel `default`, meaning "pass no `--model` at all".
 
 ### Quick start — local LLM via Ollama
 
@@ -262,8 +262,8 @@ bun run worker:start
 | `ANTHROPIC_API_KEY` | — | Required when `provider=anthropic`. Ignored under other providers. |
 | `CAPTAIN_MEMO_OPENAI_ENDPOINT` | — | Required when `provider=openai-compatible`. Full URL to `/v1/chat/completions`. |
 | `CAPTAIN_MEMO_OPENAI_API_KEY` | — | Optional bearer token for `provider=openai-compatible`. Local servers (Ollama, LM Studio) typically don't need it. |
-| `CAPTAIN_MEMO_SUMMARIZER_MODEL` | `claude-haiku-4-6` | Primary summarizer model. Provider-agnostic — set it to whatever model your endpoint serves (e.g. `gpt-4o-mini`, `qwen2.5:14b`, `deepseek-chat`, etc.). |
-| `CAPTAIN_MEMO_SUMMARIZER_FALLBACKS` | `claude-haiku-4-5` | Comma-separated fallback chain. Each model is tried in order on `model_not_found`; the first one that responds is cached for the worker's lifetime. |
+| `CAPTAIN_MEMO_SUMMARIZER_MODEL` | **provider-dependent** | Primary summarizer model. Defaults: `claude-haiku-4-5` for the API providers (`claude-oauth`, `anthropic`), the alias `haiku` for `claude-code`, and the `default` sentinel — "send no model flag, let the account choose" — for `codex` and `agy`. Set it to whatever model your endpoint serves (e.g. `gpt-4o-mini`, `qwen2.5:14b`) to pin one yourself. |
+| `CAPTAIN_MEMO_SUMMARIZER_FALLBACKS` | **provider-dependent** | Comma-separated fallback chain, tried in order on `model_not_found`; the first that responds is cached for the worker's lifetime. Defaults: `claude-haiku-4-5-20251001,claude-sonnet-5` for the API providers, and the `default` sentinel for the three agent CLIs — which is the floor under any model you pin, so a retired name can never leave the summarizer with nothing to call. |
 | `CAPTAIN_MEMO_HOOK_BUDGET_TOKENS` | `4000` | Hard cap on `<memory-context>` token budget. |
 | `CAPTAIN_MEMO_HOOK_TIMEOUT_MS` | `250` | UserPromptSubmit hard timeout. |
 | `CAPTAIN_MEMO_AUTO_UPDATE` | `0` | `1` opts a **git-clone** install into autonomous self-update: on session start, fast-forward the checkout to the newest stable `vX.Y.Z` tag on `origin`, `bun install`, restart the worker. Fast-forward only; refuses a dirty tree / detached HEAD; ignores pre-release tags. No-op on a marketplace install. |

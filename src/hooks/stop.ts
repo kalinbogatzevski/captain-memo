@@ -35,11 +35,12 @@ export async function main(options: StopOptions = {}): Promise<void> {
   // it came back, which is why sessions were being closed and reopened by hand. This flush is already
   // a live round-trip to the worker on every turn end, so an OK result IS the recovery signal: no
   // extra probe, and the flag (raised by SessionStart, per session) makes it fire exactly once.
-  // Vendor hosts (Codex/Gemini, emitJson) keep their verified '{}' — their systemMessage contract
-  // is not confirmed, and the flag is consumed either way so it can't fire later out of context.
-  const backOnline = res.ok && consumeSessionDegraded(payload.session_id);
-  if (options.emitJson) writeStdout('{}');
-  else if (backOnline) {
+  // Vendor hosts (Codex/Gemini, emitJson) keep their verified '{}' — their systemMessage contract is
+  // not confirmed. The flag is only CONSUMED on the path that can actually show it: consuming it
+  // first would destroy the notice on a host that then prints '{}', so the session that was told
+  // memory was down would never hear it came back.
+  if (options.emitJson) { writeStdout('{}'); return; }
+  if (res.ok && consumeSessionDegraded(payload.session_id)) {
     writeStdout(JSON.stringify({
       systemMessage: '⚓ Captain Memo is back online — memory is active again for this session.',
     }));

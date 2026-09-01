@@ -53,13 +53,13 @@
 import { copyFileSync, existsSync, mkdirSync, rmSync, statSync, symlinkSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import { DATA_DIR } from '../shared/paths.ts';
+import { ACCOUNT_DEFAULT_MODEL, DATA_DIR } from '../shared/paths.ts';
 import { isWindows } from '../shared/platform.ts';
 import type { SummarizerTransport, SummarizerTransportArgs, SummarizerTransportResult } from './summarizer.ts';
 
 /** Sentinel model meaning "don't pass --model; use the account default". Mirrors the
  *  codex transport. A real string, not '', because Summarizer drops falsy fallbacks. */
-export const AGY_ACCOUNT_DEFAULT = 'default';
+export const AGY_ACCOUNT_DEFAULT = ACCOUNT_DEFAULT_MODEL;
 
 /** Where the real `agy` keeps its OAuth token — the one thing we link into our home. */
 const AGY_TOKEN_REL = join('.gemini', 'antigravity-cli', 'antigravity-oauth-token');

@@ -609,7 +609,7 @@ export function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOpt
   } else if (summarizer === 'claude-code') {
     // The CLI takes family aliases and resolves them to the current release, so this is one
     // model name that never goes stale — no prompt, nothing for the user to keep current.
-    // (claude-oauth keeps the dated id above: the API resolves full ids only.)
+    // (claude-oauth keeps the full id above: the API resolves full ids only, no aliases.)
     summarizerModel = DEFAULT_CLAUDE_CODE_MODEL;
   } else if (summarizer === 'openai-compatible') {
     summarizerOpenaiEndpoint = resolveText(opts?.openaiEndpoint, nonInteractive, 'OpenAI-compatible endpoint URL', existing?.summarizerOpenaiEndpoint ?? 'http://localhost:11434/v1/chat/completions');

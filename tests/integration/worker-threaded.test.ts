@@ -1,5 +1,5 @@
 import { test, expect, afterAll } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
@@ -52,4 +52,11 @@ test('threaded worker: /health stays fast while the engine is blocked 5s', async
   await Bun.sleep(5000);
   const s = await (await fetch(`${base}/search/all`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: 'hello', top_k: 3 }) })).json() as any;
   expect(Array.isArray(s.results)).toBe(true);
+
+  // The boot breadcrumb is written before the port opens and MUST be cleared once it is. Left
+  // behind, every SessionStart after every boot waits out the transition budget and a genuinely
+  // dead worker is shielded from self-heal for the whole TTL. Asserted at the END of the test,
+  // not right after the port answers: clearTransition() runs a hair after startThreadedWorker
+  // returns, so an immediate check has a sub-millisecond flake window.
+  expect(existsSync(join(dir, '.worker-transition'))).toBe(false);
 }, 40_000);

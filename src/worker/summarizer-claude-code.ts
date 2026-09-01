@@ -12,6 +12,7 @@
 //     in Summarizer continues to walk.
 
 import type { SummarizerTransport, SummarizerTransportArgs, SummarizerTransportResult } from './summarizer.ts';
+import { ACCOUNT_DEFAULT_MODEL } from '../shared/paths.ts';
 
 /**
  * Sentinel model meaning "don't pass --model; let the CLI use its configured default".
@@ -24,7 +25,7 @@ import type { SummarizerTransport, SummarizerTransportArgs, SummarizerTransportR
  *
  * A real string (not '') because Summarizer drops falsy entries from the fallback chain.
  */
-export const CLAUDE_CODE_ACCOUNT_DEFAULT = 'default';
+export const CLAUDE_CODE_ACCOUNT_DEFAULT = ACCOUNT_DEFAULT_MODEL;
 
 /**
  * Subset of the JSON envelope returned by `claude -p --output-format json`.

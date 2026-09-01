@@ -6,7 +6,7 @@ import { VERSION } from '../shared/version.ts';
 import { consumeUpgradeNotice, formatAutoUpdateBanner, formatRollbackBanner, writeMarker } from '../shared/self-update.ts';
 import { runAutoUpdate, rollbackTo, isUpdateCheckDue, DEFAULT_UPDATE_CHECK_INTERVAL_MS, type UpdaterPort } from '../worker/self-updater.ts';
 import { ensureWorkerHealthy } from '../shared/worker-health.ts';
-import { markTransition, readTransition, markSessionDegraded, type WorkerTransition } from '../shared/worker-transition.ts';
+import { markTransition, readTransition, clearTransition, markSessionDegraded, type WorkerTransition } from '../shared/worker-transition.ts';
 import { restartWorker } from '../shared/worker-control.ts';
 import { acquireHealLock, releaseHealLock } from '../shared/worker-heal-lock.ts';
 
@@ -120,7 +120,7 @@ function formatDegradedBanner(detail: string): string {
 // new version, or it is still opening its port. Both end on their own in seconds, so this must not
 // read like the degraded banner — nothing is broken, and closing Claude (what people did before this
 // existed) only makes the wait longer.
-function formatTransitionBanner(t: WorkerTransition, now: number = Date.now()): string {
+function formatTransitionBanner(t: WorkerTransition, willAnnounce: boolean, now: number = Date.now()): string {
   const secs = Math.max(1, Math.round((now - t.ts) / 1000));
   const versions = t.from && t.to ? ` (v${t.from} → v${t.to})` : t.to ? ` (→ v${t.to})` : '';
   return [
@@ -130,8 +130,13 @@ function formatTransitionBanner(t: WorkerTransition, now: number = Date.now()): 
     '─'.repeat(60),
     t.phase === 'updating'
       ? `  The worker restarted itself onto the new version ${secs}s ago and is coming back up.`
-      : `  The worker started ${secs}s ago and hasn't opened its port yet (a cold start takes ~10s).`,
-    '  Memory resumes by itself — no need to restart Claude. This session says so when it is back.',
+      : `  The worker started ${secs}s ago and hasn't opened its port yet (a cold start takes a few seconds).`,
+    // Only promise the follow-up when the flag that drives it actually landed — the Stop hook has
+    // nothing to announce from if the write failed (read-only home, ENOSPC), and a banner that
+    // promises a notice nobody will send is the same one-shot lie in a friendlier voice.
+    willAnnounce
+      ? '  Memory resumes by itself — no need to restart Claude. This session says so when it is back.'
+      : '  Memory resumes by itself — no need to restart Claude.',
     '',
   ].join('\n');
 }
@@ -178,6 +183,7 @@ export async function main(): Promise<void> {
   // fail-open: any error is logged, never thrown, and the session continues on the current version.
   let autoUpdateNotice = '';
   let updatedThisSession = false;
+  let wroteTransition = false;   // did WE leave a breadcrumb that must not outlive a failed restart?
   if (process.env.CAPTAIN_MEMO_AUTO_UPDATE === '1') {
     const AUTO_UPDATE_LOCK = join(DATA_DIR, '.auto-update.lock');
     try {
@@ -212,7 +218,11 @@ export async function main(): Promise<void> {
             const sm = getServiceManager();
             const wport = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
             // Same breadcrumb the worker leaves when it replaces itself: a CONCURRENT session starting
-            // during this replacement must wait it out, not reclaim the port from under us.
+            // during this replacement must wait it out, not reclaim the port from under us. It MUST be
+            // cleared again on every path where the replacement does not land — otherwise this hook
+            // reads its own note back below, shields the worker it just failed to restart, and tells
+            // the user "updating, coming back by itself" about a worker that is simply dead.
+            wroteTransition = true;
             markTransition({ phase: 'updating', from: res.from, ...(res.to ? { to: res.to } : {}) });
             await restartWorker(sm, 'captain-memo-worker', { port: wport, graceful: true });
             const healthy = await waitWorkerHealthy();
@@ -226,7 +236,8 @@ export async function main(): Promise<void> {
               const rolled = res.priorSha ? rollbackTo(port, installDir, res.priorSha, process.execPath) : false;
               markTransition({ phase: 'updating', to: res.from });   // rolling BACK to the known-good version
               await restartWorker(sm, 'captain-memo-worker', { port: wport });
-              await waitWorkerHealthy();
+              const backOnOld = await waitWorkerHealthy();
+              if (!backOnOld) { clearTransition(); wroteTransition = false; }   // nothing is coming back — stop shielding it
               stats = await probeStats();
               updatedThisSession = true;
               autoUpdateNotice = formatRollbackBanner(res.from, res.to ?? '?', rolled);
@@ -241,6 +252,9 @@ export async function main(): Promise<void> {
         }
       }
     } catch (err) {
+      // The restart itself threw (service manager missing, task locked). Our breadcrumb would
+      // otherwise shield a worker nobody restarted, for the full TTL.
+      if (wroteTransition) { clearTransition(); wroteTransition = false; }
       logHookError('SessionStart', err);
     }
   }
@@ -261,7 +275,8 @@ export async function main(): Promise<void> {
   // from healthy and, on win32, races the updater's own detached relauncher for the port: that is how
   // "⚓ worker unreachable (worker timed out)" was manufactured for a captain that was merely updating.
   // So wait it out INSTEAD of healing — never both, stacking the two waits would push this hook past
-  // its own timeout — then re-judge on the refreshed stats.
+  // its own 60s registered timeout (10s /stats + 20s wait is the worst path as it stands) — then
+  // re-judge on the refreshed stats.
   const transition = running ? null : readTransition();
   if (transition) {
     await waitWorkerHealthy(Number(process.env.CAPTAIN_MEMO_SESSION_START_TRANSITION_WAIT_MS ?? 20_000));
@@ -272,7 +287,12 @@ export async function main(): Promise<void> {
   // `stale` compares the worker's version to VERSION — the hook's frozen constant. After an
   // auto-update this session, the worker is NEWER than VERSION (which was loaded pre-pull), so the
   // stale check would false-fire and bounce the just-restarted worker a second time. Suppress it.
-  const stale = !updatedThisSession && running && stats.body!.version !== undefined && stats.body!.version !== VERSION;
+  // `!transition` for the same reason one step removed: a worker that came back DURING our wait
+  // came back on whatever version the transition installed, and this hook's VERSION is frozen from
+  // before it. Bouncing it there stacks a restart + 15s health wait onto the 30s already spent and
+  // can overrun the hook's 60s budget — which kills the banner outright, the exact "no banner, looks
+  // broken" state this feature exists to remove. A genuinely stale worker is picked up next session.
+  const stale = !updatedThisSession && !transition && running && stats.body!.version !== undefined && stats.body!.version !== VERSION;
   if (!selfHealOff && !inTransition && (!running || stale)) {
     try {
       const { getServiceManager } = await import('../services/service-manager/index.ts');
@@ -371,11 +391,15 @@ export async function main(): Promise<void> {
     }));
   } else if (inTransition) {
     // Unreachable, but the worker told us why before it went quiet: it is updating or still booting.
-    // Name that, promise the recovery, and flag the session so the Stop hook can confirm it happened.
-    markSessionDegraded(payload.session_id ?? '');
+    // Name that, flag the session so the Stop hook can confirm the recovery, and LOG it — the banner
+    // is reassuring by design, so without this line a transition that never completes leaves no trace
+    // at all and the next reader of hook.log cannot tell a slow update from a stalled one.
+    const willAnnounce = markSessionDegraded(payload.session_id ?? '');
+    logHookError('SessionStart', new Error(
+      `worker ${inTransition.phase} (breadcrumb ${Math.round((Date.now() - inTransition.ts) / 1000)}s old) — still unreachable after the transition wait; self-heal skipped`));
     writeStdout(JSON.stringify({
       continue: true,
-      systemMessage: withNotice(formatTransitionBanner(inTransition)),
+      systemMessage: withNotice(formatTransitionBanner(inTransition, willAnnounce)),
     }));
   } else {
     // Worker unreachable / timed out / errored / empty body: log it AND tell the

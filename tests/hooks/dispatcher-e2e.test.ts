@@ -14,6 +14,14 @@
 
 import { test, expect, beforeAll, afterAll } from 'bun:test';
 import { join } from 'path';
+import { mkdtempSync } from 'fs';
+import { tmpdir } from 'os';
+
+// Each hook runs in a THROWAWAY data dir. These hooks write state (the .degraded-<session_id> flag,
+// the .worker-transition breadcrumb, .install-version) and default to the real ~/.captain-memo —
+// which is how test litter reached a developer's live data dir once already.
+const TEST_DATA_DIR = mkdtempSync(join(tmpdir(), 'captain-memo-hooktest-'));
+
 import { readFileSync } from 'fs';
 import { spawn } from 'bun';
 
@@ -56,7 +64,7 @@ async function runDispatcher(event: string, input: string) {
     // not recovery. Without this, the SessionStart case would find /stats unhandled
     // by the stub (404), attempt a real `systemctl start`, and block on the health
     // poll until the test times out.
-    env: { ...process.env, CAPTAIN_MEMO_WORKER_PORT: String(port), CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1' },
+    env: { ...process.env, CAPTAIN_MEMO_DATA_DIR: TEST_DATA_DIR, CAPTAIN_MEMO_WORKER_PORT: String(port), CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1' },
   });
   proc.stdin.write(input);
   proc.stdin.end();
