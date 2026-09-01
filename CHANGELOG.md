@@ -7,6 +7,23 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.41.1] — 2026-09-01
+
+### Fixed
+
+- **The summarizer no longer ships a hardcoded agent-CLI model that rots.** The installer offered new
+  captains `gpt-5.4-mini` as the codex model long after that slug was retired — a fresh install this
+  week was handed a model its account cannot use. Nothing was broken (the codex transport classifies
+  the rejection, `Summarizer` walks the chain down to the `default` sentinel and latches it), but every
+  worker start burned a wasted ~6–7s `codex exec` boot per dead candidate, and the written config named
+  a model that no longer exists. The root problem is not *which* slug: a ChatGPT account gates models
+  SERVER-SIDE and PER PLAN, the slugs turn over every few months, and nothing offline can enumerate
+  them — there is no `codex models`, and `-m` documents no values — so re-pinning only resets the
+  clock. `DEFAULT_CODEX_MODEL` and `DEFAULT_AGY_MODEL` are now the `default` sentinel ("send no model
+  at all"), letting the account pick: it cannot rot and cannot 400. The sentinel remains in the
+  fallback chain as the floor under a model you pin deliberately via
+  `CAPTAIN_MEMO_SUMMARIZER_MODEL`, and de-dups away when it is itself the primary.
+
 ## [0.41.0] — 2026-09-01
 
 ### Fixed
