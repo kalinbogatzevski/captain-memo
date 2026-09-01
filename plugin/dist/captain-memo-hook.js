@@ -1099,27 +1099,44 @@ init_paths();
 
 // src/shared/worker-transition.ts
 init_paths();
-import { mkdirSync as mkdirSync2, readFileSync, readdirSync, statSync as statSync2, unlinkSync, writeFileSync } from "fs";
+import { mkdirSync as mkdirSync2, readFileSync, readdirSync, renameSync as renameSync2, statSync as statSync2, unlinkSync, writeFileSync } from "fs";
 import { dirname, join as join3 } from "path";
 var TRANSITION_PATH = join3(DATA_DIR, ".worker-transition");
 var TRANSITION_TTL_MS = 120000;
 function markTransition(t, path = TRANSITION_PATH, now = Date.now()) {
   try {
+    const live = readTransition(path, now);
+    const entry = {
+      ...t,
+      ...t.from === undefined && live?.from !== undefined ? { from: live.from } : {},
+      ...t.to === undefined && live?.to !== undefined ? { to: live.to } : {},
+      ts: live?.ts ?? now
+    };
     mkdirSync2(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify({ ...t, ts: now }), "utf-8");
-  } catch {}
+    const tmp = `${path}.tmp-${process.pid}`;
+    writeFileSync(tmp, JSON.stringify(entry), "utf-8");
+    renameSync2(tmp, path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 function readTransition(path = TRANSITION_PATH, now = Date.now()) {
   try {
     const t = JSON.parse(readFileSync(path, "utf-8"));
     if (t.phase !== "booting" && t.phase !== "updating")
       return null;
-    if (!Number.isFinite(t.ts) || now - t.ts > TRANSITION_TTL_MS)
+    if (!Number.isFinite(t.ts) || Math.abs(now - t.ts) > TRANSITION_TTL_MS)
       return null;
     return t;
   } catch {
     return null;
   }
+}
+function clearTransition(path = TRANSITION_PATH) {
+  try {
+    unlinkSync(path);
+  } catch {}
 }
 var DEGRADED_PREFIX = ".degraded-";
 var DEGRADED_MAX_AGE_MS = 24 * 60 * 60000;
@@ -1128,7 +1145,7 @@ function degradedPath(sessionId, dataDir) {
 }
 function markSessionDegraded(sessionId, dataDir = DATA_DIR) {
   if (!sessionId)
-    return;
+    return false;
   const now = Date.now();
   try {
     mkdirSync2(dataDir, { recursive: true });
@@ -1142,7 +1159,10 @@ function markSessionDegraded(sessionId, dataDir = DATA_DIR) {
           unlinkSync(p);
       } catch {}
     }
-  } catch {}
+    return true;
+  } catch {
+    return false;
+  }
 }
 function consumeSessionDegraded(sessionId, dataDir = DATA_DIR) {
   if (!sessionId)
@@ -1179,7 +1199,11 @@ async function main(options = {}) {
     timeoutMs
   });
   logWorkerFailure("UserPromptSubmit", "/inject/context", result);
-  if (!result.ok && process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL !== "1" && !readTransition()) {
+  const transition = result.ok ? null : readTransition();
+  if (transition) {
+    logHookError("UserPromptSubmit", new Error(`worker is ${transition.phase} \u2014 skipping the reclaim`));
+  }
+  if (!result.ok && process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL !== "1" && !transition) {
     try {
       const { acquireHealLock: acquireHealLock2, releaseHealLock: releaseHealLock2 } = await Promise.resolve().then(() => (init_worker_heal_lock(), exports_worker_heal_lock));
       if (acquireHealLock2()) {
@@ -1235,7 +1259,7 @@ import { join as join14 } from "path";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.41.2",
+  version: "0.41.3",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -1310,7 +1334,7 @@ var package_default = {
 var VERSION = package_default.version;
 
 // src/shared/self-update.ts
-import { mkdirSync as mkdirSync5, readFileSync as readFileSync5, writeFileSync as writeFileSync5, renameSync as renameSync2 } from "fs";
+import { mkdirSync as mkdirSync5, readFileSync as readFileSync5, writeFileSync as writeFileSync5, renameSync as renameSync3 } from "fs";
 import { join as join8 } from "path";
 var MARKER_FILENAME = ".install-version";
 function compareSemver(a, b) {
@@ -1380,7 +1404,7 @@ function writeMarker(dataDir, version) {
     const tmp = `${final}.tmp-${process.pid}`;
     writeFileSync5(tmp, `${version}
 `, "utf-8");
-    renameSync2(tmp, final);
+    renameSync3(tmp, final);
   } catch {}
 }
 function consumeUpgradeNotice(dataDir, runningVersion) {
@@ -1618,7 +1642,7 @@ function formatDegradedBanner(detail) {
   ].join(`
 `);
 }
-function formatTransitionBanner(t, now = Date.now()) {
+function formatTransitionBanner(t, willAnnounce, now = Date.now()) {
   const secs = Math.max(1, Math.round((now - t.ts) / 1000));
   const versions = t.from && t.to ? ` (v${t.from} \u2192 v${t.to})` : t.to ? ` (\u2192 v${t.to})` : "";
   return [
@@ -1626,8 +1650,8 @@ function formatTransitionBanner(t, now = Date.now()) {
     "",
     t.phase === "updating" ? `\u2693 Captain Memo \u2014 updating${versions}` : "\u2693 Captain Memo \u2014 worker still starting up",
     "\u2500".repeat(60),
-    t.phase === "updating" ? `  The worker restarted itself onto the new version ${secs}s ago and is coming back up.` : `  The worker started ${secs}s ago and hasn't opened its port yet (a cold start takes ~10s).`,
-    "  Memory resumes by itself \u2014 no need to restart Claude. This session says so when it is back.",
+    t.phase === "updating" ? `  The worker restarted itself onto the new version ${secs}s ago and is coming back up.` : `  The worker started ${secs}s ago and hasn't opened its port yet (a cold start takes a few seconds).`,
+    willAnnounce ? "  Memory resumes by itself \u2014 no need to restart Claude. This session says so when it is back." : "  Memory resumes by itself \u2014 no need to restart Claude.",
     ""
   ].join(`
 `);
@@ -1658,6 +1682,7 @@ async function main2() {
   }
   let autoUpdateNotice = "";
   let updatedThisSession = false;
+  let wroteTransition = false;
   if (process.env.CAPTAIN_MEMO_AUTO_UPDATE === "1") {
     const AUTO_UPDATE_LOCK = join14(DATA_DIR, ".auto-update.lock");
     try {
@@ -1697,6 +1722,7 @@ async function main2() {
             const { getServiceManager: getServiceManager2 } = await Promise.resolve().then(() => (init_service_manager(), exports_service_manager));
             const sm = getServiceManager2();
             const wport = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
+            wroteTransition = true;
             markTransition({ phase: "updating", from: res.from, ...res.to ? { to: res.to } : {} });
             await restartWorker(sm, "captain-memo-worker", { port: wport, graceful: true });
             const healthy = await waitWorkerHealthy();
@@ -1709,7 +1735,11 @@ async function main2() {
               const rolled = res.priorSha ? rollbackTo(port, installDir, res.priorSha, process.execPath) : false;
               markTransition({ phase: "updating", to: res.from });
               await restartWorker(sm, "captain-memo-worker", { port: wport });
-              await waitWorkerHealthy();
+              const backOnOld = await waitWorkerHealthy();
+              if (!backOnOld) {
+                clearTransition();
+                wroteTransition = false;
+              }
               stats = await probeStats();
               updatedThisSession = true;
               autoUpdateNotice = formatRollbackBanner(res.from, res.to ?? "?", rolled);
@@ -1723,6 +1753,10 @@ async function main2() {
         }
       }
     } catch (err) {
+      if (wroteTransition) {
+        clearTransition();
+        wroteTransition = false;
+      }
       logHookError("SessionStart", err);
     }
   }
@@ -1734,7 +1768,7 @@ async function main2() {
     running = stats.ok && !!stats.body;
   }
   const inTransition = running ? null : transition;
-  const stale = !updatedThisSession && running && stats.body.version !== undefined && stats.body.version !== VERSION;
+  const stale = !updatedThisSession && !transition && running && stats.body.version !== undefined && stats.body.version !== VERSION;
   if (!selfHealOff && !inTransition && (!running || stale)) {
     try {
       const { getServiceManager: getServiceManager2 } = await Promise.resolve().then(() => (init_service_manager(), exports_service_manager));
@@ -1804,10 +1838,11 @@ ${banner}` : banner;
       systemMessage: withNotice(formatBanner(stats.body))
     }));
   } else if (inTransition) {
-    markSessionDegraded(payload.session_id ?? "");
+    const willAnnounce = markSessionDegraded(payload.session_id ?? "");
+    logHookError("SessionStart", new Error(`worker ${inTransition.phase} (breadcrumb ${Math.round((Date.now() - inTransition.ts) / 1000)}s old) \u2014 still unreachable after the transition wait; self-heal skipped`));
     writeStdout(JSON.stringify({
       continue: true,
-      systemMessage: withNotice(formatTransitionBanner(inTransition))
+      systemMessage: withNotice(formatTransitionBanner(inTransition, willAnnounce))
     }));
   } else {
     logHookError("SessionStart", new Error(workerFailureMessage("/stats", stats) ?? "worker /stats returned no body"));
@@ -2047,10 +2082,11 @@ async function main5(options = {}) {
     timeoutMs: DEFAULT_STOP_DRAIN_BUDGET_MS
   });
   logWorkerFailure("Stop", "/observation/flush", res);
-  const backOnline = res.ok && consumeSessionDegraded(payload.session_id);
-  if (options.emitJson)
+  if (options.emitJson) {
     writeStdout("{}");
-  else if (backOnline) {
+    return;
+  }
+  if (res.ok && consumeSessionDegraded(payload.session_id)) {
     writeStdout(JSON.stringify({
       systemMessage: "\u2693 Captain Memo is back online \u2014 memory is active again for this session."
     }));

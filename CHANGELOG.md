@@ -7,6 +7,63 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.41.3] — 2026-09-01
+
+### Fixed
+
+- **A crash-looping worker could pin the transition breadcrumb open and disable every recovery
+  path.** The supervisor restarts a worker that dies on boot every `RestartSec` — and the unit sets
+  `Restart=always` with `StartLimitIntervalSec=0`, i.e. every 5s, forever — and each restart
+  re-stamped the breadcrumb, so the 120s TTL never expired. Self-heal, the `UserPromptSubmit`
+  reclaim and the watchdog reclaim were skipped indefinitely, and every session read "the worker
+  started 3s ago… memory resumes by itself, no need to restart Claude", an age that never grew, in
+  the one situation where the user genuinely has to intervene. The TTL now measures the OUTAGE:
+  overwriting a live breadcrumb keeps its original timestamp (and its versions, so the banner keeps
+  naming them across the `updating`→`booting` handover), so a boot loop ages out 120s after the
+  FIRST attempt. A future-dated timestamp — a backwards clock correction, a restored snapshot — is
+  bounded the same way; the one-sided comparison never expired at all.
+- **SessionStart shielded itself with its own breadcrumb.** It writes one before `restartWorker` and
+  never cleared it when the restart threw or the rollback failed to boot, then read its own note back
+  and reported "updating, coming back by itself" over a worker it had just failed to revive —
+  suppressing the degraded banner that points at `hook.log`, on exactly the path where an operator
+  must act. It now clears on every failed path, and a transition that never completes is logged the
+  way the degraded branch always was.
+- **The transition wait and the self-heal wait could stack.** When the worker came back DURING the
+  wait, the version check fired against the hook's frozen `VERSION` and bounced the just-updated
+  worker: a restart plus a 15s health wait on top of the 30s already spent, enough to overrun the
+  registered 60s hook timeout — which kills the banner outright and reproduces the "no banner, looks
+  broken" state this feature exists to remove.
+- Smaller, from the same review: `markTransition` / `markSessionDegraded` report whether the write
+  landed, so a failed breadcrumb is logged rather than silently reinstating the original bug, and the
+  banner only promises a recovery notice it can actually deliver; the breadcrumb is written
+  tmp+rename, so a concurrent hook can no longer read a torn file and reclaim the port during the
+  very window this prevents; `Stop` consumes the session flag only on the path that can display it;
+  and `UserPromptSubmit` logs its skipped reclaim the way the watchdog already did.
+
+### Changed
+
+- One `ACCOUNT_DEFAULT_MODEL` constant in `paths.ts`, re-exported by the three agent-CLI transports,
+  instead of eight hand-written `'default'` literals — a typo in one of them would have pinned a
+  model literally named "default". The per-provider model defaults move from a ternary chain to a
+  `Record<SummarizerProvider, …>`, so a provider added to the union and forgotten there is now a
+  compile error rather than a silent fall-through to the Claude API default: that fall-through is
+  exactly how `claude-code` shipped pointing at an API id in the first place.
+
+### Documentation
+
+- The `CAPTAIN_MEMO_SUMMARIZER_MODEL` / `_FALLBACKS` rows in USAGE named defaults that no longer
+  existed (`claude-haiku-4-6`) and implied a single pinned model; they now state the per-provider
+  defaults. "Dated id" corrected to "full id" — only the *fallback* is date-pinned. The module header
+  justified the TTL against a periodic watchdog that was removed in 0.2.17.
+
+### Testing
+
+- The hook suites were writing `.degraded-<session_id>` flags into the real `~/.captain-memo` — one
+  was sitting there — and one test's flag was silently consumed by another's run. Each spawned hook
+  now gets its own data dir. New coverage: the transition banner and the stale-breadcrumb fall-through,
+  the Stop recovery notice and its don't-burn-the-flag case, the crash-loop and clock-skew bounds, and
+  an assertion that a real worker boot clears its own breadcrumb.
+
 ## [0.41.2] — 2026-09-01
 
 ### Fixed
