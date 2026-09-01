@@ -103,21 +103,29 @@ export const DEFAULT_SUMMARIZER_PROVIDER: SummarizerProvider = 'claude-oauth';
 // instant 400. The worker substitutes these when provider=codex and the user
 // hasn't pinned CAPTAIN_MEMO_SUMMARIZER_MODEL themselves.
 //
-// gpt-5.4-mini is the Haiku-tier pick: cheapest slug a ChatGPT account will
-// actually accept (gpt-5.4-nano is rejected). The chain ends in 'default' — the
-// sentinel for "send no -m at all" — because a ChatGPT account gates models
-// server-side per plan, so the only candidate guaranteed not to 400 is the
-// account's own default. See summarizer-codex.ts:CODEX_ACCOUNT_DEFAULT.
-export const DEFAULT_CODEX_MODEL = 'gpt-5.4-mini';
-export const DEFAULT_CODEX_FALLBACKS: string[] = ['gpt-5.5', 'default'];
+// The default is the SENTINEL 'default' — "send no -m at all", so Codex uses the
+// account's own model (summarizer-codex.ts:CODEX_ACCOUNT_DEFAULT). It used to name a
+// slug: gpt-5.4-mini, picked as the cheapest Haiku-tier model a ChatGPT account would
+// accept. That rots. A ChatGPT account gates models SERVER-SIDE and PER PLAN, the slugs
+// turn over every few months, and nothing offline can enumerate them (there is no
+// `codex models`, and `-m` documents no values) — so the installer was handing new
+// captains a retired slug (field 2026-09-01: gpt-5.4-mini, gone) that cost a wasted
+// ~6-7s `codex exec` boot per rejected candidate on every worker start before the chain
+// walked down to this sentinel anyway. Naming no model is the only choice that cannot
+// rot and cannot 400. Pin CAPTAIN_MEMO_SUMMARIZER_MODEL yourself if your plan gives you
+// a cheaper tier worth saving quota on — the sentinel stays in the fallback chain as the
+// floor under that pin (it de-dups away when it IS the primary).
+export const DEFAULT_CODEX_MODEL = 'default';
+export const DEFAULT_CODEX_FALLBACKS: string[] = ['default'];
 
-// Antigravity (`agy`) model defaults. These are DISPLAY names, not slugs — that is what
-// `agy models` prints and what `--model` accepts (an unrecognised value exits 1 and lists
-// the valid ones). 'Gemini 3.5 Flash (Low)' is the Flash/Haiku tier: cheapest and, measured,
-// also the fastest. Chain ends at the 'default' sentinel (= pass no --model), which the
-// account always accepts. See summarizer-agy.ts:AGY_ACCOUNT_DEFAULT.
-export const DEFAULT_AGY_MODEL = 'Gemini 3.5 Flash (Low)';
-export const DEFAULT_AGY_FALLBACKS: string[] = ['Gemini 3.5 Flash (Medium)', 'default'];
+// Antigravity (`agy`): same reasoning as codex above, same sentinel (= pass no --model,
+// summarizer-agy.ts:AGY_ACCOUNT_DEFAULT). Its names are DISPLAY names, not slugs — what
+// `agy models` prints and what `--model` accepts — and they turn over with the model
+// line ('Gemini 3.5 Flash (Low)' was the measured cheapest-and-fastest pick). agy at
+// least fails loudly on an unknown value (exits 1, lists the valid ones), but a default
+// nobody can keep current is still a default that ages into a wrong one.
+export const DEFAULT_AGY_MODEL = 'default';
+export const DEFAULT_AGY_FALLBACKS: string[] = ['default'];
 
 /** Endpoint URL for openai-compatible provider. Required when provider=openai-compatible. */
 export const ENV_OPENAI_ENDPOINT = 'CAPTAIN_MEMO_OPENAI_ENDPOINT';

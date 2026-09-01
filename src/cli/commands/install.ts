@@ -582,10 +582,10 @@ export function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOpt
     anthropicApiKey = resolveText(undefined, nonInteractive, 'Anthropic API key (sk-ant-...)', anthropicDefault);
     summarizerModel = resolveText(undefined, nonInteractive, 'Summarizer model', (existing?.summarizer === 'anthropic' ? existing?.summarizerModel : undefined) ?? 'claude-haiku-4-5');
   } else if (summarizer === 'codex') {
-    // Haiku-tier default. Note a ChatGPT account gates the model list server-side:
-    // gpt-5.4-nano and every gpt-5.1-* slug are rejected outright. If the pinned
-    // model 400s, the worker's fallback chain ends at the 'default' sentinel
-    // (= send no -m), which the account always accepts. See paths.ts.
+    // Defaults to the 'default' sentinel = the account's own model. Naming a slug here
+    // rots: a ChatGPT account gates models server-side and per plan, and nothing offline
+    // can enumerate them — this prompt used to offer gpt-5.4-mini long after it was
+    // retired. A user who knows their plan has a cheaper tier can still type it. See paths.ts.
     summarizerModel = resolveText(
       undefined, nonInteractive, 'Codex model (leave as "default" to use your account default)',
       (existing?.summarizer === 'codex' ? existing?.summarizerModel : undefined) ?? DEFAULT_CODEX_MODEL,
@@ -596,8 +596,9 @@ export function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOpt
       warn('`codex` is not on PATH. Install it (`npm i -g @openai/codex`) then run `codex login`, or the summarizer stays idle.');
     }
   } else if (summarizer === 'agy') {
-    // Display names, not slugs — that's what `agy models` prints and `--model` accepts.
-    // An unrecognised value exits 1 and lists the valid ones, so a typo is loud, not silent.
+    // Same as codex: defaults to the account's own model. Display names, not slugs — that's
+    // what `agy models` prints and `--model` accepts; an unrecognised value exits 1 and lists
+    // the valid ones, so a typo (or a name that has since been retired) is loud, not silent.
     summarizerModel = resolveText(
       undefined, nonInteractive, 'Antigravity model (leave as "default" to use your account default)',
       (existing?.summarizer === 'agy' ? existing?.summarizerModel : undefined) ?? DEFAULT_AGY_MODEL,

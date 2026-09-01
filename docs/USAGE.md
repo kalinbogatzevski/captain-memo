@@ -174,8 +174,9 @@ The summarizer compresses raw tool-use events into structured observations. Pick
 ```bash
 agy                                        # once, to log in (Antigravity CLI, >= 1.1.1)
 export CAPTAIN_MEMO_SUMMARIZER_PROVIDER=agy
-# Model defaults to 'Gemini 3.5 Flash (Low)' — the Flash tier, cheapest AND fastest.
-# Set it to `default` to just use your account default.
+# Model defaults to `default` — your account's own model, so there is no name to keep
+# current. Pin one (e.g. 'Gemini 3.5 Flash (Low)', the Flash tier, cheapest AND fastest)
+# if you want a specific tier.
 ```
 
 Model names here are the **display names** `agy models` prints (`Gemini 3.5 Flash (Low)`), not
@@ -191,14 +192,16 @@ OAuth token symlinked in, and prunes its conversations after each call. Your rea
 ```bash
 npm i -g @openai/codex && codex login    # once
 export CAPTAIN_MEMO_SUMMARIZER_PROVIDER=codex
-# CAPTAIN_MEMO_SUMMARIZER_MODEL defaults to gpt-5.4-mini; set it to `default`
-# to just use whatever model your ChatGPT plan gives you.
+# CAPTAIN_MEMO_SUMMARIZER_MODEL defaults to `default` — whatever model your ChatGPT
+# plan gives you. Pin a slug only if you know your plan allows it.
 ```
 
-A ChatGPT account gates the model list server-side (`gpt-5.4-nano` and every
-`gpt-5.1-*` slug are rejected outright), so the fallback chain ends at the
-sentinel `default` — meaning "send no model at all" — which the account always
-accepts. You never have to know which slugs your plan allows.
+A ChatGPT account gates the model list server-side and PER PLAN, and the slugs turn
+over every few months — nothing offline can enumerate them (there is no `codex models`,
+and `-m` documents no values). So the default, and the floor under any slug you pin, is
+the sentinel `default` — meaning "send no model at all" — which the account always
+accepts. You never have to know which slugs your plan allows, and captain-memo never
+ships you one that has since been retired.
 
 Summarization runs on the worker's 5 s background tick and collapses a whole
 prompt window into ONE call, so the ~6–7 s never lands on your keystrokes.
