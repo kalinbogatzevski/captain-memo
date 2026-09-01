@@ -7,6 +7,23 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.41.2] — 2026-09-01
+
+### Fixed
+
+- **The `claude-code` summarizer no longer names a dated model either.** 0.41.1 unpinned the two
+  agent CLIs but left this one on `claude-haiku-4-5`, which the installer wrote into `worker.env`.
+  `claude-code` shells out to the CLI rather than the API, and the CLI's own accepted-model list takes
+  family ALIASES — `haiku`, `sonnet`, `opus`, `fable` — resolving them to the CURRENT release. So the
+  default is now the alias `haiku`: always the cheapest live tier, with nothing to keep current. The
+  transport also gained the `default` sentinel its codex and agy siblings already had, so the chain
+  floors at "pass no `--model` at all" and even a retired alias cannot leave the summarizer with
+  nothing to call.
+- Not unpinnable, stated for the record: `anthropic` and `claude-oauth` talk to api.anthropic.com,
+  where `model` is a required field and every bare alias 404s (probed 2026-08-09 — the reason the
+  fallback chain is dated ids). Those keep a named default with the probed chain behind it.
+  `openai-compatible` points at the user's own server and takes the user's own model name.
+
 ## [0.41.1] — 2026-09-01
 
 ### Fixed
