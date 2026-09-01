@@ -14,6 +14,19 @@
 import type { SummarizerTransport, SummarizerTransportArgs, SummarizerTransportResult } from './summarizer.ts';
 
 /**
+ * Sentinel model meaning "don't pass --model; let the CLI use its configured default".
+ *
+ * Same role as CODEX_ACCOUNT_DEFAULT / AGY_ACCOUNT_DEFAULT: the terminal fallback that cannot
+ * name a model that has since been retired. Unlike api.anthropic.com — which resolves FULL ids
+ * only, so no alias can serve as a last resort (probed 2026-08-09, see paths.ts) — the `claude`
+ * CLI takes family ALIASES and maps them to the current release, which is why the default here
+ * is the alias `haiku` rather than a dated id (paths.ts:DEFAULT_CLAUDE_CODE_MODEL).
+ *
+ * A real string (not '') because Summarizer drops falsy entries from the fallback chain.
+ */
+export const CLAUDE_CODE_ACCOUNT_DEFAULT = 'default';
+
+/**
  * Subset of the JSON envelope returned by `claude -p --output-format json`.
  * Fields we don't use are intentionally omitted to keep the contract narrow.
  */
@@ -63,7 +76,7 @@ export function createClaudeCodeTransport(opts: ClaudeCodeTransportOptions = {})
   return async (args: SummarizerTransportArgs): Promise<SummarizerTransportResult> => {
     const cmd = [
       bin, '-p',
-      '--model', args.model,
+      ...(args.model && args.model !== CLAUDE_CODE_ACCOUNT_DEFAULT ? ['--model', args.model] : []),
       '--append-system-prompt', args.system,
       '--output-format', 'json',
       ...extraArgs,

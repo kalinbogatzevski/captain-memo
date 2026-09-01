@@ -215,6 +215,11 @@ bun run worker:start
 
 Auth comes from your existing Claude Code login. Trade-off: ~1-2 s subprocess overhead per batch (vs ~200-400 ms direct API), and calls count against your Max session rate limits.
 
+The model defaults to the alias `haiku`, which the CLI resolves to the current Haiku release —
+so there is no model name to keep current here. (`claude-oauth` and `anthropic` talk to
+api.anthropic.com, which resolves FULL ids only and 404s every alias, so those keep a dated
+default.) The chain floors at the sentinel `default`, meaning "pass no `--model` at all".
+
 ### Quick start — local LLM via Ollama
 
 ```bash

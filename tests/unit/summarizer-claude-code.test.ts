@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { createClaudeCodeTransport, type SpawnFn } from '../../src/worker/summarizer-claude-code.ts';
+import { createClaudeCodeTransport, CLAUDE_CODE_ACCOUNT_DEFAULT, type SpawnFn } from '../../src/worker/summarizer-claude-code.ts';
 
 function fakeSpawn(stdoutText: string, exitCode = 0): { spawn: SpawnFn; lastCmd: string[] | null } {
   let lastCmd: string[] | null = null;
@@ -47,6 +47,14 @@ test('claude-code transport — passes correct CLI flags', async () => {
   expect(cmd[cmd.indexOf('--output-format') + 1]).toBe('json');
   // user prompt is the last arg
   expect(cmd[cmd.length - 1]).toBe('USR');
+});
+
+test('claude-code transport — the account-default sentinel passes NO --model', async () => {
+  const fake = fakeSpawn(JSON.stringify({ is_error: false, result: 'ok' }));
+  const t = createClaudeCodeTransport({ spawn: fake.spawn });
+  await t({ model: CLAUDE_CODE_ACCOUNT_DEFAULT, system: 's', user: 'u', max_tokens: 200 });
+  expect(fake.lastCmd!).not.toContain('--model');
+  expect(fake.lastCmd!).not.toContain(CLAUDE_CODE_ACCOUNT_DEFAULT);
 });
 
 test('claude-code transport — is_error throws with descriptive message', async () => {

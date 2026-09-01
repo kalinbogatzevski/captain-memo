@@ -75,6 +75,8 @@ import {
   DEFAULT_SUMMARIZER_MODEL,
   DEFAULT_CODEX_MODEL,
   DEFAULT_CODEX_FALLBACKS,
+  DEFAULT_CLAUDE_CODE_MODEL,
+  DEFAULT_CLAUDE_CODE_FALLBACKS,
   DEFAULT_AGY_MODEL,
   DEFAULT_AGY_FALLBACKS,
   DEFAULT_SUMMARIZER_FALLBACKS,
@@ -3828,12 +3830,16 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
   // and handing a Claude slug to `codex exec` is an instant 400. Resolve the
   // default AFTER the provider is known. An explicit CAPTAIN_MEMO_SUMMARIZER_MODEL
   // always wins — the user may be on a plan with a different allowed model set.
+  // claude-code is the CLI, not the API: it takes the 'haiku' alias (always the current release)
+  // and can be handed no model at all. The API providers must name a full id — aliases 404 there.
   const defaultModelFor = (pv: SummarizerProvider): string =>
-    pv === 'codex' ? DEFAULT_CODEX_MODEL :
-    pv === 'agy'   ? DEFAULT_AGY_MODEL   : DEFAULT_SUMMARIZER_MODEL;
+    pv === 'codex'       ? DEFAULT_CODEX_MODEL :
+    pv === 'agy'         ? DEFAULT_AGY_MODEL   :
+    pv === 'claude-code' ? DEFAULT_CLAUDE_CODE_MODEL : DEFAULT_SUMMARIZER_MODEL;
   const defaultFallbacksFor = (pv: SummarizerProvider): string[] =>
-    pv === 'codex' ? DEFAULT_CODEX_FALLBACKS :
-    pv === 'agy'   ? DEFAULT_AGY_FALLBACKS   : DEFAULT_SUMMARIZER_FALLBACKS;
+    pv === 'codex'       ? DEFAULT_CODEX_FALLBACKS :
+    pv === 'agy'         ? DEFAULT_AGY_FALLBACKS   :
+    pv === 'claude-code' ? DEFAULT_CLAUDE_CODE_FALLBACKS : DEFAULT_SUMMARIZER_FALLBACKS;
   const providerDefaultModel = defaultModelFor(provider);
   const providerDefaultFallbacks = defaultFallbacksFor(provider);
   const summarizerModel = process.env[ENV_SUMMARIZER_MODEL] ?? providerDefaultModel;

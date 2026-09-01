@@ -63,6 +63,18 @@ export const DEFAULT_SUMMARIZER_MODEL = 'claude-haiku-4-5';
 // summary beats none. Override via CAPTAIN_MEMO_SUMMARIZER_FALLBACKS.
 export const DEFAULT_SUMMARIZER_FALLBACKS: string[] = ['claude-haiku-4-5-20251001', 'claude-sonnet-5'];
 
+// `claude-code` shells out to the CLI, and the CLI is the one Anthropic surface that takes
+// family ALIASES ('haiku', 'sonnet', 'opus', 'fable') and resolves them to the CURRENT release —
+// verified in the shipped CLI's own accepted-alias list. api.anthropic.com does NOT (full ids
+// only; every alias 404s — probed 2026-08-09, see DEFAULT_SUMMARIZER_FALLBACKS above), which is
+// why the two paths need different defaults and why the API providers keep a dated id.
+//
+// So this line never has to be maintained: 'haiku' is always the current cheapest tier, and the
+// chain floors at the sentinel (= pass no --model, summarizer-claude-code.ts) so even a retired
+// alias cannot leave the summarizer with nothing to call.
+export const DEFAULT_CLAUDE_CODE_MODEL = 'haiku';
+export const DEFAULT_CLAUDE_CODE_FALLBACKS: string[] = ['default'];
+
 // Env-var names — keep all under CAPTAIN_MEMO_* except ANTHROPIC_API_KEY,
 // which intentionally matches the Anthropic SDK convention.
 export const ENV_ANTHROPIC_API_KEY = 'ANTHROPIC_API_KEY';

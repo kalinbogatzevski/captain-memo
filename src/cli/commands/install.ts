@@ -23,7 +23,7 @@ import { spawnSync } from 'child_process';
 import { printMiniBanner } from '../banner.ts';
 import { isWindows, isMac, homeOf, totalMemGb, diskFreeGb, whichBun as probeBun } from '../../shared/platform.ts';
 import { ensureExtensionCapableSqlite } from '../../shared/sqlite-extensions.ts';
-import { WORKER_ENV_PATH, CONFIG_DIR, LOGS_DIR, DATA_DIR, DEFAULT_WORKER_PORT, DEFAULT_CODEX_MODEL, DEFAULT_AGY_MODEL } from '../../shared/paths.ts';
+import { WORKER_ENV_PATH, CONFIG_DIR, LOGS_DIR, DATA_DIR, DEFAULT_WORKER_PORT, DEFAULT_CODEX_MODEL, DEFAULT_AGY_MODEL, DEFAULT_CLAUDE_CODE_MODEL } from '../../shared/paths.ts';
 import { getServiceManager } from '../../services/service-manager/index.ts';
 import { grantPluginToolPermissions } from './install-hooks.ts';
 import { getEmbedderInstaller } from '../../services/embedder-installer/index.ts';
@@ -606,6 +606,11 @@ export function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOpt
     const agyOk = spawnSync('agy', ['--version'], { stdio: 'ignore', shell: isWindows }).status === 0;
     if (!agyOk) warn('`agy` is not on PATH. Install the Antigravity CLI and run `agy` once to log in, or the summarizer stays idle.');
     else info('agy runs under an isolated $HOME — your real `agy --continue` history stays clean.');
+  } else if (summarizer === 'claude-code') {
+    // The CLI takes family aliases and resolves them to the current release, so this is one
+    // model name that never goes stale — no prompt, nothing for the user to keep current.
+    // (claude-oauth keeps the dated id above: the API resolves full ids only.)
+    summarizerModel = DEFAULT_CLAUDE_CODE_MODEL;
   } else if (summarizer === 'openai-compatible') {
     summarizerOpenaiEndpoint = resolveText(opts?.openaiEndpoint, nonInteractive, 'OpenAI-compatible endpoint URL', existing?.summarizerOpenaiEndpoint ?? 'http://localhost:11434/v1/chat/completions');
     summarizerOpenaiKey = resolveText(opts?.openaiKey, nonInteractive, 'API key (leave blank for local servers)', existing?.summarizerOpenaiKey ?? '');
