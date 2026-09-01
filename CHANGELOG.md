@@ -7,6 +7,30 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.41.0] — 2026-09-01
+
+### Fixed
+
+- **A booting or self-updating worker is no longer killed by the hook that reports it.** An
+  unreachable worker was indistinguishable from a dead one, so `SessionStart` force-reclaimed
+  `:39888` from a worker that was mid-restart or seconds into a cold boot (win32: wscript→bun ≈10s)
+  — and then reported that as `⚓ Captain Memo — worker unreachable (worker timed out)`. Since the
+  banner is a one-shot statement nothing ever revised it: the session kept reading "memory is paused"
+  long after the worker was back, so it got closed and reopened by hand. The worker now leaves a
+  breadcrumb (`~/.captain-memo/.worker-transition`, 120s TTL) whenever it is legitimately between
+  states: `updating` (written SYNCHRONOUSLY, carrying from/to, right before a restart is armed — the
+  window the opt-in updater's own lock does not cover) and `booting` (written by the incoming worker
+  before it opens the port, cleared once it listens, so every start path is covered, including a plain
+  cold start). A fresh breadcrumb means wait, not kill: `SessionStart` skips self-heal and waits it out
+  instead (never both — stacking the waits would blow the hook's own 60s budget; worst case is now
+  32s), `UserPromptSubmit` and the watchdog skip the reclaim, and the banner names what is happening —
+  "updating (v0.40.2 → v0.41.0) … memory resumes by itself, no need to restart Claude" — instead of
+  announcing a break. The `Stop` hook closes the loop: its `/observation/flush` is already a live
+  round-trip at every turn end, so an OK result is the recovery signal for a session that was told
+  memory was down, and it says so once. Trade-off, deliberate: a worker that hangs mid-boot is
+  shielded from self-heal for up to the TTL rather than ~12s — killing healthy booting workers was the
+  actual bug.
+
 ## [0.40.2] — 2026-08-30
 
 ### Fixed

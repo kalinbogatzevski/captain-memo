@@ -167,8 +167,8 @@ __export(exports_worker_heal_lock, {
   HEAL_LOCK_TTL_MS: () => HEAL_LOCK_TTL_MS,
   HEAL_LOCK_PATH: () => HEAL_LOCK_PATH
 });
-import { openSync, closeSync, readFileSync, unlinkSync, writeSync } from "fs";
-import { join as join3 } from "path";
+import { openSync, closeSync, readFileSync as readFileSync2, unlinkSync as unlinkSync2, writeSync } from "fs";
+import { join as join4 } from "path";
 function acquireHealLock(lockPath = HEAL_LOCK_PATH, now = Date.now()) {
   try {
     const fd = openSync(lockPath, "wx");
@@ -177,10 +177,10 @@ function acquireHealLock(lockPath = HEAL_LOCK_PATH, now = Date.now()) {
     return true;
   } catch {
     try {
-      const stamp = Number(readFileSync(lockPath, "utf-8").trim());
+      const stamp = Number(readFileSync2(lockPath, "utf-8").trim());
       const age = now - (Number.isFinite(stamp) ? stamp : 0);
       if (age > HEAL_LOCK_TTL_MS) {
-        unlinkSync(lockPath);
+        unlinkSync2(lockPath);
         const fd = openSync(lockPath, "wx");
         writeSync(fd, String(now));
         closeSync(fd);
@@ -192,13 +192,13 @@ function acquireHealLock(lockPath = HEAL_LOCK_PATH, now = Date.now()) {
 }
 function releaseHealLock(lockPath = HEAL_LOCK_PATH) {
   try {
-    unlinkSync(lockPath);
+    unlinkSync2(lockPath);
   } catch {}
 }
 var HEAL_LOCK_PATH, HEAL_LOCK_TTL_MS = 20000;
 var init_worker_heal_lock = __esm(() => {
   init_paths();
-  HEAL_LOCK_PATH = join3(DATA_DIR, ".worker-heal.lock");
+  HEAL_LOCK_PATH = join4(DATA_DIR, ".worker-heal.lock");
 });
 
 // src/shared/worker-health-probe.ts
@@ -233,9 +233,9 @@ async function probeHealthyWithRetries(probeOnce, attempts = 3, gapMs = 2000, sl
 }
 
 // src/services/service-manager/systemd.ts
-import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, rmSync, writeFileSync } from "fs";
+import { existsSync as existsSync2, mkdirSync as mkdirSync3, readFileSync as readFileSync3, rmSync, writeFileSync as writeFileSync2 } from "fs";
 import { homedir as homedir3 } from "os";
-import { join as join4, resolve as resolve2 } from "path";
+import { join as join5, resolve as resolve2 } from "path";
 import { spawnSync } from "child_process";
 function unitName(name) {
   return name.endsWith(".service") ? name : `${name}.service`;
@@ -243,9 +243,9 @@ function unitName(name) {
 function templateFor(name) {
   const bare = name.replace(/\.service$/, "");
   if (bare === "captain-memo-embed") {
-    return join4(REPO_ROOT, "services/embed/systemd/captain-memo-embed.user.service");
+    return join5(REPO_ROOT, "services/embed/systemd/captain-memo-embed.user.service");
   }
-  return join4(REPO_ROOT, "services/worker/systemd/captain-memo-worker.user.service");
+  return join5(REPO_ROOT, "services/worker/systemd/captain-memo-worker.user.service");
 }
 function systemctl(args) {
   const userR = spawnSync("systemctl", ["--user", ...args], { encoding: "utf-8", timeout: 1e4 });
@@ -264,10 +264,10 @@ class SystemdServiceManager {
     if (!existsSync2(tpl))
       throw new Error(`missing systemd unit template: ${tpl}`);
     const bun = spec.exec[0] ?? "bun";
-    const unit = readFileSync2(tpl, "utf-8").replaceAll("__INSTALL_DIR__", spec.workingDir).replaceAll("__ENV_FILE__", spec.envFile ?? "").replaceAll("__BUN__", bun);
+    const unit = readFileSync3(tpl, "utf-8").replaceAll("__INSTALL_DIR__", spec.workingDir).replaceAll("__ENV_FILE__", spec.envFile ?? "").replaceAll("__BUN__", bun);
     if (!existsSync2(USER_SYSTEMD_DIR))
-      mkdirSync2(USER_SYSTEMD_DIR, { recursive: true });
-    writeFileSync(join4(USER_SYSTEMD_DIR, unitName(spec.name)), unit, { mode: 420 });
+      mkdirSync3(USER_SYSTEMD_DIR, { recursive: true });
+    writeFileSync2(join5(USER_SYSTEMD_DIR, unitName(spec.name)), unit, { mode: 420 });
     systemctl(["daemon-reload"]);
     if (spec.autostart)
       systemctl(["enable", unitName(spec.name)]);
@@ -276,7 +276,7 @@ class SystemdServiceManager {
   async remove(name) {
     systemctl(["stop", unitName(name)]);
     systemctl(["disable", unitName(name)]);
-    const unitPath = join4(USER_SYSTEMD_DIR, unitName(name));
+    const unitPath = join5(USER_SYSTEMD_DIR, unitName(name));
     if (existsSync2(unitPath))
       rmSync(unitPath, { force: true });
     systemctl(["daemon-reload"]);
@@ -339,13 +339,13 @@ var REPO_ROOT, USER_SYSTEMD_DIR;
 var init_systemd = __esm(() => {
   init_paths();
   REPO_ROOT = resolve2(import.meta.dir, "../../..");
-  USER_SYSTEMD_DIR = join4(homedir3(), ".config/systemd/user");
+  USER_SYSTEMD_DIR = join5(homedir3(), ".config/systemd/user");
 });
 
 // src/services/service-manager/launchd.ts
-import { existsSync as existsSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync3, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "fs";
+import { existsSync as existsSync3, mkdirSync as mkdirSync4, readFileSync as readFileSync4, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "fs";
 import { homedir as homedir4, userInfo } from "os";
-import { join as join5, resolve as resolve3 } from "path";
+import { join as join6, resolve as resolve3 } from "path";
 import { spawnSync as spawnSync2 } from "child_process";
 function bareName(name) {
   return name.replace(/\.service$/, "");
@@ -354,7 +354,7 @@ function labelFor(name) {
   return `com.captainmemo.${bareName(name).replace(/^captain-memo-/, "")}`;
 }
 function plistPath(name) {
-  return join5(LAUNCH_AGENTS_DIR, `${labelFor(name)}.plist`);
+  return join6(LAUNCH_AGENTS_DIR, `${labelFor(name)}.plist`);
 }
 function domainTarget(name) {
   const uid = typeof process.getuid === "function" ? process.getuid() : userInfo().uid;
@@ -363,9 +363,9 @@ function domainTarget(name) {
 function templateFor2(name) {
   const bare = bareName(name);
   if (bare === "captain-memo-embed") {
-    return join5(REPO_ROOT2, "services/embed/launchd/captain-memo-embed.plist");
+    return join6(REPO_ROOT2, "services/embed/launchd/captain-memo-embed.plist");
   }
-  return join5(REPO_ROOT2, "services/worker/launchd/captain-memo-worker.plist");
+  return join6(REPO_ROOT2, "services/worker/launchd/captain-memo-worker.plist");
 }
 function xmlEscape(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -410,14 +410,14 @@ class LaunchdServiceManager {
     const tpl = templateFor2(spec.name);
     if (!existsSync3(tpl))
       throw new Error(`missing launchd plist template: ${tpl}`);
-    const plist = renderPlist(spec, readFileSync3(tpl, "utf-8"));
+    const plist = renderPlist(spec, readFileSync4(tpl, "utf-8"));
     if (!existsSync3(LAUNCH_AGENTS_DIR))
-      mkdirSync3(LAUNCH_AGENTS_DIR, { recursive: true });
+      mkdirSync4(LAUNCH_AGENTS_DIR, { recursive: true });
     const logDir = spec.logDir || DEFAULT_LOG_DIR;
     if (!existsSync3(logDir))
-      mkdirSync3(logDir, { recursive: true });
+      mkdirSync4(logDir, { recursive: true });
     const path = plistPath(spec.name);
-    writeFileSync2(path, plist, { mode: 420 });
+    writeFileSync3(path, plist, { mode: 420 });
     launchctl(["bootout", domainTarget(spec.name)]);
     must(launchctl(["bootstrap", domainTarget(), path]), `bootstrap ${path}`);
     if (spec.autostart)
@@ -503,14 +503,14 @@ var REPO_ROOT2, LAUNCH_AGENTS_DIR, DEFAULT_LOG_DIR, LAUNCHCTL_TIMEOUT_MS = 90000
 var init_launchd = __esm(() => {
   init_paths();
   REPO_ROOT2 = resolve3(import.meta.dir, "../../..");
-  LAUNCH_AGENTS_DIR = join5(homedir4(), "Library/LaunchAgents");
+  LAUNCH_AGENTS_DIR = join6(homedir4(), "Library/LaunchAgents");
   DEFAULT_LOG_DIR = LOGS_DIR;
 });
 
 // src/services/service-manager/windows-scheduled-task.ts
-import { writeFileSync as writeFileSync3, rmSync as rmSync3 } from "fs";
+import { writeFileSync as writeFileSync4, rmSync as rmSync3 } from "fs";
 import { tmpdir } from "os";
-import { join as join6 } from "path";
+import { join as join7 } from "path";
 function psSingleQuote(value) {
   return `'${value.replaceAll("'", "''")}'`;
 }
@@ -661,8 +661,8 @@ function toTaskXmlBuffer(xml) {
 class WindowsScheduledTaskServiceManager {
   async install(spec) {
     const xml = buildTaskXml(spec);
-    const xmlPath = join6(tmpdir(), `captain-memo-task-${spec.name}-${process.pid}-${Date.now()}.xml`);
-    writeFileSync3(xmlPath, toTaskXmlBuffer(xml));
+    const xmlPath = join7(tmpdir(), `captain-memo-task-${spec.name}-${process.pid}-${Date.now()}.xml`);
+    writeFileSync4(xmlPath, toTaskXmlBuffer(xml));
     try {
       const r = await runSchtasks(["/Create", "/TN", spec.name, "/XML", xmlPath, "/F"]);
       if (r.exitCode !== 0) {
@@ -767,9 +767,9 @@ async function restartWorker(sm, name, opts) {
 }
 
 // src/shared/plugin-cache.ts
-import { existsSync as existsSync4, readFileSync as readFileSync5, readdirSync, statSync as statSync2 } from "fs";
+import { existsSync as existsSync4, readFileSync as readFileSync6, readdirSync as readdirSync2, statSync as statSync3 } from "fs";
 import { homedir as homedir5 } from "os";
-import { join as join8 } from "path";
+import { join as join9 } from "path";
 function normalizePath(p) {
   return p.replace(/\\/g, "/").replace(/\/+$/, "");
 }
@@ -799,7 +799,7 @@ function parseInstalledPaths(json) {
 }
 function readPluginManifest(root) {
   try {
-    const m = JSON.parse(readFileSync5(join8(root, ".claude-plugin", "plugin.json"), "utf-8"));
+    const m = JSON.parse(readFileSync6(join9(root, ".claude-plugin", "plugin.json"), "utf-8"));
     if (typeof m.name !== "string")
       return null;
     return { name: m.name, version: typeof m.version === "string" ? m.version : null };
@@ -809,15 +809,15 @@ function readPluginManifest(root) {
 }
 function readInstalledPaths(file = INSTALLED_PLUGINS_PATH) {
   try {
-    return parseInstalledPaths(readFileSync5(file, "utf-8"));
+    return parseInstalledPaths(readFileSync6(file, "utf-8"));
   } catch {
     return null;
   }
 }
 var CACHE_ROOT, INSTALLED_PLUGINS_PATH;
 var init_plugin_cache = __esm(() => {
-  CACHE_ROOT = join8(homedir5(), ".claude", "plugins", "cache");
-  INSTALLED_PLUGINS_PATH = join8(homedir5(), ".claude", "plugins", "installed_plugins.json");
+  CACHE_ROOT = join9(homedir5(), ".claude", "plugins", "cache");
+  INSTALLED_PLUGINS_PATH = join9(homedir5(), ".claude", "plugins", "installed_plugins.json");
 });
 
 // src/shared/ansi.ts
@@ -850,19 +850,19 @@ var init_sqlite_extensions = __esm(() => {
 var init_install_hooks = () => {};
 
 // src/services/embedder-installer/bash.ts
-import { join as join9, resolve as resolve4 } from "path";
+import { join as join10, resolve as resolve4 } from "path";
 var REPO_ROOT3, SCRIPT;
 var init_bash = __esm(() => {
   REPO_ROOT3 = resolve4(import.meta.dir, "../../..");
-  SCRIPT = join9(REPO_ROOT3, "scripts/install-embedder.sh");
+  SCRIPT = join10(REPO_ROOT3, "scripts/install-embedder.sh");
 });
 
 // src/services/embedder-installer/powershell.ts
-import { join as join10, resolve as resolve5 } from "path";
+import { join as join11, resolve as resolve5 } from "path";
 var REPO_ROOT4, SCRIPT2;
 var init_powershell = __esm(() => {
   REPO_ROOT4 = resolve5(import.meta.dir, "../../..");
-  SCRIPT2 = join10(REPO_ROOT4, "scripts/install-embedder.ps1");
+  SCRIPT2 = join11(REPO_ROOT4, "scripts/install-embedder.ps1");
 });
 
 // src/services/embedder-installer/index.ts
@@ -894,7 +894,7 @@ var init_ai_memory_sources = __esm(() => {
 });
 
 // src/cli/commands/install.ts
-import { dirname, join as join11, resolve as resolve6 } from "path";
+import { dirname as dirname2, join as join12, resolve as resolve6 } from "path";
 import { homedir as homedir7 } from "os";
 function pluginRegistrationSteps(repoRoot) {
   return [
@@ -915,7 +915,7 @@ var init_install = __esm(() => {
   init_cross_ai();
   init_ai_memory_sources();
   REPO_ROOT5 = resolve6(import.meta.dir, "../../..");
-  PLUGIN_LINK = join11(homedir7(), ".claude", "plugins", "captain-memo");
+  PLUGIN_LINK = join12(homedir7(), ".claude", "plugins", "captain-memo");
   MANAGED_ENV_KEYS = new Set([
     "CAPTAIN_MEMO_DATA_DIR",
     "CAPTAIN_MEMO_PROJECT_ID",
@@ -947,13 +947,13 @@ __export(exports_plugin_cache_refresh, {
   CACHE_REFRESH_LOCK: () => CACHE_REFRESH_LOCK
 });
 import { spawnSync as spawnSync3 } from "child_process";
-import { readFileSync as readFileSync6 } from "fs";
+import { readFileSync as readFileSync7 } from "fs";
 import { homedir as homedir8 } from "os";
-import { join as join12 } from "path";
+import { join as join13 } from "path";
 function marketplacePointsAtCheckout(repoRoot, home = homedir8()) {
   try {
-    const file = join12(home, ".claude", "plugins", "known_marketplaces.json");
-    const parsed = JSON.parse(readFileSync6(file, "utf-8"));
+    const file = join13(home, ".claude", "plugins", "known_marketplaces.json");
+    const parsed = JSON.parse(readFileSync7(file, "utf-8"));
     const src = parsed["captain-memo"]?.source;
     return src?.source === "directory" && typeof src.path === "string" && normalizePath(src.path) === normalizePath(repoRoot);
   } catch {
@@ -961,7 +961,7 @@ function marketplacePointsAtCheckout(repoRoot, home = homedir8()) {
   }
 }
 function activeCachedVersion(home = homedir8()) {
-  const installed = readInstalledPaths(join12(home, ".claude", "plugins", "installed_plugins.json"));
+  const installed = readInstalledPaths(join13(home, ".claude", "plugins", "installed_plugins.json"));
   if (installed === null)
     return null;
   for (const path of installed) {
@@ -997,7 +997,7 @@ var REPO_ROOT6, CACHE_REFRESH_LOCK = ".plugin-cache-refresh.lock";
 var init_plugin_cache_refresh = __esm(() => {
   init_plugin_cache();
   init_install();
-  REPO_ROOT6 = join12(import.meta.dir, "..", "..");
+  REPO_ROOT6 = join13(import.meta.dir, "..", "..");
 });
 
 // src/worker/branch.ts
@@ -1096,6 +1096,68 @@ init_shared();
 // src/hooks/user-prompt-submit.ts
 init_shared();
 init_paths();
+
+// src/shared/worker-transition.ts
+init_paths();
+import { mkdirSync as mkdirSync2, readFileSync, readdirSync, statSync as statSync2, unlinkSync, writeFileSync } from "fs";
+import { dirname, join as join3 } from "path";
+var TRANSITION_PATH = join3(DATA_DIR, ".worker-transition");
+var TRANSITION_TTL_MS = 120000;
+function markTransition(t, path = TRANSITION_PATH, now = Date.now()) {
+  try {
+    mkdirSync2(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({ ...t, ts: now }), "utf-8");
+  } catch {}
+}
+function readTransition(path = TRANSITION_PATH, now = Date.now()) {
+  try {
+    const t = JSON.parse(readFileSync(path, "utf-8"));
+    if (t.phase !== "booting" && t.phase !== "updating")
+      return null;
+    if (!Number.isFinite(t.ts) || now - t.ts > TRANSITION_TTL_MS)
+      return null;
+    return t;
+  } catch {
+    return null;
+  }
+}
+var DEGRADED_PREFIX = ".degraded-";
+var DEGRADED_MAX_AGE_MS = 24 * 60 * 60000;
+function degradedPath(sessionId, dataDir) {
+  return join3(dataDir, `${DEGRADED_PREFIX}${sessionId.replace(/[^a-zA-Z0-9_-]/g, "")}`);
+}
+function markSessionDegraded(sessionId, dataDir = DATA_DIR) {
+  if (!sessionId)
+    return;
+  const now = Date.now();
+  try {
+    mkdirSync2(dataDir, { recursive: true });
+    writeFileSync(degradedPath(sessionId, dataDir), new Date(now).toISOString(), "utf-8");
+    for (const f of readdirSync(dataDir)) {
+      if (!f.startsWith(DEGRADED_PREFIX))
+        continue;
+      const p = join3(dataDir, f);
+      try {
+        if (now - statSync2(p).mtimeMs > DEGRADED_MAX_AGE_MS)
+          unlinkSync(p);
+      } catch {}
+    }
+  } catch {}
+}
+function consumeSessionDegraded(sessionId, dataDir = DATA_DIR) {
+  if (!sessionId)
+    return false;
+  try {
+    const p = degradedPath(sessionId, dataDir);
+    statSync2(p);
+    unlinkSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// src/hooks/user-prompt-submit.ts
 async function main(options = {}) {
   let payload = {};
   try {
@@ -1117,7 +1179,7 @@ async function main(options = {}) {
     timeoutMs
   });
   logWorkerFailure("UserPromptSubmit", "/inject/context", result);
-  if (!result.ok && process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL !== "1") {
+  if (!result.ok && process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL !== "1" && !readTransition()) {
     try {
       const { acquireHealLock: acquireHealLock2, releaseHealLock: releaseHealLock2 } = await Promise.resolve().then(() => (init_worker_heal_lock(), exports_worker_heal_lock));
       if (acquireHealLock2()) {
@@ -1168,12 +1230,12 @@ if (isMainModule(import.meta)) {
 // src/hooks/session-start.ts
 init_shared();
 init_paths();
-import { mkdirSync as mkdirSync5, readFileSync as readFileSync7, statSync as statSync3, writeFileSync as writeFileSync5 } from "fs";
-import { join as join13 } from "path";
+import { mkdirSync as mkdirSync6, readFileSync as readFileSync8, statSync as statSync4, writeFileSync as writeFileSync6 } from "fs";
+import { join as join14 } from "path";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.40.2",
+  version: "0.41.0",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -1248,8 +1310,8 @@ var package_default = {
 var VERSION = package_default.version;
 
 // src/shared/self-update.ts
-import { mkdirSync as mkdirSync4, readFileSync as readFileSync4, writeFileSync as writeFileSync4, renameSync as renameSync2 } from "fs";
-import { join as join7 } from "path";
+import { mkdirSync as mkdirSync5, readFileSync as readFileSync5, writeFileSync as writeFileSync5, renameSync as renameSync2 } from "fs";
+import { join as join8 } from "path";
 var MARKER_FILENAME = ".install-version";
 function compareSemver(a, b) {
   const parse = (v) => v.replace(/^v/i, "").split("+")[0].split("-")[0].split(".").map((n) => parseInt(n, 10) || 0);
@@ -1301,11 +1363,11 @@ function formatRollbackBanner(from, attempted, rolledBack) {
 `);
 }
 function markerPath(dataDir) {
-  return join7(dataDir, MARKER_FILENAME);
+  return join8(dataDir, MARKER_FILENAME);
 }
 function readMarker(dataDir) {
   try {
-    const raw = readFileSync4(markerPath(dataDir), "utf-8").trim();
+    const raw = readFileSync5(markerPath(dataDir), "utf-8").trim();
     return raw.length > 0 ? raw : null;
   } catch {
     return null;
@@ -1313,10 +1375,10 @@ function readMarker(dataDir) {
 }
 function writeMarker(dataDir, version) {
   try {
-    mkdirSync4(dataDir, { recursive: true });
+    mkdirSync5(dataDir, { recursive: true });
     const final = markerPath(dataDir);
     const tmp = `${final}.tmp-${process.pid}`;
-    writeFileSync4(tmp, `${version}
+    writeFileSync5(tmp, `${version}
 `, "utf-8");
     renameSync2(tmp, final);
   } catch {}
@@ -1490,7 +1552,7 @@ async function ensureWorkerHealthy(deps) {
 init_worker_heal_lock();
 function readPkgField(dir, field) {
   try {
-    return JSON.parse(readFileSync7(join13(dir, "package.json"), "utf-8"))[field] ?? null;
+    return JSON.parse(readFileSync8(join14(dir, "package.json"), "utf-8"))[field] ?? null;
   } catch {
     return null;
   }
@@ -1556,9 +1618,24 @@ function formatDegradedBanner(detail) {
   ].join(`
 `);
 }
+function formatTransitionBanner(t, now = Date.now()) {
+  const secs = Math.max(1, Math.round((now - t.ts) / 1000));
+  const versions = t.from && t.to ? ` (v${t.from} \u2192 v${t.to})` : t.to ? ` (\u2192 v${t.to})` : "";
+  return [
+    "",
+    "",
+    t.phase === "updating" ? `\u2693 Captain Memo \u2014 updating${versions}` : "\u2693 Captain Memo \u2014 worker still starting up",
+    "\u2500".repeat(60),
+    t.phase === "updating" ? `  The worker restarted itself onto the new version ${secs}s ago and is coming back up.` : `  The worker started ${secs}s ago and hasn't opened its port yet (a cold start takes ~10s).`,
+    "  Memory resumes by itself \u2014 no need to restart Claude. This session says so when it is back.",
+    ""
+  ].join(`
+`);
+}
 async function main2() {
+  let payload = {};
   try {
-    await readStdinJson();
+    payload = await readStdinJson();
   } catch (err) {
     logHookError("SessionStart", err);
   }
@@ -1582,7 +1659,7 @@ async function main2() {
   let autoUpdateNotice = "";
   let updatedThisSession = false;
   if (process.env.CAPTAIN_MEMO_AUTO_UPDATE === "1") {
-    const AUTO_UPDATE_LOCK = join13(DATA_DIR, ".auto-update.lock");
+    const AUTO_UPDATE_LOCK = join14(DATA_DIR, ".auto-update.lock");
     try {
       const port = {
         run: (argv, cwd, timeoutMs2) => {
@@ -1600,17 +1677,17 @@ async function main2() {
       };
       const intervalMs = Number(process.env.CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS ?? DEFAULT_UPDATE_CHECK_INTERVAL_MS);
       try {
-        mkdirSync5(DATA_DIR, { recursive: true });
+        mkdirSync6(DATA_DIR, { recursive: true });
       } catch {}
-      const stampPath = join13(DATA_DIR, ".last-update-check");
+      const stampPath = join14(DATA_DIR, ".last-update-check");
       let lastCheck = null;
       try {
-        lastCheck = statSync3(stampPath).mtimeMs;
+        lastCheck = statSync4(stampPath).mtimeMs;
       } catch {}
       if (isUpdateCheckDue(lastCheck, Date.now(), intervalMs) && acquireHealLock(AUTO_UPDATE_LOCK)) {
         try {
           try {
-            writeFileSync5(stampPath, `${new Date().toISOString()}
+            writeFileSync6(stampPath, `${new Date().toISOString()}
 `);
           } catch {}
           const top = port.run(["git", "rev-parse", "--show-toplevel"], import.meta.dir);
@@ -1620,6 +1697,7 @@ async function main2() {
             const { getServiceManager: getServiceManager2 } = await Promise.resolve().then(() => (init_service_manager(), exports_service_manager));
             const sm = getServiceManager2();
             const wport = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
+            markTransition({ phase: "updating", from: res.from, ...res.to ? { to: res.to } : {} });
             await restartWorker(sm, "captain-memo-worker", { port: wport, graceful: true });
             const healthy = await waitWorkerHealthy();
             if (healthy) {
@@ -1629,6 +1707,7 @@ async function main2() {
               autoUpdateNotice = formatAutoUpdateBanner(res.from, res.to ?? "?", res.installFailed);
             } else {
               const rolled = res.priorSha ? rollbackTo(port, installDir, res.priorSha, process.execPath) : false;
+              markTransition({ phase: "updating", to: res.from });
               await restartWorker(sm, "captain-memo-worker", { port: wport });
               await waitWorkerHealthy();
               stats = await probeStats();
@@ -1648,9 +1727,15 @@ async function main2() {
     }
   }
   const selfHealOff = process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL === "1";
-  const running = stats.ok && !!stats.body;
+  let running = stats.ok && !!stats.body;
+  const transition = running ? null : readTransition();
+  if (transition) {
+    await waitWorkerHealthy(Number(process.env.CAPTAIN_MEMO_SESSION_START_TRANSITION_WAIT_MS ?? 20000));
+    running = stats.ok && !!stats.body;
+  }
+  const inTransition = running ? null : transition;
   const stale = !updatedThisSession && running && stats.body.version !== undefined && stats.body.version !== VERSION;
-  if (!selfHealOff && (!running || stale)) {
+  if (!selfHealOff && !inTransition && (!running || stale)) {
     try {
       const { getServiceManager: getServiceManager2 } = await Promise.resolve().then(() => (init_service_manager(), exports_service_manager));
       const sm = getServiceManager2();
@@ -1690,7 +1775,7 @@ async function main2() {
   }
   try {
     const { refreshPluginCacheIfStale: refreshPluginCacheIfStale2, CACHE_REFRESH_LOCK: CACHE_REFRESH_LOCK2 } = await Promise.resolve().then(() => (init_plugin_cache_refresh(), exports_plugin_cache_refresh));
-    const lock = join13(DATA_DIR, CACHE_REFRESH_LOCK2);
+    const lock = join14(DATA_DIR, CACHE_REFRESH_LOCK2);
     if (acquireHealLock(lock)) {
       try {
         const r = refreshPluginCacheIfStale2(VERSION);
@@ -1718,8 +1803,15 @@ ${banner}` : banner;
       continue: true,
       systemMessage: withNotice(formatBanner(stats.body))
     }));
+  } else if (inTransition) {
+    markSessionDegraded(payload.session_id ?? "");
+    writeStdout(JSON.stringify({
+      continue: true,
+      systemMessage: withNotice(formatTransitionBanner(inTransition))
+    }));
   } else {
     logHookError("SessionStart", new Error(workerFailureMessage("/stats", stats) ?? "worker /stats returned no body"));
+    markSessionDegraded(payload.session_id ?? "");
     writeStdout(JSON.stringify({
       continue: true,
       systemMessage: withNotice(formatDegradedBanner(stats.timedOut ? "worker timed out" : "worker not reachable"))
@@ -1955,8 +2047,14 @@ async function main5(options = {}) {
     timeoutMs: DEFAULT_STOP_DRAIN_BUDGET_MS
   });
   logWorkerFailure("Stop", "/observation/flush", res);
+  const backOnline = res.ok && consumeSessionDegraded(payload.session_id);
   if (options.emitJson)
     writeStdout("{}");
+  else if (backOnline) {
+    writeStdout(JSON.stringify({
+      systemMessage: "\u2693 Captain Memo is back online \u2014 memory is active again for this session."
+    }));
+  }
 }
 if (isMainModule(import.meta)) {
   try {
