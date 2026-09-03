@@ -7,6 +7,16 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.41.4] — 2026-09-03
+
+### Fixed
+
+- **A resumed session skipped `SessionStart` entirely.** The hook's matcher was `startup|clear|compact`
+  — Claude Code's `resume` source (`claude --resume`/`--continue`) was never in it, so on resume the
+  worker self-heal probe, the version/stats banner, and any pending upgrade notice never ran. `source?:
+  'resume'` was already a typed, handled value in the hook's own payload; the matcher just never listed
+  it. Matcher is now `startup|resume|clear|compact`.
+
 ## [0.41.3] — 2026-09-01
 
 ### Fixed
