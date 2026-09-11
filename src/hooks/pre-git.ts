@@ -1,7 +1,11 @@
-// PreToolUse (Bash) — warn before a mutating git op on a working tree another session is using.
+// PreToolUse (Bash/PowerShell) — warn before a mutating git op on a working tree another session is using.
 // Advisory only (fail-open): parse the command, resolve the cwd's repo root, ask the board who holds it,
-// and if a PEER session does, emit additionalContext suggesting a worktree. Any error → silent no-op.
-import { workerFetch, writeStdout } from './shared.ts';
+// and if a PEER session does, RETURN the warning text. Any error → null (silent no-op).
+//
+// Returns rather than prints: the shell branch of pre-tool-use.ts can now produce TWO advisories (this
+// one and a work-board overlap), and stdout carries a single JSON object — two writeStdout calls would
+// emit two concatenated objects and the host would parse neither. The caller merges and emits once.
+import { workerFetch } from './shared.ts';
 import { detectRepoRootSync } from '../worker/branch.ts';
 
 const MUTATING = /^(checkout|switch|commit|reset|stash|rebase|merge|cherry-pick|clean|restore)$/;
@@ -36,16 +40,16 @@ export function parseGitOp(command: string): string | null {
   return null;
 }
 
-export async function runPreGit(payload: Payload): Promise<void> {
+/** The shared-checkout advisory for this command, or null when there is nothing to say. */
+export async function runPreGit(payload: Payload): Promise<string | null> {
   const op = parseGitOp(typeof payload.tool_input?.command === 'string' ? payload.tool_input.command : '');
-  if (!op || !payload.cwd) return;
+  if (!op || !payload.cwd) return null;
   const root = detectRepoRootSync(payload.cwd);
-  if (!root || root.includes('/claude-1000/')) return;            // no repo / scratchpad → nothing shared
+  if (!root || root.includes('/claude-1000/')) return null;            // no repo / scratchpad → nothing shared
   const res = await workerFetch<RepoActiveResp>(`/worknote/repo-active?repo_root=${encodeURIComponent(root)}`, { method: 'GET', timeoutMs: HOOK_TIMEOUT_MS });
-  if (!res.ok || !res.body?.holders) return;
+  if (!res.ok || !res.body?.holders) return null;
   const peers = res.body.holders.filter((h) => h.session_id !== payload.session_id);
-  if (peers.length === 0) return;
+  if (peers.length === 0) return null;
   const who = peers.map((h) => `${(h.session_id ?? '').slice(0, 12)} (${h.agent ?? '?'})${h.branch ? ` on ${h.branch}` : ''}${h.is_dirty ? ', dirty' : ''}`).join(' ; ');
-  const warning = `WORK-BOARD SHARED CHECKOUT: peer session(s) are using ${root} — ${who}. Running \`git ${op}\` here changes that shared working tree for them. Isolate instead: \`git worktree add ../<name> <branch>\` and work there. (advisory)`;
-  writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: warning } }));
+  return `WORK-BOARD SHARED CHECKOUT: peer session(s) are using ${root} — ${who}. Running \`git ${op}\` here changes that shared working tree for them. Isolate instead: \`git worktree add ../<name> <branch>\` and work there. (advisory)`;
 }
