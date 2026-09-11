@@ -1262,7 +1262,7 @@ import { join as join14 } from "path";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.42.0",
+  version: "0.42.1",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -1319,11 +1319,11 @@ var package_default = {
     zod: "^3.24.0"
   },
   overrides: {
-    qs: "^6.15.3",
-    hono: "^4.12.34",
+    qs: "^6.16.0",
+    hono: "^4.13.5",
     "body-parser": "^2.3.0",
     "@hono/node-server": "^2.0.5",
-    "fast-uri": "^3.1.5",
+    "fast-uri": "^3.1.6",
     "ip-address": "^10.4.0"
   },
   devDependencies: {

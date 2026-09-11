@@ -7,6 +7,26 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.42.1] — 2026-09-11
+
+### Security
+
+- **Nine advisories (4 high, 5 moderate) were reachable through the dependency tree.** All arrive via
+  `@modelcontextprotocol/sdk`: `fast-uri` (host confusion via skipped IDN canonicalization and via
+  percent-encoded scheme normalization, plus SSRF through malformed IPv6 normalization and repeated
+  hostname percent-decoding), `hono` (`toSSG()` writing outside the output directory, unbounded
+  dot-notation nesting in `parseBody()` causing memory exhaustion, and a query-parser cache-key
+  differential) and `qs` (array-limit bypass via bracket-key comma parsing, and denial of service via
+  attacker-controlled `isBuffer`). The `overrides` block already pins exactly these three packages, so
+  they are bumped to the patched versions — `qs` ^6.16.0, `hono` ^4.13.5, `fast-uri` ^3.1.6 — rather
+  than any advisory being silenced. `bun audit` now reports no vulnerabilities.
+
+  Updating the SDK within its own semver range does NOT clear these: the vulnerable versions are
+  pinned by its transitive ranges, which is exactly why the overrides block exists. Note also that
+  GitHub's dependency graph cannot parse `bun.lock`, so Dependabot never saw any of them — `bun audit`
+  in CI is what surfaces this tree at all.
+
+
 ## [0.42.0] — 2026-09-11
 
 ### Fixed
