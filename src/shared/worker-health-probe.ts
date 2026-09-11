@@ -25,6 +25,30 @@ export async function probeHealthOnce(port: number, timeoutMs = 3000): Promise<b
   }
 }
 
+/** WHICH worker process is answering — `worker.started_at_epoch` from /stats — or null when it
+ *  cannot be read (unreachable, still starting, or mid-embed so /stats is slow).
+ *
+ *  `/health` deliberately answers `{healthy:true}` from any live process and carries no identity, so
+ *  it cannot distinguish a restarted worker from the OUTGOING one that is still listening. A restart
+ *  needs that distinction: on win32 the relauncher is detached and returns immediately, so the old
+ *  process is still up when the first poll fires. Comparing this stamp is what makes "it came back"
+ *  mean a NEW process rather than merely a reachable one. */
+export async function readWorkerInstance(port: number, timeoutMs = 3000): Promise<number | null> {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/stats`, { signal: ctl.signal });
+    if (!r.ok) return null;
+    const body = (await r.json().catch(() => null)) as { worker?: { started_at_epoch?: unknown } } | null;
+    const v = body?.worker?.started_at_epoch;
+    return typeof v === 'number' && Number.isFinite(v) ? v : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 /** True if ANY of up to `attempts` spaced probes succeeds (worker alive); false
  *  only if ALL fail (a genuine, persistent outage worth reclaiming). `sleep` is
  *  injectable so the retry logic is unit-testable without real waits. */
