@@ -208,6 +208,7 @@ var init_worker_heal_lock = __esm(() => {
 // src/shared/worker-health-probe.ts
 var exports_worker_health_probe = {};
 __export(exports_worker_health_probe, {
+  readWorkerInstance: () => readWorkerInstance,
   probeHealthyWithRetries: () => probeHealthyWithRetries,
   probeHealthOnce: () => probeHealthOnce
 });
@@ -222,6 +223,22 @@ async function probeHealthOnce(port, timeoutMs = 3000) {
     return body?.healthy === true;
   } catch {
     return false;
+  } finally {
+    clearTimeout(t);
+  }
+}
+async function readWorkerInstance(port, timeoutMs = 3000) {
+  const ctl = new AbortController;
+  const t = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/stats`, { signal: ctl.signal });
+    if (!r.ok)
+      return null;
+    const body = await r.json().catch(() => null);
+    const v = body?.worker?.started_at_epoch;
+    return typeof v === "number" && Number.isFinite(v) ? v : null;
+  } catch {
+    return null;
   } finally {
     clearTimeout(t);
   }
@@ -1262,7 +1279,7 @@ import { join as join14 } from "path";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.42.1",
+  version: "0.42.2",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,

@@ -7,6 +7,29 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.42.2] — 2026-09-11
+
+### Fixed
+
+- **`captain-memo restart` reported "✓ worker is healthy" while leaving the worker dead.** The
+  poll accepted any `/health` 200 — but `/health` answers `{healthy:true}` from ANY live process
+  and carries no identity, and on Windows the relauncher is DETACHED and returns before the stop
+  has even happened. So the outgoing worker was still listening when the first probe fired, and the
+  command confirmed the very process that was about to be killed. Whether the restart then
+  succeeded or failed made no difference to what it printed: a green line over a dead service.
+  Seen in the field — the success line, then `status` returning `{"healthy":false}` with "Worker
+  has been terminated", the scheduled task left `Ready` with `LastTaskResult 267014`, no worker
+  process and port 39888 free; the captain stayed down until it was started by hand.
+
+  Success now means a NEW process rather than a reachable one: `readWorkerInstance()` reads
+  `worker.started_at_epoch` from `/stats` — the field that says WHICH worker is answering — and the
+  pre-restart stamp is captured before anything is touched, so the poll can require a strictly newer
+  one. With nothing running beforehand there is no old instance to confuse, so a plain health answer
+  still counts and a warming-up `/stats` does not block it. An unconfirmed restart is now reported
+  as unconfirmed instead of as success, and Windows gets a 30s window instead of 8s because the
+  detached stop→drain→start genuinely needs it.
+
+
 ## [0.42.1] — 2026-09-11
 
 ### Security
