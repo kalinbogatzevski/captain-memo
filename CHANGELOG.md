@@ -7,6 +7,47 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.42.0] — 2026-09-11
+
+### Fixed
+
+- **A session editing through the shell published no work claim at all, so the board showed it idle
+  while it rewrote the tree.** The `PreToolUse` hook claimed only when `tool_input.file_path` was
+  present — that is, only for the Edit/Write/MultiEdit/NotebookEdit tools. A `Bash` call returned
+  early after the shared-checkout git check, which warns but never publishes a claim. That is not an
+  edge case: in bypass-permissions mode Claude Code is explicitly instructed to make file changes with
+  `sed`, heredocs and `>` INSTEAD of the edit tools, so in that mode *every* edit took the no-claim
+  path. The hole was total rather than partial, because `repo_root` is derived FROM a claim's files —
+  no file claim also meant no shared-checkout contention detection.
+
+- **`PowerShell` matched no `PreToolUse` hook whatsoever**, on the platform where it is the primary
+  shell. Nothing done through it was ever visible to the board.
+
+- **The same file claimed from two different shells never overlapped.** One path has three spellings
+  on Windows: `C:\src\a.ts` (what the edit tools send), `/c/src/a.ts` (MSYS bash) and `C:/src/a.ts`
+  (PowerShell). Claims were compared as raw text split on `/`, so none of them matched and two
+  sessions editing one file through different shells were never warned about each other — a silent
+  clobber, which is the exact failure the board exists to prevent. Claims are now canonicalised on
+  separator and drive letter; path case is untouched, so case-sensitive filesystems are unaffected.
+
+### Added
+
+- **Shell commands that WRITE now publish a claim.** A parser reads the command text and answers
+  "what will this touch": `sed -i`, `>`/`>>`, heredocs, `tee`, `cp`/`mv`, `dd of=`, `truncate`, and the
+  PowerShell write cmdlets (`Set-Content`, `Add-Content`, `Out-File`, `New-Item`, `Copy-Item`,
+  `Move-Item`). Targets resolve to absolute paths against the payload cwd, since a relative claim can
+  never stamp `repo_root`. It is pure, total, and runs before any worker round-trip, so a read-only
+  command — the overwhelming majority of shell calls — short-circuits at no cost. Accuracy is
+  deliberately asymmetric: over-claiming costs one spurious advisory, under-claiming costs a silent
+  clobber. A mutation whose target cannot be resolved (a `"$f"` loop variable) therefore claims the
+  enclosing repository rather than nothing — and only the repository, never an arbitrary parent
+  directory, which would otherwise overlap every unrelated project beneath it. Outside a repository
+  nothing is shared, so nothing is claimed. Leading shell keywords and wrappers (`do`, `then`, `sudo`,
+  `time`, `xargs`) are walked past before the command is identified, so a
+  `for f in *.ts; do sed -i … "$f"; done` loop is seen. `> /dev/null` is not a mutation, a `>` inside a
+  quoted string is not a redirect, and `>=` is a comparison rather than a redirect to a file named `=`.
+
+
 ## [0.41.4] — 2026-09-03
 
 ### Fixed

@@ -1,13 +1,17 @@
 #!/usr/bin/env bun
 // @bun
 var __defProp = Object.defineProperty;
+var __returnValue = (v) => v;
+function __exportSetter(name, newValue) {
+  this[name] = __returnValue.bind(null, newValue);
+}
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, {
       get: all[name],
       enumerable: true,
       configurable: true,
-      set: (newValue) => all[name] = () => newValue
+      set: __exportSetter.bind(all, name)
     });
 };
 var __esm = (fn, res) => () => (fn && (res = fn(fn = 0)), res);
@@ -1068,19 +1072,18 @@ function parseGitOp(command) {
 async function runPreGit(payload) {
   const op = parseGitOp(typeof payload.tool_input?.command === "string" ? payload.tool_input.command : "");
   if (!op || !payload.cwd)
-    return;
+    return null;
   const root = detectRepoRootSync(payload.cwd);
   if (!root || root.includes("/claude-1000/"))
-    return;
+    return null;
   const res = await workerFetch(`/worknote/repo-active?repo_root=${encodeURIComponent(root)}`, { method: "GET", timeoutMs: HOOK_TIMEOUT_MS });
   if (!res.ok || !res.body?.holders)
-    return;
+    return null;
   const peers = res.body.holders.filter((h) => h.session_id !== payload.session_id);
   if (peers.length === 0)
-    return;
+    return null;
   const who = peers.map((h) => `${(h.session_id ?? "").slice(0, 12)} (${h.agent ?? "?"})${h.branch ? ` on ${h.branch}` : ""}${h.is_dirty ? ", dirty" : ""}`).join(" ; ");
-  const warning = `WORK-BOARD SHARED CHECKOUT: peer session(s) are using ${root} \u2014 ${who}. Running \`git ${op}\` here changes that shared working tree for them. Isolate instead: \`git worktree add ../<name> <branch>\` and work there. (advisory)`;
-  writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: warning } }));
+  return `WORK-BOARD SHARED CHECKOUT: peer session(s) are using ${root} \u2014 ${who}. Running \`git ${op}\` here changes that shared working tree for them. Isolate instead: \`git worktree add ../<name> <branch>\` and work there. (advisory)`;
 }
 var MUTATING, HOOK_TIMEOUT_MS;
 var init_pre_git = __esm(() => {
@@ -1259,7 +1262,7 @@ import { join as join14 } from "path";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.41.4",
+  version: "0.42.0",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -1864,40 +1867,226 @@ if (isMainModule(import.meta)) {
 
 // src/hooks/pre-tool-use.ts
 init_shared();
+
+// src/hooks/shell-writes.ts
+import { resolve as resolve7 } from "path";
+var MAX_SHELL_FILES = 25;
+function coarseClaimFor(cwd) {
+  return `${cwd}/**`;
+}
+function isCoarseClaim(paths, cwd) {
+  return paths.length === 1 && paths[0] === coarseClaimFor(cwd);
+}
+var NOT_A_FILE = /^(\/dev\/(null|stdout|stderr|tty)|nul:?|con)$/i;
+var REDIRECT = /(?:^|[\s;|&])(\d?)(>>?)(?!=)\s*("[^"]*"|'[^']*'|[^\s;|&<>]+)/g;
+var PS_VALUE_FLAGS = new Set(["-value", "-itemtype", "-encoding", "-force", "-pattern", "-filter"]);
+var PS_PATH_FLAGS = new Set(["-path", "-filepath", "-literalpath", "-destination"]);
+var PS_WRITE_CMDLETS = new Set([
+  "set-content",
+  "add-content",
+  "out-file",
+  "new-item",
+  "copy-item",
+  "move-item",
+  "set-itemproperty",
+  "remove-item",
+  "rename-item",
+  "clear-content"
+]);
+var PS_MOVES = new Set(["move-item", "rename-item"]);
+function tokenize(seg) {
+  const out = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m;
+  while ((m = re.exec(seg)) !== null)
+    out.push(m[1] ?? m[2] ?? m[3] ?? "");
+  return out;
+}
+var CMD_PREFIXES = new Set([
+  "do",
+  "then",
+  "else",
+  "elif",
+  "!",
+  "time",
+  "exec",
+  "nohup",
+  "command",
+  "builtin",
+  "sudo",
+  "doas",
+  "env",
+  "xargs",
+  "nice",
+  "ionice"
+]);
+var WRAPPER_VALUE_FLAGS = new Set(["-u", "-g", "-n", "-c", "-p", "-I", "-P", "-L", "-s"]);
+function cmdName(toks) {
+  let i = 0;
+  for (;; ) {
+    while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i]))
+      i++;
+    const tok = toks[i];
+    if (tok === undefined)
+      break;
+    const base0 = (tok.split(/[\\/]/).pop() ?? tok).toLowerCase();
+    if (!CMD_PREFIXES.has(base0))
+      break;
+    i++;
+    while (i < toks.length && toks[i].startsWith("-")) {
+      const flag = toks[i];
+      i++;
+      if (WRAPPER_VALUE_FLAGS.has(flag))
+        i++;
+    }
+  }
+  const raw = toks[i] ?? "";
+  const base = raw.split(/[\\/]/).pop() ?? raw;
+  return { name: base.toLowerCase(), rest: toks.slice(i + 1) };
+}
+function positionals(rest, valueFlags = new Set) {
+  const out = [];
+  for (let i = 0;i < rest.length; i++) {
+    const t = rest[i];
+    if (t.startsWith("-")) {
+      if (valueFlags.has(t))
+        i++;
+      continue;
+    }
+    out.push(t);
+  }
+  return out;
+}
+function sedTargets(rest) {
+  const inPlace = rest.some((t) => /^-i/.test(t) || t === "--in-place" || t.startsWith("--in-place="));
+  if (!inPlace)
+    return [];
+  const scriptFlags = new Set(["-e", "-f", "--expression", "--file"]);
+  const sawScriptFlag = rest.some((t) => scriptFlags.has(t));
+  const pos = positionals(rest, scriptFlags);
+  return sawScriptFlag ? pos : pos.slice(1);
+}
+function psTargets(name, rest) {
+  const out = [];
+  const pos = [];
+  for (let i = 0;i < rest.length; i++) {
+    const t = rest[i];
+    if (t.startsWith("-")) {
+      const f = t.toLowerCase();
+      const val = rest[i + 1];
+      const takesValue = PS_PATH_FLAGS.has(f) || PS_VALUE_FLAGS.has(f);
+      if (PS_PATH_FLAGS.has(f) && val && !val.startsWith("-"))
+        out.push(val);
+      if (takesValue && val && !val.startsWith("-"))
+        i++;
+      continue;
+    }
+    pos.push(t);
+  }
+  if (out.length > 0)
+    return PS_MOVES.has(name) ? [...pos, ...out] : out;
+  return pos.slice(0, 1);
+}
+function segmentTargets(seg, shell) {
+  const toks = tokenize(seg);
+  if (toks.length === 0)
+    return { targets: [], mutates: false };
+  const { name, rest } = cmdName(toks);
+  if (shell === "powershell" && PS_WRITE_CMDLETS.has(name)) {
+    return { targets: psTargets(name, rest), mutates: true };
+  }
+  switch (name) {
+    case "sed": {
+      const t = sedTargets(rest);
+      const inPlace = rest.some((x) => /^-i/.test(x) || x.startsWith("--in-place"));
+      return { targets: t, mutates: inPlace };
+    }
+    case "tee":
+      return { targets: positionals(rest), mutates: true };
+    case "cp":
+    case "install": {
+      const pos = positionals(rest);
+      return { targets: pos.slice(-1), mutates: true };
+    }
+    case "mv":
+      return { targets: positionals(rest), mutates: true };
+    case "dd": {
+      const of = rest.find((t) => t.startsWith("of="));
+      return { targets: of ? [of.slice(3)] : [], mutates: true };
+    }
+    case "truncate":
+      return { targets: positionals(rest, new Set(["-s", "--size"])), mutates: true };
+    case "rm":
+    case "shred":
+      return { targets: positionals(rest), mutates: true };
+    default:
+      return { targets: [], mutates: false };
+  }
+}
+function unresolvable(t) {
+  return t === "" || t === "-" || t.includes("$") || t.includes("`") || t.includes("%");
+}
+function parseWrittenPaths(command, cwd, shell = "posix") {
+  try {
+    if (typeof command !== "string" || command.trim() === "" || !cwd)
+      return [];
+    const raw = [];
+    let unresolved = false;
+    for (const seg of command.split(/&&|\|\||;|\||\n/)) {
+      const { targets, mutates } = segmentTargets(seg, shell);
+      if (mutates && targets.length === 0)
+        unresolved = true;
+      raw.push(...targets);
+    }
+    REDIRECT.lastIndex = 0;
+    let m;
+    while ((m = REDIRECT.exec(command)) !== null) {
+      const tok = m[3] ?? "";
+      if ((tok.match(/["']/g) ?? []).length % 2 === 1)
+        continue;
+      raw.push(tok.replace(/^["']|["']$/g, ""));
+    }
+    const out = [];
+    const seen = new Set;
+    for (const t of raw) {
+      if (NOT_A_FILE.test(t))
+        continue;
+      if (unresolvable(t)) {
+        unresolved = true;
+        continue;
+      }
+      const abs = resolve7(cwd, shell === "powershell" ? t.replace(/\\/g, "/") : t);
+      if (seen.has(abs))
+        continue;
+      seen.add(abs);
+      out.push(abs);
+      if (out.length >= MAX_SHELL_FILES)
+        break;
+    }
+    if (out.length === 0 && unresolved)
+      return [coarseClaimFor(cwd)];
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+// src/hooks/pre-tool-use.ts
+init_branch();
 var HOOK_TIMEOUT_MS2 = Number(process.env.CAPTAIN_MEMO_PRE_TOOL_USE_TIMEOUT_MS ?? 1500);
 var MAX_FILES = 25;
-async function main3() {
-  let payload = {};
-  try {
-    payload = await readStdinJson();
-  } catch (err) {
-    logHookError("PreToolUse", err);
-    return;
-  }
-  if (payload.tool_name === "Bash") {
-    try {
-      await (await Promise.resolve().then(() => (init_pre_git(), exports_pre_git))).runPreGit(payload);
-    } catch (err) {
-      logHookError("PreToolUse", err);
-    }
-    return;
-  }
-  const sid = payload.session_id;
-  const ip = payload.tool_input ?? {};
-  const fp = typeof ip.file_path === "string" ? ip.file_path : typeof ip.notebook_path === "string" ? ip.notebook_path : undefined;
-  if (!sid || !fp)
-    return;
-  const project = resolveProjectId(payload.cwd);
-  let files = [fp];
+var SHELL_TOOLS = { Bash: "posix", PowerShell: "powershell" };
+async function publishClaim(sid, cwd, touched) {
+  const project = resolveProjectId(cwd);
+  let files = [...touched];
   const cur = await workerFetch(`/worknote/active?session_id=${encodeURIComponent(sid)}`, { method: "GET", timeoutMs: HOOK_TIMEOUT_MS2 });
   if (cur.ok && cur.body?.claims) {
     const mine = cur.body.claims.find((c) => c.session_id === sid);
-    if (mine?.files?.length) {
-      files = [...new Set([...mine.files, fp])];
-      if (files.length > MAX_FILES)
-        files = files.slice(-MAX_FILES);
-    }
+    if (mine?.files?.length)
+      files = [...new Set([...mine.files, ...touched])];
   }
+  if (files.length > MAX_FILES)
+    files = files.slice(-MAX_FILES);
   const set = await workerFetch("/worknote/set", {
     method: "POST",
     body: { session_id: sid, agent: "claude", what: `editing ${files.length} file(s) in ${project}`, files, enrich_from_observations: true },
@@ -1905,10 +2094,10 @@ async function main3() {
   });
   logWorkerFailure("PreToolUse", "/worknote/set", set);
   if (!set.ok || !set.body)
-    return;
+    return null;
   const overlaps = set.body.overlaps ?? [];
   if (overlaps.length === 0)
-    return;
+    return null;
   const fileHits = overlaps.filter((o) => o.kind !== "semantic");
   const semHits = overlaps.filter((o) => o.kind === "semantic");
   const parts = [];
@@ -1920,8 +2109,60 @@ async function main3() {
     const who = semHits.map((o) => `${(o.session_id ?? "").slice(0, 12)} (${o.agent ?? "?"}) on "${(o.what ?? "").slice(0, 80)}"${typeof o.similarity === "number" ? ` (~${o.similarity.toFixed(2)})` : ""}`).join(" ; ");
     parts.push(`working on the same thing by meaning: ${who}`);
   }
-  const warning = `WORK-BOARD OVERLAP: another captain is ${parts.join("; and is ")}. Check the captain-memo work board (work_active) and coordinate, or pick a different area, before continuing.`;
-  writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: warning } }));
+  return `WORK-BOARD OVERLAP: another captain is ${parts.join("; and is ")}. Check the captain-memo work board (work_active) and coordinate, or pick a different area, before continuing.`;
+}
+async function main3() {
+  let payload = {};
+  try {
+    payload = await readStdinJson();
+  } catch (err) {
+    logHookError("PreToolUse", err);
+    return;
+  }
+  const sid = payload.session_id;
+  const shell = SHELL_TOOLS[payload.tool_name ?? ""];
+  const advisories = [];
+  if (shell) {
+    try {
+      const gitWarn = await (await Promise.resolve().then(() => (init_pre_git(), exports_pre_git))).runPreGit(payload);
+      if (gitWarn)
+        advisories.push(gitWarn);
+    } catch (err) {
+      logHookError("PreToolUse", err);
+    }
+    const cmd = typeof payload.tool_input?.command === "string" ? payload.tool_input.command : "";
+    let written = parseWrittenPaths(cmd, payload.cwd ?? "", shell);
+    if (payload.cwd && isCoarseClaim(written, payload.cwd)) {
+      const root = detectRepoRootSync(payload.cwd);
+      written = root && !root.includes("/claude-1000/") ? [`${root}/**`] : [];
+    }
+    if (sid && written.length > 0) {
+      try {
+        const warn = await publishClaim(sid, payload.cwd, written);
+        if (warn)
+          advisories.push(warn);
+      } catch (err) {
+        logHookError("PreToolUse", err);
+      }
+    }
+  } else {
+    const ip = payload.tool_input ?? {};
+    const fp = typeof ip.file_path === "string" ? ip.file_path : typeof ip.notebook_path === "string" ? ip.notebook_path : undefined;
+    if (!sid || !fp)
+      return;
+    try {
+      const warn = await publishClaim(sid, payload.cwd, [fp]);
+      if (warn)
+        advisories.push(warn);
+    } catch (err) {
+      logHookError("PreToolUse", err);
+    }
+  }
+  if (advisories.length === 0)
+    return;
+  writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: advisories.join(`
+
+`) } }));
 }
 if (isMainModule(import.meta)) {
   try {
