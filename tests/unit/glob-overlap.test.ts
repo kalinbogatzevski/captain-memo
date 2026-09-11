@@ -51,3 +51,32 @@ test('a bare path (no slash, no wildcard) is an exact file', () => {
   expect(globsOverlap(['README'], ['README'])).toEqual(['README']);
   expect(globsOverlap(['billing'], ['billing/invoice.ts'])).toEqual([]);   // "billing" the file ≠ billing/ the dir
 });
+
+// ─── Windows path spellings ────────────────────────────────────────────────
+// One file, three spellings: the Edit tool sends `C:\src\a.ts` (backslashes — verified live on the
+// board), a Bash-driven edit resolves MSYS-style `/c/src/a.ts`, PowerShell gives `C:/src/a.ts`. norm()
+// split on "/" only and compared raw text, so NONE of them overlapped — two sessions editing the same
+// file through different shells were told nothing. That is a silent clobber, the exact failure the
+// board exists to prevent.
+test('separator and drive spellings of the same path overlap', () => {
+  expect(globsOverlap(['C:\\src\\proj\\a.ts'], ['C:/src/proj/a.ts'])).toEqual(['C:\\src\\proj\\a.ts']);
+  expect(globsOverlap(['/c/src/proj/a.ts'], ['C:\\src\\proj\\a.ts'])).toEqual(['/c/src/proj/a.ts']);
+  expect(globsOverlap(['c:/src/proj/**'], ['C:\\src\\proj\\a.ts'])).toEqual(['c:/src/proj/**']);
+});
+
+test('canonicalisation does not merge genuinely different paths', () => {
+  expect(globsOverlap(['C:\\src\\proj\\a.ts'], ['C:\\src\\proj\\b.ts'])).toEqual([]);
+  expect(globsOverlap(['/c/src/a.ts'], ['/d/src/a.ts'])).toEqual([]);
+});
+
+// Only the DRIVE LETTER is case-folded (drive letters are case-insensitive everywhere). The rest of the
+// path is left alone so a Linux captain keeps its case-sensitive semantics.
+test('path case is preserved — only the drive letter folds', () => {
+  expect(globsOverlap(['/home/k/proj/A.ts'], ['/home/k/proj/a.ts'])).toEqual([]);
+  expect(globsOverlap(['c:/x/a.ts'], ['C:/x/a.ts'])).toEqual(['c:/x/a.ts']);
+});
+
+test('relative globs still behave exactly as before', () => {
+  expect(globsOverlap(['billing/**'], ['billing/invoice.ts'])).toEqual(['billing/**']);
+  expect(globsOverlap(['./src/a.ts'], ['src/a.ts'])).toEqual(['./src/a.ts']);
+});
