@@ -20,14 +20,29 @@ import { resolve } from 'path';
 /** Cap on claimed paths. A `find … -exec sed -i` fan-out must not flood the board. */
 export const MAX_SHELL_FILES = 25;
 
+/** The COARSE claim: "something under here was written, but the command did not name it."
+ *  Callers must recognise it (see `isCoarseClaim`) because it needs narrowing before publication —
+ *  a cwd can be a broad parent like `C:\src` that holds many unrelated projects. */
+export function coarseClaimFor(cwd: string): string { return `${cwd}/**`; }
+
+/** Is this result the coarse fallback rather than named files? */
+export function isCoarseClaim(paths: string[], cwd: string): boolean {
+  return paths.length === 1 && paths[0] === coarseClaimFor(cwd);
+}
+
 export type ShellKind = 'posix' | 'powershell';
 
 /** Sinks that are not files. Claiming these would be pure noise. */
 const NOT_A_FILE = /^(\/dev\/(null|stdout|stderr|tty)|nul:?|con)$/i;
 
 /** `>file`, `>>file`, `2>file` — but NOT `2>&1` (an fd dup: `&` is excluded from the target class, so
- *  the match simply fails) and not a bare `>` with no target. */
-const REDIRECT = /(?:^|[\s;|&])(\d?)(>>?)\s*("[^"]*"|'[^']*'|[^\s;|&<>]+)/g;
+ *  the match simply fails), not a bare `>` with no target, and not the COMPARISON `>=`.
+ *
+ *  The `(?!=)` is load-bearing: `[ $a >= $b ]` was claiming a file literally named `=`, and one such
+ *  claim was observed live on the board (`C:\src\=`, with no such file on disk). Shell would indeed
+ *  redirect there, but an agent writing `>=` means a comparison, and a bogus path is noise — which is
+ *  how a coordination signal gets ignored. */
+const REDIRECT = /(?:^|[\s;|&])(\d?)(>>?)(?!=)\s*("[^"]*"|'[^']*'|[^\s;|&<>]+)/g;
 
 /** Flags whose NEXT token is a value, not a path — skipped so we never claim `-Value x`'s `x`. */
 const PS_VALUE_FLAGS = new Set(['-value', '-itemtype', '-encoding', '-force', '-pattern', '-filter']);
@@ -48,10 +63,36 @@ function tokenize(seg: string): string[] {
   return out;
 }
 
-/** Command name, ignoring leading `VAR=value` assignments and any directory prefix. */
+/** Shell keywords and transparent wrappers that PRECEDE the real command. Splitting on `;` leaves a
+ *  loop body as `do sed -i …`, so without this the command name reads as `do` and every
+ *  `for f in *.ts; do sed -i … "$f"; done` — the single most common bulk-edit shape, and the exact case
+ *  the coarse fallback exists for — was silently missed. Same for `then`, `sudo`, `time`, `xargs`. */
+const CMD_PREFIXES = new Set([
+  'do', 'then', 'else', 'elif', '!', 'time', 'exec', 'nohup', 'command', 'builtin',
+  'sudo', 'doas', 'env', 'xargs', 'nice', 'ionice',
+]);
+
+/** Wrapper flags that consume the NEXT token (`sudo -u kalin`, `xargs -I {}`, `nice -n 5`). Only
+ *  consulted while walking wrapper prefixes, never against the real command's own arguments. */
+const WRAPPER_VALUE_FLAGS = new Set(['-u', '-g', '-n', '-c', '-p', '-I', '-P', '-L', '-s']);
+
+/** Command name, ignoring leading `VAR=value` assignments, shell keywords/wrappers, and any directory
+ *  prefix. Flags on a wrapper (`sudo -u kalin sed …`) are skipped too, so the real command surfaces. */
 function cmdName(toks: string[]): { name: string; rest: string[] } {
   let i = 0;
-  while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i]!)) i++;
+  for (;;) {
+    while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i]!)) i++;   // env assignments
+    const tok = toks[i];
+    if (tok === undefined) break;
+    const base0 = (tok.split(/[\\/]/).pop() ?? tok).toLowerCase();
+    if (!CMD_PREFIXES.has(base0)) break;
+    i++;
+    while (i < toks.length && toks[i]!.startsWith('-')) {                       // the wrapper's own flags
+      const flag = toks[i]!;
+      i++;
+      if (WRAPPER_VALUE_FLAGS.has(flag)) i++;   // …and its value (`sudo -u kalin`, `xargs -I {}`)
+    }
+  }
   const raw = toks[i] ?? '';
   const base = raw.split(/[\\/]/).pop() ?? raw;
   return { name: base.toLowerCase(), rest: toks.slice(i + 1) };
@@ -192,7 +233,7 @@ export function parseWrittenPaths(command: string, cwd: string, shell: ShellKind
       if (out.length >= MAX_SHELL_FILES) break;
     }
 
-    if (out.length === 0 && unresolved) return [`${cwd}/**`];
+    if (out.length === 0 && unresolved) return [coarseClaimFor(cwd)];
     return out;
   } catch {
     return [];   // total by contract: a parse failure must never block or break the edit

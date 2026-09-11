@@ -18,7 +18,8 @@
 // bad payload, or timeout is a silent no-op. stdout is written AT MOST ONCE: the host parses a single JSON
 // object, so the two possible advisories (shared checkout, work-board overlap) are merged into one emit.
 import { readStdinJson, workerFetch, writeStdout, resolveProjectId, logHookError, logWorkerFailure, isMainModule } from './shared.ts';
-import { parseWrittenPaths } from './shell-writes.ts';
+import { parseWrittenPaths, isCoarseClaim } from './shell-writes.ts';
+import { detectRepoRootSync } from '../worker/branch.ts';
 
 interface PreToolUsePayload {
   session_id?: string;
@@ -104,7 +105,19 @@ export async function main(): Promise<void> {
     //    round-trip, so the overwhelmingly common read-only command (`ls`, `cat`, `grep`, `bun test`)
     //    short-circuits here and costs nothing — Bash fires far more often than the edit tools.
     const cmd = typeof payload.tool_input?.command === 'string' ? payload.tool_input.command : '';
-    const written = parseWrittenPaths(cmd, payload.cwd ?? '', shell);
+    let written = parseWrittenPaths(cmd, payload.cwd ?? '', shell);
+
+    // The parser is PURE, so its "I could not name the target" fallback is `<cwd>/**` — and a cwd can be
+    // a broad parent holding many unrelated projects. Observed live: a session at `C:\src` (not a repo
+    // at all) claimed `C:\src/**`, which then overlapped every project beneath it and warned sessions
+    // that shared nothing with it. Narrow it here, where touching the filesystem is allowed: bound the
+    // claim to the REPO, which is the actual unit of sharing and the only thing that stamps repo_root.
+    // Outside a repo — or in a per-session scratchpad — there is nothing shared, so claim nothing.
+    if (payload.cwd && isCoarseClaim(written, payload.cwd)) {
+      const root = detectRepoRootSync(payload.cwd);
+      written = root && !root.includes('/claude-1000/') ? [`${root}/**`] : [];
+    }
+
     if (sid && written.length > 0) {
       try {
         const warn = await publishClaim(sid, payload.cwd, written);

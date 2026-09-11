@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 import { resolve } from 'path';
-import { parseWrittenPaths, MAX_SHELL_FILES } from '../../src/hooks/shell-writes.ts';
+import { parseWrittenPaths, MAX_SHELL_FILES, isCoarseClaim, coarseClaimFor } from '../../src/hooks/shell-writes.ts';
 
 // The bug this covers: in bypass-permissions mode Claude Code is instructed to make file changes with
 // `sed`, heredocs and `>` rather than the Edit/Write tools — so PreToolUse's auto-claim, which only ever
@@ -79,8 +79,41 @@ test('several writes in one command line are all claimed, deduped, in order', ()
 // command text, and claiming NOTHING is the failure mode this whole change exists to remove — so fall
 // back to the whole cwd. Coarse and noisy beats invisible.
 test('a write whose path is a variable falls back to claiming the cwd subtree', () => {
-  expect(parse(`sed -i 's/a/b/' "$f"`)).toEqual([`${CWD}/**`]);
-  expect(parse('echo x > "$OUT"')).toEqual([`${CWD}/**`]);
+  expect(parse(`sed -i 's/a/b/' "$f"`)).toEqual([coarseClaimFor(CWD)]);
+  expect(parse('echo x > "$OUT"')).toEqual([coarseClaimFor(CWD)]);
+});
+
+// The fallback is COARSE and the caller must be able to tell, because a cwd can be a broad parent of
+// many unrelated projects. Observed live: a session at `C:\src` — not a repo at all — claimed
+// `C:\src/**`, which overlapped every project beneath it and warned sessions that shared nothing with
+// it. pre-tool-use.ts narrows it to the repo root, or drops it when there is no repo.
+test('the coarse fallback is identifiable, and named files are never mistaken for it', () => {
+  expect(isCoarseClaim(parse(`sed -i 's/a/b/' "$f"`), CWD)).toBe(true);
+  expect(isCoarseClaim(parse('echo hi > out.txt'), CWD)).toBe(false);
+  expect(isCoarseClaim(parse('cat foo.ts'), CWD)).toBe(false);           // empty is not coarse
+  expect(isCoarseClaim(parse(`sed -i 's/a/b/' src/*.ts`), CWD)).toBe(false);   // a real glob is not coarse
+});
+
+// FOUND LIVE: a claim on the board named `C:\src\=`, with no such file on disk. ` >= ` was being read
+// as a redirect to a file called `=`. A shell would genuinely redirect there, but an agent writing `>=`
+// means a comparison — and a bogus path is noise, which is how a real signal gets ignored.
+test('a >= comparison is not a redirect', () => {
+  expect(parse('if [ $a >= $b ]; then echo x; fi')).toEqual([]);
+  expect(parse('pip install numpy>=1.2')).toEqual([]);
+  expect(parse('test $x >>= 2')).toEqual([]);
+  expect(parse('echo hi >= out.txt')).toEqual([]);       // still a comparison shape, not a claim
+});
+
+// FOUND LIVE: splitting on `;` leaves a loop body as `do sed -i …`, so the command name read as `do`
+// and the whole shape was missed — including the `for f in *.ts; do sed -i … "$f"; done` bulk edit that
+// the coarse fallback was written for. Wrappers hid it the same way.
+test('shell keywords and wrappers do not hide the real command', () => {
+  expect(parse('for f in *.ts; do sed -i "s/a/b/" "$f"; done')).toEqual([coarseClaimFor(CWD)]);
+  expect(parse('if [ -f x ]; then sed -i s/a/b/ a.ts; fi')).toEqual(at('a.ts'));
+  expect(parse('sudo sed -i s/a/b/ a.ts')).toEqual(at('a.ts'));
+  expect(parse('sudo -u kalin sed -i s/a/b/ a.ts')).toEqual(at('a.ts'));
+  expect(parse('time sed -i s/a/b/ a.ts')).toEqual(at('a.ts'));
+  expect(parse('find . -name "*.ts" | xargs sed -i s/a/b/')).toEqual([coarseClaimFor(CWD)]);
 });
 
 test('globs are claimed as-is — the board understands them', () => {
