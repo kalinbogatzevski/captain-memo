@@ -12,6 +12,9 @@ export interface VectorStoreOptions {
   /** A2: governs the clustered-query probe width. Defaults to DEFAULT_IVF_CONFIG
    *  so existing call sites that don't pass this are unaffected. */
   ivfConfig?: IvfConfig;
+  /** How long a parsed centroid set is reused before it is re-read (default 30 s). Per-tick
+   *  centroid drift may lag readers by up to this; a structural change (count / ids) never does. */
+  centroidCacheTtlMs?: number;
 }
 
 export interface AddVectorInput {
@@ -120,6 +123,8 @@ export class VectorStore {
   private db: Database;
   private dimension: number;
   private ivfConfig: IvfConfig;
+  private centroidCacheTtlMs: number;
+  private centroidCache = new Map<string, { fp: string; at: number; centroids: Centroid[] }>();
 
   constructor(opts: VectorStoreOptions) {
     // macOS links Bun against Apple's libsqlite3, which is built WITHOUT extension
@@ -140,6 +145,7 @@ export class VectorStore {
     }
     this.dimension = opts.dimension;
     this.ivfConfig = opts.ivfConfig ?? DEFAULT_IVF_CONFIG;
+    this.centroidCacheTtlMs = opts.centroidCacheTtlMs ?? 30_000;
     if (!opts.readonly) {
       this.db.exec('PRAGMA journal_mode = WAL;');
       this.db.exec(SCHEMA.replace(/__DIM__/g, String(opts.dimension))
@@ -436,14 +442,32 @@ export class VectorStore {
   /** All centroids currently stored for a collection. Empty when clustering
    *  hasn't started yet — callers treat that as "use the brute-force fallback." */
   getCentroids(collection: string): Centroid[] {
+    // Cached: this ran on EVERY query, re-reading and Array.from-ing 477 × 1024 floats — measured
+    // 92-202 ms per call on the live store (2026-09-16), while the set only moves on a sweep tick.
+    // The fingerprint is one indexed scan of ≤ a few hundred rows (sub-ms) and catches the change
+    // that must NOT lag: a rebuild allocates NEW ids, and probing dead ids returns nothing. Same-id
+    // drift (miniBatchUpdate nudging vectors) only shifts which partitions are nearest, so it may
+    // lag by the TTL. Callers never mutate the array (nearestCentroids / miniBatchUpdate copy).
+    const now = Date.now();
+    const hit = this.centroidCache.get(collection);
+    if (hit && now - hit.at < this.centroidCacheTtlMs && this.centroidFingerprint(collection) === hit.fp) return hit.centroids;
     const rows = this.db
       .query(`SELECT cluster_id, hit_count, centroid FROM vec_cluster_centroids WHERE collection_name = ?`)
       .all(collection) as Array<{ cluster_id: number; hit_count: number; centroid: Uint8Array }>;
-    return rows.map(r => {
+    const centroids = rows.map(r => {
       const buf = r.centroid;
       const floats = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
       return { clusterId: r.cluster_id, vector: Array.from(floats), hitCount: r.hit_count };
     });
+    this.centroidCache.set(collection, { fp: this.centroidFingerprint(collection), at: now, centroids });
+    return centroids;
+  }
+
+  private centroidFingerprint(collection: string): string {
+    const r = this.db
+      .query(`SELECT COUNT(*) n, COALESCE(MAX(cluster_id), 0) mx FROM vec_cluster_centroids WHERE collection_name = ?`)
+      .get(collection) as { n: number; mx: number };
+    return r.n + ':' + r.mx;
   }
 
   /** Replace the full centroid set for a collection. Does not touch other
@@ -461,6 +485,7 @@ export class VectorStore {
       }
     });
     tx();
+    this.centroidCache.delete(collection);   // the sweep reads back what it just wrote, never a stale copy
   }
 
   /** Allocate `n` globally-unique cluster ids (never reused, never reset per
