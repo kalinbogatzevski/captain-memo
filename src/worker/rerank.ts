@@ -16,9 +16,13 @@ export function extractIdentifierTokens(query: string): string[] {
   return cleaned.filter(t => t.length > 0 && codeShaped.test(t));
 }
 
-const STOPWORDS = new Set([
+/** Shared with meta.keywordMatchTokens, which drops these from the FTS5 OR-union: on the live
+ *  191K-chunk corpus 'the' is in 87% of chunks and 'and' in 91%, so their posting lists ARE the
+ *  cost of the union. The 3-letter entries are inert here (rare-token candidates are >= 4 chars). */
+export const STOPWORDS = new Set([
   'the','and','for','with','what','which','this','that','from','your','about',
   'does','how','why','when','where','into','over','than','then','they','them',
+  'are','was','were','has','have','had','not','but','can','you','its','our','all','any','out','per','via',
   'version','latest','current','release', // common but low-signal here
 ]);
 

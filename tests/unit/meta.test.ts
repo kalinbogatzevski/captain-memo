@@ -157,6 +157,16 @@ test('keywordMatchTokens — keeps the selective words and drops the stopwords',
   expect(kept).toEqual(['thread_rpc_timeout', 'federation', 'orchestrator']);
 });
 
+test('keywordMatchTokens — drops stopwords and 1-2 char tokens even under the cap', () => {
+  // Measured 2026-09-16 on the live 191,104-chunk corpus, `chunks_fts MATCH` alone, read-only:
+  // a 10-word natural-language prompt cost 1.6s; the same prompt minus the/and/does/where/when
+  // cost 0.47s. 'the' is in 87% of chunks, 'and' in 91% — their posting lists ARE the union.
+  const q = 'where does the worker auto update code live and when is it on';
+  expect(keywordMatchTokens(q)).toEqual(['worker', 'auto', 'update', 'code', 'live']);
+  // all-stopword query → nothing reaches FTS (the vector half still answers)
+  expect(keywordMatchTokens('what is it and where')).toEqual([]);
+});
+
 test('keywordMatchTokens — dedupes, and preserves the original word order', () => {
   const kept = keywordMatchTokens('federation federation orchestrator federation');
   expect(kept).toEqual(['federation', 'orchestrator']);

@@ -1,5 +1,6 @@
 import { Database } from 'bun:sqlite';
 import type { ChannelType, Document } from '../shared/types.ts';
+import { STOPWORDS } from './rerank.ts';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS documents (
@@ -190,8 +191,21 @@ export interface KeywordHit {
  *  Inbound peer searches carry the requester's query text, so a fleet-mate sending a long
  *  query timed out the SERVING captain the same way.
  *
- *  32 holds the worst case near 1s while leaving far more signal than any real query needs. */
-export const KEYWORD_MAX_TOKENS = 32;
+ *  32 held the worst case near 1s on that corpus. Re-measured 2026-09-16 on 191,104 chunks
+ *  (read-only, `chunks_fts MATCH` alone, the same 32-token prompt):
+ *
+ *    tokens reaching MATCH | 32 (cap) | 26 (minus stopwords) | 12 longest | 8 longest
+ *    time                  |  2.0 s   |  0.95 s              |  0.55 s    |  0.12 s
+ *
+ *  Cost tracks DOCUMENT FREQUENCY, not count: 'the' is in 87% of chunks, 'and' in 91%, and a
+ *  10-word natural-language prompt went 1.6s → 0.47s just by dropping the/and/does/where/when.
+ *  So two cuts: the STOPWORDS set and 1-2 char tokens never reach FTS, and the cap is 12 —
+ *  longest-first already prefers the selective tokens. This is the hook's per-prompt inject
+ *  path (every UserPromptSubmit in every session), so the 2s was paid on every turn.
+ *  ponytail: a length+stopword proxy for selectivity; the real thing is an fts5vocab doc-frequency
+ *  filter (drop any token in > N% of chunks), add it when domain words like 'verify'/'worker'
+ *  start dominating the remaining cost. */
+export const KEYWORD_MAX_TOKENS = 12;
 
 /** Tokens to OR into an FTS5 MATCH: deduped, capped, original order preserved.
  *
@@ -205,6 +219,7 @@ export function keywordMatchTokens(query: string, max: number = KEYWORD_MAX_TOKE
   const tokens: string[] = [];
   for (const t of raw) {
     const key = t.toLowerCase();   // FTS5's default tokenizer is case-insensitive, so "A" and "a" are one term
+    if (t.length < 3 || STOPWORDS.has(key)) continue;   // see KEYWORD_MAX_TOKENS: their posting lists are the union's cost
     if (seen.has(key)) continue;
     seen.add(key);
     tokens.push(t);
