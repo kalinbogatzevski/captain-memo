@@ -7,6 +7,35 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.43.0] — 2026-09-16
+
+### Performance
+
+- **Every prompt's memory injection paid ~2 s in FTS5 before a single result was ranked.**
+  `meta.searchKeyword` OR'd every prompt token into one `MATCH`, and FTS5 unions one posting list
+  per term BEFORE bm25 ranks anything — so the cost tracks document frequency, not term count. On a
+  live 191K-chunk corpus `the` is in 87 % of chunks and `and` in 91 %: a 10-word natural-language
+  prompt cost 1.6 s, the same prompt minus the/and/does/where/when 0.47 s; the 32-token cap cost
+  2.0 s, the 12 longest tokens 0.55 s. `keywordMatchTokens` now drops the shared `STOPWORDS` set
+  and tokens under 3 chars, and `KEYWORD_MAX_TOKENS` is 12 (longest-first selection already keeps
+  the selective ones). Measured on that store: `/search/*` 2.25 s → 1.1 s, `/inject/context`
+  3.7 s → 2.5 s, same hits. The real filter is an `fts5vocab` document-frequency cut; noted beside
+  the constant for when domain words start dominating what is left.
+- **The IVF probe re-parsed every centroid on every query.** `getCentroids()` read and
+  `Array.from`-ed all 477 × 1024 centroid floats per `vector.query()` — 92–202 ms of the 465 ms a
+  clustered query costs on a 218K-vector store — while the set only moves on a sweep tick. Now
+  cached per collection (30 s TTL, `centroidCacheTtlMs`); a sub-ms fingerprint (`COUNT(*)`,
+  `MAX(cluster_id)`) catches a rebuild at once, since a rebuild allocates NEW ids and probing dead
+  ids returns nothing; `setCentroids` drops the writer's own copy so the sweep never updates a
+  stale set.
+
+### Changed
+
+- The keyword half of hybrid search no longer sees stopwords or 1–2 character tokens (see above).
+  The vector half is unchanged, so an all-stopword query still answers; an exact 2-letter
+  identifier now only matches through the vector half.
+
+
 ## [0.42.2] — 2026-09-11
 
 ### Fixed
