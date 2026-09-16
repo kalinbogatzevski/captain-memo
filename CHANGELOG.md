@@ -7,6 +7,17 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.43.1] — 2026-09-16
+
+### Fixed
+
+- **On Windows, every CLI summarizer (claude-code, codex, agy) was reported "not on PATH", whatever was
+  installed or logged in.** The chain probed a CLI by spawning `which`, and Windows has no `which`: the spawn
+  threw and the provider was skipped, so a captain that had `codex` installed and logged in could not get a
+  summarizer, and no observations were created. Reproduced on a Windows captain (`which codex` fails while
+  `Bun.which` resolves `codex.cmd`). The probe now uses `Bun.which` (PATHEXT-aware, no subprocess) and the
+  transport spawns the exact file it resolved.
+
 ## [0.43.0] — 2026-09-16
 
 ### Performance
