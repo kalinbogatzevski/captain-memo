@@ -7,10 +7,11 @@
 // (3) be dropped by the instance that rewrites the set, so the writer's sweep never updates stale
 // centroids, and (4) refresh on its TTL so per-tick drift reaches readers.
 import { test, expect } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { VectorStore } from '../../src/worker/vector-store.ts';
+import { rmWorkDir } from '../support/worker-temp.ts';
 
 const DIM = 4;
 const cents = (ids: number[], x: number) => ids.map((clusterId) => ({ clusterId, hitCount: 1, vector: [x, 0, 0, 0] }));
@@ -40,7 +41,8 @@ test('a reader reuses its parsed centroids until the TTL, and sees a structural 
     writer.setCentroids('c', cents([4, 5, 6, 7], 0.6));
     await new Promise((r) => setTimeout(r, 250));                 // past the TTL: drift arrives
     expect(reader.getCentroids('c')[0]!.vector[0]).toBeCloseTo(0.6);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+    reader.close(); writer.close();   // Windows: an open SQLite handle makes the rm below EBUSY
+  } finally { rmWorkDir(dir); }
 });
 
 test('the instance that rewrites the set never reads its own stale copy', async () => {
@@ -52,5 +54,6 @@ test('the instance that rewrites the set never reads its own stale copy', async 
     expect(writer.getCentroids('c')[0]!.vector[0]).toBeCloseTo(0.1);
     writer.setCentroids('c', cents([1, 2], 0.7));                 // same ids, same count: only the vectors moved
     expect(writer.getCentroids('c')[0]!.vector[0]).toBeCloseTo(0.7);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+    writer.close();
+  } finally { rmWorkDir(dir); }
 });
