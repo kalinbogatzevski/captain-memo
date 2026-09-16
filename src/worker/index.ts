@@ -3671,12 +3671,9 @@ async function buildSummarizerFor(
     transport: s.getTransport(),
     note,
   });
-  const onPath = async (bin: string): Promise<boolean> => {
-    try {
-      const proc = Bun.spawn(['which', bin], { stdout: 'ignore', stderr: 'ignore' });
-      return (await proc.exited) === 0;
-    } catch { return false; }
-  };
+  // Bun.which, not `which`: Windows has no `which`, so the old spawn threw and every CLI provider was
+  // "not on PATH" there. The resolved path is handed to the transport so it spawns exactly that file.
+  const { cliOnPath } = await import('../shared/cli-on-path.ts');
 
   if (pv === 'claude-oauth') {
     const { createClaudeOauthTransport, readClaudeOauthToken } = await import('./summarizer-claude-oauth.ts');
@@ -3695,26 +3692,29 @@ async function buildSummarizerFor(
     );
   }
   if (pv === 'claude-code') {
-    if (!await onPath('claude')) return { skip: '`claude` not on PATH' };
+    const claudeBin = cliOnPath('claude');
+    if (!claudeBin) return { skip: '`claude` not on PATH' };
     const { createClaudeCodeTransport } = await import('./summarizer-claude-code.ts');
     return wrap(
-      new Summarizer({ apiKey: '', model, fallbackModels, transport: createClaudeCodeTransport() }),
+      new Summarizer({ apiKey: '', model, fallbackModels, transport: createClaudeCodeTransport({ bin: claudeBin }) }),
       `Max/Pro plan auth via 'claude -p'; model ${model}`,
     );
   }
   if (pv === 'codex') {
-    if (!await onPath('codex')) return { skip: '`codex` not on PATH (npm i -g @openai/codex, then `codex login`)' };
+    const codexBin = cliOnPath('codex');
+    if (!codexBin) return { skip: '`codex` not on PATH (npm i -g @openai/codex, then `codex login`)' };
     const { createCodexTransport } = await import('./summarizer-codex.ts');
     return wrap(
-      new Summarizer({ apiKey: '', model, fallbackModels, transport: createCodexTransport() }),
+      new Summarizer({ apiKey: '', model, fallbackModels, transport: createCodexTransport({ bin: codexBin }) }),
       `ChatGPT Plus/Pro auth via 'codex exec', model ${model}; ~6-7s/call — agent boot, not inference`,
     );
   }
   if (pv === 'agy') {
-    if (!await onPath('agy')) return { skip: '`agy` not on PATH (install Antigravity CLI, then run `agy` once to log in)' };
+    const agyBin = cliOnPath('agy');
+    if (!agyBin) return { skip: '`agy` not on PATH (install Antigravity CLI, then run `agy` once to log in)' };
     const { createAgyTransport } = await import('./summarizer-agy.ts');
     return wrap(
-      new Summarizer({ apiKey: '', model, fallbackModels, transport: createAgyTransport() }),
+      new Summarizer({ apiKey: '', model, fallbackModels, transport: createAgyTransport({ bin: agyBin }) }),
       `Google account via Antigravity CLI, model ${model}; ~3.4-5.5s/call, isolated $HOME`,
     );
   }
