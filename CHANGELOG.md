@@ -7,6 +7,22 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.43.3] — 2026-09-17
+
+### Fixed
+
+- **Codex and Gemini native hooks failed on every prompt on Windows** (`UserPromptSubmit hook (failed): hook
+  exited with code 1`). The hook command line started with a quoted `"bun"`; Codex runs hooks through the
+  user's shell, which on Windows is PowerShell, where a statement that starts with a string literal is an
+  expression, not a command (and cmd.exe strips the quotes into `bun" "C:\…`). Arguments are now bare unless
+  they need quoting, Windows paths are no longer written with doubled backslashes, and the managed-entry
+  marker rides as a trailing argument instead of a `#` comment. Re-run `captain-memo connect` (or the
+  installer) to rewrite the hooks.
+- **The install wizard recommends a summarizer that is actually logged in on this machine.** It used to
+  recommend Claude via OAuth unconditionally; a first install on a laptop without a Claude login came up with a
+  dead summarizer. A read-only probe (Claude credentials, Codex `auth.json`, agy token) now picks the default,
+  headless installs take it, and each option says whether it is logged in here.
+
 ## [0.43.2] — 2026-09-17
 
 ### Fixed
