@@ -16,7 +16,7 @@
 //
 // Idempotent: re-running PRESERVES existing config (flags/env override) rather than resetting to defaults or crashing.
 
-import { existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync, statSync, chmodSync, readdirSync, copyFileSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync, statSync, chmodSync, readdirSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { homedir } from 'os';
 import { spawnSync } from 'child_process';
@@ -901,6 +901,18 @@ function installWorkerService(paths: ModePaths, bunPath: string): void {
   ok(`worker service enabled + started (${paths.mode === 'user' ? 'systemctl --user' : 'systemctl'} ${WORKER_UNIT_NAME})`);
 }
 
+/** The %LOCALAPPDATA%\captain-memo\bin\captain-memo.cmd body: Bun on the checkout's entry point by ABSOLUTE
+ *  path (quoted — the path may carry spaces), every argument forwarded. Exported so the contract is pinned. */
+export function windowsCliShim(installDir: string): string {
+  return [
+    '@echo off',
+    'REM Windows CLI shim for captain-memo, written by `captain-memo install` for this checkout.',
+    'REM Invokes Bun directly on the TypeScript entry point (no shebang dispatch on Windows). Requires bun on PATH.',
+    `bun "${installDir}\\src\\cli\\index.ts" %*`,
+    '',
+  ].join('\r\n');
+}
+
 function installCliShim(mode: InstallMode): void {
   // System mode: /usr/local/bin (universal PATH).
   // User mode:   ~/.local/bin (on PATH on every modern Linux desktop via
@@ -1248,11 +1260,13 @@ async function installWindows(args: string[], opts: InstallOptions): Promise<num
   header('Linking CLI shim');
   const binDir = join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'captain-memo', 'bin');
   if (!existsSync(binDir)) mkdirSync(binDir, { recursive: true });
-  const shimSrc = join(INSTALL_DIR, 'bin', 'captain-memo.cmd');
   const shimDst = join(binDir, 'captain-memo.cmd');
   try {
-    copyFileSync(shimSrc, shimDst);
-    ok(`installed ${shimDst}`);
+    // WRITTEN with the checkout's absolute path, not copied: the checkout's own bin\captain-memo.cmd resolves
+    // the entry point relative to itself (`%~dp0..\src`), which is wrong once it lives under %LOCALAPPDATA% —
+    // every install whose checkout was not at the default folder had a dead `captain-memo` command.
+    writeFileSync(shimDst, windowsCliShim(INSTALL_DIR));
+    ok(`installed ${shimDst} → ${INSTALL_DIR}`);
     // Don't clobber PATH with setx (it truncates long PATHs and is easy to misuse).
     // Print one clear, idiot-proof instruction instead.
     warn(`Add this folder to your PATH so you can run \`captain-memo\` from anywhere:`);
