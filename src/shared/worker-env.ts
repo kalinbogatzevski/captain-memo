@@ -5,12 +5,61 @@
 // for secrets), so the daemon must load it itself. Calling loadWorkerEnv() at the
 // top of the worker / MCP / CLI bootstrap makes secrets reach the process on EVERY
 // platform, and de-risks the eventual macOS port for free.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, renameSync, chmodSync } from 'fs';
+import { spawnSync } from 'child_process';
 import { dirname } from 'path';
 import { WORKER_ENV_PATH } from './paths.ts';
 
 /** Candidate worker.env locations, in precedence order (first existing wins per key,
  *  but every file is read so a later file can supply keys an earlier one omitted). */
+/** worker.env holds the user's API keys and settings; nothing that rewrites or removes it may lose them.
+ *  A single rolling copy beside the file: `uninstall` keeps it, `install` restores from it when the
+ *  file itself is gone (so a re-install after an uninstall asks no questions), and every rewrite
+ *  copies first. One `.bak`, overwritten each time: the last good state, not a history. */
+export function workerEnvBackupPath(path: string = WORKER_ENV_PATH): string { return path + '.bak'; }
+
+/** Owner-only on the file that holds the keys: 0600 on POSIX; on Windows, where a mode is meaningless,
+ *  strip the inherited NTFS ACL and grant the current user alone (the same icacls lock the installer
+ *  puts on worker.env). Best-effort: a failed lock never fails the copy that protects the settings. */
+export function lockWorkerEnvFile(path: string): boolean {
+  try {
+    if (process.platform === 'win32') {
+      const user = process.env.USERNAME ?? process.env.USER ?? '';
+      if (!user) return false;
+      return spawnSync('icacls', [path, '/inheritance:r', '/grant:r', `${user}:F`], { stdio: 'ignore' }).status === 0;
+    }
+    chmodSync(path, 0o600);
+    return true;
+  } catch { return false; }
+}
+
+/** Copy the live file to its `.bak` (no-op when there is nothing to copy). Returns the backup path or null. */
+export function backupWorkerEnv(path: string = WORKER_ENV_PATH): string | null {
+  if (!existsSync(path)) return null;
+  const bak = workerEnvBackupPath(path);
+  copyFileSync(path, bak);
+  lockWorkerEnvFile(bak);
+  return bak;
+}
+
+/** Move the live file to its `.bak` (uninstall: the settings leave with the service, but not for good). A
+ *  rename keeps the file's own permissions, so the lock the installer applied travels with it. */
+export function retireWorkerEnv(path: string = WORKER_ENV_PATH): string | null {
+  if (!existsSync(path)) return null;
+  const bak = workerEnvBackupPath(path);
+  renameSync(path, bak);
+  return bak;
+}
+
+/** When the live file is missing but a `.bak` exists, bring it back. Returns the backup it came from, or null. */
+export function restoreWorkerEnvBackup(path: string = WORKER_ENV_PATH): string | null {
+  const bak = workerEnvBackupPath(path);
+  if (existsSync(path) || !existsSync(bak)) return null;
+  copyFileSync(bak, path);
+  lockWorkerEnvFile(path);
+  return bak;
+}
+
 export function workerEnvPaths(): string[] {
   const paths = [WORKER_ENV_PATH];
   // System-mode install location (Linux only — there is no /etc on Windows).

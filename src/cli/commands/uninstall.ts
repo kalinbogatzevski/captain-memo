@@ -10,6 +10,7 @@ import { homedir } from 'os';
 import { spawnSync } from 'child_process';
 import { isWindows, homeOf } from '../../shared/platform.ts';
 import { WORKER_ENV_PATH, CONFIG_DIR, DATA_DIR } from '../../shared/paths.ts';
+import { retireWorkerEnv } from '../../shared/worker-env.ts';
 import { getServiceManager } from '../../services/service-manager/index.ts';
 import { getEmbedderInstaller } from '../../services/embedder-installer/index.ts';
 
@@ -75,7 +76,7 @@ function removeUserMode(): void {
     if (existsSync(path)) { unlinkSync(path); ok(`removed ${path}`); }
   }
   spawnSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' });
-  if (existsSync(USER_ETC_FILE)) { unlinkSync(USER_ETC_FILE); ok(`removed ${USER_ETC_FILE}`); }
+  { const bak = retireWorkerEnv(USER_ETC_FILE); if (bak) ok(`kept your settings at ${bak} (the next install picks them up; delete it for a clean slate)`); }
   if (existsSync(USER_EMBED_DIR)) { rmSync(USER_EMBED_DIR, { recursive: true, force: true }); ok(`removed ${USER_EMBED_DIR}`); }
 }
 
@@ -177,11 +178,10 @@ async function removeWindows(purge: boolean): Promise<void> {
     }
   }
 
-  // worker.env (API keys) and the config dir if it's now empty.
-  if (existsSync(WORKER_ENV_PATH)) {
-    try { unlinkSync(WORKER_ENV_PATH); ok(`removed ${WORKER_ENV_PATH}`); }
-    catch { warn(`could not remove ${WORKER_ENV_PATH}`); }
-  }
+  // worker.env (API keys + settings) is KEPT as worker.env.bak: the next install restores it, so an
+  // uninstall/reinstall never costs the user their keys. Delete the .bak for a clean slate.
+  try { const bak = retireWorkerEnv(WORKER_ENV_PATH); if (bak) ok(`kept your settings at ${bak} (the next install picks them up; delete it for a clean slate)`); }
+  catch { warn(`could not move ${WORKER_ENV_PATH} aside`); }
   if (existsSync(CONFIG_DIR)) {
     try {
       if (readdirSync(CONFIG_DIR).length === 0) { rmSync(CONFIG_DIR, { recursive: true, force: true }); ok(`removed ${CONFIG_DIR}`); }

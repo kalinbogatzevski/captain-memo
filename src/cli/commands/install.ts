@@ -24,6 +24,7 @@ import { printMiniBanner } from '../banner.ts';
 import { isWindows, isMac, homeOf, totalMemGb, diskFreeGb, whichBun as probeBun } from '../../shared/platform.ts';
 import { ensureExtensionCapableSqlite } from '../../shared/sqlite-extensions.ts';
 import { WORKER_ENV_PATH, CONFIG_DIR, LOGS_DIR, DATA_DIR, DEFAULT_WORKER_PORT, DEFAULT_CODEX_MODEL, DEFAULT_AGY_MODEL, DEFAULT_CLAUDE_CODE_MODEL } from '../../shared/paths.ts';
+import { backupWorkerEnv, restoreWorkerEnvBackup } from '../../shared/worker-env.ts';
 import { getServiceManager } from '../../services/service-manager/index.ts';
 import { grantPluginToolPermissions } from './install-hooks.ts';
 import { getEmbedderInstaller } from '../../services/embedder-installer/index.ts';
@@ -842,6 +843,7 @@ function writeWorkerEnv(cfg: WizardConfig, paths: ModePaths): void {
     : join(homedir(), '.captain-memo'); // same for both — data lives in the user's home
   // Read the EXISTING file before overwriting so hand-added keys survive the reinstall.
   const { body, kept } = composeWorkerEnvBody(workerEnvLines(cfg, dataDir), paths.envFile);
+  backupWorkerEnv(paths.envFile);       // the previous state survives the rewrite as worker.env.bak
   writeFileSync(paths.envFile, body, { mode: 0o644 });
   ok(`wrote ${paths.envFile}${kept > 0 ? ` (preserved ${kept} hand-added setting${kept === 1 ? '' : 's'})` : ''}`);
 }
@@ -1077,6 +1079,7 @@ async function installWindows(args: string[], opts: InstallOptions): Promise<num
   info(`source: ${INSTALL_DIR}`);
 
   let existing: Partial<WizardConfig> | undefined;
+  { const bak = restoreWorkerEnvBackup(WORKER_ENV_PATH); if (bak) info(`restored your settings from ${bak}`); }   // after an uninstall
   if (existsSync(WORKER_ENV_PATH)) {
     info(`detected existing config: ${WORKER_ENV_PATH}`);
     // Re-installing: load the existing config as the fallback so an upgrade NEVER
@@ -1147,6 +1150,7 @@ async function installWindows(args: string[], opts: InstallOptions): Promise<num
   if (existingEnv === body) {
     ok(`worker.env unchanged — left as-is${kept > 0 ? ` (${kept} hand-added setting${kept === 1 ? '' : 's'} preserved)` : ''}`);
   } else {
+    backupWorkerEnv(WORKER_ENV_PATH);   // the previous state survives the rewrite as worker.env.bak
     writeFileSync(WORKER_ENV_PATH, body);
     ok(`wrote ${WORKER_ENV_PATH}${kept > 0 ? ` (preserved ${kept} hand-added setting${kept === 1 ? '' : 's'})` : ''}`);
     // NTFS ACL-lock: 0600 is meaningless on Windows. Strip inheritance and grant
@@ -1377,6 +1381,7 @@ Both modes: re-running preserves existing config (flags/env override). To remove
   info(`source: ${REPO_ROOT}`);
 
   let existing: Partial<WizardConfig> | undefined;
+  { const bak = restoreWorkerEnvBackup(paths.envFile); if (bak) info(`restored your settings from ${bak}`); }   // after an uninstall
   if (existsSync(paths.envFile)) {
     info(`detected existing config: ${paths.envFile}`);
     // Re-installing: load the existing config as the fallback so an upgrade NEVER
