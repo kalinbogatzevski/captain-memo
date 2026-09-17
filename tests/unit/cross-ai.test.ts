@@ -145,6 +145,27 @@ test('codexHooksEnabled — follows the effective feature value and fails closed
   expect(codexHooksEnabled({ status: 1, stdout: 'hooks stable true\n' })).toBe(false);
 });
 
+test('hook command lines: bare words stay bare, spaces get quotes, the marker is a trailing argument', () => {
+  // A line that starts with a quoted word is mangled by cmd.exe (Codex's hook shell on Windows): it strips the
+  // first and last quote of the whole line and runs `bun" "C:\...` — exit 1 on every prompt (seen on a fleet
+  // captain 2026-09-17). Paths without whitespace must therefore be written bare, and `# marker` is not a
+  // comment to cmd.exe, so the marker rides as an extra argument the dispatcher ignores.
+  const bare = JSON.parse(mergeCodexHooks(null, 'bun', 'C:\\projects\\captain-memo\\plugin\\dist\\captain-memo-hook.js'));
+  const cmd = bare.hooks.UserPromptSubmit[0].hooks[0].command as string;
+  expect(cmd).toBe(`bun C:\\projects\\captain-memo\\plugin\\dist\\captain-memo-hook.js CodexUserPromptSubmit ${CAPTAIN_MEMO_CODEX_HOOK_MARKER}`);
+  expect(cmd.startsWith('"')).toBe(false);
+  expect(cmd).not.toContain('#');
+  expect(cmd).not.toContain('\\\\');                                   // no doubled path separators
+  const spaced = JSON.parse(mergeCodexHooks(null, 'bun', '/Users/a b/hook.js'));
+  expect(spaced.hooks.Stop[0].hooks[0].command).toBe(`bun "/Users/a b/hook.js" CodexStop ${CAPTAIN_MEMO_CODEX_HOOK_MARKER}`);
+  // the marker still identifies managed entries, so a reconnect replaces rather than duplicates
+  const twice = mergeCodexHooks(mergeCodexHooks(null, 'bun', '/x/hook.js'), 'bun', '/y/hook.js');
+  expect(JSON.stringify(JSON.parse(twice))).not.toContain('/x/hook.js');
+  const gem = JSON.parse(mergeGeminiHooks(null, 'bun', 'C:\\p\\hook.js'));
+  expect(JSON.stringify(gem)).toContain(`bun C:\\\\p\\\\hook.js`);
+  expect(JSON.stringify(gem)).not.toContain('# ');
+});
+
 test('mergeCodexHooks — preserves foreign hooks and replaces managed entries idempotently', () => {
   const existing = JSON.stringify({
     custom: { keep: true },

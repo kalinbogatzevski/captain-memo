@@ -627,8 +627,15 @@ export function codexHooksEnabled(result: RunResult): boolean {
   });
 }
 
+/** One argument of a hook command line, as the host CLI's shell will read it. Bare when it can be: a line
+ *  that STARTS with a quoted word makes cmd.exe (the shell Codex uses for hooks on Windows) strip the first
+ *  and last quote of the whole line and run `bun" "C:\...` — "hook exited with code 1" on every prompt.
+ *  Backslashes are escaped for sh only; inside cmd.exe quotes they are literal path separators, and
+ *  doubling them turned every Windows path into C:\\Users\\... */
 function quoteHookArg(value: string): string {
-  return `"${value.replace(/(["\\])/g, '\\$1')}"`;
+  if (!/[\s"']/.test(value)) return value;
+  const inner = process.platform === 'win32' ? value.replace(/"/g, '\\"') : value.replace(/(["\\])/g, '\\$1');
+  return `"${inner}"`;
 }
 
 /** Merge Captain Memo's native Codex hooks while preserving every foreign
@@ -660,7 +667,7 @@ export function mergeCodexHooks(existingJson: string | null, hookCommand: string
   }
 
   const command = (alias: string) =>
-    `${quoteHookArg(hookCommand)} ${quoteHookArg(hookBundle)} ${alias} # ${CAPTAIN_MEMO_CODEX_HOOK_MARKER}`;
+    `${quoteHookArg(hookCommand)} ${quoteHookArg(hookBundle)} ${alias} ${CAPTAIN_MEMO_CODEX_HOOK_MARKER}`;   // marker as an extra argument (ignored by the hook); `# marker` is not a comment to cmd.exe
   const managed: Record<string, CommandHookEntry> = {
     UserPromptSubmit: {
       type: 'command', command: command('CodexUserPromptSubmit'), timeout: 5,
@@ -719,7 +726,7 @@ export function mergeGeminiHooks(existingJson: string | null, hookCommand: strin
     });
   }
   const command = (alias: string) =>
-    `${quoteHookArg(hookCommand)} ${quoteHookArg(hookBundle)} ${alias} # ${CAPTAIN_MEMO_GEMINI_HOOK_MARKER}`;
+    `${quoteHookArg(hookCommand)} ${quoteHookArg(hookBundle)} ${alias} ${CAPTAIN_MEMO_GEMINI_HOOK_MARKER}`;   // marker as an extra argument (ignored by the hook); `# marker` is not a comment to cmd.exe
   const add = (event: string, alias: string, timeout: number, matcher?: string) => {
     const groups = Array.isArray(hooks[event]) ? hooks[event] as CommandHookGroup[] : [];
     groups.push({
