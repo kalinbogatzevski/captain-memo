@@ -55,7 +55,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { ACCOUNT_DEFAULT_MODEL, DATA_DIR } from '../shared/paths.ts';
 import { isWindows } from '../shared/platform.ts';
-import type { SummarizerTransport, SummarizerTransportArgs, SummarizerTransportResult } from './summarizer.ts';
+import { promptForSubprocess, type SummarizerTransport, type SummarizerTransportArgs, type SummarizerTransportResult } from './summarizer.ts';
 
 /** Sentinel model meaning "don't pass --model; use the account default". Mirrors the
  *  codex transport. A real string, not '', because Summarizer drops falsy fallbacks. */
@@ -150,7 +150,7 @@ export function createAgyTransport(opts: AgyTransportOptions = {}): SummarizerTr
       bin,
       '--sandbox', // the summarizer must never execute model-authored commands
       ...(args.model && args.model !== AGY_ACCOUNT_DEFAULT ? ['--model', args.model] : []),
-      '-p', `${args.system}\n\n${args.user}`,
+      '-p', promptForSubprocess(`${args.system}\n\n${args.user}`),   // agy takes the prompt as an argument only; a NUL byte would make the spawn throw
     ];
 
     const proc = spawnFn({

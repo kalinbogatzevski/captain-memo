@@ -31,7 +31,7 @@
 //   stdin: 'ignore'       Without it codex blocks on "Reading additional input
 //                         from stdin" when stdin is an open pipe (i.e. the worker).
 
-import type { SummarizerTransport, SummarizerTransportArgs, SummarizerTransportResult } from './summarizer.ts';
+import { promptForSubprocess, type SummarizerTransport, type SummarizerTransportArgs, type SummarizerTransportResult } from './summarizer.ts';
 import { ACCOUNT_DEFAULT_MODEL } from '../shared/paths.ts';
 
 /**
@@ -65,7 +65,7 @@ interface CodexEvent {
 /** Minimal shape of `Bun.spawn` we depend on. Tests inject a stub. */
 export type SpawnFn = (args: {
   cmd: string[];
-  stdin: 'ignore';
+  stdin: 'ignore' | Uint8Array;   // the prompt, written to the child's stdin and closed
   stdout: 'pipe';
   stderr: 'pipe';
 }) => {
@@ -118,10 +118,15 @@ export function createCodexTransport(opts: CodexTransportOptions = {}): Summariz
       '--color', 'never',
       ...(args.model && args.model !== CODEX_ACCOUNT_DEFAULT ? ['-m', args.model] : []),
       ...extraArgs,
-      `${args.system}\n\n${args.user}`,
     ];
+    // The prompt goes over STDIN, not as the positional argument (codex reads its prompt from stdin when none
+    // is given — the "Reading additional input from stdin" line). As an argument it hit two walls on a fleet
+    // captain 2026-09-17: Windows caps a command line at 32 K characters, so a long batch was cut right after
+    // the system prompt and codex answered "provide the transcript"; and a NUL byte in a batch makes
+    // Bun.spawn refuse the argument outright. Neither applies to a pipe.
+    const prompt = Buffer.from(promptForSubprocess(`${args.system}\n\n${args.user}`), 'utf8');
 
-    const proc = spawnFn({ cmd, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' });
+    const proc = spawnFn({ cmd, stdin: prompt, stdout: 'pipe', stderr: 'pipe' });
     // Same reasoning as the claude-code transport: a wedged subprocess would
     // never resolve `exited`, stranding processBatch's in-flight guard and
     // silently halting the observation queue forever. Codex's agent boot makes

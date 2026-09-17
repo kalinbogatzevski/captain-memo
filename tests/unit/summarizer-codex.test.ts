@@ -2,10 +2,12 @@ import { test, expect } from 'bun:test';
 import { createCodexTransport, CODEX_ACCOUNT_DEFAULT, type SpawnFn } from '../../src/worker/summarizer-codex.ts';
 
 /** Stub `codex exec --json`: emits the given JSONL lines on stdout. */
-function fakeSpawn(lines: string[], exitCode = 0): { spawn: SpawnFn; lastCmd: string[] | null } {
+function fakeSpawn(lines: string[], exitCode = 0): { spawn: SpawnFn; lastCmd: string[] | null; lastStdin: string | null } {
   let lastCmd: string[] | null = null;
-  const spawn: SpawnFn = ({ cmd }) => {
+  let lastStdin: string | null = null;
+  const spawn: SpawnFn = ({ cmd, stdin }) => {
     lastCmd = cmd;
+    lastStdin = stdin instanceof Uint8Array ? new TextDecoder().decode(stdin) : null;
     const stdout = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(new TextEncoder().encode(lines.join('\n')));
@@ -15,7 +17,7 @@ function fakeSpawn(lines: string[], exitCode = 0): { spawn: SpawnFn; lastCmd: st
     const stderr = new ReadableStream<Uint8Array>({ start(c) { c.close(); } });
     return { stdout, stderr, exited: Promise.resolve(exitCode) };
   };
-  return { spawn, get lastCmd() { return lastCmd; } } as { spawn: SpawnFn; lastCmd: string[] | null };
+  return { spawn, get lastCmd() { return lastCmd; }, get lastStdin() { return lastStdin; } } as { spawn: SpawnFn; lastCmd: string[] | null; lastStdin: string | null };
 }
 
 const OK_LINES = [
@@ -57,8 +59,12 @@ test('codex transport — passes the isolation flags that keep summarize cheap',
   // The summarizer must never run model-authored writes.
   expect(cmd[cmd.indexOf('--sandbox') + 1]).toBe('read-only');
   expect(cmd[cmd.indexOf('-m') + 1]).toBe('gpt-5.4-mini');
-  // Codex has no system-prompt flag — system and user ride the one positional.
-  expect(cmd[cmd.length - 1]).toBe('SYS\n\nUSR');
+  // Codex has no system-prompt flag — system and user ride together, over STDIN: as a positional argument a
+  // long batch is cut at Windows' 32 K command-line cap (codex then answers "provide the transcript") and a
+  // NUL byte in a batch makes Bun.spawn refuse it (both seen on a fleet captain 2026-09-17).
+  expect(fake.lastStdin).toBe('SYS\n\nUSR');
+  expect(cmd).not.toContain('SYS\n\nUSR');
+  expect(cmd[cmd.length - 1]).toBe('gpt-5.4-mini');              // the -m value is the last argv; no positional prompt follows
 });
 
 test('codex transport — the "default" sentinel omits -m entirely', async () => {
@@ -110,4 +116,11 @@ test('codex transport — tolerates non-JSON notice lines interleaved in the str
   const t = createCodexTransport({ spawn: fake.spawn });
   const out = await t({ model: 'gpt-5.4-mini', system: 's', user: 'u', max_tokens: 800 });
   expect(out.content[0]!.text).toBe('{"title":"hi"}');
+});
+
+test('codex transport — a NUL byte in the batch is dropped before the prompt reaches the child', async () => {
+  const fake = fakeSpawn(OK_LINES);
+  const t = createCodexTransport({ spawn: fake.spawn });
+  await t({ model: 'gpt-5.4-mini', system: 'SYS', user: 'tool output: \u0000binary\u0000 done', max_tokens: 800 });
+  expect(fake.lastStdin).toBe('SYS\n\ntool output: binary done');
 });

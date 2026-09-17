@@ -17,6 +17,13 @@ const SummaryJsonSchema = z.object({
   concepts: z.array(z.string()),
 });
 
+/** A prompt that is about to become a subprocess argument or its stdin. A NUL byte anywhere in a captured
+ *  batch (binary tool output) makes Bun.spawn throw "must be a string without null bytes" and the batch is
+ *  never summarised; nothing meaningful lives in a NUL, so it is dropped. */
+export function promptForSubprocess(text: string): string {
+  return text.includes('\0') ? text.replaceAll('\0', '') : text;
+}
+
 export interface SummarizerTransportArgs {
   /**
    * Model slug, or '' for "caller has no opinion — resolve it". ONLY

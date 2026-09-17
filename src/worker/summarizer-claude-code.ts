@@ -11,7 +11,7 @@
 //     synthetic `Error` with `status: 404` so the existing fallback chain
 //     in Summarizer continues to walk.
 
-import type { SummarizerTransport, SummarizerTransportArgs, SummarizerTransportResult } from './summarizer.ts';
+import { promptForSubprocess, type SummarizerTransport, type SummarizerTransportArgs, type SummarizerTransportResult } from './summarizer.ts';
 import { ACCOUNT_DEFAULT_MODEL } from '../shared/paths.ts';
 
 /**
@@ -44,6 +44,7 @@ interface ClaudeCodeEnvelope {
  */
 export type SpawnFn = (args: {
   cmd: string[];
+  stdin?: Uint8Array;   // the user prompt, written to the child's stdin and closed
   stdout: 'pipe';
   stderr: 'pipe';
 }) => {
@@ -78,12 +79,14 @@ export function createClaudeCodeTransport(opts: ClaudeCodeTransportOptions = {})
     const cmd = [
       bin, '-p',
       ...(args.model && args.model !== CLAUDE_CODE_ACCOUNT_DEFAULT ? ['--model', args.model] : []),
-      '--append-system-prompt', args.system,
+      '--append-system-prompt', promptForSubprocess(args.system),
       '--output-format', 'json',
       ...extraArgs,
-      args.user,
     ];
-    const proc = spawnFn({ cmd, stdout: 'pipe', stderr: 'pipe' });
+    // The user prompt (the event batch) goes over STDIN — `claude -p` reads it there when no positional is
+    // given. As an argument it is capped at 32 K characters on Windows (a long batch loses its events) and a
+    // NUL byte in a batch makes Bun.spawn refuse it; see the codex transport for the fleet case.
+    const proc = spawnFn({ cmd, stdin: Buffer.from(promptForSubprocess(args.user), 'utf8'), stdout: 'pipe', stderr: 'pipe' });
     // Without a timeout, a hung claude-p subprocess (rare but real — slow
     // models, network blip, prompt edge cases) freezes the worker forever:
     // `await proc.exited` never resolves, `processBatch` never returns,

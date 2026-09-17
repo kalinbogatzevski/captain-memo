@@ -1,10 +1,12 @@
 import { test, expect } from 'bun:test';
 import { createClaudeCodeTransport, CLAUDE_CODE_ACCOUNT_DEFAULT, type SpawnFn } from '../../src/worker/summarizer-claude-code.ts';
 
-function fakeSpawn(stdoutText: string, exitCode = 0): { spawn: SpawnFn; lastCmd: string[] | null } {
+function fakeSpawn(stdoutText: string, exitCode = 0): { spawn: SpawnFn; lastCmd: string[] | null; lastStdin: string | null } {
   let lastCmd: string[] | null = null;
-  const spawn: SpawnFn = ({ cmd }) => {
+  let lastStdin: string | null = null;
+  const spawn: SpawnFn = ({ cmd, stdin }) => {
     lastCmd = cmd;
+    lastStdin = stdin ? new TextDecoder().decode(stdin) : null;
     const stdout = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(new TextEncoder().encode(stdoutText));
@@ -16,7 +18,7 @@ function fakeSpawn(stdoutText: string, exitCode = 0): { spawn: SpawnFn; lastCmd:
     });
     return { stdout, stderr, exited: Promise.resolve(exitCode) };
   };
-  return { spawn, get lastCmd() { return lastCmd; } } as { spawn: SpawnFn; lastCmd: string[] | null };
+  return { spawn, get lastCmd() { return lastCmd; }, get lastStdin() { return lastStdin; } } as { spawn: SpawnFn; lastCmd: string[] | null; lastStdin: string | null };
 }
 
 test('claude-code transport — happy path returns content + echoes model', async () => {
@@ -46,7 +48,9 @@ test('claude-code transport — passes correct CLI flags', async () => {
   expect(cmd[cmd.indexOf('--append-system-prompt') + 1]).toBe('SYS');
   expect(cmd[cmd.indexOf('--output-format') + 1]).toBe('json');
   // user prompt is the last arg
-  expect(cmd[cmd.length - 1]).toBe('USR');
+  // the batch rides on STDIN, never as an argument (Windows' 32 K command-line cap; NUL bytes)
+  expect(fake.lastStdin).toBe('USR');
+  expect(cmd).not.toContain('USR');
 });
 
 test('claude-code transport — the account-default sentinel passes NO --model', async () => {
