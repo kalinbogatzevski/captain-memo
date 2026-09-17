@@ -25,6 +25,7 @@ import { isWindows, isMac, homeOf, totalMemGb, diskFreeGb, whichBun as probeBun 
 import { ensureExtensionCapableSqlite } from '../../shared/sqlite-extensions.ts';
 import { WORKER_ENV_PATH, CONFIG_DIR, LOGS_DIR, DATA_DIR, DEFAULT_WORKER_PORT, DEFAULT_CODEX_MODEL, DEFAULT_AGY_MODEL, DEFAULT_CLAUDE_CODE_MODEL } from '../../shared/paths.ts';
 import { backupWorkerEnv, restoreWorkerEnvBackup } from '../../shared/worker-env.ts';
+import { summarizerLogins } from '../../shared/summarizer-login.ts';
 import { getServiceManager } from '../../services/service-manager/index.ts';
 import { grantPluginToolPermissions } from './install-hooks.ts';
 import { getEmbedderInstaller } from '../../services/embedder-installer/index.ts';
@@ -550,20 +551,30 @@ export function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOpt
   else info('A few questions, then I install everything in one go.');
 
   // ----- summarizer -----
+  // Recommend (and, headless, pick) the first subscription-backed provider that is LOGGED IN on this machine:
+  // a first install on a laptop with no Claude login used to take the Claude default and come up with a dead
+  // summarizer. The labels say which ones are usable here, so the choice is informed either way.
+  const logins = summarizerLogins();
+  const loginTag = (ok: boolean): string => ok ? ' [logged in here]' : ' [not logged in on this machine]';
+  const firstUsable = (['claude-oauth', 'codex', 'agy'] as const).findIndex((p) => logins[p]);
+  const summarizerDefaultIdx = firstUsable >= 0 ? firstUsable : 0;
   const summarizer = resolveChoice<SummarizerProvider>(
     opts?.summarizer ?? (nonInteractive ? existing?.summarizer : undefined),
     nonInteractive,
     'Which summarizer should I use to compress session events into observations?',
     [
-      { value: 'claude-oauth', label: 'Claude Max plan via OAuth (~700 ms/call, no API key, requires `claude login`)', recommended: true },
-      { value: 'codex', label: 'ChatGPT Plus/Pro via Codex CLI (~6-7 s/call, no API key, requires `codex login`) — pick this if you have NO Claude subscription' },
-      { value: 'agy', label: 'Google account via Antigravity CLI `agy` (~3-5 s/call, no API key) — pick this if you have NEITHER a Claude nor a ChatGPT subscription' },
+      { value: 'claude-oauth', label: 'Claude Max plan via OAuth (~700 ms/call, no API key, requires `claude login`)' + loginTag(logins['claude-oauth']), recommended: summarizerDefaultIdx === 0 },
+      { value: 'codex', label: 'ChatGPT Plus/Pro via Codex CLI (~6-7 s/call, no API key, requires `codex login`)' + loginTag(logins.codex), recommended: summarizerDefaultIdx === 1 },
+      { value: 'agy', label: 'Google account via Antigravity CLI `agy` (~3-5 s/call, no API key)' + loginTag(logins.agy), recommended: summarizerDefaultIdx === 2 },
       { value: 'anthropic', label: 'Anthropic API (paid, sub-second, needs ANTHROPIC_API_KEY)' },
       { value: 'claude-code', label: 'Claude Code subprocess (`claude -p`) — slower but works without OAuth file' },
       { value: 'openai-compatible', label: 'OpenAI / Ollama / OpenRouter / etc. (any /v1/chat/completions)' },
       { value: 'skip', label: "Skip — events queue but don't summarize" },
     ],
+    summarizerDefaultIdx,
   );
+  if (firstUsable < 0 && !nonInteractive) warn('none of Claude, Codex or agy is logged in on this machine: whichever you pick, log in there (claude login / codex login / agy login) and restart the worker, or the summarizer stays off.');
+
 
   // Re-running install REPLACES the summarizer (it's a managed key) — it does NOT add a second one.
   // Say so out loud, because a customer who ran the wizard twice expecting to "enable both" otherwise
