@@ -863,6 +863,11 @@ var init_sqlite_extensions = __esm(() => {
 ` + '  (Or install with the embedder set to "skip" for keyword-only retrieval, which needs no extension.)';
 });
 
+// src/shared/worker-env.ts
+var init_worker_env = __esm(() => {
+  init_paths();
+});
+
 // src/cli/commands/install-hooks.ts
 var init_install_hooks = () => {};
 
@@ -926,6 +931,7 @@ var init_install = __esm(() => {
   init_platform();
   init_sqlite_extensions();
   init_paths();
+  init_worker_env();
   init_service_manager();
   init_install_hooks();
   init_embedder_installer();
@@ -1275,7 +1281,7 @@ import { join as join14 } from "path";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.43.1",
+  version: "0.43.2",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,

@@ -7,6 +7,15 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.43.2] — 2026-09-17
+
+### Fixed
+
+- **`uninstall` no longer throws away your settings.** `worker.env` (API keys, summarizer, embedder, hand-added
+  lines) is moved to `worker.env.bak`; the next `install` restores it when the live file is missing, so an
+  uninstall + reinstall asks no questions. Both installer paths also copy the file aside before every rewrite.
+  The copy carries the same owner-only lock as the live file (0600; icacls on Windows).
+
 ## [0.43.1] — 2026-09-16
 
 ### Fixed
