@@ -7,6 +7,17 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.43.4] — 2026-09-17
+
+### Fixed
+
+- **The CLI summarizers (Codex, Claude Code) send the event batch over stdin.** As a command-line argument
+  the batch was cut at 32 000 characters on Windows (Codex then answered `Ready. Provide the session
+  transcript…`, which the worker reported as `failed to parse JSON`) and a single NUL byte in a captured
+  event made the spawn refuse it (`The argument 'args[12]' must be a string without null bytes`) — either way
+  no observations were written. The agy transport, which takes its prompt as an argument only, has NUL bytes
+  stripped. Queued observations drain once the worker restarts on this version.
+
 ## [0.43.3] — 2026-09-17
 
 ### Fixed
