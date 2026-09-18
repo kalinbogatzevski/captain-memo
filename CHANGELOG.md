@@ -7,6 +7,18 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.44.1] — 2026-09-18
+
+### Changed
+
+- **The injected `captain-memo` skill knows the new methods, and stays current.** The copy `captain-memo
+  connect` places in Codex / Gemini / agy / Cursor / opencode / vibe / Kimi / VS Code / JetBrains now covers
+  the work board with topics and homework (`idea:` capture where a hook is wired, `todo_add` where it is
+  not; `todo_list/claim/done`). It also refreshes at every Claude Code session start (`src/cli/skill-refresh.ts`,
+  refresh-only, never create): it had frozen at `connect` time, so a CLI connected before a tool existed never
+  learned it.
+- The GitHub Release job is idempotent: a release already cut for the tag is not a failure.
+
 ## [0.44.0] — 2026-09-18
 
 ### Added

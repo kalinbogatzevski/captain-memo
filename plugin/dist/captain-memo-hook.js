@@ -1027,11 +1027,55 @@ var init_plugin_cache_refresh = __esm(() => {
   REPO_ROOT6 = join13(import.meta.dir, "..", "..");
 });
 
+// src/cli/skill-refresh.ts
+var exports_skill_refresh = {};
+__export(exports_skill_refresh, {
+  resolveMemoSkillSource: () => resolveMemoSkillSource,
+  refreshMemoSkills: () => refreshMemoSkills,
+  MEMO_SKILL_RELPATHS: () => MEMO_SKILL_RELPATHS
+});
+import { existsSync as existsSync5, copyFileSync } from "fs";
+import { join as join14 } from "path";
+function resolveMemoSkillSource() {
+  const p = join14(import.meta.dir, "..", "..", "skills", "captain-memo", "SKILL.md");
+  return existsSync5(p) ? p : null;
+}
+function refreshMemoSkills(source, home, deps = {}) {
+  const exists = deps.exists ?? existsSync5;
+  const copy = deps.copy ?? copyFileSync;
+  if (!exists(source))
+    return [];
+  const refreshed = [];
+  for (const rel of MEMO_SKILL_RELPATHS) {
+    const dest = join14(home, ...rel.split("/"));
+    if (!exists(dest))
+      continue;
+    try {
+      copy(source, dest);
+      refreshed.push(dest);
+    } catch {}
+  }
+  return refreshed;
+}
+var MEMO_SKILL_RELPATHS;
+var init_skill_refresh = __esm(() => {
+  MEMO_SKILL_RELPATHS = [
+    ".codex/skills/captain-memo/SKILL.md",
+    ".gemini/skills/captain-memo/SKILL.md",
+    ".cursor/rules/captain-memo.md",
+    ".config/opencode/skills/captain-memo/SKILL.md",
+    ".vibe/skills/captain-memo/SKILL.md",
+    ".kimi/skills/captain-memo/SKILL.md",
+    ".config/Code/User/prompts/captain-memo.instructions.md",
+    ".config/JetBrains/captain-memo.md"
+  ];
+});
+
 // src/worker/branch.ts
 import { spawnSync as spawnSync4 } from "child_process";
-import { existsSync as existsSync5 } from "fs";
+import { existsSync as existsSync6 } from "fs";
 function detectBranchSync(cwd) {
-  if (!existsSync5(cwd))
+  if (!existsSync6(cwd))
     return null;
   try {
     const result = spawnSync4("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf-8", timeout: 2000 });
@@ -1044,7 +1088,7 @@ function detectBranchSync(cwd) {
   }
 }
 function detectRepoRootSync(cwd) {
-  if (!existsSync5(cwd))
+  if (!existsSync6(cwd))
     return null;
   try {
     const result = spawnSync4("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf-8", timeout: 2000 });
@@ -1309,11 +1353,12 @@ if (isMainModule(import.meta)) {
 init_shared();
 init_paths();
 import { mkdirSync as mkdirSync6, readFileSync as readFileSync8, statSync as statSync4, writeFileSync as writeFileSync6 } from "fs";
-import { join as join14 } from "path";
+import { join as join15 } from "path";
+import { homedir as homedir9 } from "os";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.44.0",
+  version: "0.44.1",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -1630,7 +1675,7 @@ async function ensureWorkerHealthy(deps) {
 init_worker_heal_lock();
 function readPkgField(dir, field) {
   try {
-    return JSON.parse(readFileSync8(join14(dir, "package.json"), "utf-8"))[field] ?? null;
+    return JSON.parse(readFileSync8(join15(dir, "package.json"), "utf-8"))[field] ?? null;
   } catch {
     return null;
   }
@@ -1747,7 +1792,7 @@ async function main2() {
   let updatedThisSession = false;
   let wroteTransition = false;
   if (process.env.CAPTAIN_MEMO_AUTO_UPDATE === "1") {
-    const AUTO_UPDATE_LOCK = join14(DATA_DIR, ".auto-update.lock");
+    const AUTO_UPDATE_LOCK = join15(DATA_DIR, ".auto-update.lock");
     try {
       const port = {
         run: (argv, cwd, timeoutMs2) => {
@@ -1767,7 +1812,7 @@ async function main2() {
       try {
         mkdirSync6(DATA_DIR, { recursive: true });
       } catch {}
-      const stampPath = join14(DATA_DIR, ".last-update-check");
+      const stampPath = join15(DATA_DIR, ".last-update-check");
       let lastCheck = null;
       try {
         lastCheck = statSync4(stampPath).mtimeMs;
@@ -1872,7 +1917,7 @@ async function main2() {
   }
   try {
     const { refreshPluginCacheIfStale: refreshPluginCacheIfStale2, CACHE_REFRESH_LOCK: CACHE_REFRESH_LOCK2 } = await Promise.resolve().then(() => (init_plugin_cache_refresh(), exports_plugin_cache_refresh));
-    const lock = join14(DATA_DIR, CACHE_REFRESH_LOCK2);
+    const lock = join15(DATA_DIR, CACHE_REFRESH_LOCK2);
     if (acquireHealLock(lock)) {
       try {
         const r = refreshPluginCacheIfStale2(VERSION);
@@ -1885,6 +1930,14 @@ async function main2() {
         releaseHealLock(lock);
       }
     }
+  } catch (err) {
+    logHookError("SessionStart", err);
+  }
+  try {
+    const { refreshMemoSkills: refreshMemoSkills2, resolveMemoSkillSource: resolveMemoSkillSource2 } = await Promise.resolve().then(() => (init_skill_refresh(), exports_skill_refresh));
+    const memoSource = resolveMemoSkillSource2();
+    if (memoSource)
+      refreshMemoSkills2(memoSource, homedir9());
   } catch (err) {
     logHookError("SessionStart", err);
   }

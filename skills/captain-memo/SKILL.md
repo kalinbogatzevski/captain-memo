@@ -1,6 +1,6 @@
 ---
 name: captain-memo
-description: Persistent cross-session, cross-tool memory for this project via captain-memo. Use at the START of any non-trivial task to recall prior context, decisions, conventions, and past bugs/fixes, and whenever you'd ask "have we done / decided / hit this before?". Searches a shared local memory corpus (past session observations, curated project memory, skills) through the captain-memo MCP tools. Works across AI tools (Claude Code, Codex, Cursor, Gemini CLI) pointed at the same captain-memo worker.
+description: Persistent cross-session, cross-tool memory for this project via captain-memo. Use at the START of any non-trivial task to recall prior context, decisions, conventions, and past bugs/fixes, and whenever you'd ask "have we done / decided / hit this before?". Searches a shared local memory corpus (past session observations, curated project memory, skills) through the captain-memo MCP tools; the same tools coordinate work with the other AI sessions on this machine (work board) and park ideas for later (homework). Works across AI tools (Claude Code, Codex, Cursor, Gemini CLI) pointed at the same captain-memo worker.
 metadata:
   short-description: Recall project memory before acting — it persists across sessions and across AI tools.
 ---
@@ -47,3 +47,30 @@ It is local-first: the corpus lives on this machine, not in a vendor cloud.
   recorded decision.
 - Recall is the contract here. New learnings are captured automatically by the session's memory hooks
   where they run (e.g. Claude Code); you don't need to write memory yourself.
+
+## Coordinating concurrent work (when other sessions/AIs share this codebase)
+
+The same shared worker also runs a **work-coordination board** — "who is working on what right now" across
+every AI session on this machine. Use it to avoid two agents clobbering the same files, or the same thing
+in different files:
+- **Before editing a shared area**, call `work_set(what, { topics, files, agent })`. `topics` is 1–5 short
+  tags for WHAT the work is about (`["billing-rounding", "invoice-pdf"]`) — two sessions on one topic is
+  the collision that matters, whatever files they touch; a claim without topics is untitled work. The call
+  publishes your claim AND returns `overlaps[]` — by topic, files, meaning or shared checkout (`kind` says
+  which). Non-empty ⇒ coordinate before you edit. If it says `semantic.degraded`, meaning-match is off and
+  topics are what keeps you honest.
+- Re-call `work_set` periodically to keep the lease alive (it auto-expires, so it never blocks an area), and
+  `work_clear()` when done. `work_active()` lists the live claims and `topic_contention` (every topic two or
+  more sessions hold, with who).
+- Nothing claims for you on this CLI — only Claude Code auto-claims the files it edits. State intent yourself.
+
+## Homework — ideas for later
+
+Homework is what is NOT for now: an idea or a task parked on this machine, with a lifecycle
+open → claimed → done, visible to every AI session here.
+- If the user starts a message with `idea:`, `todo:`, `later:` (or `идея:`) and a hook already filed it,
+  you see `📝 Filed as homework #N` — answer with a short "noted" and carry on. If no such line appears
+  (this CLI has no prompt hook wired), file it yourself with `todo_add(text, topics)` and say so.
+- `todo_list()` — what is open (Claude Code also lists it in the session banner). `todo_claim(id)` before you
+  start one, so no other session starts it too; `todo_done(id, note)` when it is done.
+- Not a memory (`remember` is for facts to recall) and not a work claim (`work_set` is what you do now).

@@ -40,6 +40,8 @@ jobs:
           # Fall back to the commit subject if the CHANGELOG has no matching section.
           [ -s RELEASE_NOTES.md ] || printf '%s\n' "$SUBJ" > RELEASE_NOTES.md
 
+          # Idempotent: a release cut by hand (gh release create) before this job ran is not a failure.
+          if gh release view "$TAG" >/dev/null 2>&1; then echo "release $TAG already exists — nothing to do"; exit 0; fi
           gh release create "$TAG" \
             --title "$TITLE" \
             --notes-file RELEASE_NOTES.md \

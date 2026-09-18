@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 import { readStdinJson, writeStdout, workerFetch, logHookError, workerFailureMessage, isMainModule } from './shared.ts';
 import type { HomeworkItem } from '../worker/homework.ts';
 import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS, DEFAULT_WORKER_PORT, DATA_DIR } from '../shared/paths.ts';
@@ -375,6 +376,16 @@ export async function main(): Promise<void> {
         }
       } finally { releaseHealLock(lock); }
     }
+  } catch (err) { logHookError('SessionStart', err); }
+
+  // Re-copy the portable captain-memo skill into the cross-AI destinations that ALREADY have one. Claude
+  // reads its skills from the checkout, so it is never stale; codex/gemini/cursor/… hold a SNAPSHOT taken
+  // when `connect` last ran, and nothing else ever rewrote it. Runs after self-heal and any rollback, so
+  // the copy can never describe code that was rolled back. Refresh-only, never create (skill-refresh.ts).
+  try {
+    const { refreshMemoSkills, resolveMemoSkillSource } = await import('../cli/skill-refresh.ts');
+    const memoSource = resolveMemoSkillSource();
+    if (memoSource) refreshMemoSkills(memoSource, homedir());
   } catch (err) { logHookError('SessionStart', err); }
 
   // Self-upgrade notice: if the plugin VERSION advanced since the last
