@@ -21,6 +21,9 @@ export interface WorkNote {
   session_id: string;   // stable per-session id (the session refreshes/clears its OWN note by this)
   what: string;         // short free-text ("refactoring the billing module")
   files: string[];      // claimed globs ("billing/**", "src/auth/*.ts")
+  topics?: string[];    // WHAT the work is about, as 1–5 short kebab tags ("fleet-keys", "installer-windows") —
+                        // the collision an operator cares about is two sessions on one TOPIC, whatever files they
+                        // touch. Absent ⇒ untitled work (a hook auto-claim never derives one: a file is not a topic).
   ts: number;           // epoch-ms the lease was (re)published
   ttl_s: number;        // lease length; live while now < ts + ttl_s*1000
   captain?: string;     // set ONLY for fleet notes (which captain they came from); absent ⇒ this captain
@@ -35,7 +38,7 @@ export interface WorkNote {
 
 export interface OverlapHit {
   agent: string; session_id: string; captain?: string; what: string; files: string[]; overlapping: string[];
-  kind?: 'files' | 'semantic' | 'repo';   // how the collision was detected (absent ⇒ 'files', for back-compat)
+  kind?: 'files' | 'semantic' | 'repo' | 'topics';   // how the collision was detected (absent ⇒ 'files', for back-compat)
   similarity?: number;           // cosine similarity in [0,1], semantic hits only
 }
 
@@ -65,7 +68,7 @@ function isLive(n: WorkNote, now: number): boolean {
 }
 
 export interface SetWorkNoteInput {
-  agent?: string; session_id: string; what?: string; files?: string[]; ttl_s?: number;
+  agent?: string; session_id: string; what?: string; files?: string[]; topics?: string[]; ttl_s?: number;
   meaningful?: boolean;   // persisted onto the note (see WorkNote.meaningful); the route computes it
   // Handler-only routing hint (consumed by the /worknote/set HTTP route, NOT persisted on the note): when set,
   // the route replaces a generic `what` with the session's latest observation title before storing. The pure
@@ -74,6 +77,24 @@ export interface SetWorkNoteInput {
   // Shared-repo stamp (see resolveRepoClaim), resolved by the /worknote/set route BEFORE calling setWorkNote —
   // setWorkNote stays pure (no git I/O) and just copies these through onto the note.
   repo_root?: string; branch?: string; is_dirty?: boolean;
+}
+
+export const MAX_TOPICS = 5;
+const MAX_TOPIC_CHARS = 40;
+
+/** Topics as stored: lowercase, non-alphanumerics collapsed to '-', trimmed of dashes, deduped, ≤ MAX_TOPICS of
+ *  ≤ MAX_TOPIC_CHARS. "Fleet Keys" and "fleet-keys" are the same topic; junk (non-strings, empties) is dropped. */
+export function normalizeTopics(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const out: string[] = [];
+  for (const raw of input) {
+    if (typeof raw !== 'string') continue;
+    const t = raw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, MAX_TOPIC_CHARS).replace(/-+$/, '');
+    if (!t || out.includes(t)) continue;
+    out.push(t);
+    if (out.length >= MAX_TOPICS) break;
+  }
+  return out;
 }
 
 /** Publish/refresh a session's claim (a heartbeat re-`set`s it). Returns the stored note. Validated + capped. */
@@ -87,6 +108,8 @@ export function setWorkNote(kv: WorkNoteKv, input: SetWorkNoteInput, now: number
     ttl_s: Math.min(MAX_TTL_S, Math.max(MIN_TTL_S, Math.floor(Number(input.ttl_s) || DEFAULT_TTL_S))),
   };
   if (input.meaningful === true) note.meaningful = true;   // only store when true (keeps notes lean + back-compat)
+  const topics = normalizeTopics(input.topics);
+  if (topics.length > 0) note.topics = topics;
   if (typeof input.repo_root === 'string' && input.repo_root) note.repo_root = input.repo_root.slice(0, 512);
   if (typeof input.branch === 'string' && input.branch) note.branch = input.branch.slice(0, 256);
   if (typeof input.is_dirty === 'boolean') note.is_dirty = input.is_dirty;
@@ -126,6 +149,39 @@ export function overlapsAgainst(mineFiles: string[], others: WorkNote[], exclude
     }
   }
   return hits;
+}
+
+/** Live claims (not mine) that share at least one TOPIC tag with `mineTopics`: kind 'topics', `overlapping` = the
+ *  shared tags. Exact tags only — the semantic pass covers the fuzzy half. [] when I claim no topics. */
+export function topicOverlapsAgainst(mineTopics: string[], others: WorkNote[], excludeSession: string): OverlapHit[] {
+  const mine = new Set(normalizeTopics(mineTopics));
+  if (mine.size === 0) return [];
+  const hits: OverlapHit[] = [];
+  for (const o of others) {
+    if (o.session_id === excludeSession) continue;
+    const shared = (o.topics ?? []).filter((t) => mine.has(t));
+    if (shared.length > 0) {
+      hits.push({ agent: o.agent, session_id: o.session_id, ...(o.captain ? { captain: o.captain } : {}), what: o.what, files: o.files, overlapping: shared, kind: 'topics' });
+    }
+  }
+  return hits;
+}
+
+export interface TopicContention { topic: string; holders: { agent: string; session_id: string; captain?: string; what: string }[] }
+
+/** Every topic two or more live sessions claim at once, fleet-wide, with the holders — the board's "two people on
+ *  the installer" row. Sorted by most holders, then topic. */
+export function groupTopicContention(notes: WorkNote[]): TopicContention[] {
+  const byTopic = new Map<string, TopicContention['holders']>();
+  for (const n of notes) {
+    for (const t of n.topics ?? []) {
+      const list = byTopic.get(t) ?? [];
+      if (!list.some((h) => h.session_id === n.session_id)) list.push({ agent: n.agent, session_id: n.session_id, ...(n.captain ? { captain: n.captain } : {}), what: n.what });
+      byTopic.set(t, list);
+    }
+  }
+  return [...byTopic.entries()].filter(([, h]) => h.length >= 2).map(([topic, holders]) => ({ topic, holders }))
+    .sort((a, b) => b.holders.length - a.holders.length || a.topic.localeCompare(b.topic));
 }
 
 /** Cosine similarity of two equal-length vectors, in [-1, 1]. Returns 0 (never NaN/throws) for a zero vector or
@@ -274,6 +330,7 @@ export function sanitizeFleetNotes(input: unknown, now: number): WorkNote[] {
       ttl_s: Math.min(MAX_TTL_S, Math.max(0, Math.floor(ttl_s))),
       ...(typeof r.captain === 'string' && r.captain ? { captain: r.captain.slice(0, 64) } : {}),
       ...(r.meaningful === true ? { meaningful: true } : {}),   // a sibling's declared-intent flag (else file-only)
+      ...(normalizeTopics(r.topics).length ? { topics: normalizeTopics(r.topics) } : {}),
       ...(typeof r.repo_root === 'string' && r.repo_root ? { repo_root: r.repo_root.slice(0, 512) } : {}),
       ...(typeof r.branch === 'string' && r.branch ? { branch: r.branch.slice(0, 256) } : {}),
       ...(r.is_dirty === true ? { is_dirty: true } : {}),

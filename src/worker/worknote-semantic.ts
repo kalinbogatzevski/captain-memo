@@ -59,6 +59,20 @@ let embedWarned = false;
 /** Embed any of `texts` not already cached/in-flight and store them. AWAITED — used by warmWorknoteVecs (fire-
  *  and-forget) in production and directly by tests. De-dupes concurrent embeds of the same text. Fail-open: an
  *  embedder error leaves the texts uncached, to be retried on the next call (logged once per outage). */
+// DEGRADATION IS A FACT THE BOARD MUST SHOW (2026-09-18): a failed embed left the pass file-only for the rest of the
+// outage with one warn line nobody read. `degradedSince` / `degradedReason` are readable (semanticStatus) so
+// work_active and the cockpit can say so instead of quietly reporting "no overlap".
+let degradedSince: number | null = null;
+let degradedReason: string | null = null;
+
+/** Whether the semantic (meaning) half of overlap detection is currently working, and if not since when / why. */
+export function semanticStatus(): { enabled: boolean; degraded: boolean; since?: number; reason?: string } {
+  if (!SEMANTIC_ENABLED) return { enabled: false, degraded: false };
+  return degradedSince === null
+    ? { enabled: true, degraded: false }
+    : { enabled: true, degraded: true, since: degradedSince, ...(degradedReason ? { reason: degradedReason } : {}) };
+}
+
 export async function embedAndCache(texts: string[], embed: (t: string[]) => Promise<number[][]>): Promise<void> {
   const want = [...new Set(texts.map(key).filter(Boolean))].filter((t) => !VEC_CACHE.has(t) && !inflight.has(t));
   if (want.length === 0) return;
@@ -67,10 +81,14 @@ export async function embedAndCache(texts: string[], embed: (t: string[]) => Pro
     const vecs = await embed(want);
     for (let i = 0; i < want.length; i++) put(want[i]!, vecs[i] ?? []);
     embedWarned = false;   // recovered — re-arm so a later outage logs again
+    degradedSince = null; degradedReason = null;
   } catch (err) {
+    const reason = (err as Error)?.message ?? String(err);
+    if (degradedSince === null) degradedSince = Date.now();
+    degradedReason = reason;
     if (!embedWarned) {
       embedWarned = true;
-      console.warn(`[worknote-semantic] warm embed failed; semantic overlap degraded to file-only: ${(err as Error)?.message ?? String(err)}`);
+      console.warn(`[worknote-semantic] warm embed failed; semantic overlap degraded to file-only: ${reason}`);
     }
   } finally { for (const t of want) inflight.delete(t); }
 }
@@ -100,4 +118,4 @@ export function semanticOverlapPass(mine: WorkNote, others: WorkNote[], fileSess
 }
 
 /** Test-only: drop all cached vectors + re-arm the embed-failure log so cache-dependent tests don't leak. */
-export function __clearWorknoteVecCache(): void { VEC_CACHE.clear(); inflight.clear(); embedWarned = false; }
+export function __clearWorknoteVecCache(): void { VEC_CACHE.clear(); inflight.clear(); embedWarned = false; degradedSince = null; degradedReason = null; }

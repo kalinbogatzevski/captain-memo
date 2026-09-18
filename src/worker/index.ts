@@ -42,9 +42,10 @@ import { loadDreamInputs, pairKey } from '../dreaming/load.ts';
 import { coRetrievalSimilarity } from '../dreaming/distance.ts';
 import { isIdle, blockingSignals } from './idle.ts';
 import { runQmSupersedeSlice, applySupersedeDemotion } from './supersede.ts';
-import { setWorkNote, listLocalActive, clearWorkNote, overlapsAgainst, repoOverlapsAgainst, groupRepoContention, repoActiveHolders, type SetWorkNoteInput } from './work-notes.ts';
+import { setWorkNote, listLocalActive, clearWorkNote, overlapsAgainst, topicOverlapsAgainst, groupTopicContention, repoOverlapsAgainst, groupRepoContention, repoActiveHolders, type SetWorkNoteInput } from './work-notes.ts';
 import { resolveRepoClaim } from './repo-claim.ts';
-import { warmWorknoteVecs, semanticOverlapPass, hasIntent, SEMANTIC_ENABLED } from './worknote-semantic.ts';
+import { warmWorknoteVecs, semanticOverlapPass, hasIntent, SEMANTIC_ENABLED, semanticStatus } from './worknote-semantic.ts';
+import { addHomework, listHomework, claimHomework, doneHomework } from './homework.ts';
 import { centroid } from '../shared/vector-math.ts';
 import { PendingEmbedQueue } from './pending-embed-queue.ts';
 import { chunkObservation } from './chunkers/observation.ts';
@@ -2280,6 +2281,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         const note = setWorkNote(meta, setBody, now);
         const others = listLocalActive(meta, now);
         const overlaps = overlapsAgainst(note.files, others, note.session_id);
+        // TOPIC overlap (2026-09-18): the collision an operator cares about is two sessions on the same THING; a
+        // shared exact tag is as loud as a shared glob, and a session already flagged by files is not repeated.
+        const fileSessionsForTopics = new Set(overlaps.map((o) => o.session_id));
+        overlaps.push(...topicOverlapsAgainst(note.topics ?? [], others, note.session_id).filter((o) => !fileSessionsForTopics.has(o.session_id)));
         // Semantic pass (best-effort, never awaits the embedder): compare meaning vectors already cached, and warm
         // the cache for next time. Catches agents on the SAME intent in DIFFERENT files, which file overlap misses.
         // Only meaningful claims (hasIntent) take part — generic placeholders carry no intent and would false-match.
@@ -2289,7 +2294,29 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           const fileSessions = new Set(overlaps.map((o) => o.session_id));
           overlaps.push(...semanticOverlapPass(note, peers, fileSessions));
         }
-        return Response.json({ session_id: note.session_id, ttl_s: note.ttl_s, overlaps });
+        // `semantic` says whether the meaning half of overlap detection is working RIGHT NOW: a degraded pass used
+        // to report "no overlap" indistinguishably from a real no-overlap.
+        return Response.json({ session_id: note.session_id, ttl_s: note.ttl_s, topics: note.topics ?? [], overlaps, semantic: semanticStatus() });
+      }
+      // ── Homework: ideas and todos parked for later (open → claimed → done), per captain ──────
+      if (req.method === 'POST' && url.pathname === '/homework/add') {
+        const b = (await req.json().catch(() => null)) as { text?: unknown; topics?: unknown; project?: unknown; by?: unknown } | null;
+        if (!b || typeof b.text !== 'string' || !b.text.trim()) return Response.json({ error: 'invalid_request', details: 'text required' }, { status: 400 });
+        const item = addHomework(meta, { text: b.text, topics: b.topics, ...(typeof b.project === 'string' ? { project: b.project } : {}), ...(typeof b.by === 'string' ? { by: b.by } : {}) }, Date.now());
+        return Response.json({ item, open: listHomework(meta, { status: 'open' }, Date.now()).length });
+      }
+      if (req.method === 'GET' && url.pathname === '/homework/list') {
+        const st = url.searchParams.get('status');
+        const items = listHomework(meta, { status: st === 'done' || st === 'all' ? st : 'open' }, Date.now());
+        return Response.json({ items, open: items.filter((i) => !i.done_at).length });
+      }
+      if (req.method === 'POST' && (url.pathname === '/homework/claim' || url.pathname === '/homework/done')) {
+        const b = (await req.json().catch(() => null)) as { id?: unknown; by?: unknown; note?: unknown } | null;
+        if (!b || (typeof b.id !== 'string' && typeof b.id !== 'number')) return Response.json({ error: 'invalid_request', details: 'id required' }, { status: 400 });
+        const by = typeof b.by === 'string' && b.by ? b.by : 'session';
+        const item = url.pathname === '/homework/claim' ? claimHomework(meta, String(b.id), by, Date.now()) : doneHomework(meta, String(b.id), by, typeof b.note === 'string' ? b.note : undefined, Date.now());
+        if (!item) return Response.json({ error: 'not_found', detail: `no open homework #${String(b.id)}` }, { status: 404 });
+        return Response.json({ item, open: listHomework(meta, { status: 'open' }, Date.now()).length });
       }
       if (req.method === 'GET' && url.pathname === '/worknote/active') {
         const now = Date.now();
@@ -2297,10 +2324,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         const mine = url.searchParams.get('session_id') ?? '';
         const mineNote = mine ? claims.find((c) => c.session_id === mine) : undefined;
         const overlaps_with_mine = mineNote
-          ? [...overlapsAgainst(mineNote.files, claims, mine), ...repoOverlapsAgainst(mineNote.repo_root, claims, mine)]
+          ? [...overlapsAgainst(mineNote.files, claims, mine), ...topicOverlapsAgainst(mineNote.topics ?? [], claims, mine), ...repoOverlapsAgainst(mineNote.repo_root, claims, mine)]
           : [];
         const repo_contention = groupRepoContention(claims);
-        return Response.json({ claims, overlaps_with_mine, repo_contention });
+        // TOPIC contention: every topic claimed by two or more live sessions, with who.
+        const topic_contention = groupTopicContention(claims);
+        return Response.json({ claims, overlaps_with_mine, repo_contention, topic_contention, semantic: semanticStatus() });
       }
       if (req.method === 'GET' && url.pathname === '/worknote/repo-active') {
         const now = Date.now();

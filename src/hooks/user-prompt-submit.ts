@@ -1,6 +1,7 @@
 import { readStdinJson, writeStdout, workerFetch, logHookError, logWorkerFailure, resolveProjectId, isMainModule } from './shared.ts';
 import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS, DEFAULT_WORKER_PORT } from '../shared/paths.ts';
 import type { EnvelopePayload } from '../shared/types.ts';
+import { parseHomeworkPrompt, homeworkFiledLine, type HomeworkItem } from '../worker/homework.ts';
 import { readTransition } from '../shared/worker-transition.ts';
 
 interface UserPromptSubmitPayload {
@@ -32,6 +33,23 @@ export async function main(options: UserPromptSubmitOptions = {}): Promise<void>
   }
   const prompt = payload.prompt ?? '';
   const timeoutMs = Number(process.env[ENV_HOOK_TIMEOUT_MS] ?? DEFAULT_HOOK_TIMEOUT_MS);
+
+  // HOMEWORK CAPTURE: `idea: …` / `todo: …` / `later: …` typed mid-task is parked on the captain right here, before
+  // the model spends a turn on it, and the model is told so in one line. The prompt still goes through (the user
+  // may want a word back); recall is skipped — the prompt is not a question about the codebase.
+  const homework = parseHomeworkPrompt(prompt);
+  if (homework) {
+    // 6 s, not the 1.5 s envelope budget: the write queues behind the writer thread while the observer ingests
+    // this very session (measured 2026-09-18: 2.35 s on a live worker, 20 ms idle). The user is filing an aside.
+    const filed = await workerFetch<{ item: HomeworkItem; open: number }>('/homework/add', { method: 'POST', body: { text: homework, by: payload.session_id ?? 'hook', project: resolveProjectId(payload.cwd) }, timeoutMs: 6_000 });
+    const line = filed.ok && filed.body ? homeworkFiledLine(filed.body.item) + ` (${filed.body.open} open)`
+      : '📝 The worker did not confirm filing this as homework in time — it may still have landed: todo_list() shows; if it is not there, say "noted" and todo_add it yourself.';
+    logWorkerFailure('UserPromptSubmit', '/homework/add', filed);
+    if (options.structuredContextJson) writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: options.contextEventName ?? 'UserPromptSubmit', additionalContext: line } }));
+    else { writeStdout(line); writeStdout('\n\n'); }
+    if (options.emitOriginalPrompt !== false) writeStdout(prompt);
+    return;
+  }
 
   const result = await workerFetch<EnvelopePayload>('/inject/context', {
     method: 'POST',

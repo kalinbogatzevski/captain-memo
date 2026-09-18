@@ -263,3 +263,47 @@ test('repoActiveHolders returns holders of the given root only', () => {
   expect(repoActiveHolders(notes, '/proj/erp').map((h) => h.session_id).sort()).toEqual(['a', 'b']);
   expect(repoActiveHolders(notes, '/nope')).toEqual([]);
 });
+
+// ─── TOPICS (2026-09-18, Kalin: "work claims must also set topics of what the session is working on") ────────
+import { normalizeTopics, topicOverlapsAgainst, groupTopicContention } from '../../src/worker/work-notes.ts';
+
+test('normalizeTopics: lowercase kebab tags, deduped, bounded to 5 × 40 chars, junk dropped', () => {
+  expect(normalizeTopics(['Fleet Keys', 'fleet-keys', ' Installer/Windows ', 'x'.repeat(60), '', 42 as never, 'ok_tag'])).toEqual(['fleet-keys', 'installer-windows', 'x'.repeat(40), 'ok-tag']);
+  expect(normalizeTopics(['a', 'b', 'c', 'd', 'e', 'f', 'g'])).toEqual(['a', 'b', 'c', 'd', 'e']);
+  expect(normalizeTopics(undefined)).toEqual([]);
+  expect(normalizeTopics('not-an-array' as never)).toEqual([]);
+});
+
+test('setWorkNote stores topics; a note without them has none (untitled work); sanitizeFleetNotes carries a sibling\'s', () => {
+  const kv = makeKv();
+  const n = setWorkNote(kv, { session_id: 's1', what: 'fixing the fleet key exchange', topics: ['Fleet Keys', 'federation'] }, NOW);
+  expect(n.topics).toEqual(['fleet-keys', 'federation']);
+  expect(JSON.parse(kv.map.get(WORKNOTE_PREFIX + 's1')!).topics).toEqual(['fleet-keys', 'federation']);
+  expect(setWorkNote(kv, { session_id: 's2', what: 'editing 3 files' }, NOW).topics).toBeUndefined();
+  const fleet = sanitizeFleetNotes([{ session_id: 'f1', agent: 'codex', what: 'w', files: [], ts: NOW, ttl_s: 600, captain: 'DANTE', topics: ['Fleet-Keys', 7, 'x'] }], NOW);
+  expect(fleet[0]!.topics).toEqual(['fleet-keys', 'x']);
+});
+
+test('topicOverlapsAgainst: an exact tag shared with another live claim is a kind:"topics" hit naming the shared tags', () => {
+  const others: WorkNote[] = [
+    { agent: 'codex', session_id: 'o1', what: 'installer', files: ['scripts/install.ps1'], ts: NOW, ttl_s: 600, topics: ['installer-windows', 'shim'] },
+    { agent: 'claude', session_id: 'o2', what: 'billing', files: ['billing/**'], ts: NOW, ttl_s: 600, topics: ['billing'] },
+    { agent: 'claude', session_id: 'me', what: 'mine', files: [], ts: NOW, ttl_s: 600, topics: ['shim'] },
+    { agent: 'gemini', session_id: 'o3', what: 'no topics', files: [], ts: NOW, ttl_s: 600 },
+  ];
+  const hits = topicOverlapsAgainst(['shim', 'fleet-keys'], others, 'me');
+  expect(hits).toHaveLength(1);
+  expect(hits[0]).toMatchObject({ session_id: 'o1', kind: 'topics', overlapping: ['shim'] });
+  expect(topicOverlapsAgainst([], others, 'me')).toEqual([]);
+});
+
+test('groupTopicContention: a topic held by two or more live sessions, fleet-wide, with the holders', () => {
+  const notes: WorkNote[] = [
+    { agent: 'claude', session_id: 'a', what: 'shim', files: [], ts: NOW, ttl_s: 600, topics: ['installer-windows', 'shim'] },
+    { agent: 'codex', session_id: 'b', what: 'ps1', files: [], ts: NOW, ttl_s: 600, captain: 'DANTE', topics: ['installer-windows'] },
+    { agent: 'gemini', session_id: 'c', what: 'billing', files: [], ts: NOW, ttl_s: 600, topics: ['billing'] },
+    { agent: 'claude', session_id: 'a', what: 'shim', files: [], ts: NOW, ttl_s: 600, topics: ['installer-windows'] },   // a duplicate row of the same session counts once
+  ];
+  const g = groupTopicContention(notes);
+  expect(g).toEqual([{ topic: 'installer-windows', holders: [{ agent: 'claude', session_id: 'a', what: 'shim' }, { agent: 'codex', session_id: 'b', captain: 'DANTE', what: 'ps1' }] }]);
+});

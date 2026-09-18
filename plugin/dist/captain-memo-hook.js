@@ -1123,6 +1123,17 @@ init_shared();
 init_shared();
 init_paths();
 
+// src/worker/homework.ts
+var HOMEWORK_DONE_KEEP_MS = 7 * 24 * 3600000;
+function parseHomeworkPrompt(prompt2) {
+  const m = /^\s*(?:idea|todo|homework|later|\u0438\u0434\u0435\u044F|\u0437\u0430 \u043F\u043E\u0441\u043B\u0435)\s*[:\-\u2014]\s*(\S[\s\S]*)$/i.exec(String(prompt2));
+  return m ? m[1].trim() : null;
+}
+function homeworkFiledLine(it) {
+  return `\uD83D\uDCDD Filed as homework #${it.id} on this captain (not for now): ${it.text.split(`
+`)[0].slice(0, 160)} \u2014 todo_list() shows the list; the user may just want a short "noted".`;
+}
+
 // src/shared/worker-transition.ts
 init_paths();
 import { mkdirSync as mkdirSync2, readFileSync, readdirSync, renameSync as renameSync2, statSync as statSync2, unlinkSync, writeFileSync } from "fs";
@@ -1214,6 +1225,23 @@ async function main(options = {}) {
   }
   const prompt2 = payload.prompt ?? "";
   const timeoutMs = Number(process.env[ENV_HOOK_TIMEOUT_MS] ?? DEFAULT_HOOK_TIMEOUT_MS);
+  const homework = parseHomeworkPrompt(prompt2);
+  if (homework) {
+    const filed = await workerFetch("/homework/add", { method: "POST", body: { text: homework, by: payload.session_id ?? "hook", project: resolveProjectId(payload.cwd) }, timeoutMs: 6000 });
+    const line = filed.ok && filed.body ? homeworkFiledLine(filed.body.item) + ` (${filed.body.open} open)` : '\uD83D\uDCDD The worker did not confirm filing this as homework in time \u2014 it may still have landed: todo_list() shows; if it is not there, say "noted" and todo_add it yourself.';
+    logWorkerFailure("UserPromptSubmit", "/homework/add", filed);
+    if (options.structuredContextJson)
+      writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: options.contextEventName ?? "UserPromptSubmit", additionalContext: line } }));
+    else {
+      writeStdout(line);
+      writeStdout(`
+
+`);
+    }
+    if (options.emitOriginalPrompt !== false)
+      writeStdout(prompt2);
+    return;
+  }
   const result = await workerFetch("/inject/context", {
     method: "POST",
     body: {
@@ -1285,7 +1313,7 @@ import { join as join14 } from "path";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.43.4",
+  version: "0.44.0",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -1622,7 +1650,7 @@ function fmtBytes(bytes) {
   }
   return `${size.toFixed(size >= 100 ? 0 : 1)} ${units[i]}`;
 }
-function formatBanner(stats) {
+function formatBanner(stats, homework = []) {
   const ver = stats.version ? ` v${stats.version}` : "";
   const ed = stats.edition === "federation" ? " (Federation)" : stats.edition === "oss" ? " (OSS)" : "";
   const lines = [
@@ -1641,6 +1669,15 @@ function formatBanner(stats) {
   }
   lines.push(`  Embedder   ${stats.embedder.model} @ ${host}`);
   lines.push(`  Retrieval  silent envelope on each prompt (top-5)`);
+  if (homework.length > 0) {
+    const shown = homework.slice(0, 3).map((h) => `#${h.id} ${h.text.split(`
+`)[0].slice(0, 70)}${h.claimed_by ? ` (claimed by ${h.claimed_by})` : ""}`);
+    lines.push(`  Homework   ${homework.length} open \u2014 todo_list() for all, todo_claim(id) before starting one`);
+    for (const s of shown)
+      lines.push(`             ${s}`);
+    if (homework.length > 3)
+      lines.push(`             \u2026 ${homework.length - 3} more`);
+  }
   const idx = stats.indexing;
   if (idx.status === "indexing") {
     lines.push(`  Indexing   ${fmtNum(idx.done)}/${fmtNum(idx.total)} (${idx.percent}%)`);
@@ -1858,10 +1895,12 @@ async function main2() {
   const withNotice = (banner) => notices ? `${notices}
 
 ${banner}` : banner;
+  const hw = stats.ok && stats.body ? await workerFetch("/homework/list?status=open", { method: "GET", timeoutMs: 1500 }) : null;
+  const homework = hw?.ok && hw.body ? hw.body.items : [];
   if (stats.ok && stats.body) {
     writeStdout(JSON.stringify({
       continue: true,
-      systemMessage: withNotice(formatBanner(stats.body))
+      systemMessage: withNotice(formatBanner(stats.body, homework))
     }));
   } else if (inTransition) {
     const willAnnounce = markSessionDegraded(payload.session_id ?? "");

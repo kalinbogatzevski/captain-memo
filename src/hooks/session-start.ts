@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { readStdinJson, writeStdout, workerFetch, logHookError, workerFailureMessage, isMainModule } from './shared.ts';
+import type { HomeworkItem } from '../worker/homework.ts';
 import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS, DEFAULT_WORKER_PORT, DATA_DIR } from '../shared/paths.ts';
 import { VERSION } from '../shared/version.ts';
 import { consumeUpgradeNotice, formatAutoUpdateBanner, formatRollbackBanner, writeMarker } from '../shared/self-update.ts';
@@ -54,7 +55,7 @@ function fmtBytes(bytes: number): string {
   return `${size.toFixed(size >= 100 ? 0 : 1)} ${units[i]}`;
 }
 
-function formatBanner(stats: StatsResponse): string {
+function formatBanner(stats: StatsResponse, homework: HomeworkItem[] = []): string {
   const ver = stats.version ? ` v${stats.version}` : '';
   // Build edition suffix — only for a worker that reports it (older workers omit it ⇒ no suffix).
   const ed = stats.edition === 'federation' ? ' (Federation)' : stats.edition === 'oss' ? ' (OSS)' : '';
@@ -82,6 +83,14 @@ function formatBanner(stats: StatsResponse): string {
   }
   lines.push(`  Embedder   ${stats.embedder.model} @ ${host}`);
   lines.push(`  Retrieval  silent envelope on each prompt (top-5)`);
+  // HOMEWORK: what earlier sessions parked for later (`idea: …` / todo_add). One line per item, at most three,
+  // so a new session knows what is waiting without being told to start on it.
+  if (homework.length > 0) {
+    const shown = homework.slice(0, 3).map((h) => `#${h.id} ${h.text.split('\n')[0]!.slice(0, 70)}${h.claimed_by ? ` (claimed by ${h.claimed_by})` : ''}`);
+    lines.push(`  Homework   ${homework.length} open — todo_list() for all, todo_claim(id) before starting one`);
+    for (const s of shown) lines.push(`             ${s}`);
+    if (homework.length > 3) lines.push(`             … ${homework.length - 3} more`);
+  }
 
   // Conditional lines — only show when there's something to flag
   const idx = stats.indexing;
@@ -380,6 +389,10 @@ export async function main(): Promise<void> {
   const notices = [autoUpdateNotice, upgradeNotice].filter(Boolean).join('\n\n');
   const withNotice = (banner: string): string => (notices ? `${notices}\n\n${banner}` : banner);
 
+  // Open homework for the banner — best-effort and quick; a worker that answered /stats answers this too.
+  const hw = stats.ok && stats.body ? await workerFetch<{ items: HomeworkItem[] }>('/homework/list?status=open', { method: 'GET', timeoutMs: 1500 }) : null;
+  const homework = hw?.ok && hw.body ? hw.body.items : [];
+
   if (stats.ok && stats.body) {
     // Claude Code's SessionStart hook protocol expects a JSON envelope on
     // stdout. The `systemMessage` field becomes the visible banner shown
@@ -387,7 +400,7 @@ export async function main(): Promise<void> {
     // text on stdout is silently discarded.
     writeStdout(JSON.stringify({
       continue: true,
-      systemMessage: withNotice(formatBanner(stats.body)),
+      systemMessage: withNotice(formatBanner(stats.body, homework)),
     }));
   } else if (inTransition) {
     // Unreachable, but the worker told us why before it went quiet: it is updating or still booting.

@@ -20,6 +20,10 @@ beforeAll(() => {
     port: 0,
     async fetch(req) {
       const url = new URL(req.url);
+      if (url.pathname === '/homework/add') {
+        lastReceived = await req.json();
+        return Response.json({ item: { id: '7', text: (lastReceived as { text: string }).text, topics: [], by: 'hook', created_at: 1 }, open: 3 });
+      }
       if (url.pathname === '/inject/context') {
         lastReceived = await req.json();
         return Response.json({
@@ -157,4 +161,23 @@ test('UserPromptSubmit — envelope conforms to spec §3 template', async () => 
     await worker.stop();
     rmSync(workDir, { recursive: true, force: true });
   }
+});
+
+test('UserPromptSubmit — `idea:` files homework instead of recalling, and tells the model in one line', async () => {
+  const input = JSON.stringify({ session_id: 's-1', cwd: '/tmp/p', prompt: 'idea: let the banner show what is parked' });
+  const res = await runHook(input);
+  expect(res.exitCode).toBe(0);
+  expect((lastReceived as { text: string }).text).toBe('let the banner show what is parked');   // the prefix is stripped
+  expect((lastReceived as { by: string }).by).toBe('s-1');                                       // the session is the filer
+  expect(res.stdout).toContain('📝 Filed as homework #7');
+  expect(res.stdout).toContain('(3 open)');
+  expect(res.stdout).not.toContain('<memory-context');                                           // no recall on an aside
+  expect(res.stdout.trim().endsWith('idea: let the banner show what is parked')).toBe(true);     // the prompt still goes through
+});
+
+test('UserPromptSubmit — a plain prompt is not homework', async () => {
+  const input = JSON.stringify({ session_id: 's-1', cwd: '/tmp/p', prompt: 'I had an idea: what does this function do?' });
+  const res = await runHook(input);
+  expect(res.stdout).toContain('<memory-context');
+  expect(res.stdout).not.toContain('Filed as homework');
 });

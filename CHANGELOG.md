@@ -7,6 +7,26 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.44.0] — 2026-09-18
+
+### Added
+
+- **Homework — a parking lot for ideas and todos.** "I have ideas and start typing them, but in the session we are
+  still working on something else." A prompt that starts with `idea:` / `todo:` / `homework:` / `later:` (`идея:` /
+  `за после:`) is filed by the prompt hook on this machine without spending the turn — the model sees
+  `📝 Filed as homework #N (not for now)` and answers "noted". Sessions file with `todo_add(text, topics, project)`,
+  see the open list with `todo_list()` (also in the session-start banner), take one with `todo_claim(id)` (every AI
+  session on this machine sees it as taken) and close it with `todo_done(id, note)`; done items stay listable a
+  week. Worker routes `/homework/add|list|claim|done`. Ported from the federation line (fed 0.61.x), where the open
+  list also reaches the fleet cockpit.
+- **Topics on work claims.** `work_set` takes `topics`: 1–5 short kebab tags for what the work is *about*
+  ("billing-rounding", "installer-windows"). The board flags two sessions on one topic whatever files they touch —
+  `overlaps[]` rows carry `kind` (topics | files | semantic | repo) and what is shared, `work_active` adds
+  `topic_contention` (every topic two or more sessions hold, with who), and both report `semantic` — whether the
+  meaning-match pass is working right now, and since when / why it is degraded (a failed embed used to leave the
+  board file-only for the rest of the outage with one warn line nobody read). Ported from fed 0.54.7.
+
+
 ## [0.43.4] — 2026-09-17
 
 ### Fixed

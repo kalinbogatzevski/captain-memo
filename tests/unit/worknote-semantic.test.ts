@@ -87,3 +87,18 @@ test('embedAndCache is fail-open: a throwing embedder never rejects and leaves t
   expect(getWorknoteVec('some intent')).toBeUndefined();                  // cold — degrades to file-only
   expect(warned.filter((w) => w.includes('warm embed failed')).length).toBe(1);   // ONE line per outage, not spam
 });
+
+// 2026-09-18: a failed embed silently turned the semantic pass into file-only for the rest of the outage. The
+// state is now readable, so work_active and the board can say "semantic overlap: degraded since <t>".
+test('semanticStatus: ok after a successful embed, degraded (with the failure time + reason) after a failed one, ok again on recovery', async () => {
+  const { semanticStatus } = await import('../../src/worker/worknote-semantic.ts');
+  await embedAndCache(['a'], async (t) => t.map(() => [1, 0]));
+  expect(semanticStatus()).toMatchObject({ enabled: true, degraded: false });
+  await embedAndCache(['b'], async () => { throw new Error('embedder 502'); });
+  const s = semanticStatus();
+  expect(s.degraded).toBe(true);
+  expect(s.reason).toContain('embedder 502');
+  expect(typeof s.since).toBe('number');
+  await embedAndCache(['c'], async (t) => t.map(() => [0, 1]));
+  expect(semanticStatus().degraded).toBe(false);
+});

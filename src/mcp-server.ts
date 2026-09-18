@@ -9,6 +9,7 @@ import { customAlphabet } from 'nanoid';
 import { DEFAULT_WORKER_PORT } from './shared/paths.ts';
 import { loadWorkerEnv } from './shared/worker-env.ts';
 import { VERSION } from './shared/version.ts';
+import { resolveProjectId } from './hooks/shared.ts';
 
 // Seed worker.env so a custom CAPTAIN_MEMO_WORKER_PORT set there is honored even
 // when Claude Code launches the MCP server without that var in its environment.
@@ -220,11 +221,12 @@ export const TOOLS = [
   {
     name: 'work_set',
     description:
-      'Coordination board: publish or refresh a transient claim that YOU are working on something right now, then immediately get back any OTHER active sessions whose files overlap yours. Call this before diving into a codebase area, and re-call periodically (it is a heartbeat that keeps the lease alive). Other AI sessions on this machine (Claude, Codex, Gemini, Cursor all share one captain) see your claim at once. Pass `agent` so the claim reads "codex on this captain", and `files` as the globs you will touch ("billing/**", "src/auth/login.ts"). Claims are advisory leases, not locks — they auto-expire (default 30 min) so a crashed session never blocks an area. Returns { session_id, overlaps[] }; if overlaps is non-empty, another session is in the same files — coordinate before editing.',
+      'Coordination board: publish or refresh a transient claim that YOU are working on something right now, then immediately get back any OTHER active sessions on this machine that overlap yours by TOPIC, by FILES, or by MEANING. Call this before diving into a codebase area, and re-call periodically (it is a heartbeat that keeps the lease alive). Other AI sessions on this machine (Claude, Codex, Gemini, Cursor all share one captain) see your claim at once. ALWAYS pass `topics`: 1–5 short tags for WHAT the work is about ("billing-rounding", "installer-windows") — two sessions on one topic are the collision that matters, whatever files they touch; a claim without topics is untitled work. Pass `agent` so the claim reads "codex on this captain", and `files` as the globs you will touch ("billing/**", "src/auth/login.ts"). Claims are advisory leases, not locks — they auto-expire (default 30 min) so a crashed session never blocks an area. Returns { session_id, topics, overlaps[], semantic }: each overlap says `kind` (topics | files | semantic | repo) and what is shared; `semantic.degraded` true means the meaning-match half is currently off (embedder down) — then topic and file overlap are all you have, say so if you rely on it.',
     inputSchema: {
       type: 'object',
       properties: {
         what: { type: 'string', description: 'Short description, e.g. "refactoring the billing module".' },
+        topics: { type: 'array', items: { type: 'string' }, description: 'What the work is ABOUT, 1–5 short kebab tags, e.g. ["billing-rounding", "invoice-pdf"]. Normalised to lowercase-kebab; "Fleet Keys" and "fleet-keys" are the same topic.' },
         files: { type: 'array', items: { type: 'string' }, description: 'Globs you will touch, e.g. ["billing/**"].' },
         agent: { type: 'string', description: 'Your AI label: claude | codex | gemini | cursor.' },
         ttl_s: { type: 'number', description: 'Lease seconds (default 1800, clamped 60..28800).' },
@@ -234,9 +236,29 @@ export const TOOLS = [
     },
   },
   {
+    name: 'todo_add',
+    description: 'File HOMEWORK on this captain: an idea or a task for later — not for now. Kept per captain (every AI session on this machine shares the list; every new session sees the open items at start), with a lifecycle open → claimed → done. Use it when the user says "idea:", "todo:", "later:", "note for later", or when you notice work that should happen but not in this session. NOT a memory (that is `remember`: a fact to recall) and NOT a work claim (that is `work_set`: what you are doing right now). Returns the item with its number (#12) and how many are open.',
+    inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'What to do, in one or two lines; the first line is the title.' }, topics: { type: 'array', items: { type: 'string' }, description: 'Optional 1–5 kebab tags, like work_set topics.' }, project: { type: 'string', description: 'Optional project it belongs to; defaults to this cwd\'s project.' } }, required: ['text'] },
+  },
+  {
+    name: 'todo_list',
+    description: 'The homework on this captain: open items (default), done ones (kept a week), or all — each with number, text, topics, who filed it, who claimed it. Read it at the start of a session when you have nothing else to do, or when the user asks "what is pending / what did I want to do".',
+    inputSchema: { type: 'object', properties: { status: { type: 'string', enum: ['open', 'done', 'all'] } } },
+  },
+  {
+    name: 'todo_claim',
+    description: 'Take a homework item before starting it, so every other session on this machine sees it as claimed by you and nobody else starts the same one. Re-claiming is allowed (it just updates who has it).',
+    inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'The item number, e.g. "12" or "#12".' } }, required: ['id'] },
+  },
+  {
+    name: 'todo_done',
+    description: 'Close a homework item, with a one-line note of what was done (or why it was dropped). Done items stay listable for a week.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' }, note: { type: 'string' } }, required: ['id'] },
+  },
+  {
     name: 'work_active',
     description:
-      'Coordination board: list the live work claims on this captain and, if you pass your session_id, which of them overlap your own claimed files. Call this to see who else is working where before you start.',
+      'Coordination board: list the live work claims on this captain with their topics, `topic_contention` (every topic two or more sessions hold right now, with who), and, if you pass your session_id, `overlaps_with_mine` by topic / files / repo. `semantic.degraded` true means meaning-match is off (embedder down) — the board is then topics + files only. Call this to see who else is working on what before you start.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -379,6 +401,23 @@ export async function dispatchTool(
       case 'work_set': {
         const a = (args ?? {}) as { session_id?: string };
         result = await workerPost(workerBase, '/worknote/set', { ...a, session_id: a.session_id || sessionId });
+        break;
+      }
+      case 'todo_add': {
+        const a = (args ?? {}) as { text?: string; topics?: string[]; project?: string };
+        result = await workerPost(workerBase, '/homework/add', { text: a.text, topics: a.topics, project: a.project ?? resolveProjectId(cwd()), by: sessionId });
+        break;
+      }
+      case 'todo_list': {
+        const a = (args ?? {}) as { status?: string };
+        const res = await fetch(`${workerBase}/homework/list?status=${encodeURIComponent(a.status ?? 'open')}`);
+        if (!res.ok) throw new Error(`worker /homework/list returned ${res.status}`);
+        result = await res.json();
+        break;
+      }
+      case 'todo_claim': case 'todo_done': {
+        const a = (args ?? {}) as { id?: string; note?: string };
+        result = await workerPost(workerBase, name === 'todo_claim' ? '/homework/claim' : '/homework/done', { id: String(a.id ?? '').replace(/^#/, ''), by: sessionId, ...(a.note ? { note: a.note } : {}) });
         break;
       }
       case 'work_active': {

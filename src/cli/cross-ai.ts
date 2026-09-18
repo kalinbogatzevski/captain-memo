@@ -573,7 +573,7 @@ export const CODEX_TOOL_NAMES = [
   'search_memory', 'remember', 'search_skill', 'list_skills', 'recommend_skills', 'load_skill',
   'list_capabilities', 'recommend_capabilities', 'get_capability',
   'search_observations', 'search_all', 'get_full',
-  'reindex', 'stats', 'status', 'work_set', 'work_active', 'work_clear',
+  'reindex', 'stats', 'status', 'work_set', 'todo_add', 'todo_list', 'todo_claim', 'todo_done', 'work_active', 'work_clear',
 ] as const;
 
 /** Pre-approve captain-memo's tools in codex's config.toml.
