@@ -37,4 +37,4 @@ Format `created_at_epoch` as a UTC date in the user's timezone. Pad `[type]` to 
 ## If empty
 
 Say something like:
-> "No observations yet. Captain Memo's `Stop` hook summarises sessions when they end — make sure you've actually closed (`/exit`) at least one Claude Code session since installing, and that `ANTHROPIC_API_KEY` or `claude-code` summarizer is configured. Run `captain-memo doctor` to verify."
+> "No observations yet. Captain Memo's `Stop` hook summarises sessions when they end — make sure you've actually closed (`/exit`) at least one Claude Code session since installing, and that a summarizer is configured — `captain-memo stats` shows which one is live, `captain-memo doctor` says why it is not."

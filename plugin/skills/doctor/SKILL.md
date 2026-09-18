@@ -17,13 +17,13 @@ captain-memo doctor
 
 …and pass the output back to the user verbatim (it's already nicely formatted with colour and remediation hints).
 
-If `captain-memo` isn't on PATH, fall back to:
+If `captain-memo` isn't on PATH, fall back to the shim the installer wrote:
 
 ```bash
-/home/kalin/projects/captain-memo/bin/captain-memo doctor
+~/.local/bin/captain-memo doctor    # user install; /usr/local/bin/captain-memo in --system mode
 ```
 
-…or whatever the actual install path is — find it via `readlink ~/.claude/plugins/captain-memo`.
+…or run `bun ./bin/captain-memo doctor` from the checkout — its path is the `installLocation` of `captain-memo` in `~/.claude/plugins/known_marketplaces.json`.
 
 ## On error
 

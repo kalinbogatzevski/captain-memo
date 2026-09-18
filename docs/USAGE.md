@@ -1,6 +1,6 @@
-# captain-memo Plan-1 — Manual Usage (Foundation)
+# captain-memo — Manual usage
 
-This is what's available after Plan 1 ships. Hooks (auto-injection) come in Plan 2; migration from claude-mem comes in Plan 3.
+The worker, the CLI and the MCP server driven by hand. Hooks, the observation pipeline and the claude-mem migration follow further down.
 
 ## Prerequisites
 
@@ -106,7 +106,18 @@ Expose to Claude Code via `.mcp.json`:
 }
 ```
 
-Skill-broker tools: `list_skills` browses the synchronized catalog, `recommend_skills` returns task-relevant descriptors, and `load_skill` retrieves the selected skill's complete advisory instructions. Capability tools (`list_capabilities`, `recommend_capabilities`, `get_capability`) advertise which runtime owns an installed plugin/extension so another AI can route work there. The remaining tools cover memory search, persistence, observations, reindexing, health, and work coordination.
+Skill-broker tools: `list_skills` browses the synchronized catalog, `recommend_skills` returns task-relevant descriptors, and `load_skill` retrieves the selected skill's complete advisory instructions. Capability tools (`list_capabilities`, `recommend_capabilities`, `get_capability`) advertise which runtime owns an installed plugin/extension so another AI can route work there. The remaining tools cover memory search, persistence, observations, reindexing, health, work coordination and homework.
+
+Work coordination is `work_set` / `work_active` / `work_clear`. Always pass `topics` to `work_set`: 1–5 short kebab tags for what the work is *about* (`billing-rounding`, `installer-windows`) — two sessions on one topic are flagged whatever files they touch. Each row in `overlaps[]` says its `kind` (`topics` | `files` | `semantic` | `repo`) and what is shared; `work_active` adds `topic_contention` (every topic two or more sessions hold, and who), and both report `semantic` — whether the meaning-match pass is working right now, and since when / why it is degraded.
+
+### Homework
+
+Ideas and todos parked for later, per captain — every AI session on this machine sees the same list. Not a memory (a memory is a fact) and not a work claim (a claim is now): an item has a lifecycle, open → claimed → done.
+
+- Type `idea: …`, `todo: …`, `homework: …` or `later: …` (`идея:` / `за после:`) at the start of a prompt and the prompt hook files it on this machine without spending the turn — the model sees `📝 Filed as homework #N on this captain (not for now): …` and answers "noted".
+- `todo_add(text, topics, project)` files one from a session; `todo_list(status)` shows what is `open` (default), `done` (kept a week) or `all`; `todo_claim(id)` takes one, so every other session on this machine sees it as taken; `todo_done(id, note)` closes it.
+- Every new session lists the open items in its session-start banner.
+- Worker routes: `POST /homework/add`, `GET /homework/list`, `POST /homework/claim`, `POST /homework/done`.
 
 ## Watch paths
 
@@ -118,20 +129,12 @@ Example:
 CAPTAIN_MEMO_WATCH_MEMORY="/home/me/.claude/memory/*.md" bun run worker:start
 ```
 
-## What's NOT in Plan 1
-
-- Auto-injection on user prompts (Plan 2)
-- Session observation pipeline (Plan 2)
-- Migration from claude-mem (Plan 3)
-- Optimization / duplicate detection (Plan 3)
-- Voyage install script (Plan 3)
-
 ---
 
-# captain-memo Plan-2 — Hooks + Observation Pipeline
+# Hooks + observation pipeline
 
-Plan 2 layers auto-injection hooks, the observation queue, and a configurable
-Haiku-class summarizer on top of the Plan-1 foundation.
+Auto-injection hooks, the observation queue, and a configurable Haiku-class summarizer
+on top of the foundation above.
 
 ## Summarizer — pick a provider
 
@@ -167,7 +170,7 @@ The summarizer compresses raw tool-use events into structured observations. Pick
 | `agy` | Shells out to `agy -p`, uses a plain **Google account** (Antigravity CLI) | **No Claude AND no ChatGPT subscription needed.** ~3–5 s/call — fastest agent CLI. Needs agy ≥ 1.1.1, logged in |
 | `claude-code` | Shells out to `claude -p`, uses your **Claude Code Max/Pro plan** | Zero setup, no API key |
 | `openai-compatible` | POSTs to any `/v1/chat/completions` endpoint you point it at | Local LLMs (Ollama, LM Studio, vLLM, llama.cpp), OpenAI, OpenRouter, Together, Groq, DeepSeek, Mistral, etc. |
-| `anthropic` (default) | Direct Anthropic SDK + `ANTHROPIC_API_KEY` | You already have Anthropic API billing |
+| `anthropic` | Direct Anthropic SDK + `ANTHROPIC_API_KEY` | You already have Anthropic API billing |
 
 ### Quick start — a plain Google account (no Claude, no ChatGPT, no API key)
 
@@ -249,10 +252,11 @@ bun run worker:start
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
+export CAPTAIN_MEMO_SUMMARIZER_PROVIDER=anthropic
 bun run worker:start
 ```
 
-(Default `CAPTAIN_MEMO_SUMMARIZER_PROVIDER=anthropic`, no other config needed.)
+(The default provider is `claude-oauth`; `anthropic` has to be named. No other config needed.)
 
 ## New prerequisites
 
@@ -265,13 +269,13 @@ bun run worker:start
 | `CAPTAIN_MEMO_SUMMARIZER_MODEL` | **provider-dependent** | Primary summarizer model. Defaults: `claude-haiku-4-5` for the API providers (`claude-oauth`, `anthropic`), the alias `haiku` for `claude-code`, and the `default` sentinel — "send no model flag, let the account choose" — for `codex` and `agy`. Set it to whatever model your endpoint serves (e.g. `gpt-4o-mini`, `qwen2.5:14b`) to pin one yourself. |
 | `CAPTAIN_MEMO_SUMMARIZER_FALLBACKS` | **provider-dependent** | Comma-separated fallback chain, tried in order on `model_not_found`; the first that responds is cached for the worker's lifetime. Defaults: `claude-haiku-4-5-20251001,claude-sonnet-5` for the API providers, and the `default` sentinel for the three agent CLIs — which is the floor under any model you pin, so a retired name can never leave the summarizer with nothing to call. |
 | `CAPTAIN_MEMO_HOOK_BUDGET_TOKENS` | `4000` | Hard cap on `<memory-context>` token budget. |
-| `CAPTAIN_MEMO_HOOK_TIMEOUT_MS` | `250` | UserPromptSubmit hard timeout. |
+| `CAPTAIN_MEMO_HOOK_TIMEOUT_MS` | `1500` | UserPromptSubmit hard timeout. |
 | `CAPTAIN_MEMO_AUTO_UPDATE` | `0` | `1` opts a **git-clone** install into autonomous self-update: on session start, fast-forward the checkout to the newest stable `vX.Y.Z` tag on `origin`, `bun install`, restart the worker. Fast-forward only; refuses a dirty tree / detached HEAD; ignores pre-release tags. No-op on a marketplace install. |
 | `CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS` | `21600000` (6h) | Minimum gap between auto-update checks (each does a `git fetch`), so it doesn't hit the network every session. |
 | `CAPTAIN_MEMO_OBSERVATION_BATCH_SIZE` | `20` | Rows pulled per processor tick. |
 | `CAPTAIN_MEMO_OBSERVATION_TICK_MS` | `5000` | Interval for the auto-tick processor. |
 
-> If neither `CAPTAIN_MEMO_SUMMARIZER_PROVIDER=claude-code` nor `ANTHROPIC_API_KEY` is set, the queue accepts events but `flush` returns 503 (observations stay queued; nothing is dropped).
+> If no summarizer can run (the configured provider is not logged in / has no key), the queue accepts events but `flush` returns 503 (observations stay queued; nothing is dropped). `captain-memo stats` shows which provider is live.
 
 ## Install hooks
 
@@ -286,7 +290,7 @@ captain-memo install-hooks --project
 The command is idempotent — running it twice doesn't duplicate entries.
 Foreign hook entries (from other tools) are preserved.
 
-## CLI extensions (Plan 2)
+## CLI extensions (hooks + observations)
 
 ```bash
 captain-memo config show              # Effective config + masked secrets
@@ -302,14 +306,14 @@ captain-memo install-hooks --project
 
 | Hook | Latency budget | Behavior on worker down |
 |---|---|---|
-| `UserPromptSubmit` | 250 ms p95 | No envelope; original prompt still passes through |
-| `SessionStart` | 250 ms p95 | Silent |
+| `UserPromptSubmit` | 1500 ms (`CAPTAIN_MEMO_HOOK_TIMEOUT_MS`) | No envelope; original prompt still passes through |
+| `SessionStart` | registered with a 60 s timeout; waits ≤15 s for a starting worker, ≤20 s for one that is updating or booting | Prints a banner: the degraded one, or — when the worker left a transition breadcrumb — "updating (vX → vY)" with a note that memory resumes by itself, no restart needed |
 | `PostToolUse` | 100 ms (fire-and-forget) | Event dropped |
 | `Stop` | 5 s drain | Queue persists for next session |
 
 ## Migrating from claude-mem
 
-Plan-3 ships a one-time, **read-only** migration command that imports your
+A one-time, **read-only** migration command imports your
 existing `~/.claude-mem/claude-mem.db` into the Captain Memo corpus. The
 source database is opened with `readonly: true` and is never modified or
 deleted — claude-mem keeps running side-by-side for as long as you want it to.
@@ -378,8 +382,3 @@ hooks are completely untouched by Captain Memo.
 Each migrated chunk carries `metadata.migrated_from = "claude-mem"` plus the
 original `observation_id` / `summary_id` for traceability.
 
-## What's NOT in Plan 2
-
-- `optimize` / `purge` / `forget` (Plan 3)
-- Retrieval-quality eval runner (Plan 3)
-- Local Voyage install script (Plan 3)

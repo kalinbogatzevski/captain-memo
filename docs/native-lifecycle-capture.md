@@ -42,6 +42,10 @@ there is no stable public hook reference to link yet.
   the user to review project hooks once in `/hooks`.
 - A CLI upgrade needs no migration command: re-run `captain-memo connect`. Codex and Gemini are
   capability-probed again; Kimi's version gate is re-evaluated.
+- Upgrading Captain Memo from a release before 0.43.3 on Windows: re-run `captain-memo connect` (or
+  the installer). Earlier versions wrote the Codex and Gemini hook commands starting with a quoted
+  `"bun"`, which PowerShell reads as a string expression, so every prompt logged `hook exited with
+  code 1`; connect rewrites the managed entries in place and leaves foreign hooks alone.
 - Older Captain Memo workers ignore the new hook provenance fields, while newer workers continue to
   accept the legacy Claude Code payload. The wire change is additive in both directions.
 

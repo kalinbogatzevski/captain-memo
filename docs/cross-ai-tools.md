@@ -39,7 +39,8 @@ It's two pieces per tool:
 
 1. **Register the MCP server** → the tool gets memory recall, `list_skills` / `recommend_skills` / `load_skill`,
    `list_capabilities` / `recommend_capabilities` / `get_capability`,
-   and the work-coordination tools `work_set`/`work_active`/`work_clear`. The MCP server is a
+   the work-coordination tools `work_set`/`work_active`/`work_clear`, and the homework tools
+   `todo_add`/`todo_list`/`todo_claim`/`todo_done`. The MCP server is a
    thin stdio bridge that talks to your running worker on `http://localhost:39888`, so every tool reuses
    the **same worker and corpus** — nothing is duplicated.
 2. **Install the skill** (`skills/captain-memo/SKILL.md`) into the tool's skills/rules directory → it

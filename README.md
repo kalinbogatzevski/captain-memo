@@ -45,7 +45,7 @@ So I sat down to build that "something different" for myself, and ended up with 
 - **Auto-discovered memory — every assistant, not just Claude.** `CAPTAIN_MEMO_WATCH_MEMORY=auto` (the install default) probes the machine and indexes whichever AI memory files actually exist: `~/.claude/CLAUDE.md`, per-project Claude memories, `~/.codex/`, `~/.gemini/`, `~/.cursor/rules/`, repo-level `AGENTS.md` / `CLAUDE.md` / `.github/copilot-instructions.md`. Each doc is tagged with the `tool` it came from. Composes with your own globs (`auto,/my/notes/*.md`). Credentials and session logs are structurally unindexable — every discovery glob must end in `.md`/`.mdc`, which is enforced by a test, not a blocklist.
 - **Virtual Skills — one synchronized skill repository for every AI.** Captain Memo mirrors the user-level `SKILL.md` files installed for Claude Code, Codex, Gemini, Cursor, opencode, Vibe, Kimi and more into its local SQLite corpus, preserving complete instructions, provenance, hashes and portability warnings. Discovery is **AUTO when `CAPTAIN_MEMO_WATCH_SKILLS` is missing**; set it to an explicitly empty value to opt out. Native files remain canonical and edits/deletions synchronize live. Humans can browse with `captain-memo skill list`; connected assistants use `list_skills`, `recommend_skills` and `load_skill`. Imported instructions remain advisory, and the existing backup/restore path carries the repository with the rest of Captain Memo.
 - **Virtual Capabilities — the fleet knows where work can actually run.** Captain Memo auto-discovers installed Gemini/Agy extensions plus Claude and Codex plugins, then stores a sanitized descriptor in the same SQLite corpus: name, description, version, operation names, interface names, and owning runtime. It never imports command bodies, executable configuration, environment values, or credentials. Use `captain-memo capability list`, `capability recommend`, or the `list_capabilities` / `recommend_capabilities` / `get_capability` MCP tools. A result says “delegate this to Gemini on this captain,” not “pretend this plugin runs in every CLI.” Missing `CAPTAIN_MEMO_WATCH_CAPABILITIES` means **AUTO**; explicitly empty opts out.
-- **Hybrid search.** Voyage embeddings (default) + SQLite FTS5 keyword index, fused by weighted cosine + BM25 scoring (RRF still available via the `legacy` rank profile), with a recency-aware re-rank on observations. Multilingual (BG/EN/etc.) — your non-English memory is searchable too.
+- **Hybrid search.** Voyage embeddings (default) + SQLite FTS5 keyword index, fused by weighted cosine + BM25 scoring (RRF still available via the `legacy` rank profile), with a recency-aware re-rank on observations. Multilingual (BG/EN/etc.) — your non-English memory is searchable too. The keyword half only sees the words that can select anything: stopwords and one- or two-letter tokens are dropped before the FTS5 query, and at most the 12 longest tokens go in — on a 191K-chunk corpus that cut the keyword leg from 2 s to about half a second with the same hits. The vector half is unchanged, so an all-stopword query still answers, but a bare two-letter identifier now matches only through the vector half.
 - **Six summarizer providers**, picked at install time — *three of them need no API key at all*:
   - `claude-oauth` *(default)* — direct Anthropic API using the OAuth token Claude Code already stored. No API key. ~700 ms/call. Just works on a Max plan.
   - `codex` — **`codex exec` on your ChatGPT Plus/Pro account. No API key, no Anthropic subscription needed.** The zero-key option if you don't have Claude Max. ~6–7 s/call (that's Codex booting its agent runtime, not inference — it's flat across the model ladder, so a small model saves quota, not time). Uses your account's own model by default (no slug to keep current). Runs on the background tick, so it never blocks a prompt. Requires `codex login`.
@@ -60,7 +60,8 @@ So I sat down to build that "something different" for myself, and ended up with 
   - `skip` — keyword-only retrieval (FTS5 only, no vectors)
 - **Auto-injected context.** A `<memory-context>` envelope is added to every user prompt in Claude Code and in native-hook-capable Codex, Gemini, and Kimi releases. The model sees relevant memory, skills, and prior session observations before it answers.
 - **Session observations.** Tool-use events from Claude Code and native-hook-capable Codex, Gemini, and Kimi sessions are captured immediately; transcript readers cover older CLIs plus Agy and opencode. Batched events are summarized into structured observations (type / title / facts / concepts) and indexed into the same hybrid search. Native and transcript paths deduplicate per session.
-- **Work-coordination board.** Before every file-touching tool call — the edit tools, and Bash/PowerShell commands that *write* (`sed -i`, `>`/`>>`, heredocs, `tee`, `Set-Content`) — a `PreToolUse` hook publishes a transient "I'm touching these files" claim to a shared board. Any other AI tool editing overlapping files — on the same captain, and across the fleet once you're federated — is flagged instantly: by file path, and by *meaning* (a semantic pass catches two agents working on the same thing in different files, which a plain glob match misses). Advisory only, never blocks an edit; claims are leases that auto-expire, so a crashed session never leaves a phantom claim behind.
+- **Work-coordination board.** Before every file-touching tool call — the edit tools, and Bash/PowerShell commands that *write* (`sed -i`, `>`/`>>`, heredocs, `tee`, `Set-Content`) — a `PreToolUse` hook publishes a transient "I'm touching these files" claim to a shared board. Any other AI tool editing overlapping files — on the same captain, and across the fleet once you're federated — is flagged instantly: by file path, by *topic* (a `work_set` claim carries 1–5 short tags for what the work is *about*, so two sessions on "billing-rounding" collide whatever files they touch), and by *meaning* (a semantic pass catches two agents working on the same thing in different files, which a plain glob match misses). Advisory only, never blocks an edit; claims are leases that auto-expire, so a crashed session never leaves a phantom claim behind.
+- **Homework.** Ideas arrive while a session is busy with something else. Type `idea: …` or `todo: …` at the start of a prompt and the hook files it on this machine without spending the turn — the model sees "filed as homework #12, not for now" and says "noted". Every new session lists what is open in its start banner; a session takes an item with `todo_claim` (so no other AI on the machine starts it too) and closes it with `todo_done`. Not a memory (a memory is a fact), not a work claim (a claim is now).
 - **Indefinite retention.** No 30-day cleanups. A project takes years; your memory should too.
 
 **One machine is free, forever.** Everything above runs on your own hardware — no account, no server, no key required for the zero-key paths. Nothing is time-limited, feature-gated, or held back. If you end up running agents across *several* machines and want them to share one memory, that's [Captain Fleet](https://fleet.ispcq.com), a separate commercial relay. It is not a trial and this is not a crippled edition; a single machine is the whole product for most people, including me on most days.
@@ -90,7 +91,9 @@ So I sat down to build that "something different" for myself, and ended up with 
 
 | If you choose | Extra requirement |
 |---|---|
-| **Claude Max via OAuth** *(recommended)* | A Claude Max subscription + `claude login` already done. No API key. |
+| **Claude Max via OAuth** | A Claude Max subscription + `claude login` already done. No API key. |
+| **ChatGPT Plus/Pro via Codex CLI** | `codex` on PATH + `codex login` already done. No API key. |
+| **Google account via Antigravity CLI** | `agy` ≥ 1.1.1 on PATH, logged in. No API key. |
 | **Anthropic API** | `ANTHROPIC_API_KEY=sk-ant-…` (paid per token) |
 | **Claude Code subprocess** | `claude` CLI on PATH; uses Max plan but adds 5–15 s per call vs OAuth |
 | **OpenAI / Ollama / OpenRouter** | Endpoint URL + optional API key |
@@ -124,11 +127,15 @@ After the wizard, **fully restart Claude Code** (quit the `claude` process, not 
 
 | Pick | When |
 |---|---|
-| **Claude Max via OAuth** *(recommended)* | You have a Claude Max subscription. Free, fast (~700 ms/call), no API key — Captain Memo reads the OAuth token Claude Code already stored. |
+| Claude Max via OAuth | You have a Claude Max subscription. Free, fast (~700 ms/call), no API key — Captain Memo reads the OAuth token Claude Code already stored. |
+| ChatGPT Plus/Pro via Codex CLI | You have a ChatGPT plan and `codex login` done. No API key; ~6–7 s/call, on the background tick. |
+| Google account via Antigravity CLI (`agy`) | You have a Google account and `agy` ≥ 1.1.1 logged in. No API key; ~3–5 s/call. |
 | Anthropic API | You want explicit per-token billing or don't have Max. |
 | Claude Code subprocess | OAuth not available; falls back to spawning `claude -p` per call (slower). |
 | OpenAI / Ollama / OpenRouter | You're routing to a different model fleet. |
 | Skip | Events queue but don't summarize (rare; you keep raw events for later). |
+
+There is no fixed recommendation here: the wizard checks which of Claude, Codex and agy is actually logged in on this machine and recommends the first one that is — each option says whether it is logged in here, and a headless install takes that pick. If none of the three is logged in, the interactive wizard says so and tells you to log in and restart the worker; a headless install falls back to Claude via OAuth.
 
 **Question 2 — Embedder** (turns text into vectors for semantic search):
 
@@ -145,7 +152,8 @@ If you pick Voyage hosted and don't have your API key handy, leave it blank — 
 
 | Pick | When |
 |---|---|
-| **All Claude project memories** *(recommended)* | Index every project's `~/.claude/projects/*/memory/*.md`. |
+| **Auto-detect every installed assistant's memory** *(recommended)* | Claude, Codex, Gemini, Cursor, Copilot, AGENTS.md — whatever exists on this machine (`CAPTAIN_MEMO_WATCH_MEMORY=auto`). |
+| All Claude project memories | Index every project's `~/.claude/projects/*/memory/*.md`. |
 | User-global only | Just `~/.claude/memory/*.md`. |
 | Custom paths | You keep memory files elsewhere — the wizard prompts for comma-separated globs. |
 | Skip | No file watching; observations only. |
@@ -177,11 +185,15 @@ The plugin only ever talks to a worker on **localhost** (`CAPTAIN_MEMO_WORKER_PO
 claude plugin update captain-memo@captain-memo
 ```
 
-Use the **fully-qualified id** (`captain-memo@captain-memo`). The simplest upgrade is to **re-run `captain-memo install`** — it refreshes Claude Code's plugin cache for you. (A `directory`-source marketplace is snapshotted at *add* time, so a bare `claude plugin marketplace add` is a no-op once it exists; the installer does `marketplace remove`→`add` to force a fresh copy of the current hooks + bundle.) To refresh by hand instead: `claude plugin marketplace remove captain-memo` then `claude plugin marketplace add <path>`. A GitHub marketplace re-fetches on its own.
+Use the **fully-qualified id** (`captain-memo@captain-memo`). Re-running **`captain-memo install`** always works too — it refreshes Claude Code's plugin cache for you. (A `directory`-source marketplace is snapshotted at *add* time, so a bare `claude plugin marketplace add` is a no-op once it exists; the installer does `marketplace remove`→`add` to force a fresh copy of the current hooks + bundle.) To refresh by hand instead: `claude plugin marketplace remove captain-memo` then `claude plugin marketplace add <path>`. A GitHub marketplace re-fetches on its own.
 
-**Auto-updates.** Install the plugin from the **GitHub marketplace** (`claude plugin marketplace add kalinbogatzevski/captain-memo`) and Claude Code re-fetches new versions on its own — **no git required**. When a newer version goes live, Captain Memo's SessionStart hook self-heals the worker to it and shows a one-time **`⚓ Captain Memo self-upgraded: vX → vY`** banner. It only ever touches the plugin + worker process — **never** your `worker.env`, config, or corpus. Opt out of the auto worker-restart with `CAPTAIN_MEMO_DISABLE_SELF_HEAL=1`. (The local-clone full install is a `directory`-source snapshot Claude Code doesn't auto-refetch, so there you upgrade by re-running `captain-memo install`.)
+After a `git pull` (or the opt-in auto-update below) you no longer have to re-run `captain-memo install` to get the new hooks into Claude Code: on the next session start the hook compares the cached plugin's version with the checkout and re-snapshots the cache if they differ. Only a `directory` marketplace pointing at this checkout qualifies — a GitHub-marketplace install already refetches on its own. `captain-memo doctor` shows `plugin cache version` if the two ever drift, and `live plugin version` names any running session that is still on the old copy.
+
+**Auto-updates.** Install the plugin from the **GitHub marketplace** (`claude plugin marketplace add kalinbogatzevski/captain-memo`) and Claude Code re-fetches new versions on its own — **no git required**. When a newer version goes live, Captain Memo's SessionStart hook self-heals the worker to it and shows a one-time **`⚓ Captain Memo self-upgraded: vX → vY`** banner. It only ever touches the plugin + worker process — **never** your `worker.env`, config, or corpus. Opt out of the auto worker-restart with `CAPTAIN_MEMO_DISABLE_SELF_HEAL=1`. (The local-clone full install is a `directory`-source snapshot Claude Code doesn't auto-refetch, so there you upgrade with `git pull` — the cache follows on the next session start, as above — or by re-running `captain-memo install`.)
 
 **Auto-updates for a git-clone install (opt-in).** A local `git clone` install isn't refreshed by Claude Code, so it normally stays put until you `git pull`. Set **`CAPTAIN_MEMO_AUTO_UPDATE=1`** and Captain Memo will, on session start, **fast-forward your checkout to the newest stable `vX.Y.Z` tag** on its own `origin`, run `bun install`, restart the worker, and show a **`⚓ Captain Memo auto-updated: vX → vY`** banner. Safety rails: it **only** fast-forwards (never a merge/rebase), **refuses a dirty work-tree or detached HEAD** (never clobbers local edits), ignores pre-release tags, and is throttled to one `git fetch` per 6h (`CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS`). Opt-in only — off by default, because auto-pulling a developer's checkout should be a choice. It never runs on a marketplace install (those already self-update above).
+
+**While the worker is between versions, the hook waits instead of killing it.** A worker that is restarting onto a new version, or is still booting, leaves a breadcrumb at `~/.captain-memo/.worker-transition` (120 s TTL); the session-start hook reads it and waits up to 20 s (`CAPTAIN_MEMO_SESSION_START_TRANSITION_WAIT_MS`) instead of reclaiming the port and reporting "worker unreachable" — which is what used to make people restart Claude for nothing. The banner then reads `⚓ Captain Memo — updating (v0.40.2 → v0.41.0)` and says memory resumes by itself, no need to restart Claude; the Stop hook says once when memory is back. A fresh breadcrumb means wait, not kill; a stale one (a crash loop, a clock jump) ages out after 120 s and self-heal runs as before.
 
 ### macOS
 
@@ -239,6 +251,7 @@ Requirements and behavior on the native path:
 - **Run `bun install` on the Windows x64 machine.** `sqlite-vec` ships its native loadable extension per-platform; the x64 install pulls in `vec0.dll`. A `node_modules` copied from Linux/macOS lacks the DLL and the worker can't load vectors. **`win32-arm64` is unsupported** — on ARM64 hardware, run x64 Bun under emulation.
 - **Hosted Voyage is the default embedder** — pure HTTPS, nothing local to install or misconfigure. The local Python sidecar (`local-sidecar`) is still available on Windows via a PowerShell installer if you want offline embeddings.
 - **Supervision is a per-user Scheduled Task**, not systemd. The wizard registers `captain-memo-worker` to start at logon with restart-on-failure — no admin / UAC prompt. Config lives at `%APPDATA%\captain-memo\worker.env`.
+- **All six summarizers work on the native path**, including the agent CLIs (`codex`, `agy`, `claude -p`) — the wizard checks which one is logged in and recommends it. Upgrading from a release before 0.43.3? Re-run `captain-memo connect` so the Codex and Gemini hooks are rewritten in a form PowerShell runs — see [Native lifecycle capture](docs/native-lifecycle-capture.md#failure-and-upgrade-behavior).
 
 After the wizard, **fully restart Claude Code** (run it on Windows too) for the plugin to load.
 
@@ -280,7 +293,7 @@ The Windows CLI shim runs the TypeScript source directly (`captain-memo.cmd` →
 
 Captain then checks for a newer release on session start (≤ once per 6 h), fast-forwards your checkout, `bun install`s, restarts the worker, and reports the upgrade — rolling back automatically if the new code fails to start. It only ever touches a **clean** checkout, so it never clobbers local edits. (Set it as a real environment variable, **not** in `worker.env` — the session-start hook that runs it reads the process environment.)
 
-Re-running `bun .\bin\captain-memo install` also **refreshes the plugin cache** for you (it does `marketplace remove`→`add`), so the cached hooks and MCP bundle always match your checkout — there's no separate `claude plugin update` step to remember. `captain-memo doctor` should then report all green. The `/stats` version (`captain-memo stats`) updates once the worker task has restarted, since the worker reads its version at process start.
+Re-running `bun .\bin\captain-memo install` also **refreshes the plugin cache** for you (it does `marketplace remove`→`add`), so the cached hooks and MCP bundle always match your checkout — there's no separate `claude plugin update` step to remember. The next session start does the same on its own whenever the cached plugin's version differs from the checkout, so after a plain `git pull` the cache follows without re-running the installer. `captain-memo doctor` should then report all green. The `/stats` version (`captain-memo stats`) updates once the worker task has restarted, since the worker reads its version at process start.
 
 If Claude Code is in a restrictive permission mode (e.g. "don't ask") and the plugin's tools get auto-denied, allowlist them once in `%USERPROFILE%\.claude\settings.json` — `captain-memo install` (v0.2.7+) writes this for you, and `--no-grant-permissions` opts out:
 
@@ -306,9 +319,13 @@ This is the simplest route for local-sidecar-heavy users: everything stays on th
 captain-memo doctor              # health check across all components
 captain-memo restart             # restart the worker (reload config / recover; --force to hard-stop)
 captain-memo connect             # re-wire the other AI tools to this worker (--list to see them)
-captain-memo uninstall           # clean removal (--purge for data too)
+captain-memo uninstall           # clean removal (keeps worker.env as worker.env.bak; --purge for data too)
 captain-memo uninstall --system  # for the system-mode install
 ```
+
+`captain-memo restart` only says ✓ once a *new* worker process is answering — it compares the worker's start stamp before and after, so it cannot confirm the very process it was about to kill; an unconfirmed restart is reported as unconfirmed, never as success.
+
+`uninstall` moves `worker.env` (API keys, summarizer, embedder, anything you added by hand) to `worker.env.bak` instead of deleting it, and the next `captain-memo install` restores it when the live file is missing — so a reinstall comes back with your keys pre-filled (a headless `install --yes` asks nothing). Delete the `.bak` for a clean slate. The installer also copies the file aside before every rewrite, with the same owner-only lock as the live file (0600; icacls on Windows).
 
 ### Backup & restore
 
@@ -363,7 +380,7 @@ After install + a full Claude Code restart, the plugin exposes two layers to eve
 /captain-memo:doctor              # health probe inline in chat
 ```
 
-### 18 MCP tools the model calls automatically
+### 22 MCP tools the model calls automatically
 
 These fire when the model decides retrieval would help your prompt — no slash command required. List them anytime with `/mcp`:
 
@@ -384,8 +401,12 @@ These fire when the model decides retrieval would help your prompt — no slash 
 | `reindex` | Trigger re-embed |
 | `stats` | Corpus stats |
 | `status` | Worker health |
-| `work_set` | Coordination board: publish/refresh "I'm working on X, touching these files"; returns any overlapping claims |
-| `work_active` | Coordination board: list live claims, and which overlap yours |
+| `todo_add` | Homework: park an idea or a task for later (open → claimed → done); `idea: …` / `todo: …` at the start of a prompt does the same through the hook |
+| `todo_list` | Homework: what is open (default), done (kept a week), or all |
+| `todo_claim` | Homework: take an item so no other session on this machine starts it too |
+| `todo_done` | Homework: close an item with a one-line note |
+| `work_set` | Coordination board: publish/refresh "I'm working on X — topics, files"; returns overlapping claims by topic, files or meaning |
+| `work_active` | Coordination board: list live claims with their topics, which topics two sessions hold, and which claims overlap yours |
 | `work_clear` | Coordination board: drop your claim early (task done) |
 
 > **Project milestone:** the synchronized skill repository is Captain Memo's first feature built
@@ -405,6 +426,7 @@ captain-memo consolidate         # run a consolidation pass now, skipping the id
 captain-memo theme               # list themes written by consolidation (theme undo <id> to reverse)
 captain-memo reindex             # cheap sha-diff reindex (or --force to re-embed)
 captain-memo remember            # persist a curated memory entry (--type, --name, --slug; body via --body/--file/stdin)
+captain-memo forget              # delete a memory and de-index it (<doc_id|path>, --dry-run, --yes; confirms by default)
 captain-memo observation list    # recent captured observations
 captain-memo observation flush   # force-drain the queue
 captain-memo config show         # effective config (secrets masked)
@@ -517,7 +539,7 @@ sqlite3 ~/.captain-memo/observations.db \
    LIMIT 20;"
 ```
 
-The signal feeds future importance / decay scoring and "Dreaming" clustering — clusters of observations you actually keep drilling into, not just clusters that happen to share vocabulary.
+The signal feeds importance / decay scoring and "Dreaming" clustering — clusters of observations you actually keep drilling into, not just clusters that happen to share vocabulary.
 
 ### Local Dreaming
 
@@ -709,8 +731,8 @@ Schema migrations:
 |---|---|
 | **Worker** (`:39888`) | Long-lived HTTP daemon. Owns the SQLite + sqlite-vec stores, file watcher, observation queue, summarizer + embedder wiring. |
 | **Embedder** | Pluggable: hosted Voyage API (default), local voyage-4-nano sidecar (`:8124`), or any OpenAI-compatible `/v1/embeddings` endpoint. |
-| **Summarizer** | Pluggable: Claude Max via OAuth (default, no API key), Anthropic API, `claude -p` subprocess, or any OpenAI-compatible `/v1/chat/completions`. |
-| **MCP server** (stdio) | Exposes 18 tools, including virtual skills plus `list_capabilities` / `recommend_capabilities` / `get_capability` for runtime-aware plugin routing. |
+| **Summarizer** | Pluggable: Claude Max via OAuth (default, no API key), Codex CLI (ChatGPT plan), Antigravity CLI `agy` (Google account), Anthropic API, `claude -p` subprocess, or any OpenAI-compatible `/v1/chat/completions`. |
+| **MCP server** (stdio) | Exposes 22 tools, including virtual skills plus `list_capabilities` / `recommend_capabilities` / `get_capability` for runtime-aware plugin routing. |
 | **Six hooks** | `SessionStart` (corpus banner), `UserPromptSubmit` (inject memory envelope, ≤1.5 s budget), `PreToolUse` (work-board claim + overlap/git warning, advisory only), `PostToolUse` (queue tool-use events), `Stop` (drain → summarize → index), `PreCompact` (capture before context compaction). |
 | **CLI** | The commands above. |
 
@@ -728,10 +750,10 @@ Detailed docs: [`docs/USAGE.md`](docs/USAGE.md).
 | 2 | Hooks + observation pipeline + 4-provider summarizer + 4-provider embedder | Shipped |
 | 3 — Layer A | claude-mem migration (`inspect-claude-mem`, `migrate-from-claude-mem`) | Shipped |
 | 3 — Layer B | OAuth-direct summarizer (no API key needed) · recency decay · install wizard fast-path defaults | Shipped |
-| 3 — Layers C-G | observation dedup + supersede (`dedup`, `supersede`) · retrieval-quality eval (`eval seed` / `eval run`) | Shipped |
-| 3 — remaining | MEMORY.md transformation · `forget` · doctor enhancements | Planned |
+| 3 — Layers C-G | observation dedup + supersede (`dedup`, `supersede`) · retrieval-quality eval (`eval seed` / `eval run`) · `forget` · doctor staleness checks (`plugin cache version`, `live plugin version`) | Shipped |
+| 3 — remaining | MEMORY.md transformation | Planned |
 
-1072 tests pass across 160 files. Typecheck clean. Bun ≥ 1.1.14, TypeScript strict.
+Typecheck clean. Bun ≥ 1.1.14, TypeScript strict.
 
 ---
 

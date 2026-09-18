@@ -5,7 +5,7 @@ change it.
 
 ## Read this first: you need none of these
 
-Captain Memo ships with working defaults for all 142 settings. A fresh install indexes, recalls,
+Captain Memo ships with a working default for every setting. A fresh install indexes, recalls,
 summarises, dedupes and decays without a single line in `worker.env`.
 
 This document exists for the operator who wants to *change* something, not for the operator who
@@ -161,6 +161,7 @@ one recall re-floats it. Rows that were ever drilled into, or explicitly anchore
 | `CAPTAIN_MEMO_PROJECT_ID` | `default` | Namespaces the corpus. |
 | `CAPTAIN_MEMO_REMEMBER_DIR` | `~/.claude/memory` | Where curated memories are written. |
 | `CAPTAIN_MEMO_TRANSCRIPTS_DIR` | `~/.claude/projects` | Where native session transcripts are read. |
+| `CAPTAIN_MEMO_CLAUDE_PROJECTS_DIR` | `~/.claude/projects` | Where a cwd-bearing `remember` writes per-project memory files. Same shape as `CAPTAIN_MEMO_CONFIG_DIR`: the test suite sets it to stay out of the real corpus; production never needs it. |
 | `CAPTAIN_MEMO_WATCH_MEMORY` | unset | Glob of markdown files to index as the memory channel. |
 | `CAPTAIN_MEMO_WATCH_SKILLS` | `auto` | Skill globs to index. Missing auto-discovers installed AI skills; explicitly empty opts out. |
 
@@ -223,8 +224,8 @@ Read by `services/embed/`, not by the worker. Set these where the service starts
 | Setting | Default | Notes |
 |---|---|---|
 | `CAPTAIN_MEMO_SUMMARIZER_PROVIDER` | `claude-oauth` | Uses your existing Claude login, no API key. |
-| `CAPTAIN_MEMO_SUMMARIZER_MODEL` | `claude-haiku-4-5` | |
-| `CAPTAIN_MEMO_SUMMARIZER_FALLBACKS` | `claude-haiku-4-6,haiku` | Tried in order when the primary fails. |
+| `CAPTAIN_MEMO_SUMMARIZER_MODEL` | provider-dependent | `claude-haiku-4-5` for `claude-oauth` / `anthropic` / `openai-compatible`; the alias `haiku` for `claude-code` (the CLI resolves it to the current release); the `default` sentinel — send no model, let the account choose — for `codex` and `agy`. |
+| `CAPTAIN_MEMO_SUMMARIZER_FALLBACKS` | provider-dependent | Tried in order on `model_not_found`. `claude-haiku-4-5-20251001,claude-sonnet-5` for the API providers; `default` for the three agent CLIs — the floor under any model you pin, so a retired name never leaves the summarizer with nothing to call. |
 | `CAPTAIN_MEMO_SUMMARIZER_TIMEOUT_MS` | `60000` | |
 
 ### Hooks
@@ -237,6 +238,7 @@ Read by `services/embed/`, not by the worker. Set these where the service starts
 | `CAPTAIN_MEMO_HOOK_EVENT` | unset | Set by the dispatcher; not an operator setting. |
 | `CAPTAIN_MEMO_SESSION_START_TIMEOUT_MS` | `1500` | |
 | `CAPTAIN_MEMO_SESSION_START_WAIT_HEALTHY_MS` | `15000` | How long session-start waits for a starting worker. |
+| `CAPTAIN_MEMO_SESSION_START_TRANSITION_WAIT_MS` | `20000` | How long session-start waits for a worker that left a transition breadcrumb (`~/.captain-memo/.worker-transition`: updating or booting) before it reports the worker as still in transition and skips self-heal. |
 | `CAPTAIN_MEMO_PRE_TOOL_USE_TIMEOUT_MS` | `1500` | |
 | `CAPTAIN_MEMO_POST_TOOL_USE_TIMEOUT_MS` | `1000` | |
 | `CAPTAIN_MEMO_PRE_COMPACT_TIMEOUT_MS` | `5000` | Larger: compaction is the one hook worth waiting for. |
@@ -277,6 +279,11 @@ avoid duplicate observations. No extra environment setting is required.
 
 Defaults shown are for the `v2` rank profile. `CAPTAIN_MEMO_RANK_PROFILE` selects the base set;
 every value below can be overridden individually.
+
+The keyword half only sees the words that can select anything: stopwords and one- or two-letter
+tokens are dropped before the FTS5 query, and at most the 12 longest tokens go in (a constant,
+`KEYWORD_MAX_TOKENS` in `meta.ts`, not a setting). The vector half is unchanged, so an all-stopword
+query still answers; a bare two-letter identifier matches only through the vector half.
 
 | Setting | Default (v2) | Notes |
 |---|---|---|

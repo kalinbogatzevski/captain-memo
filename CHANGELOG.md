@@ -122,8 +122,9 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
   pre-restart stamp is captured before anything is touched, so the poll can require a strictly newer
   one. With nothing running beforehand there is no old instance to confuse, so a plain health answer
   still counts and a warming-up `/stats` does not block it. An unconfirmed restart is now reported
-  as unconfirmed instead of as success, and Windows gets a 30s window instead of 8s because the
-  detached stop→drain→start genuinely needs it.
+  as unconfirmed instead of as success. (Corrected 2026-09-18: this line used to promise a 30 s
+  window on Windows; that belongs to the federation line's detached relauncher — here the restart is
+  synchronous on every platform and the window is 8 s.)
 
 
 ## [0.42.1] — 2026-09-11
