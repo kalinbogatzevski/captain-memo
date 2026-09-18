@@ -161,7 +161,7 @@ test('UserPromptSubmit — envelope conforms to spec §3 template', async () => 
     await worker.stop();
     rmSync(workDir, { recursive: true, force: true });
   }
-});
+}, 20_000);   // boots a real worker + spawns the hook: ~5.3 s on the dev box, over the 5 s default (CI runs with 30 s)
 
 test('UserPromptSubmit — `idea:` files homework instead of recalling, and tells the model in one line', async () => {
   const input = JSON.stringify({ session_id: 's-1', cwd: '/tmp/p', prompt: 'idea: let the banner show what is parked' });
