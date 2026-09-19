@@ -455,8 +455,22 @@ test('gooseConfigPath — prefers a candidate that already exists over the platf
 let home: string;
 let skillSource: string;
 
+// The claude-desktop and goose adapters resolve their config dir from process.env (APPDATA,
+// LOCALAPPDATA, XDG_CONFIG_HOME, GOOSE_PATH_ROOT), NOT from the injected `home` — that is how a
+// real install is found. So every test in this file pins those under the temp home: an auto-detect
+// run (no `only`) on a box with Claude Desktop or goose installed would otherwise detect the REAL
+// install and write `captain-memo` into the developer's live config (found 2026-09-19 on Windows,
+// where %APPDATA%\Claude exists on any machine running Claude Desktop).
+const PINNED_ENV = ['APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'GOOSE_PATH_ROOT'] as const;
+let savedEnv: Partial<Record<(typeof PINNED_ENV)[number], string | undefined>>;
+
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'captain-memo-crossai-'));
+  savedEnv = Object.fromEntries(PINNED_ENV.map((k) => [k, process.env[k]]));
+  process.env.APPDATA = join(home, 'AppData', 'Roaming');
+  process.env.LOCALAPPDATA = join(home, 'AppData', 'Local');
+  delete process.env.XDG_CONFIG_HOME;
+  delete process.env.GOOSE_PATH_ROOT;
   // Make cursor "detected".
   mkdirSync(join(home, '.cursor'), { recursive: true });
   // A real skill source to copy.
@@ -467,6 +481,16 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(home, { recursive: true, force: true });
+  for (const k of PINNED_ENV) { if (savedEnv[k] === undefined) delete process.env[k]; else process.env[k] = savedEnv[k]; }
+});
+
+test('connectCrossAi — auto-detect (no `only`) can only ever see config dirs under the temp home', () => {
+  // The guard for the whole file: with these pinned, a Claude Desktop or goose installed on the
+  // machine running the suite is invisible to auto-detect, so no test here can touch its config.
+  expect(process.env.APPDATA!.startsWith(home)).toBe(true);
+  expect(process.env.LOCALAPPDATA!.startsWith(home)).toBe(true);
+  expect(process.env.XDG_CONFIG_HOME).toBeUndefined();
+  expect(process.env.GOOSE_PATH_ROOT).toBeUndefined();
 });
 
 test('connectCrossAi — only:[cursor] wires mcp.json + copies the skill', () => {
