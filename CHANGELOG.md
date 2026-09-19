@@ -7,6 +7,23 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.44.2] — 2026-09-19
+
+### Fixed
+
+- **`captain-memo restart` on a large corpus no longer reports a false failure.** The only identity the command
+  could poll was `/stats` → `worker.started_at_epoch`, and `/stats` answers 503 while the writer is buried in the
+  startup indexing burst; on a big corpus the 8 s cap expired before the new worker had even bound the port
+  (9 s from `Started` to `listening` on 197k chunks), so every restart printed "did not come back" over a
+  restart that had worked. `/health` now carries `instance` (the main thread's boot epoch), answered locally
+  and present even on a 503 while warming; the poll reads that first, falls back to `/stats` for a worker
+  predating the field, and is capped at 30 s (a cap, not a wait). The command now says which it saw —
+  "✓ worker is healthy" or "✓ worker restarted … still warming up".
+- **The cross-ai test suite could rewrite the real Claude Desktop config of whoever ran it.** Auto-detect
+  tests (no `only`) ran outside the block that fakes `%APPDATA%`, and the claude-desktop and goose adapters
+  resolve their config dir from `APPDATA` / `LOCALAPPDATA` / `XDG_CONFIG_HOME` / `GOOSE_PATH_ROOT`, not the
+  injected `home`. The file-level fixture now pins all four under the temp home and a guard test asserts it.
+
 ## [0.44.1] — 2026-09-18
 
 ### Changed

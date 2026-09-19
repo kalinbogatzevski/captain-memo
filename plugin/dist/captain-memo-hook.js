@@ -1,16 +1,30 @@
 #!/usr/bin/env bun
 // @bun
 var __defProp = Object.defineProperty;
+var __returnValue = (v) => v;
+function __exportSetter(name, newValue) {
+  this[name] = __returnValue.bind(null, newValue);
+}
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, {
       get: all[name],
       enumerable: true,
       configurable: true,
-      set: (newValue) => all[name] = () => newValue
+      set: __exportSetter.bind(all, name)
     });
 };
-var __esm = (fn, res) => () => (fn && (res = fn(fn = 0)), res);
+var __esm = (fn, res, err) => () => {
+  if (fn)
+    try {
+      res = fn(fn = 0);
+    } catch (e) {
+      err = [e];
+    }
+  if (err)
+    throw err[0];
+  return res;
+};
 
 // src/shared/paths.ts
 import { homedir } from "os";
@@ -160,13 +174,6 @@ var init_shared = __esm(() => {
 });
 
 // src/shared/worker-heal-lock.ts
-var exports_worker_heal_lock = {};
-__export(exports_worker_heal_lock, {
-  releaseHealLock: () => releaseHealLock,
-  acquireHealLock: () => acquireHealLock,
-  HEAL_LOCK_TTL_MS: () => HEAL_LOCK_TTL_MS,
-  HEAL_LOCK_PATH: () => HEAL_LOCK_PATH
-});
 import { openSync, closeSync, readFileSync as readFileSync2, unlinkSync as unlinkSync2, writeSync } from "fs";
 import { join as join4 } from "path";
 function acquireHealLock(lockPath = HEAL_LOCK_PATH, now = Date.now()) {
@@ -202,12 +209,6 @@ var init_worker_heal_lock = __esm(() => {
 });
 
 // src/shared/worker-health-probe.ts
-var exports_worker_health_probe = {};
-__export(exports_worker_health_probe, {
-  readWorkerInstance: () => readWorkerInstance,
-  probeHealthyWithRetries: () => probeHealthyWithRetries,
-  probeHealthOnce: () => probeHealthOnce
-});
 async function probeHealthOnce(port, timeoutMs = 3000) {
   const ctl = new AbortController;
   const t = setTimeout(() => ctl.abort(), timeoutMs);
@@ -219,22 +220,6 @@ async function probeHealthOnce(port, timeoutMs = 3000) {
     return body?.healthy === true;
   } catch {
     return false;
-  } finally {
-    clearTimeout(t);
-  }
-}
-async function readWorkerInstance(port, timeoutMs = 3000) {
-  const ctl = new AbortController;
-  const t = setTimeout(() => ctl.abort(), timeoutMs);
-  try {
-    const r = await fetch(`http://127.0.0.1:${port}/stats`, { signal: ctl.signal });
-    if (!r.ok)
-      return null;
-    const body = await r.json().catch(() => null);
-    const v = body?.worker?.started_at_epoch;
-    return typeof v === "number" && Number.isFinite(v) ? v : null;
-  } catch {
-    return null;
   } finally {
     clearTimeout(t);
   }
@@ -757,10 +742,6 @@ var init_windows_scheduled_task = __esm(() => {
 });
 
 // src/services/service-manager/index.ts
-var exports_service_manager = {};
-__export(exports_service_manager, {
-  getServiceManager: () => getServiceManager
-});
 function getServiceManager() {
   if (process.platform === "win32")
     return createWindowsScheduledTaskServiceManager();
@@ -775,10 +756,6 @@ var init_service_manager = __esm(() => {
 });
 
 // src/shared/worker-control.ts
-var exports_worker_control = {};
-__export(exports_worker_control, {
-  restartWorker: () => restartWorker
-});
 async function restartWorker(sm, name, opts) {
   await sm.restart(name, { graceful: opts.graceful ?? false, port: opts.port, force: true });
 }
@@ -964,15 +941,6 @@ var init_install = __esm(() => {
 });
 
 // src/cli/plugin-cache-refresh.ts
-var exports_plugin_cache_refresh = {};
-__export(exports_plugin_cache_refresh, {
-  refreshPluginCacheIfStale: () => refreshPluginCacheIfStale,
-  needsCacheRefresh: () => needsCacheRefresh,
-  marketplacePointsAtCheckout: () => marketplacePointsAtCheckout,
-  activeCachedVersion: () => activeCachedVersion,
-  REPO_ROOT: () => REPO_ROOT6,
-  CACHE_REFRESH_LOCK: () => CACHE_REFRESH_LOCK
-});
 import { spawnSync as spawnSync3 } from "child_process";
 import { readFileSync as readFileSync7 } from "fs";
 import { homedir as homedir8 } from "os";
@@ -1028,12 +996,6 @@ var init_plugin_cache_refresh = __esm(() => {
 });
 
 // src/cli/skill-refresh.ts
-var exports_skill_refresh = {};
-__export(exports_skill_refresh, {
-  resolveMemoSkillSource: () => resolveMemoSkillSource,
-  refreshMemoSkills: () => refreshMemoSkills,
-  MEMO_SKILL_RELPATHS: () => MEMO_SKILL_RELPATHS
-});
 import { existsSync as existsSync5, copyFileSync } from "fs";
 import { join as join14 } from "path";
 function resolveMemoSkillSource() {
@@ -1110,8 +1072,7 @@ var init_branch = __esm(() => {
 // src/hooks/pre-git.ts
 var exports_pre_git = {};
 __export(exports_pre_git, {
-  runPreGit: () => runPreGit,
-  parseGitOp: () => parseGitOp
+  runPreGit: () => runPreGit
 });
 function parseGitOp(command) {
   if (typeof command !== "string")
@@ -1303,19 +1264,19 @@ async function main(options = {}) {
   }
   if (!result.ok && process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL !== "1" && !transition) {
     try {
-      const { acquireHealLock: acquireHealLock2, releaseHealLock: releaseHealLock2 } = await Promise.resolve().then(() => (init_worker_heal_lock(), exports_worker_heal_lock));
-      if (acquireHealLock2()) {
+      await Promise.resolve().then(() => init_worker_heal_lock());
+      if (acquireHealLock()) {
         try {
-          const { probeHealthOnce: probeHealthOnce2, probeHealthyWithRetries: probeHealthyWithRetries2 } = await Promise.resolve().then(() => exports_worker_health_probe);
+          await Promise.resolve();
           const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
-          const reachable = await probeHealthyWithRetries2(() => probeHealthOnce2(port, 1500), 2, 1000);
+          const reachable = await probeHealthyWithRetries(() => probeHealthOnce(port, 1500), 2, 1000);
           if (!reachable) {
-            const { getServiceManager: getServiceManager2 } = await Promise.resolve().then(() => (init_service_manager(), exports_service_manager));
-            const { restartWorker: restartWorker2 } = await Promise.resolve().then(() => exports_worker_control);
-            await restartWorker2(getServiceManager2(), "captain-memo-worker", { port });
+            await Promise.resolve().then(() => init_service_manager());
+            await Promise.resolve();
+            await restartWorker(getServiceManager(), "captain-memo-worker", { port });
           }
         } finally {
-          releaseHealLock2();
+          releaseHealLock();
         }
       }
     } catch (err) {
@@ -1358,7 +1319,7 @@ import { homedir as homedir9 } from "os";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.44.1",
+  version: "0.44.2",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -1795,12 +1756,12 @@ async function main2() {
     const AUTO_UPDATE_LOCK = join15(DATA_DIR, ".auto-update.lock");
     try {
       const port = {
-        run: (argv, cwd, timeoutMs2) => {
+        run: (argv, cwd, timeoutMs) => {
           const r = Bun.spawnSync(argv, {
             cwd,
             stdout: "pipe",
             stderr: "pipe",
-            timeout: timeoutMs2 ?? 20000,
+            timeout: timeoutMs ?? 20000,
             env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oConnectTimeout=10" }
           });
           return { code: r.exitCode ?? 1, stdout: r.stdout.toString(), stderr: r.stderr.toString() };
@@ -1827,8 +1788,8 @@ async function main2() {
           const installDir = top.code === 0 && top.stdout.trim() ? top.stdout.trim() : import.meta.dir;
           const res = runAutoUpdate(port, installDir, VERSION, process.execPath);
           if (res?.ok) {
-            const { getServiceManager: getServiceManager2 } = await Promise.resolve().then(() => (init_service_manager(), exports_service_manager));
-            const sm = getServiceManager2();
+            await Promise.resolve().then(() => init_service_manager());
+            const sm = getServiceManager();
             const wport = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
             wroteTransition = true;
             markTransition({ phase: "updating", from: res.from, ...res.to ? { to: res.to } : {} });
@@ -1879,8 +1840,8 @@ async function main2() {
   const stale = !updatedThisSession && !transition && running && stats.body.version !== undefined && stats.body.version !== VERSION;
   if (!selfHealOff && !inTransition && (!running || stale)) {
     try {
-      const { getServiceManager: getServiceManager2 } = await Promise.resolve().then(() => (init_service_manager(), exports_service_manager));
-      const sm = getServiceManager2();
+      await Promise.resolve().then(() => init_service_manager());
+      const sm = getServiceManager();
       const WORKER = "captain-memo-worker";
       const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
       const outcome = await ensureWorkerHealthy({
@@ -1916,11 +1877,11 @@ async function main2() {
     }
   }
   try {
-    const { refreshPluginCacheIfStale: refreshPluginCacheIfStale2, CACHE_REFRESH_LOCK: CACHE_REFRESH_LOCK2 } = await Promise.resolve().then(() => (init_plugin_cache_refresh(), exports_plugin_cache_refresh));
-    const lock = join15(DATA_DIR, CACHE_REFRESH_LOCK2);
+    await Promise.resolve().then(() => init_plugin_cache_refresh());
+    const lock = join15(DATA_DIR, CACHE_REFRESH_LOCK);
     if (acquireHealLock(lock)) {
       try {
-        const r = refreshPluginCacheIfStale2(VERSION);
+        const r = refreshPluginCacheIfStale(VERSION);
         if (r.refreshed)
           logHookError("SessionStart", new Error(`plugin cache re-snapshotted from v${r.from} to v${VERSION}`));
         else if (r.skipped && r.skipped !== "cache is in step") {
@@ -1934,10 +1895,10 @@ async function main2() {
     logHookError("SessionStart", err);
   }
   try {
-    const { refreshMemoSkills: refreshMemoSkills2, resolveMemoSkillSource: resolveMemoSkillSource2 } = await Promise.resolve().then(() => (init_skill_refresh(), exports_skill_refresh));
-    const memoSource = resolveMemoSkillSource2();
+    await Promise.resolve().then(() => init_skill_refresh());
+    const memoSource = resolveMemoSkillSource();
     if (memoSource)
-      refreshMemoSkills2(memoSource, homedir9());
+      refreshMemoSkills(memoSource, homedir9());
   } catch (err) {
     logHookError("SessionStart", err);
   }
