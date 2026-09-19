@@ -68,6 +68,27 @@ test('a NEW instance stamp is what counts as restarted', async () => {
   expect(code).toBe(0);
 });
 
+test('a NEW instance that is still warming up is reported as restarted, not as healthy', async () => {
+  const { sm } = fakeSm();
+  let t = 0, n = 0;
+  const lines: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => { lines.push(a.join(' ')); };
+  try {
+    const code = await restartCommand([], {
+      sm, port: 39888,
+      readInstance: async () => (++n <= 2 ? 1000 : 2000),   // identity from /health arrives before health does
+      probe: async () => false,                              // …because the writer is still indexing
+      sleep: async () => {}, now: () => { t += 1000; return t; },
+    });
+    expect(code).toBe(0);
+  } finally {
+    console.log = orig;
+  }
+  expect(lines.some((l) => l.includes('✓ worker is healthy'))).toBe(false);
+  expect(lines.some((l) => l.includes('✓ worker restarted') && l.includes('warming up'))).toBe(true);
+});
+
 test('with nothing running beforehand, any healthy worker counts', async () => {
   const { sm } = fakeSm();
   let t = 0;

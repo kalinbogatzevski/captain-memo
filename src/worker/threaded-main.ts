@@ -63,6 +63,12 @@ const READER_ACQUIRE_POLL_MS = 5;
 
 export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
   const hb = { lastBeatMs: 0, busyOp: null as string | null };   // 0 = no beat yet → /health honest
+  // WHICH process this is, for `captain-memo restart`. Surfaced on /health because that is answered HERE on
+  // main and so stays readable while the writer is buried in the startup indexing burst and /stats answers
+  // 503 — the only other identity, /stats' worker.started_at_epoch, is unreadable for exactly the seconds a
+  // restart is polling (field 2026-09-19: a 34k-chunk captain reported every successful restart as
+  // unconfirmed). Seconds, like that stamp, so readWorkerInstance can compare the two across an upgrade.
+  const instanceEpoch = Math.floor(Date.now() / 1000);
   const sup: SupervisorState = { crashes: [] };
   let engine: Worker | null = null;
   let channel: ThreadChannel | null = null;
@@ -315,8 +321,8 @@ export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
     if (req.method === 'GET' && url.pathname === '/health') {
       const v = healthFromHeartbeat(hb, Date.now());
       return Response.json(
-        v.healthy ? { healthy: true } : { healthy: false, degraded: v.degraded },
-        { status: v.healthy ? 200 : 503 },
+        { ...(v.healthy ? { healthy: true } : { healthy: false, degraded: v.degraded }), instance: instanceEpoch },
+        { status: v.healthy ? 200 : 503 },   // a 503 still carries `instance`: a live process saying "not yet"
       );
     }
 

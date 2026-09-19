@@ -25,8 +25,8 @@ export async function probeHealthOnce(port: number, timeoutMs = 3000): Promise<b
   }
 }
 
-/** WHICH worker process is answering — `worker.started_at_epoch` from /stats — or null when it
- *  cannot be read (unreachable, still starting, or mid-embed so /stats is slow).
+/** WHICH worker process is answering — `instance` from /health, else `worker.started_at_epoch` from /stats —
+ *  or null when neither can be read (unreachable, or an old worker mid-embed so /stats is slow).
  *
  *  `/health` deliberately answers `{healthy:true}` from any live process and carries no identity, so
  *  it cannot distinguish a restarted worker from the OUTGOING one that is still listening. A restart
@@ -34,14 +34,28 @@ export async function probeHealthOnce(port: number, timeoutMs = 3000): Promise<b
  *  process is still up when the first poll fires. Comparing this stamp is what makes "it came back"
  *  mean a NEW process rather than merely a reachable one. */
 export async function readWorkerInstance(port: number, timeoutMs = 3000): Promise<number | null> {
+  // /health FIRST: the worker answers it on its main thread from a constant, so the identity is readable even
+  // while the writer is buried in the startup indexing burst and /stats answers 503 — for a large corpus that
+  // burst outlasts the restart window, and every successful restart came back "NOT confirmed" (field
+  // 2026-09-19, 34k chunks). The body is read whatever the status: a 503 with `instance` is a live process
+  // saying "not ready yet", which is exactly the evidence a restart is polling for.
+  const health = (await readJson(port, '/health', timeoutMs, false)) as { instance?: unknown } | null;
+  if (typeof health?.instance === 'number' && Number.isFinite(health.instance)) return health.instance;
+  // A worker predating that field (the OUTGOING one across an upgrade) identifies itself only through the
+  // writer's boot stamp on /stats. Same unit (seconds), so the two compare.
+  const stats = (await readJson(port, '/stats', timeoutMs, true)) as { worker?: { started_at_epoch?: unknown } } | null;
+  const v = stats?.worker?.started_at_epoch;
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
+/** GET a JSON body from the worker, or null when unreachable / not JSON / (with `okOnly`) not 2xx. */
+async function readJson(port: number, path: string, timeoutMs: number, okOnly: boolean): Promise<unknown> {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeoutMs);
   try {
-    const r = await fetch(`http://127.0.0.1:${port}/stats`, { signal: ctl.signal });
-    if (!r.ok) return null;
-    const body = (await r.json().catch(() => null)) as { worker?: { started_at_epoch?: unknown } } | null;
-    const v = body?.worker?.started_at_epoch;
-    return typeof v === 'number' && Number.isFinite(v) ? v : null;
+    const r = await fetch(`http://127.0.0.1:${port}${path}`, { signal: ctl.signal });
+    if (okOnly && !r.ok) return null;
+    return await r.json().catch(() => null);
   } catch {
     return null;
   } finally {

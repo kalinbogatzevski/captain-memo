@@ -40,8 +40,11 @@ export async function restartCommand(args: string[] = [], deps: RestartDeps = {}
   console.log(`Restarting captain-memo worker${force ? ' (forced)' : ''}…`);
   await restartWorker(sm, WORKER_SERVICE, { port, graceful });
 
-  // restartWorker() is synchronous here, so the worker should already be down when polling starts.
-  const waitMs = deps.waitMs ?? 8_000;
+  // A CAP, not a wait — a confirmed restart returns the moment the new process identifies itself. So size it
+  // for the slow case: restartWorker() is synchronous, but a systemd restart returns at exec, 9 s before the
+  // worker binds the port on a 197k-chunk corpus (measured 2026-09-19: Started 10:59:52 → listening 11:00:01).
+  // The old 8 s expired before that bind on every restart of a large corpus and reported a false failure.
+  const waitMs = deps.waitMs ?? 30_000;
   const secs = Math.round(waitMs / 1000);
 
   // SUCCESS MEANS A NEW PROCESS, NOT A REACHABLE ONE. This used to accept any `/health` 200 — but
@@ -53,7 +56,11 @@ export async function restartCommand(args: string[] = [], deps: RestartDeps = {}
   while (now() < deadline) {
     const cur = await readInstance(port, 1500);
     if (cur !== null && (before === null || cur > before)) {
-      console.log('✓ worker is healthy');
+      // The identity rides on /health, which a worker answers (503 + instance) from the moment its main thread
+      // is up — before the writer has finished the startup indexing burst. So a NEW process can be confirmed
+      // while not yet healthy; say which of the two it is instead of claiming health it does not have.
+      if (await probe(port, 1500)) console.log('✓ worker is healthy');
+      else console.log('✓ worker restarted — the new process is up and still warming up (startup indexing); `captain-memo status` shows HEALTHY once it settles');
       return 0;
     }
     // Nothing was running beforehand, so there is no old instance to be confused with — a plain
