@@ -42,7 +42,7 @@ import { loadDreamInputs, pairKey } from '../dreaming/load.ts';
 import { coRetrievalSimilarity } from '../dreaming/distance.ts';
 import { isIdle, blockingSignals } from './idle.ts';
 import { runQmSupersedeSlice, applySupersedeDemotion } from './supersede.ts';
-import { setWorkNote, listLocalActive, clearWorkNote, overlapsAgainst, topicOverlapsAgainst, groupTopicContention, repoOverlapsAgainst, groupRepoContention, repoActiveHolders, type SetWorkNoteInput } from './work-notes.ts';
+import { setWorkNote, inheritDeclaredIntent, leaseSeconds, listLocalActive, clearWorkNote, overlapsAgainst, topicOverlapsAgainst, groupTopicContention, repoOverlapsAgainst, groupRepoContention, repoActiveHolders, type SetWorkNoteInput } from './work-notes.ts';
 import { resolveRepoClaim } from './repo-claim.ts';
 import { warmWorknoteVecs, semanticOverlapPass, hasIntent, SEMANTIC_ENABLED, semanticStatus } from './worknote-semantic.ts';
 import { addHomework, listHomework, claimHomework, doneHomework } from './homework.ts';
@@ -2260,7 +2260,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // (the PreToolUse hook sets the hint) — an explicit MCP `work_set` `what` is never overwritten. Fail-open.
         const enrichReq = setBody.enrich_from_observations === true;
         let enriched = false;
-        if (enrichReq && obsStore) {
+        // An auto-claim keeps the session's declared work_set intent (topics, an explicit what) while the declaration
+        // is live; a work_set call is the declaration itself.
+        if (enrichReq) enriched = inheritDeclaredIntent(meta, setBody, now);
+        else if (typeof setBody.what === 'string' && setBody.what.trim() !== '') {
+          setBody.declared = true;
+          setBody.declared_until = now + leaseSeconds(setBody.ttl_s) * 1000;   // the work_set's own lease
+        }
+        if (enrichReq && !enriched && obsStore) {
           try {
             const latest = obsStore.latestForSession(String(body.session_id));
             if (latest?.title) { setBody.what = latest.title; enriched = true; }

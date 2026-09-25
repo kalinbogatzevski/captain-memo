@@ -56,3 +56,19 @@ test('buildVenvCommands — model id flows through verbatim (no hardcoded defaul
   expect(all).toContain('voyageai/voyage-4-lite');
   expect(all).not.toContain('voyage-4-nano');
 });
+
+// Windows PowerShell 5.1 strips the double quotes embedded in a native argument, so `& $VenvPython -c $warm`
+// (whose Python source quotes its strings) broke the model pre-download. The script now runs the warm step from a file.
+test('install-embedder.ps1 runs the model warm-up from a file, never through -c', () => {
+  const ps1 = require('fs').readFileSync(require('path').join(__dirname, '../../scripts/install-embedder.ps1'), 'utf8') as string;
+  expect(ps1).not.toMatch(/^\s*& \$VenvPython -c /m);   // no line runs Python with -c (a comment may name it)
+  expect(ps1).toContain("Set-Content -LiteralPath $warmFile -Value $warm -Encoding ASCII");
+  expect(ps1).toMatch(/& \$VenvPython \$warmFile/);
+});
+
+test('buildVenvCommands: the warm-up mirror writes warm-model.py and runs it, never python -c', () => {
+  const all = buildVenvCommands(OPTS).join('\n');
+  expect(all).toContain('Set-Content -LiteralPath "C:\\Users\\kalin\\.captain-memo\\embed\\warm-model.py"');
+  expect(all).toContain('python.exe" "C:\\Users\\kalin\\.captain-memo\\embed\\warm-model.py"');
+  expect(all).not.toContain('python.exe" -c');
+});

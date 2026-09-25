@@ -27,6 +27,9 @@ export interface WorkNote {
   ts: number;           // epoch-ms the lease was (re)published
   ttl_s: number;        // lease length; live while now < ts + ttl_s*1000
   captain?: string;     // set ONLY for fleet notes (which captain they came from); absent ⇒ this captain
+  declared?: boolean;   // the `what` (and topics) came from an explicit work_set, not a hook auto-claim: a later
+                        // auto-claim keeps them instead of overwriting them...
+  declared_until?: number; // ...until this epoch-ms, the work_set's own lease. The edit heartbeat never extends it.
   meaningful?: boolean; // the `what` is REAL declared intent (explicit, or enriched from an observation), not the
                         // hook's generic "editing N files" placeholder. Only meaningful claims join the semantic
                         // pass — two generic placeholders are byte-identical and would falsely match at cosine ~1.
@@ -38,6 +41,7 @@ export interface WorkNote {
 
 export interface OverlapHit {
   agent: string; session_id: string; captain?: string; what: string; files: string[]; overlapping: string[];
+  repo_root?: string;            // the peer's checkout root (files hits): its `<repo_root>/**` is a whole-repo claim
   kind?: 'files' | 'semantic' | 'repo' | 'topics';   // how the collision was detected (absent ⇒ 'files', for back-compat)
   similarity?: number;           // cosine similarity in [0,1], semantic hits only
 }
@@ -58,6 +62,8 @@ const FLEET_SNAPSHOT_TTL_MS = 30_000;   // a snapshot older than this (no recent
 const DEFAULT_TTL_S = 1800;        // 30 min
 const MIN_TTL_S = 60;
 const MAX_TTL_S = 8 * 3600;        // 8 h ceiling
+/** A requested lease in seconds, clamped the way every claim is (default 30 min, 60 s to 8 h). */
+export const leaseSeconds = (ttl: unknown): number => Math.min(MAX_TTL_S, Math.max(MIN_TTL_S, Math.floor(Number(ttl) || DEFAULT_TTL_S)));
 const MAX_FILES = 64;
 const MAX_NOTE_BYTES = 4000;
 const MAX_FLEET_NOTES = 512;       // the whole fleet's claims flattened (per-captain hub-capped at 32)
@@ -70,6 +76,8 @@ function isLive(n: WorkNote, now: number): boolean {
 export interface SetWorkNoteInput {
   agent?: string; session_id: string; what?: string; files?: string[]; topics?: string[]; ttl_s?: number;
   meaningful?: boolean;   // persisted onto the note (see WorkNote.meaningful); the route computes it
+  declared?: boolean;     // persisted onto the note (see WorkNote.declared); the route computes it
+  declared_until?: number;   // persisted (see WorkNote.declared_until); the route computes it
   // Handler-only routing hint (consumed by the /worknote/set HTTP route, NOT persisted on the note): when set,
   // the route replaces a generic `what` with the session's latest observation title before storing. The pure
   // setWorkNote ignores it.
@@ -105,9 +113,11 @@ export function setWorkNote(kv: WorkNoteKv, input: SetWorkNoteInput, now: number
     what: String(input.what ?? '').slice(0, 500),
     files: Array.isArray(input.files) ? input.files.slice(0, MAX_FILES).map((f) => String(f).slice(0, 256)) : [],
     ts: now,
-    ttl_s: Math.min(MAX_TTL_S, Math.max(MIN_TTL_S, Math.floor(Number(input.ttl_s) || DEFAULT_TTL_S))),
+    ttl_s: leaseSeconds(input.ttl_s),
   };
   if (input.meaningful === true) note.meaningful = true;   // only store when true (keeps notes lean + back-compat)
+  if (input.declared === true) note.declared = true;
+  if (note.declared && typeof input.declared_until === 'number') note.declared_until = input.declared_until;
   const topics = normalizeTopics(input.topics);
   if (topics.length > 0) note.topics = topics;
   if (typeof input.repo_root === 'string' && input.repo_root) note.repo_root = input.repo_root.slice(0, 512);
@@ -119,6 +129,23 @@ export function setWorkNote(kv: WorkNoteKv, input: SetWorkNoteInput, now: number
   while (note.files.length > 0 && JSON.stringify(note).length > MAX_NOTE_BYTES) note.files.pop();
   kv.setKv(keyFor(note.session_id), JSON.stringify(note));
   return note;
+}
+
+/** An auto-claim (the PreToolUse hook: files only, a generic `what`) keeps what this session DECLARED with work_set:
+ *  its topics and its `what`. Before, the next edit replaced the whole note, so the board went back to "untitled work"
+ *  right after the session said what it was doing. Returns whether the declaration was kept (the route then skips the
+ *  observation enrichment). An explicit work_set replaces all. */
+export function inheritDeclaredIntent(kv: WorkNoteKv, input: SetWorkNoteInput, now: number): boolean {
+  let prev: WorkNote | null = null;
+  try { prev = JSON.parse(kv.getKv(keyFor(String(input.session_id).slice(0, 64))) ?? 'null') as WorkNote | null; } catch { return false; }
+  // The declaration lives for the work_set's own lease, not for as long as the session keeps editing: the hook's
+  // heartbeat refreshes ts on every edit, so a session that moved on would otherwise keep its old intent forever.
+  if (!prev || !isLive(prev, now) || !prev.declared || !(typeof prev.declared_until === 'number' && now < prev.declared_until)) return false;
+  if (normalizeTopics(input.topics).length === 0 && prev.topics?.length) input.topics = prev.topics;
+  input.what = prev.what;
+  input.declared = true;
+  input.declared_until = prev.declared_until;
+  return true;
 }
 
 /** All LOCAL live notes (this captain), lazily reaping any expired/malformed key as it reads. */
@@ -145,7 +172,7 @@ export function overlapsAgainst(mineFiles: string[], others: WorkNote[], exclude
     if (o.session_id === excludeSession) continue;
     const overlapping = globsOverlap(mineFiles ?? [], o.files ?? []);
     if (overlapping.length > 0) {
-      hits.push({ agent: o.agent, session_id: o.session_id, ...(o.captain ? { captain: o.captain } : {}), what: o.what, files: o.files, overlapping, kind: 'files' });
+      hits.push({ agent: o.agent, session_id: o.session_id, ...(o.captain ? { captain: o.captain } : {}), ...(o.repo_root ? { repo_root: o.repo_root } : {}), what: o.what, files: o.files, overlapping, kind: 'files' });
     }
   }
   return hits;

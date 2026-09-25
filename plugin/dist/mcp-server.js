@@ -12827,6 +12827,11 @@ function customAlphabet(alphabet, size = 21) {
   return customRandom(alphabet, size, random);
 }
 
+// src/mcp-server.ts
+import { readFileSync as readFileSync2 } from "fs";
+import { join as join3 } from "path";
+import { homedir as homedir3 } from "os";
+
 // src/shared/paths.ts
 import { homedir } from "os";
 import { join } from "path";
@@ -12883,7 +12888,7 @@ function loadWorkerEnv() {
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.44.2",
+  version: "0.44.3",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -12981,6 +12986,28 @@ function resolveWorkBoardSessionId(env = process.env) {
   return env.CLAUDE_CODE_SESSION_ID || `mcp-${_sid()}`;
 }
 var PROCESS_SESSION_ID = resolveWorkBoardSessionId();
+function readClaudeSessionId(pid) {
+  const base = process.env.CLAUDE_CONFIG_DIR ?? join3(homedir3(), ".claude");
+  const d = JSON.parse(readFileSync2(join3(base, "sessions", `${pid}.json`), "utf8"));
+  return typeof d.sessionId === "string" && d.sessionId ? d.sessionId : null;
+}
+function liveSessionId(fallback, env = process.env, read = readClaudeSessionId, ppid = process.ppid, now = Date.now) {
+  let cached = fallback, at = -Infinity;
+  return () => {
+    if (!env.CLAUDE_CODE_SESSION_ID)
+      return fallback;
+    if (now() - at < 5000)
+      return cached;
+    at = now();
+    try {
+      cached = read(ppid) || fallback;
+    } catch {
+      cached = fallback;
+    }
+    return cached;
+  };
+}
+var sessionIdNow = liveSessionId(PROCESS_SESSION_ID);
 async function workerPost(base, path, body) {
   const res = await fetch(`${base}${path}`, {
     method: "POST",
@@ -13251,7 +13278,7 @@ async function dispatchRemember(args, deps) {
   return formatRememberResult(result);
 }
 function defaultDispatchDeps() {
-  return { workerBase: WORKER_BASE2, sessionId: PROCESS_SESSION_ID, cwd: () => process.cwd() };
+  return { workerBase: WORKER_BASE2, sessionId: sessionIdNow(), cwd: () => process.cwd() };
 }
 async function dispatchTool(name, args, deps = defaultDispatchDeps()) {
   const { workerBase, sessionId, cwd } = deps;
@@ -13385,6 +13412,7 @@ export {
   dispatchRemember,
   dispatchTool,
   formatRememberResult,
+  liveSessionId,
   resolveWorkBoardSessionId,
   runMcpServer
 };

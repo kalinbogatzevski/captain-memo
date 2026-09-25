@@ -21,3 +21,8 @@ plugin/bin
 
 # SDD scratch
 .superpowers/
+
+# Python bytecode. On Windows the embedder task runs from services/embed in this checkout, so Python writes an
+# untracked __pycache__ there, and the opt-in self-updater (src/worker/self-updater.ts) refuses a dirty tree.
+__pycache__/
+*.pyc

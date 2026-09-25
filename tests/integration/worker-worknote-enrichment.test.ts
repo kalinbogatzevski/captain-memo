@@ -59,3 +59,28 @@ test('a claim from a session with NO observation keeps the generic placeholder a
   expect(mine!.what).toBe('editing 1 file(s) in p1');   // unchanged
   expect(mine!.meaningful).toBeUndefined();             // not meaningful ⇒ excluded from semantic
 });
+
+// An explicit work_set (topics + a stated `what`) used to be overwritten by the very next hook auto-claim, so the
+// board went back to "untitled work". The auto-claim now keeps the declared intent while the declaration is live.
+test('a hook auto-claim after work_set keeps the declared topics and what (even when an observation exists)', async () => {
+  const post = (b: unknown) => fetch(`http://localhost:${port}/worknote/set`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) });
+  const active = async () => ((await (await fetch(`http://localhost:${port}/worknote/active?session_id=ES`)).json()) as { claims: Array<{ session_id: string; what: string; topics?: string[]; meaningful?: boolean; declared_until?: number }> }).claims.find((c) => c.session_id === 'ES')!;
+  const before = Date.now();
+  await post({ session_id: 'ES', agent: 'claude', what: 'wiring the billing gateway', topics: ['billing-gateway'], files: ['gw/**'], ttl_s: 120 });
+  const after = Date.now();
+  // The declaration lasts the work_set's own lease, in epoch-ms.
+  const until = (await active()).declared_until!;
+  expect(until).toBeGreaterThanOrEqual(before + 120_000);
+  expect(until).toBeLessThanOrEqual(after + 120_000);
+  const set = await (await post({ session_id: 'ES', agent: 'claude', what: 'editing 1 file(s) in p1', files: ['gw/b.ts'], enrich_from_observations: true })).json() as { topics: string[] };
+  expect(set.topics).toEqual(['billing-gateway']);
+  const mine = await active();
+  expect(mine.declared_until).toBe(until);   // the edit heartbeat never extends the declaration
+  expect(mine.what).toBe('wiring the billing gateway');   // the declared what, not the observation title
+  expect(mine.topics).toEqual(['billing-gateway']);
+  expect(mine.meaningful).toBe(true);
+  // A new explicit work_set is a new declaration: it replaces the old one.
+  await post({ session_id: 'ES', agent: 'claude', what: 'now the invoices', topics: ['invoices'] });
+  const again = (await (await fetch(`http://localhost:${port}/worknote/active?session_id=ES`)).json()) as { claims: Array<{ session_id: string; what: string; topics?: string[] }> };
+  expect(again.claims.find((c) => c.session_id === 'ES')!.topics).toEqual(['invoices']);
+});

@@ -20,6 +20,7 @@
 import { readStdinJson, workerFetch, writeStdout, resolveProjectId, logHookError, logWorkerFailure, isMainModule } from './shared.ts';
 import { parseWrittenPaths, isCoarseClaim } from './shell-writes.ts';
 import { detectRepoRootSync } from '../worker/branch.ts';
+import { globsOverlap } from '../worker/glob-overlap.ts';
 
 interface PreToolUsePayload {
   session_id?: string;
@@ -28,7 +29,7 @@ interface PreToolUsePayload {
   tool_input?: { file_path?: unknown; notebook_path?: unknown; command?: unknown } & Record<string, unknown>;
 }
 interface WorkNote { session_id: string; agent?: string; files?: string[]; what?: string }
-interface OverlapHit { session_id: string; agent?: string; files?: string[]; overlapping?: string[]; what?: string; kind?: 'files' | 'semantic'; similarity?: number }
+export interface OverlapHit { session_id: string; agent?: string; repo_root?: string; files?: string[]; overlapping?: string[]; what?: string; kind?: 'files' | 'semantic' | 'repo' | 'topics'; similarity?: number }
 interface SetResp { session_id: string; ttl_s: number; overlaps?: OverlapHit[] }
 interface ActiveResp { claims?: WorkNote[] }
 
@@ -65,25 +66,35 @@ async function publishClaim(sid: string, cwd: string | undefined, touched: strin
   if (!set.ok || !set.body) return null;
 
   const overlaps = set.body.overlaps ?? [];
-  if (overlaps.length === 0) return null;
+  // The caller's repo root is only needed to word a warning; resolving it is a git spawn (~9 ms median, measured
+  // 2026-09-25), so it is not paid on the common edit that overlaps nothing.
+  return overlaps.length === 0 ? null : formatOverlapWarning(overlaps, cwd ? detectRepoRootSync(cwd) : null);
+}
 
-  // Two collision kinds: same FILES (glob overlap) and same INTENT by meaning (semantic, possibly different files).
-  const fileHits = overlaps.filter((o) => o.kind !== 'semantic');
-  const semHits = overlaps.filter((o) => o.kind === 'semantic');
-  const parts: string[] = [];
-  if (fileHits.length > 0) {
-    const who = fileHits
-      .map((o) => `${(o.session_id ?? '').slice(0, 12)} (${o.agent ?? '?'}) on ${(((o.overlapping ?? o.files) ?? [])).join(', ')}`)
-      .join(' ; ');
-    parts.push(`editing the same files: ${who}`);
-  }
-  if (semHits.length > 0) {
-    const who = semHits
-      .map((o) => `${(o.session_id ?? '').slice(0, 12)} (${o.agent ?? '?'}) on "${(o.what ?? '').slice(0, 80)}"${typeof o.similarity === 'number' ? ` (~${o.similarity.toFixed(2)})` : ''}`)
-      .join(' ; ');
-    parts.push(`working on the same thing by meaning: ${who}`);
-  }
-  return `WORK-BOARD OVERLAP: another captain is ${parts.join('; and is ')}. Check the captain-memo work board (work_active) and coordinate, or pick a different area, before continuing.`;
+/** The overlap advisory, or null. For each peer it names the PEER's own matching paths. The worker's `overlapping` is
+ *  the CALLER's side of the match, which the warning used to print under the peer's id (and call every peer "another
+ *  captain"), so two sessions on one checkout each looked like they were editing the other's files. A whole-repo claim
+ *  (`<repo>/**`, what a shell edit the parser cannot name becomes) is labelled as such, on either side, so it is not
+ *  read as the peer touching your file. */
+export function formatOverlapWarning(overlaps: OverlapHit[], myRepoRoot: string | null = null): string | null {
+  if (overlaps.length === 0) return null;
+  // Whole-repo = EXACTLY `<repo_root>/**` (what main() narrows an unnamed shell edit to), and nothing more specific on
+  // that side. A declared `billing/**` is a real claim, not this.
+  const whole = (globs: string[], root: string | null | undefined): boolean => !!root && globs.length > 0 && globs.every((g) => g === `${root}/**`);
+  const lines = overlaps.map((o) => {
+    const who = `another session on this captain (${(o.session_id ?? '').slice(0, 12)}, ${o.agent ?? '?'})`;
+    const yours = o.overlapping ?? [];
+    if (o.kind === 'semantic') {
+      return `${who} is working on the same thing by meaning: "${(o.what ?? '').slice(0, 80)}"${typeof o.similarity === 'number' ? ` (~${o.similarity.toFixed(2)})` : ''}`;
+    }
+    if (o.kind === 'topics') return `${who} holds the same topic: ${yours.join(', ')} ("${(o.what ?? '').slice(0, 80)}")`;
+    if (o.kind === 'repo') return `${who} works in the same repository (${yours.join(', ')})`;
+    const theirs = globsOverlap(o.files ?? [], yours);
+    const note = whole(theirs, o.repo_root) ? ' (a whole-repo claim: it ran a shell edit whose file could not be named, so it may not touch your files at all)'
+      : whole(yours, myRepoRoot) ? ' (your side is a whole-repo claim from a shell edit whose file could not be named)' : '';
+    return `${who} holds ${(theirs.length ? theirs : (o.files ?? [])).join(', ')}, which overlaps your ${yours.join(', ')}${note}`;
+  });
+  return `WORK-BOARD OVERLAP: ${lines.join('; ')}. Check the captain-memo work board (work_active) and coordinate, or pick a different area, before continuing.`;
 }
 
 export async function main(): Promise<void> {

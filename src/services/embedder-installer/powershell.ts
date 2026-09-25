@@ -38,6 +38,7 @@ export function buildVenvCommands(opts: EmbedderInstallOpts): string[] {
   const venvPython = winJoin(venvDir, 'Scripts', 'python.exe');
   const requirements = winJoin(opts.installDir, 'requirements.txt');
   const modelsDir = winJoin(opts.installDir, 'models');
+  const warmFile = winJoin(opts.installDir, 'warm-model.py');
   return [
     // create venv: prefer the py launcher pinned to 3.11, else plain python.
     `py -3.11 -m venv "${venvDir}"`,
@@ -47,7 +48,9 @@ export function buildVenvCommands(opts: EmbedderInstallOpts): string[] {
     `& "${venvPython}" -m pip install -r "${requirements}" --quiet`,
     // pre-download the model into <installDir>\models via HF_HOME.
     `$env:HF_HOME = "${modelsDir}"`,
-    `& "${venvPython}" -c "import os; from sentence_transformers import SentenceTransformer; SentenceTransformer('${opts.model}', device='cpu', trust_remote_code=True)"`,
+    // from a FILE, not `-c`: Windows PowerShell 5.1 strips double quotes embedded in a native argument.
+    `Set-Content -LiteralPath "${warmFile}" -Value "from sentence_transformers import SentenceTransformer; SentenceTransformer('${opts.model}', device='cpu', trust_remote_code=True)" -Encoding ASCII`,
+    `& "${venvPython}" "${warmFile}"`,
   ];
 }
 

@@ -6,6 +6,9 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { customAlphabet } from 'nanoid';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 import { DEFAULT_WORKER_PORT } from './shared/paths.ts';
 import { loadWorkerEnv } from './shared/worker-env.ts';
 import { VERSION } from './shared/version.ts';
@@ -36,6 +39,38 @@ export function resolveWorkBoardSessionId(env: Record<string, string | undefined
 }
 
 const PROCESS_SESSION_ID = resolveWorkBoardSessionId();
+
+/** Claude Code's own record of a live session's CURRENT id (<config dir>/sessions/<pid>.json). Throws when absent. */
+function readClaudeSessionId(pid: number): string | null {
+  const base = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
+  const d = JSON.parse(readFileSync(join(base, 'sessions', `${pid}.json`), 'utf8')) as { sessionId?: unknown };
+  return typeof d.sessionId === 'string' && d.sessionId ? d.sessionId : null;
+}
+
+/** The host session's id NOW. CLAUDE_CODE_SESSION_ID is fixed when this process starts, but a Claude session resumed
+ *  from the picker (`claude -r`), run through Remote Control, or /clear'd continues under a DIFFERENT id, and its hooks
+ *  report that one (2 of 5 live MCP servers on one host differed, 2026-09-25). Claude Code keeps the current id in
+ *  ~/.claude/sessions/<pid>.json, and this server's parent IS that claude process (the plugin runs `bun mcp-server.js`
+ *  directly), so read it, cached 5 s. Only under Claude Code (the env var is set); otherwise, or when the file is
+ *  absent, the process id stands. Work claims and homework filed under "this session" then match the hooks. */
+export function liveSessionId(
+  fallback: string,
+  env: Record<string, string | undefined> = process.env,
+  read: (pid: number) => string | null = readClaudeSessionId,
+  ppid: number = process.ppid,
+  now: () => number = Date.now,
+): () => string {
+  let cached = fallback, at = -Infinity;
+  return () => {
+    if (!env.CLAUDE_CODE_SESSION_ID) return fallback;
+    if (now() - at < 5_000) return cached;
+    at = now();
+    try { cached = read(ppid) || fallback; } catch { cached = fallback; }
+    return cached;
+  };
+}
+
+const sessionIdNow = liveSessionId(PROCESS_SESSION_ID);
 
 async function workerPost(base: string, path: string, body: unknown): Promise<unknown> {
   const res = await fetch(`${base}${path}`, {
@@ -351,10 +386,10 @@ export async function dispatchRemember(
   return formatRememberResult(result);
 }
 
-/** Default deps for dispatchTool: preserves today's exact stdio behavior
- *  (env-derived WORKER_BASE, the process-level session id, real cwd). */
+/** Default deps for dispatchTool: the stdio context (env-derived WORKER_BASE, the host session's live id, real cwd).
+ *  Built on every call (it is the default argument), so each tool call reads the session id as it is NOW. */
 function defaultDispatchDeps(): { workerBase: string; sessionId: string; cwd: () => string } {
-  return { workerBase: WORKER_BASE, sessionId: PROCESS_SESSION_ID, cwd: () => process.cwd() };
+  return { workerBase: WORKER_BASE, sessionId: sessionIdNow(), cwd: () => process.cwd() };
 }
 
 /** Route one MCP tool call to the worker. Shared by the stdio transport (runMcpServer,

@@ -117,8 +117,14 @@ name = os.environ.get("CAPTAIN_MEMO_EMBED_MODEL", "voyageai/voyage-4-nano")
 SentenceTransformer(name, device="cpu", trust_remote_code=True)
 print("model cached:", name)
 '@
-& $VenvPython -c $warm
-if ($LASTEXITCODE -ne 0) { Write-Error 'model pre-download failed.' }
+# Run it from a file, not `-c $warm`: Windows PowerShell 5.1 strips the double quotes embedded in a native
+# argument, which broke the script. ASCII, so 5.1 writes no BOM.
+$warmFile = Join-Path $InstallDir 'warm-model.py'
+Set-Content -LiteralPath $warmFile -Value $warm -Encoding ASCII
+& $VenvPython $warmFile
+$warmExit = $LASTEXITCODE
+Remove-Item -LiteralPath $warmFile -Force -ErrorAction SilentlyContinue
+if ($warmExit -ne 0) { Write-Error 'model pre-download failed.' }
 
 Write-Host ''
 Write-Host '==> Embedder venv ready.'

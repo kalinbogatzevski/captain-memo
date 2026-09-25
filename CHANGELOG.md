@@ -7,6 +7,29 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.44.3] — 2026-09-25
+
+### Fixed
+
+- **The work-board overlap warning named your own files under the other session's id.** The worker's
+  `overlapping` list is the caller's side of the match, and the warning printed it as if the other session held
+  those files, calling every peer "another captain", so two sessions on one checkout each looked like they were
+  editing the other's files. It now names the other session's own matching paths, and labels a whole-repo claim
+  (`<repo>/**`, from a shell edit whose file could not be named) on either side, so it is not read as a real clash.
+- **What a session declared with `work_set` was lost at its next edit.** The PreToolUse auto-claim replaced the
+  whole note, so the board went back to "untitled work" right after a session said what it was doing. An
+  auto-claim now keeps the declared topics and description until that `work_set`'s own lease ends; a new
+  `work_set` replaces it, and the edit heartbeat never extends it.
+- **Work claims and homework were filed under a stale session id.** The MCP server took `CLAUDE_CODE_SESSION_ID`
+  once at start, but a Claude session resumed from the picker, run through Remote Control or `/clear`'d continues
+  under a new id, which its hooks report. The server now reads the live id from Claude Code's own
+  `sessions/<pid>.json` (cached 5 s), so `work_set`, `work_active`, `work_clear` and the `todo_*` tools match
+  what the hooks file.
+- **Windows: the embedder install's model warm-up failed under Windows PowerShell 5.1**, which strips the double
+  quotes inside a native argument (`python -c "…"`). The warm-up now runs from a file.
+- **Python bytecode made the checkout dirty.** The embedder writes `__pycache__` into `services/embed`, and the
+  opt-in self-updater refuses a dirty tree; `__pycache__/` and `*.pyc` are now ignored.
+
 ## [0.44.2] — 2026-09-19
 
 ### Fixed

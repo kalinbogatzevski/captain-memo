@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test';
 import {
   setWorkNote, listLocalActive, clearWorkNote, overlapsAgainst, WORKNOTE_PREFIX,
   setFleetSnapshot, listFleetActive, filterActive, sanitizeFleetNotes, FLEET_SNAPSHOT_KEY,
-  cosineSimilarity, semanticOverlaps, repoOverlapsAgainst, groupRepoContention, repoActiveHolders,
+  cosineSimilarity, semanticOverlaps, repoOverlapsAgainst, groupRepoContention, repoActiveHolders, inheritDeclaredIntent,
   type WorkNoteKv, type WorkNote, type ClaimVec,
 } from '../../src/worker/work-notes.ts';
 
@@ -88,6 +88,15 @@ test('overlapsAgainst flags an overlapping OTHER session and excludes my own', (
   expect(hits[0]!.agent).toBe('codex');
   expect(hits[0]!.session_id).toBe('other');
   expect(hits[0]!.overlapping).toEqual(['src/auth/**']);
+});
+
+test('overlapsAgainst carries the peer\'s repo_root, so the hook can tell a whole-repo claim from a real one', () => {
+  const kv = makeKv();
+  setWorkNote(kv, { session_id: 'other', files: ['/repo/**'], repo_root: '/repo' }, NOW);
+  setWorkNote(kv, { session_id: 'plain', files: ['src/auth/**'] }, NOW);
+  const hits = overlapsAgainst(['/repo/a.ts', 'src/auth/x.ts'], listLocalActive(kv, NOW), 'mine');
+  expect(hits.find((h) => h.session_id === 'other')!.repo_root).toBe('/repo');
+  expect('repo_root' in hits.find((h) => h.session_id === 'plain')!).toBe(false);
 });
 
 test('overlapsAgainst returns nothing when files are disjoint', () => {
@@ -306,4 +315,24 @@ test('groupTopicContention: a topic held by two or more live sessions, fleet-wid
   ];
   const g = groupTopicContention(notes);
   expect(g).toEqual([{ topic: 'installer-windows', holders: [{ agent: 'claude', session_id: 'a', what: 'shim' }, { agent: 'codex', session_id: 'b', captain: 'DANTE', what: 'ps1' }] }]);
+});
+
+// An auto-claim inherits the declared intent until the work_set's OWN deadline, whatever the edit heartbeat does.
+test('inheritDeclaredIntent: topics and a declared what carry onto an auto-claim only until the declaration expires', () => {
+  const kv = makeKv();
+  setWorkNote(kv, { session_id: 'S', agent: 'claude', what: 'fixing the rounding', topics: ['billing-rounding'], declared: true, declared_until: 1_000 + 1_800_000, meaningful: true }, 1_000);
+  const auto = { session_id: 'S', agent: 'claude', what: 'editing 1 file(s)', files: ['a.ts'], enrich_from_observations: true };
+  expect(inheritDeclaredIntent(kv, auto, 2_000)).toBe(true);
+  expect(auto).toMatchObject({ what: 'fixing the rounding', topics: ['billing-rounding'], declared: true, declared_until: 1_801_000 });
+  // The session keeps editing: each auto-claim refreshes ts (the heartbeat) but carries declared_until unchanged.
+  setWorkNote(kv, auto, 1_700_000);
+  const later = { session_id: 'S', what: 'editing 2 file(s)', files: ['b.ts'], enrich_from_observations: true };
+  expect(inheritDeclaredIntent(kv, later, 1_900_000)).toBe(false);   // claim still live, declaration over
+  expect(later.what).toBe('editing 2 file(s)');
+  // An undeclared claim passes nothing on.
+  const kv2 = makeKv();
+  setWorkNote(kv2, { session_id: 'T', what: 'editing 2 file(s)' }, 1_000);
+  const auto2 = { session_id: 'T', what: 'editing 3 file(s)', files: ['b.ts'], enrich_from_observations: true };
+  expect(inheritDeclaredIntent(kv2, auto2, 2_000)).toBe(false);
+  expect(auto2.what).toBe('editing 3 file(s)');
 });

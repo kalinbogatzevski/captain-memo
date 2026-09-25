@@ -1319,7 +1319,7 @@ import { homedir as homedir9 } from "os";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.44.2",
+  version: "0.44.3",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -2149,6 +2149,55 @@ function parseWrittenPaths(command, cwd, shell = "posix") {
 
 // src/hooks/pre-tool-use.ts
 init_branch();
+
+// src/worker/glob-overlap.ts
+var BACKSLASH = /\\/g;
+var MSYS_DRIVE = /^\/([a-zA-Z])\//;
+var WIN_DRIVE = /^([a-zA-Z]):\//;
+function canon(g) {
+  return g.replace(BACKSLASH, "/").replace(MSYS_DRIVE, "$1:/").replace(WIN_DRIVE, (_m, d) => `${d.toUpperCase()}:/`);
+}
+function norm(glob) {
+  let g = canon(String(glob ?? "").trim()).replace(/^\.\//, "");
+  if (g === "" || g === "**" || g === "*")
+    return { kind: "prefix", path: "" };
+  const dirIntent = g.endsWith("/");
+  g = g.replace(/\/+$/, "");
+  if (dirIntent)
+    return { kind: "prefix", path: g };
+  const star = g.indexOf("*");
+  if (star < 0)
+    return { kind: "exact", path: g };
+  return { kind: "prefix", path: g.slice(0, star).replace(/\/+$/, "") };
+}
+function underOrEq(child, base) {
+  if (base === "")
+    return true;
+  return child === base || child.startsWith(base + "/");
+}
+function oneOverlap(a, b) {
+  if (a.kind === "exact" && b.kind === "exact")
+    return a.path === b.path;
+  if (a.kind === "prefix" && b.kind === "exact")
+    return underOrEq(b.path, a.path);
+  if (a.kind === "exact" && b.kind === "prefix")
+    return underOrEq(a.path, b.path);
+  return underOrEq(a.path, b.path) || underOrEq(b.path, a.path);
+}
+function globsOverlap(aGlobs, bGlobs) {
+  const bN = (bGlobs ?? []).map(norm);
+  if (bN.length === 0)
+    return [];
+  const hits = [];
+  for (const ag of aGlobs ?? []) {
+    const an = norm(ag);
+    if (bN.some((bn) => oneOverlap(an, bn)))
+      hits.push(ag);
+  }
+  return hits;
+}
+
+// src/hooks/pre-tool-use.ts
 var HOOK_TIMEOUT_MS2 = Number(process.env.CAPTAIN_MEMO_PRE_TOOL_USE_TIMEOUT_MS ?? 1500);
 var MAX_FILES = 25;
 var SHELL_TOOLS = { Bash: "posix", PowerShell: "powershell" };
@@ -2172,20 +2221,27 @@ async function publishClaim(sid, cwd, touched) {
   if (!set.ok || !set.body)
     return null;
   const overlaps = set.body.overlaps ?? [];
+  return overlaps.length === 0 ? null : formatOverlapWarning(overlaps, cwd ? detectRepoRootSync(cwd) : null);
+}
+function formatOverlapWarning(overlaps, myRepoRoot = null) {
   if (overlaps.length === 0)
     return null;
-  const fileHits = overlaps.filter((o) => o.kind !== "semantic");
-  const semHits = overlaps.filter((o) => o.kind === "semantic");
-  const parts = [];
-  if (fileHits.length > 0) {
-    const who = fileHits.map((o) => `${(o.session_id ?? "").slice(0, 12)} (${o.agent ?? "?"}) on ${(o.overlapping ?? o.files ?? []).join(", ")}`).join(" ; ");
-    parts.push(`editing the same files: ${who}`);
-  }
-  if (semHits.length > 0) {
-    const who = semHits.map((o) => `${(o.session_id ?? "").slice(0, 12)} (${o.agent ?? "?"}) on "${(o.what ?? "").slice(0, 80)}"${typeof o.similarity === "number" ? ` (~${o.similarity.toFixed(2)})` : ""}`).join(" ; ");
-    parts.push(`working on the same thing by meaning: ${who}`);
-  }
-  return `WORK-BOARD OVERLAP: another captain is ${parts.join("; and is ")}. Check the captain-memo work board (work_active) and coordinate, or pick a different area, before continuing.`;
+  const whole = (globs, root) => !!root && globs.length > 0 && globs.every((g) => g === `${root}/**`);
+  const lines = overlaps.map((o) => {
+    const who = `another session on this captain (${(o.session_id ?? "").slice(0, 12)}, ${o.agent ?? "?"})`;
+    const yours = o.overlapping ?? [];
+    if (o.kind === "semantic") {
+      return `${who} is working on the same thing by meaning: "${(o.what ?? "").slice(0, 80)}"${typeof o.similarity === "number" ? ` (~${o.similarity.toFixed(2)})` : ""}`;
+    }
+    if (o.kind === "topics")
+      return `${who} holds the same topic: ${yours.join(", ")} ("${(o.what ?? "").slice(0, 80)}")`;
+    if (o.kind === "repo")
+      return `${who} works in the same repository (${yours.join(", ")})`;
+    const theirs = globsOverlap(o.files ?? [], yours);
+    const note = whole(theirs, o.repo_root) ? " (a whole-repo claim: it ran a shell edit whose file could not be named, so it may not touch your files at all)" : whole(yours, myRepoRoot) ? " (your side is a whole-repo claim from a shell edit whose file could not be named)" : "";
+    return `${who} holds ${(theirs.length ? theirs : o.files ?? []).join(", ")}, which overlaps your ${yours.join(", ")}${note}`;
+  });
+  return `WORK-BOARD OVERLAP: ${lines.join("; ")}. Check the captain-memo work board (work_active) and coordinate, or pick a different area, before continuing.`;
 }
 async function main3() {
   let payload = {};
