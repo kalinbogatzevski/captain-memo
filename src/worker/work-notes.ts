@@ -37,6 +37,13 @@ export interface WorkNote {
                         // files resolved into. Absent for plain file-claims (relative globs, scratchpad paths).
   branch?: string;      // the repo's current branch at claim time, when repo_root is set.
   is_dirty?: boolean;   // whether the working tree had uncommitted changes at claim time, when repo_root is set.
+  // ── COMPUTED ON READ, NEVER STORED ──────────────────────────────────────────────────────────────
+  // A claim is a HEARTBEAT: a live session re-`set`s it (the PreToolUse hook does so on every file-touching
+  // tool call). `ts` is therefore "last sign of life", and a claim whose ts has not moved in a long while is
+  // very likely a ghost — its session died and the lease is simply running out its declared TTL. These two
+  // fields say so out loud; they are attached by decorateStaleness() at read time and never written to the kv.
+  stale?: boolean;      // ts older than STALE_AFTER_MS ⇒ "probably dead, judge accordingly"
+  age_s?: number;       // seconds since the claim was last refreshed
 }
 
 export interface OverlapHit {
@@ -68,9 +75,41 @@ const MAX_FILES = 64;
 const MAX_NOTE_BYTES = 4000;
 const MAX_FLEET_NOTES = 512;       // the whole fleet's claims flattened (per-captain hub-capped at 32)
 
+// STALENESS CEILING. A claim is a heartbeat — the PreToolUse hook re-`set`s it on every file-touching tool
+// call, and work_set is documented as "re-call periodically". So a claim that has not been refreshed in this
+// long is almost certainly a GHOST: its session died and the lease is just running out the clock.
+//
+// WHY FLAG RATHER THAN HIDE. A ghost's harm is that it BLOCKS: a claim saying "do NOT start any concurrent
+// call/AEC test until cleared" (ttl 3600s) outlived the session that published it, a dispatched job correctly
+// refused to start, and the owner confirmed nothing was running. Dropping stale claims outright would fix the
+// blocking and lose the information; leaving them unmarked keeps the blocking. Marking them does both — the
+// reader can see "last refreshed 47m ago" and judge, which is exactly what nobody could do.
+// 10 minutes: a session actually working refreshes within seconds of each edit, so this is generous, while
+// still being far shorter than the 30-minute default and 8-hour maximum lease.
+// ponytail: one flat threshold, env-overridable because it is a heuristic about human/agent rhythm, not a
+// constant of the system — the one place a tuning knob genuinely earns its keep.
+const STALE_AFTER_MS = Math.max(60_000, Number(process.env.CAPTAIN_MEMO_WORKNOTE_STALE_MS ?? 600_000));
+
 function keyFor(sessionId: string): string { return WORKNOTE_PREFIX + sessionId; }
 function isLive(n: WorkNote, now: number): boolean {
   return typeof n.ts === 'number' && typeof n.ttl_s === 'number' && now < n.ts + n.ttl_s * 1000;
+}
+
+/** Seconds since this claim was last refreshed (its heartbeat age). */
+export function claimAgeS(n: WorkNote, now: number): number {
+  return Math.max(0, Math.round((now - (typeof n.ts === 'number' ? n.ts : now)) / 1000));
+}
+
+/** Has this claim gone quiet past the ceiling? Live by TTL, but no longer evidence of anything running. */
+export function isStale(n: WorkNote, now: number): boolean {
+  return typeof n.ts === 'number' && now - n.ts > STALE_AFTER_MS;
+}
+
+/** Attach the read-time staleness view (`stale`, `age_s`) to each claim. Returns COPIES — the stored notes are
+ *  untouched, so nothing is ever persisted with a computed field on it. Apply at every seam a caller reads
+ *  claims from, so "is this still real?" is answerable without doing the arithmetic yourself. */
+export function decorateStaleness(notes: WorkNote[], now: number): WorkNote[] {
+  return notes.map((n) => ({ ...n, age_s: claimAgeS(n, now), ...(isStale(n, now) ? { stale: true } : {}) }));
 }
 
 export interface SetWorkNoteInput {
@@ -160,9 +199,16 @@ export function listLocalActive(kv: WorkNoteKv, now: number): WorkNote[] {
   return out;
 }
 
-/** Drop a session's own claim (task done). */
-export function clearWorkNote(kv: WorkNoteKv, sessionId: string): void {
-  kv.deleteKv(keyFor(String(sessionId)));
+/** Drop a session's own claim (task done). Returns whether a claim actually existed and was removed.
+ *
+ *  IT USED TO RETURN void, and the route reported `{ok:true}` either way — so a clear that removed nothing (a
+ *  session_id this captain holds no claim for) said it had worked, and the caller walked away believing the
+ *  blocker was gone. A false success is worse than a refusal. The caller now gets the truth and can act on it. */
+export function clearWorkNote(kv: WorkNoteKv, sessionId: string): boolean {
+  const key = keyFor(String(sessionId));
+  const existed = kv.getKv(key) !== null;
+  kv.deleteKv(key);   // unconditional: a malformed/expired value must still be swept
+  return existed;
 }
 
 /** Active claims (excluding `excludeSession`) whose file globs intersect `mineFiles`. */

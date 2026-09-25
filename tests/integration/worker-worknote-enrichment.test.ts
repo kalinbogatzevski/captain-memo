@@ -84,3 +84,22 @@ test('a hook auto-claim after work_set keeps the declared topics and what (even 
   const again = (await (await fetch(`http://localhost:${port}/worknote/active?session_id=ES`)).json()) as { claims: Array<{ session_id: string; what: string; topics?: string[] }> };
   expect(again.claims.find((c) => c.session_id === 'ES')!.topics).toEqual(['invoices']);
 });
+
+// work_clear used to answer {ok:true} whether or not it removed anything, so a caller clearing a claim this captain
+// did not hold was told it had worked. And a claim read off the board carries its heartbeat age (age_s).
+test('/worknote/clear says whether it cleared anything; /worknote/active carries each claim\'s age_s', async () => {
+  await fetch(`http://localhost:${port}/worknote/set`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ session_id: 'CLR', agent: 'claude', what: 'x', files: ['c/a.ts'] }),
+  });
+  const board = (await (await fetch(`http://localhost:${port}/worknote/active`)).json()) as { claims: Array<{ session_id: string; age_s?: number; stale?: boolean }> };
+  const c = board.claims.find((x) => x.session_id === 'CLR')!;
+  expect(typeof c.age_s).toBe('number');
+  expect(c.age_s!).toBeLessThan(5);        // just refreshed
+  expect(c.stale).toBeUndefined();
+  const clear = async () => (await fetch(`http://localhost:${port}/worknote/clear`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session_id: 'CLR' }),
+  })).json() as Promise<{ ok: boolean; cleared: boolean }>;
+  expect(await clear()).toMatchObject({ ok: true, cleared: true });
+  expect(await clear()).toMatchObject({ ok: true, cleared: false });   // nothing left: says so instead of "ok"
+});

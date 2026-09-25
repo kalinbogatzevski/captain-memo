@@ -116,3 +116,15 @@ test('dispatchRemember surfaces worker ok:false as an MCP error', async () => {
   expect(out.isError).toBe(true);
   expect(out.content[0]!.text).toContain('ENOSPC: no space left on device');
 });
+
+// A 202 write_in_flight is UNCONFIRMED, not failed. It has no `ok` field at all, so before this arm the
+// formatter fell into the !result.ok branch and reported "Error: undefined" for a write that had landed —
+// which is precisely what drives the caller into the retry that writes a second copy.
+test('formatRememberResult: write_in_flight is reported as unconfirmed and NOT as an error', () => {
+  const out = formatRememberResult({ status: 'write_in_flight' } as never);
+  expect(out.isError).toBeUndefined();
+  const text = out.content[0]!.text;
+  expect(text).toContain('UNCONFIRMED');
+  expect(text).toContain('Do NOT retry');
+  expect(text).not.toContain('undefined');
+});

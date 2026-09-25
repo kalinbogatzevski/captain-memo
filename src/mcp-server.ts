@@ -293,7 +293,7 @@ export const TOOLS = [
   {
     name: 'work_active',
     description:
-      'Coordination board: list the live work claims on this captain with their topics, `topic_contention` (every topic two or more sessions hold right now, with who), and, if you pass your session_id, `overlaps_with_mine` by topic / files / repo. `semantic.degraded` true means meaning-match is off (embedder down) — the board is then topics + files only. Call this to see who else is working on what before you start.',
+      'Coordination board: list the live work claims on this captain with their topics, `topic_contention` (every topic two or more sessions hold right now, with who), and, if you pass your session_id, `overlaps_with_mine` by topic / files / repo. `semantic.degraded` true means meaning-match is off (embedder down) — the board is then topics + files only. Call this to see who else is working on what before you start. READ `stale` BEFORE YOU DEFER TO A CLAIM: every row carries age_s (seconds since it was last refreshed) and stale:true once that passes the ceiling. A claim is a heartbeat: a session that is genuinely working re-publishes it constantly, so a stale claim almost always means that session DIED and its lease is merely running out the clock. Treat a stale claim as information, not as a blocker: say you saw it and proceed. Deferring to a ghost blocks real work for the rest of its TTL, which is worse than having no board at all.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -303,7 +303,7 @@ export const TOOLS = [
   },
   {
     name: 'work_clear',
-    description: 'Coordination board: drop your work claim when the task is done (releases the lease immediately instead of waiting for it to expire).',
+    description: 'Coordination board: drop your work claim when the task is done (releases the lease immediately instead of waiting for it to expire). Reports what it ACTUALLY did: cleared:true when a claim was removed, cleared:false when this captain held no claim with that session_id, so nothing was cleared.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -328,7 +328,12 @@ type RememberWorkerResult =
       ok: true; path: string; action: 'created' | 'updated'; doc_id: string;
       near_duplicate?: { path: string; doc_id: string; score: number };
     }
-  | { ok: false; reason: string };
+  | { ok: false; reason: string }
+  // 202 from forwardToWriter: main stopped waiting, the writer did NOT stop writing. Neither success nor
+  // failure, and it has NO path/doc_id — so it needs its own arm or the formatter reads the absent `ok`
+  // as a failure and reports a write that landed as one that didn't. That exact misreading cost a caller
+  // a duplicate memory in the field (2026-08-08).
+  | { status: 'write_in_flight'; detail?: string; hint?: string };
 
 /** Build the `POST /remember` request body: forward the model's fields verbatim and
  *  inject the session's project cwd (flat `cwd`, matching the worker's RememberSchema).
@@ -353,6 +358,17 @@ export function buildRememberRequest(
 export function formatRememberResult(
   result: RememberWorkerResult,
 ): { content: { type: 'text'; text: string }[]; isError?: true } {
+  // NOT an error: the write is unconfirmed, not failed. Flagging it isError would push the caller straight
+  // into the retry that duplicates the memory — so say plainly what happened and what to do instead.
+  if ('status' in result) {
+    return {
+      content: [{
+        type: 'text',
+        text: 'Memory write UNCONFIRMED (not failed): the engine did not answer within the deadline, but it was not cancelled and has most likely completed.\n'
+          + 'Do NOT retry: a retry is how you end up with two copies. Wait a few seconds and confirm with search_memory.',
+      }],
+    };
+  }
   if (!result.ok) {
     return {
       content: [{ type: 'text', text: `Error: ${result.reason}` }],

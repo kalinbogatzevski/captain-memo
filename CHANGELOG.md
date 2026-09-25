@@ -7,6 +7,20 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.44.5] — 2026-09-25
+
+### Fixed
+
+- **`remember` said the write failed when it had in fact landed.** When the worker's writer was busy past the
+  remember deadline, the tool answered as a failure, and a retry wrote the memory twice. The worker now answers
+  `write_in_flight` for `/remember` on that timeout: the MCP tool reports the write as unconfirmed and says not to
+  retry, and `captain-memo remember` prints UNCONFIRMED and exits 0. Other routes still answer 503 on a timeout.
+- **A dead session's claim looked live, and `work_clear` said it cleared claims it had not.** `work_active` now
+  marks each claim with `age_s`, and `stale` once it has gone 10 minutes without a heartbeat
+  (`CAPTAIN_MEMO_WORKNOTE_STALE_MS`), so a crashed session's claim reads as a ghost instead of blocking real work.
+  `work_clear` answers `cleared: true` only when it removed a claim, and `cleared: false` when there was nothing
+  to remove.
+
 ## [0.44.4] — 2026-09-25
 
 ### Fixed

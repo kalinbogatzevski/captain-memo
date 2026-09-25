@@ -64,3 +64,26 @@ test('readBody — --file reads the file contents', async () => {
 test('readBody — missing --file path throws an actionable error', async () => {
   await expect(readBody({ type: 'decision', file: '/no/such/path-xyz.md' })).rejects.toThrow(/no\/such\/path-xyz\.md|read|file/i);
 });
+
+// The CLI reads the same /remember contract as the MCP tool. A 202 write_in_flight carries no `ok`, so without its
+// own arm `captain-memo remember` printed "remember failed" and exited 1 about a write that had most likely landed.
+test('remember CLI: a 202 write_in_flight is reported as unconfirmed, exit 0, not as a failure', async () => {
+  const server = Bun.serve({
+    port: 0,
+    fetch: () => Response.json({ status: 'write_in_flight', detail: 'd', hint: 'h' }, { status: 202 }),
+  });
+  try {
+    const proc = Bun.spawn({
+      cmd: ['bun', join(import.meta.dir, '../../../src/cli/index.ts'), 'remember', '--type', 'feedback', '--body', 'x'],
+      stdout: 'pipe', stderr: 'pipe',
+      env: { ...process.env, CAPTAIN_MEMO_WORKER_PORT: String(server.port) },
+    });
+    const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+    expect(code).toBe(0);
+    expect(out).toContain('UNCONFIRMED');
+    expect(out).toContain('Do NOT retry');
+    expect(err).not.toContain('remember failed');
+  } finally {
+    server.stop(true);
+  }
+}, 15_000);

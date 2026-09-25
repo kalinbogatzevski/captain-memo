@@ -32,6 +32,14 @@ const LONG_WRITE_DEADLINE_MS = Number(process.env.CAPTAIN_MEMO_REINDEX_MS ?? 30 
 // /consolidate joins /reindex here because a forced pass is a whole-corpus scan (~50s measured)
 // plus, for themes, a model call per cluster.
 const LONG_WRITE_PATHS = new Set(['/reindex', '/consolidate']);
+// Paths whose work SURVIVES main abandoning its wait — the writer runs on and finishes them. A timeout on
+// one of these is "unconfirmed", not "failed", and forwardToWriter answers 202 rather than 503.
+// WRITES ONLY, deliberately: a timed-out READ is safe to retry, so collapsing it into "probably worked"
+// would lose information rather than add it.
+// ponytail: /remember only. /reindex, /promote/slice and /consolidate survive a timeout the same way, but their
+// CLI callers (reindex.ts, upgrade.ts, promote.ts) read any 2xx body as a finished result and would print
+// "complete" with undefined counts. Add each one here together with its caller's write_in_flight arm.
+const IN_FLIGHT_ON_TIMEOUT = new Set(['/remember']);
 // /remember does an LLM frontmatter `generate`, a semantic dedup search AND a chunk-embed pass before
 // it returns — none of which fit the 10s default on a real corpus, and it was never given a ceiling
 // of its own. MEASURED on this captain (149k chunks, external Voyage embedder), wall-clock at the
@@ -309,7 +317,21 @@ export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
     try {
       return deserializeResponse((await channel.request('http', wire, timeoutMs)) as WireResponse);
     } catch (e) {
-      return Response.json({ error: (e as Error).message }, { status: 503 });
+      const msg = (e as Error).message;
+      // "WRITE FAILED" AND "WRITE STILL RUNNING" DEMAND OPPOSITE RESPONSES FROM THE CALLER, so they must
+      // not share a status. A thread_rpc_timeout abandons MAIN's wait — it does NOT cancel the writer,
+      // which carries on and completes the write. Reporting that as a flat 503 told a caller its write had
+      // failed when it had in fact landed; it retried, and BOTH copies were written. (Field 2026-08-08, the
+      // same incident the REMEMBER_DEADLINE_MS ceiling above came from — the ceiling made it rarer, it did
+      // not make the report honest.) 202 Accepted is exactly this situation: taken, not yet confirmed.
+      if (msg === 'thread_rpc_timeout' && IN_FLIGHT_ON_TIMEOUT.has(new URL(wire.url).pathname)) {
+        return Response.json({
+          status: 'write_in_flight',
+          detail: 'The engine did not confirm within the deadline, but it was NOT cancelled: this write has most likely completed.',
+          hint: 'Do NOT retry: a retry is how you get two copies. Verify with search_memory in a few seconds instead.',
+        }, { status: 202 });
+      }
+      return Response.json({ error: msg }, { status: 503 });
     }
   }
 

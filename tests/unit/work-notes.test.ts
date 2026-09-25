@@ -3,6 +3,7 @@ import {
   setWorkNote, listLocalActive, clearWorkNote, overlapsAgainst, WORKNOTE_PREFIX,
   setFleetSnapshot, listFleetActive, filterActive, sanitizeFleetNotes, FLEET_SNAPSHOT_KEY,
   cosineSimilarity, semanticOverlaps, repoOverlapsAgainst, groupRepoContention, repoActiveHolders, inheritDeclaredIntent,
+  decorateStaleness, isStale, claimAgeS,
   type WorkNoteKv, type WorkNote, type ClaimVec,
 } from '../../src/worker/work-notes.ts';
 
@@ -271,6 +272,66 @@ test('repoActiveHolders returns holders of the given root only', () => {
   const notes = [repoNote('a', '/proj/erp', 'master'), repoNote('b', '/proj/erp', 'feat'), repoNote('c', '/proj/other')];
   expect(repoActiveHolders(notes, '/proj/erp').map((h) => h.session_id).sort()).toEqual(['a', 'b']);
   expect(repoActiveHolders(notes, '/nope')).toEqual([]);
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// STALE / GHOST CLAIMS + HONEST CLEAR. A claim held "do NOT start any concurrent
+// call/AEC test until cleared" (ttl 3600s) after the session that published it
+// had ended; a dispatched job correctly refused to start, nothing was actually
+// running, and work_clear answered ok:true while the claim stayed put.
+// ────────────────────────────────────────────────────────────────────────────
+
+test('clearWorkNote reports whether a claim actually existed', () => {
+  const kv = makeKv();
+  setWorkNote(kv, { session_id: 's1', what: 'x' }, NOW);
+  expect(clearWorkNote(kv, 's1')).toBe(true);    // there was one, it is gone
+  expect(clearWorkNote(kv, 's1')).toBe(false);   // second call clears nothing, and says so
+  expect(clearWorkNote(kv, 'never-existed')).toBe(false);
+});
+
+test('clearWorkNote still sweeps a malformed value, while reporting it existed', () => {
+  const kv = makeKv();
+  kv.setKv(WORKNOTE_PREFIX + 'broken', '{not json');
+  expect(clearWorkNote(kv, 'broken')).toBe(true);
+  expect(kv.map.has(WORKNOTE_PREFIX + 'broken')).toBe(false);
+});
+
+test('a claim refreshed just now is live and NOT stale', () => {
+  const kv = makeKv();
+  setWorkNote(kv, { session_id: 's1', what: 'working', ttl_s: 3600 }, NOW);
+  const [c] = decorateStaleness(listLocalActive(kv, NOW + 5_000), NOW + 5_000);
+  expect(c!.stale).toBeUndefined();
+  expect(c!.age_s).toBe(5);
+});
+
+// THE GHOST: still inside its hour-long lease, but nothing has refreshed it for 47 minutes.
+test('a long-lease claim that stopped heartbeating is live but flagged stale', () => {
+  const kv = makeKv();
+  setWorkNote(kv, { session_id: 'dead-session', what: 'do NOT start concurrent tests', ttl_s: 3600 }, NOW);
+  const later = NOW + 47 * 60_000;
+  const live = listLocalActive(kv, later);
+  expect(live).toHaveLength(1);                       // TTL semantics unchanged — it is still "live"
+  const [c] = decorateStaleness(live, later);
+  expect(c!.stale).toBe(true);                        // ...but visibly not evidence of anything running
+  expect(c!.age_s).toBe(47 * 60);
+});
+
+test('staleness is computed on read and never written back to the kv', () => {
+  const kv = makeKv();
+  setWorkNote(kv, { session_id: 's1', what: 'x', ttl_s: 3600 }, NOW);
+  const later = NOW + 30 * 60_000;
+  decorateStaleness(listLocalActive(kv, later), later);
+  const stored = JSON.parse(kv.map.get(WORKNOTE_PREFIX + 's1')!) as WorkNote;
+  expect(stored.stale).toBeUndefined();
+  expect(stored.age_s).toBeUndefined();
+});
+
+test('isStale/claimAgeS agree with the decorated view', () => {
+  const old: WorkNote = { agent: 'claude', session_id: 'p1', what: 'x', files: [], ts: NOW, ttl_s: 3600 };
+  const later = NOW + 20 * 60_000;
+  expect(isStale(old, later)).toBe(true);
+  expect(claimAgeS(old, later)).toBe(1200);
+  expect(isStale(old, NOW + 60_000)).toBe(false);
 });
 
 // ─── TOPICS (2026-09-18, Kalin: "work claims must also set topics of what the session is working on") ────────

@@ -42,7 +42,7 @@ import { loadDreamInputs, pairKey } from '../dreaming/load.ts';
 import { coRetrievalSimilarity } from '../dreaming/distance.ts';
 import { isIdle, blockingSignals } from './idle.ts';
 import { runQmSupersedeSlice, applySupersedeDemotion } from './supersede.ts';
-import { setWorkNote, inheritDeclaredIntent, leaseSeconds, listLocalActive, clearWorkNote, overlapsAgainst, topicOverlapsAgainst, groupTopicContention, repoOverlapsAgainst, groupRepoContention, repoActiveHolders, type SetWorkNoteInput } from './work-notes.ts';
+import { setWorkNote, inheritDeclaredIntent, leaseSeconds, listLocalActive, clearWorkNote, decorateStaleness, overlapsAgainst, topicOverlapsAgainst, groupTopicContention, repoOverlapsAgainst, groupRepoContention, repoActiveHolders, type SetWorkNoteInput } from './work-notes.ts';
 import { resolveRepoClaim } from './repo-claim.ts';
 import { warmWorknoteVecs, semanticOverlapPass, hasIntent, SEMANTIC_ENABLED, semanticStatus } from './worknote-semantic.ts';
 import { addHomework, listHomework, claimHomework, doneHomework } from './homework.ts';
@@ -2335,7 +2335,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       }
       if (req.method === 'GET' && url.pathname === '/worknote/active') {
         const now = Date.now();
-        const claims = listLocalActive(meta, now);
+        // Decorate with the heartbeat view (stale/age_s) so a reader can tell a claim that is still being
+        // refreshed from one whose session died and is just running out its lease. Without this the board
+        // cannot distinguish them, and a ghost blocks real work for its full TTL.
+        const claims = decorateStaleness(listLocalActive(meta, now), now);
         const mine = url.searchParams.get('session_id') ?? '';
         const mineNote = mine ? claims.find((c) => c.session_id === mine) : undefined;
         const overlaps_with_mine = mineNote
@@ -2358,8 +2361,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         if (!body || typeof body.session_id !== 'string' || body.session_id.trim() === '') {
           return Response.json({ error: 'invalid_request', details: 'session_id required' }, { status: 400 });
         }
-        clearWorkNote(meta, body.session_id);
-        return Response.json({ ok: true });
+        // A clear that did nothing must SAY it did nothing: this returned {ok:true} unconditionally, so a caller
+        // clearing a claim this captain does not hold was told it had worked and found it still there on the next read.
+        if (clearWorkNote(meta, body.session_id)) return Response.json({ ok: true, cleared: true });
+        return Response.json({ ok: true, cleared: false, details: 'No claim with that session_id on this captain: nothing to clear.' });
       }
 
       // LIVE PER-SESSION TOKEN FLOW — including sessions the broker cannot see.
