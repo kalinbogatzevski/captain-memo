@@ -177,6 +177,12 @@ test('reader pool: a reader-served search forwards its bump to the writer', asyn
     CAPTAIN_MEMO_WORKER_PORT: String(port),
     CAPTAIN_MEMO_SUMMARIZER_PROVIDER: 'openai-compatible',
     CAPTAIN_MEMO_OPENAI_ENDPOINT: stub.url,
+    // Hardening, not an observed failure: flush is the only summarizer, so a background tick can't
+    // claim the seeded row first and leave flush creating 0 (possible via processBatchSerialized).
+    CAPTAIN_MEMO_OBSERVATION_TICK_MS: '0',
+    // A /stats cache that outlives the 8 s poll, so a rise proves the relayed bump INVALIDATED it. At
+    // the default 5 s TTL, expiry alone passes this test even when the writer never invalidates.
+    CAPTAIN_MEMO_STATS_CACHE_MS: '60000',
   });
   await waitHealthy(base);
 

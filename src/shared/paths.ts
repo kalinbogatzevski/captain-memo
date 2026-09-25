@@ -141,6 +141,11 @@ export const ENV_OPENAI_API_KEY = 'CAPTAIN_MEMO_OPENAI_API_KEY';
 // margin for embed + RRF fusion + envelope build. The user is already waiting
 // for the model anyway, so a few hundred extra ms here is invisible.
 export const DEFAULT_HOOK_TIMEOUT_MS = 1500;
+/** Seconds Codex and Kimi (x1000 = ms for Gemini) let the native prompt hook run before killing it and
+ *  dropping its stdout. Codex hashes this value into the hook's trust identity (codex-rs hooks
+ *  engine/discovery.rs hook_hash), so changing it silently disables the user-approved hook in
+ *  `codex exec` until re-reviewed. The hook budgets itself inside it instead (user-prompt-submit.ts). */
+export const NATIVE_PROMPT_HOOK_TIMEOUT_S = 5;
 export const DEFAULT_STOP_DRAIN_BUDGET_MS = 5_000;
 export const DEFAULT_HOOK_BUDGET_TOKENS = 4_000;
 export const DEFAULT_OBSERVATION_BATCH_SIZE = 20;

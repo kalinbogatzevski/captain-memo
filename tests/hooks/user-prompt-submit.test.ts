@@ -4,6 +4,7 @@ import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os';
 import { spawn } from 'bun';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
+import { homeworkWaitMs } from '../../src/hooks/user-prompt-submit.ts';
 
 const FIXTURE = readFileSync(
   join(import.meta.dir, '../fixtures/hooks/user-prompt-submit.input.json'),
@@ -125,7 +126,15 @@ test('UserPromptSubmit — envelope conforms to spec §3 template', async () => 
     hookBudgetTokens: 2000,
   });
   const workerPort = worker.port;
-  await new Promise(r => setTimeout(r, 500));
+  // Wait until the watcher has indexed the memory file (a fixed 500 ms sleep lost that race under load,
+  // and the envelope then came back with no local-memory section).
+  for (const end = Date.now() + 10_000; Date.now() < end; await Bun.sleep(100)) {
+    const r = await fetch(`http://127.0.0.1:${workerPort}/search/all`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ query: 'NULL sentinels', top_k: 5 }),
+    });
+    if (((await r.json()) as { results?: Array<{ channel: string }> }).results?.some(h => h.channel === 'memory')) break;
+  }
 
   try {
     const fixture = JSON.stringify({
@@ -161,7 +170,7 @@ test('UserPromptSubmit — envelope conforms to spec §3 template', async () => 
     await worker.stop();
     rmSync(workDir, { recursive: true, force: true });
   }
-}, 20_000);   // boots a real worker + spawns the hook: ~5.3 s on the dev box, over the 5 s default (CI runs with 30 s)
+}, 20_000);   // boots a real worker + spawns the hook: ~0.6 s; the 5.3 s once measured here was the boot digest of the REAL recall-audit.jsonl (tests/preload.ts)
 
 test('UserPromptSubmit — `idea:` files homework instead of recalling, and tells the model in one line', async () => {
   const input = JSON.stringify({ session_id: 's-1', cwd: '/tmp/p', prompt: 'idea: let the banner show what is parked' });
@@ -180,4 +189,11 @@ test('UserPromptSubmit — a plain prompt is not homework', async () => {
   const res = await runHook(input);
   expect(res.stdout).toContain('<memory-context');
   expect(res.stdout).not.toContain('Filed as homework');
+});
+
+test('homework wait: 6 s under Claude Code, the rest of the host budget under a native CLI', () => {
+  expect(homeworkWaitMs(undefined, 9_999)).toBe(6_000);   // Claude Code: its own hook timeout is 60 s
+  expect(homeworkWaitMs(5_000, 600)).toBe(3_650);          // 5 s host, 0.6 s cold start, 0.75 s exit margin
+  expect(homeworkWaitMs(5_000, 4_900)).toBe(0);            // budget already spent: answer at once
+  expect(homeworkWaitMs(60_000, 100)).toBe(6_000);         // a roomy host never waits longer than Claude does
 });

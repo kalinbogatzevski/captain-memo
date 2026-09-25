@@ -17,7 +17,7 @@ async function boot(): Promise<void> {
   // dimension config instead of the defaults (voyage-4-nano@localhost, …).
   loadWorkerEnv();
   const handle = await startWorker({ ...(await buildWorkerOptionsFromEnv()), noServe: true });
-  const store = handle.store;
+  const { bumpRetrieval } = handle;   // store bump + /stats invalidation; a bare store.bumpRetrieval left /stats stale
   let busyOp: string | null = null;
 
   const channel = new ThreadChannel({
@@ -29,9 +29,9 @@ async function boot(): Promise<void> {
         // side-message, not an op-routed req/res frame. Validate the source against the known set
         // rather than casting: a malformed value would otherwise build `SET undefined = undefined + 1`
         // and throw (then get swallowed). The reader→main→writer relay only ever sends a valid source.
-        if (m && m.kind === 'bump' && Array.isArray(m.ids) && store) {
+        if (m && m.kind === 'bump' && Array.isArray(m.ids) && bumpRetrieval) {
           if (m.source === 'auto' || m.source === 'search' || m.source === 'drill') {
-            try { store.bumpRetrieval(m.ids, m.source); } catch (err) { console.error('[retrieval-tracking] writer bump failed:', (err as Error).message); }
+            try { bumpRetrieval(m.ids, m.source); } catch (err) { console.error('[retrieval-tracking] writer bump failed:', (err as Error).message); }
           }
           return;
         }

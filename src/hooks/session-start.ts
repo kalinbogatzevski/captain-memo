@@ -379,9 +379,10 @@ export async function main(): Promise<void> {
   } catch (err) { logHookError('SessionStart', err); }
 
   // Re-copy the portable captain-memo skill into the cross-AI destinations that ALREADY have one. Claude
-  // reads its skills from the checkout, so it is never stale; codex/gemini/cursor/… hold a SNAPSHOT taken
-  // when `connect` last ran, and nothing else ever rewrote it. Runs after self-heal and any rollback, so
-  // the copy can never describe code that was rolled back. Refresh-only, never create (skill-refresh.ts).
+  // reads its skills from the plugin this hook runs from (checkout or cache), so they are never stale;
+  // codex/gemini/cursor/… hold a SNAPSHOT taken when `connect` last ran, and nothing else ever rewrote it.
+  // Runs after self-heal and any rollback, so the copy can never describe code that was rolled back.
+  // Refresh-only, never create (skill-refresh.ts), from either install layout (resolveMemoSkillSource).
   try {
     const { refreshMemoSkills, resolveMemoSkillSource } = await import('../cli/skill-refresh.ts');
     const memoSource = resolveMemoSkillSource();

@@ -22,6 +22,7 @@ import { dirname, isAbsolute, join } from 'path';
 import { homedir } from 'os';
 import { spawnSync } from 'child_process';
 import { isMac, isWindows } from '../shared/platform.ts';
+import { NATIVE_PROMPT_HOOK_TIMEOUT_S } from '../shared/paths.ts';
 
 /** Return to column 0 and ERASE the line, for the in-place per-tool probe line that `connect` and
  *  `install` both repaint. A bare `\r` is not enough: the line is routinely overwritten by a SHORTER
@@ -533,7 +534,7 @@ export function mergeKimiHooks(existingToml: string | null, hookCommand: string,
   ].join('\n');
   const block = [
     CAPTAIN_MEMO_KIMI_HOOK_BEGIN,
-    hook('UserPromptSubmit', 'KimiUserPromptSubmit', 5),
+    hook('UserPromptSubmit', 'KimiUserPromptSubmit', NATIVE_PROMPT_HOOK_TIMEOUT_S),
     '',
     hook('PostToolUse', 'KimiPostToolUse', 5),
     '',
@@ -670,7 +671,7 @@ export function mergeCodexHooks(existingJson: string | null, hookCommand: string
     `${quoteHookArg(hookCommand)} ${quoteHookArg(hookBundle)} ${alias} ${CAPTAIN_MEMO_CODEX_HOOK_MARKER}`;   // marker as an extra argument (ignored by the hook); `# marker` is not a comment to cmd.exe
   const managed: Record<string, CommandHookEntry> = {
     UserPromptSubmit: {
-      type: 'command', command: command('CodexUserPromptSubmit'), timeout: 5,
+      type: 'command', command: command('CodexUserPromptSubmit'), timeout: NATIVE_PROMPT_HOOK_TIMEOUT_S,
       // Captain Memo's default injection budget is 4k tokens; Codex otherwise
       // truncates command-hook context at its lower 2.5k default.
       additionalContextLimit: 5_000,
@@ -739,7 +740,7 @@ export function mergeGeminiHooks(existingJson: string | null, hookCommand: strin
     });
     hooks[event] = groups;
   };
-  add('BeforeAgent', 'GeminiBeforeAgent', 5_000);
+  add('BeforeAgent', 'GeminiBeforeAgent', NATIVE_PROMPT_HOOK_TIMEOUT_S * 1000);
   add('AfterTool', 'GeminiAfterTool', 5_000, '*');
   add('AfterAgent', 'GeminiAfterAgent', 30_000);
   root.hooks = hooks;

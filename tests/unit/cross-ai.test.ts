@@ -166,6 +166,15 @@ test('hook command lines: bare words stay bare, spaces get quotes, the marker is
   expect(JSON.stringify(gem)).not.toContain('# ');
 });
 
+// The prompt-hook timeout is part of Codex's hook trust hash: a reconnect that changed it would silently
+// disable the user-approved hook in `codex exec`. Configs older connects wrote say 5 / 5000 / 5, and the
+// hook budgets itself inside that (homeworkWaitMs), so a reconnect must keep writing exactly these values.
+test('native prompt-hook timeouts stay what older connects wrote', () => {
+  expect(JSON.parse(mergeCodexHooks(null, 'bun', '/x/h.js')).hooks.UserPromptSubmit[0].hooks[0].timeout).toBe(5);
+  expect(JSON.parse(mergeGeminiHooks(null, 'bun', '/x/h.js')).hooks.BeforeAgent[0].hooks[0].timeout).toBe(5_000);
+  expect(mergeKimiHooks(null, 'bun', '/x/h.js')).toMatch(/event = "UserPromptSubmit"\ncommand = [^\n]*\ntimeout = 5\n/);
+});
+
 test('mergeCodexHooks — preserves foreign hooks and replaces managed entries idempotently', () => {
   const existing = JSON.stringify({
     custom: { keep: true },

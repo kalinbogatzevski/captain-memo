@@ -1,5 +1,6 @@
 import { test, expect } from 'bun:test';
-import { readFileSync } from 'fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
 import { refreshMemoSkills, resolveMemoSkillSource, MEMO_SKILL_RELPATHS } from '../../src/cli/skill-refresh.ts';
 
@@ -14,6 +15,28 @@ function fakeFs(present: string[]) {
 
 test('resolves the shipped skill from the checkout', () => {
   expect(resolveMemoSkillSource()).toMatch(/skills[\\/]captain-memo[\\/]SKILL\.md$/);
+});
+
+// A GitHub-marketplace install runs the hook bundle from Claude Code's plugin cache, which holds a copy of
+// plugin/ and nothing else: <ver>/dist/../../skills does not exist there, so the refresh silently did nothing.
+test('resolves the portable copy from a plugin-cache layout, and null when neither exists', () => {
+  const root = mkdtempSync(join(tmpdir(), 'cm-skill-cache-'));
+  try {
+    const dist = join(root, '0.0.0', 'dist');
+    mkdirSync(dist, { recursive: true });
+    expect(resolveMemoSkillSource(dist)).toBeNull();
+    const portable = join(root, '0.0.0', 'portable', 'captain-memo', 'SKILL.md');
+    mkdirSync(join(portable, '..'), { recursive: true });
+    writeFileSync(portable, 'x');
+    expect(resolveMemoSkillSource(dist)).toBe(portable);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('the plugin ships a byte-identical copy of the portable skill (else run `bun run build:plugin`)', () => {
+  const root = join(import.meta.dir, '..', '..');
+  const checkout = readFileSync(join(root, 'skills', 'captain-memo', 'SKILL.md'));
+  const shipped = readFileSync(join(root, 'plugin', 'portable', 'captain-memo', 'SKILL.md'));
+  expect(shipped.equals(checkout), 'plugin/portable/captain-memo/SKILL.md drifted from skills/captain-memo/SKILL.md: run `bun run build:plugin`').toBe(true);
 });
 
 test('refreshes existing copies only — never creates one for a CLI that was not connected here', () => {

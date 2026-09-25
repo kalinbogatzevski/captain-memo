@@ -12,6 +12,7 @@
 // one by reference. (Regression history: commit 8295f08.)
 
 import { logHookError } from './shared.ts';
+import { NATIVE_PROMPT_HOOK_TIMEOUT_S } from '../shared/paths.ts';
 import { main as userPromptSubmit } from './user-prompt-submit.ts';
 import { main as sessionStart } from './session-start.ts';
 import { main as preToolUse } from './pre-tool-use.ts';
@@ -29,15 +30,16 @@ const EVENTS: Record<string, () => Promise<void>> = {
   // Native Codex uses the same lifecycle event names but not identical stdout
   // semantics. Installer-owned aliases keep the vendor behavior explicit while
   // reusing the same single-file hook bundle.
-  CodexUserPromptSubmit: () => userPromptSubmit({ emitOriginalPrompt: false, structuredContextJson: true }),
+  CodexUserPromptSubmit: () => userPromptSubmit({ emitOriginalPrompt: false, structuredContextJson: true, hostTimeoutMs: NATIVE_PROMPT_HOOK_TIMEOUT_S * 1000 }),
   CodexPostToolUse: () => postToolUse({ originAgent: 'codex', source: 'hook:codex' }),
   CodexStop: () => stop({ emitJson: true }),
-  GeminiBeforeAgent: () => userPromptSubmit({ emitOriginalPrompt: false, structuredContextJson: true, contextEventName: 'BeforeAgent' }),
+  GeminiBeforeAgent: () => userPromptSubmit({ emitOriginalPrompt: false, structuredContextJson: true, contextEventName: 'BeforeAgent', hostTimeoutMs: NATIVE_PROMPT_HOOK_TIMEOUT_S * 1000 }),
   GeminiAfterTool: () => postToolUse({ originAgent: 'gemini', source: 'hook:gemini' }),
   GeminiAfterAgent: () => stop({ emitJson: true }),
-  // Kimi treats plain successful stdout as added context; it documents
-  // structured JSON only for permission decisions, so keep recall human-readable.
-  KimiUserPromptSubmit: () => userPromptSubmit({ emitOriginalPrompt: false }),
+  // Kimi documents plain successful stdout as added context, but kimi-cli 1.52.0 only reads a
+  // UserPromptSubmit result's block decision (soul/kimisoul.py), so this output does not reach
+  // the model there yet. Kept human-readable for when it does.
+  KimiUserPromptSubmit: () => userPromptSubmit({ emitOriginalPrompt: false, hostTimeoutMs: NATIVE_PROMPT_HOOK_TIMEOUT_S * 1000 }),
   KimiPostToolUse: () => postToolUse({ originAgent: 'kimi', source: 'hook:kimi' }),
   KimiStop: () => stop(),
 };

@@ -7,6 +7,28 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.44.4] — 2026-09-25
+
+### Fixed
+
+- **The injected `captain-memo` skill now refreshes on a GitHub-marketplace install.** Claude Code runs such an
+  install from its plugin cache, a copy of `plugin/` only, where the session-start refresh (0.44.1) found no skill
+  file and silently did nothing. The skill now ships inside the plugin as `plugin/portable/captain-memo/SKILL.md`
+  (outside Claude Code's component folders, so it does not load as a skill of its own), kept byte-identical to
+  `skills/captain-memo/SKILL.md` by `build:plugin` and a test. A `captain-memo install` checkout runs the plugin in
+  place and was not affected.
+- **`idea:` in Codex, Gemini CLI or Kimi could lose its "filed as homework" line.** Those CLIs kill a prompt hook
+  after 5 s, and homework capture could wait up to 6 s for the worker. Under a native CLI the wait now fits inside
+  that budget with a 750 ms margin; a slower worker gets the model the "did not confirm, check `todo_list`" line
+  instead of nothing. The timeouts `connect` writes stay at 5 s: Codex hashes them into its hook trust, so
+  changing them would silently switch off hooks you already approved. Existing hook configs need nothing.
+- **A search served by a reader thread left `/stats` stale.** The retrieval bump it relays to the writer never
+  cleared the `/stats` cache, so the count lagged until the cache expired.
+- **The test suite runs against a scratch home.** `tests/preload.ts` (loaded by `bunfig.toml`) gives every test
+  its own `HOME` and data folder. The suite had been reading and writing the developer's real Captain Memo data
+  (the recall audit log, transcripts, a paired gateway device, the injected skill copies), which is what made
+  the reader-pool, hook-bundle and UserPromptSubmit tests fail on a busy machine.
+
 ## [0.44.3] — 2026-09-25
 
 ### Fixed
@@ -57,9 +79,9 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
   not; `todo_list/claim/done`). It also refreshes at every Claude Code session start (`src/cli/skill-refresh.ts`,
   refresh-only, never create): it had frozen at `connect` time, so a CLI connected before a tool existed never
   learned it.
-  *Correction (2026-09-25): on a default install, where Claude Code runs the plugin from its cache, this refresh
-  does not run, because the plugin snapshot does not carry the skill file. It works only in `install-hooks` mode.
-  Until that is fixed, re-run `captain-memo connect` after an update to refresh the copies.*
+  *Correction (2026-09-25, amended): this refresh did not run on a GitHub-marketplace install, which Claude Code
+  runs from its plugin cache; fixed in 0.44.4. A `captain-memo install` checkout runs the plugin in place and was
+  not affected.*
 - The GitHub Release job is idempotent: a release already cut for the tag is not a failure.
 
 ## [0.44.0] — 2026-09-18

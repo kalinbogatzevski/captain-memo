@@ -12888,7 +12888,7 @@ function loadWorkerEnv() {
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.44.3",
+  version: "0.44.4",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -12933,7 +12933,7 @@ var package_default = {
     "mcp:start": "bun src/mcp-server.ts",
     cli: "bun bin/captain-memo",
     hook: "bun bin/captain-memo-hook.ts",
-    "build:plugin": "bun build src/mcp-server.ts --target bun --outfile plugin/dist/mcp-server.js && bun build bin/captain-memo-hook.ts --target bun --outfile plugin/dist/captain-memo-hook.js"
+    "build:plugin": `bun build src/mcp-server.ts --target bun --outfile plugin/dist/mcp-server.js && bun build bin/captain-memo-hook.ts --target bun --outfile plugin/dist/captain-memo-hook.js && bun -e "require('fs').copyFileSync('skills/captain-memo/SKILL.md','plugin/portable/captain-memo/SKILL.md')"`
   },
   dependencies: {
     "@anthropic-ai/sdk": "^0.95.0",

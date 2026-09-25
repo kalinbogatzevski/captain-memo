@@ -22,10 +22,15 @@ export const MEMO_SKILL_RELPATHS: readonly string[] = [
   '.config/JetBrains/captain-memo.md',
 ];
 
-/** The skill this install ships (a checkout file — the plugin snapshot does not carry it), or null. */
-export function resolveMemoSkillSource(): string | null {
-  const p = join(import.meta.dir, '..', '..', 'skills', 'captain-memo', 'SKILL.md');
-  return existsSync(p) ? p : null;
+/** The skill this install ships, or null. `base` is the running code's directory: src/cli (install-hooks
+ *  mode) or plugin/dist (the hook bundle). A checkout has skills/ two levels up; a Claude Code plugin CACHE
+ *  (GitHub marketplace: ~/.claude/plugins/cache/<m>/<p>/<ver>/dist) holds only plugin/, so the bundle also
+ *  looks in plugin/portable/, a byte copy kept in step by build:plugin and a drift test. */
+export function resolveMemoSkillSource(base: string = import.meta.dir): string | null {
+  return [
+    join(base, '..', '..', 'skills', 'captain-memo', 'SKILL.md'),
+    join(base, '..', 'portable', 'captain-memo', 'SKILL.md'),
+  ].find((p) => existsSync(p)) ?? null;
 }
 
 export interface RefreshDeps {

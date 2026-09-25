@@ -1,0 +1,3 @@
+[test]
+# Scratch HOME / data dir / config dir for the whole suite; see the file for why.
+preload = ["./tests/preload.ts"]

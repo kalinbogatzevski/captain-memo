@@ -29,7 +29,7 @@ var __esm = (fn, res, err) => () => {
 // src/shared/paths.ts
 import { homedir } from "os";
 import { join } from "path";
-var DATA_DIR, META_DB_PATH, QUEUE_DB_PATH, OBSERVATIONS_DB_PATH, PENDING_EMBED_DB_PATH, VECTOR_DB_DIR, LOGS_DIR, ARCHIVE_DIR, CONFIG_PATH, CONFIG_DIR, WORKER_ENV_PATH, DEFAULT_WORKER_PORT = 39888, ENV_HOOK_TIMEOUT_MS = "CAPTAIN_MEMO_HOOK_TIMEOUT_MS", DEFAULT_HOOK_TIMEOUT_MS = 1500, DEFAULT_STOP_DRAIN_BUDGET_MS = 5000, DEFAULT_REMEMBER_DIR;
+var DATA_DIR, META_DB_PATH, QUEUE_DB_PATH, OBSERVATIONS_DB_PATH, PENDING_EMBED_DB_PATH, VECTOR_DB_DIR, LOGS_DIR, ARCHIVE_DIR, CONFIG_PATH, CONFIG_DIR, WORKER_ENV_PATH, DEFAULT_WORKER_PORT = 39888, ENV_HOOK_TIMEOUT_MS = "CAPTAIN_MEMO_HOOK_TIMEOUT_MS", DEFAULT_HOOK_TIMEOUT_MS = 1500, NATIVE_PROMPT_HOOK_TIMEOUT_S = 5, DEFAULT_STOP_DRAIN_BUDGET_MS = 5000, DEFAULT_REMEMBER_DIR;
 var init_paths = __esm(() => {
   DATA_DIR = process.env.CAPTAIN_MEMO_DATA_DIR ?? join(homedir(), ".captain-memo");
   META_DB_PATH = join(DATA_DIR, "meta.sqlite3");
@@ -878,6 +878,7 @@ var init_embedder_installer = __esm(() => {
 var PROBE_CLEAR, bunYaml, OPENCODE_LOCAL_PROVIDERS, OPENCODE_LOCAL_PROVIDER_KEYS;
 var init_cross_ai = __esm(() => {
   init_platform();
+  init_paths();
   PROBE_CLEAR = process.stdout.isTTY === true ? "\r\x1B[2K" : "\r";
   bunYaml = globalThis.Bun?.YAML;
   OPENCODE_LOCAL_PROVIDERS = {
@@ -998,9 +999,11 @@ var init_plugin_cache_refresh = __esm(() => {
 // src/cli/skill-refresh.ts
 import { existsSync as existsSync5, copyFileSync } from "fs";
 import { join as join14 } from "path";
-function resolveMemoSkillSource() {
-  const p = join14(import.meta.dir, "..", "..", "skills", "captain-memo", "SKILL.md");
-  return existsSync5(p) ? p : null;
+function resolveMemoSkillSource(base = import.meta.dir) {
+  return [
+    join14(base, "..", "..", "skills", "captain-memo", "SKILL.md"),
+    join14(base, "..", "portable", "captain-memo", "SKILL.md")
+  ].find((p) => existsSync5(p)) ?? null;
 }
 function refreshMemoSkills(source, home, deps = {}) {
   const exists = deps.exists ?? existsSync5;
@@ -1123,6 +1126,7 @@ var init_pre_git = __esm(() => {
 
 // src/hooks/dispatcher.ts
 init_shared();
+init_paths();
 
 // src/hooks/user-prompt-submit.ts
 init_shared();
@@ -1220,6 +1224,12 @@ function consumeSessionDegraded(sessionId, dataDir = DATA_DIR) {
 }
 
 // src/hooks/user-prompt-submit.ts
+var HOST_EXIT_MARGIN_MS = 750;
+function homeworkWaitMs(hostTimeoutMs, elapsedMs) {
+  if (hostTimeoutMs === undefined)
+    return 6000;
+  return Math.max(0, Math.min(6000, hostTimeoutMs - elapsedMs - HOST_EXIT_MARGIN_MS));
+}
 async function main(options = {}) {
   let payload = {};
   try {
@@ -1232,7 +1242,7 @@ async function main(options = {}) {
   const timeoutMs = Number(process.env[ENV_HOOK_TIMEOUT_MS] ?? DEFAULT_HOOK_TIMEOUT_MS);
   const homework = parseHomeworkPrompt(prompt2);
   if (homework) {
-    const filed = await workerFetch("/homework/add", { method: "POST", body: { text: homework, by: payload.session_id ?? "hook", project: resolveProjectId(payload.cwd) }, timeoutMs: 6000 });
+    const filed = await workerFetch("/homework/add", { method: "POST", body: { text: homework, by: payload.session_id ?? "hook", project: resolveProjectId(payload.cwd) }, timeoutMs: homeworkWaitMs(options.hostTimeoutMs, performance.now()) });
     const line = filed.ok && filed.body ? homeworkFiledLine(filed.body.item) + ` (${filed.body.open} open)` : '\uD83D\uDCDD The worker did not confirm filing this as homework in time \u2014 it may still have landed: todo_list() shows; if it is not there, say "noted" and todo_add it yourself.';
     logWorkerFailure("UserPromptSubmit", "/homework/add", filed);
     if (options.structuredContextJson)
@@ -1319,7 +1329,7 @@ import { homedir as homedir9 } from "os";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.44.3",
+  version: "0.44.4",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -1364,7 +1374,7 @@ var package_default = {
     "mcp:start": "bun src/mcp-server.ts",
     cli: "bun bin/captain-memo",
     hook: "bun bin/captain-memo-hook.ts",
-    "build:plugin": "bun build src/mcp-server.ts --target bun --outfile plugin/dist/mcp-server.js && bun build bin/captain-memo-hook.ts --target bun --outfile plugin/dist/captain-memo-hook.js"
+    "build:plugin": `bun build src/mcp-server.ts --target bun --outfile plugin/dist/mcp-server.js && bun build bin/captain-memo-hook.ts --target bun --outfile plugin/dist/captain-memo-hook.js && bun -e "require('fs').copyFileSync('skills/captain-memo/SKILL.md','plugin/portable/captain-memo/SKILL.md')"`
   },
   dependencies: {
     "@anthropic-ai/sdk": "^0.95.0",
@@ -2524,13 +2534,13 @@ var EVENTS = {
   PostToolUse: main4,
   Stop: main5,
   PreCompact: main6,
-  CodexUserPromptSubmit: () => main({ emitOriginalPrompt: false, structuredContextJson: true }),
+  CodexUserPromptSubmit: () => main({ emitOriginalPrompt: false, structuredContextJson: true, hostTimeoutMs: NATIVE_PROMPT_HOOK_TIMEOUT_S * 1000 }),
   CodexPostToolUse: () => main4({ originAgent: "codex", source: "hook:codex" }),
   CodexStop: () => main5({ emitJson: true }),
-  GeminiBeforeAgent: () => main({ emitOriginalPrompt: false, structuredContextJson: true, contextEventName: "BeforeAgent" }),
+  GeminiBeforeAgent: () => main({ emitOriginalPrompt: false, structuredContextJson: true, contextEventName: "BeforeAgent", hostTimeoutMs: NATIVE_PROMPT_HOOK_TIMEOUT_S * 1000 }),
   GeminiAfterTool: () => main4({ originAgent: "gemini", source: "hook:gemini" }),
   GeminiAfterAgent: () => main5({ emitJson: true }),
-  KimiUserPromptSubmit: () => main({ emitOriginalPrompt: false }),
+  KimiUserPromptSubmit: () => main({ emitOriginalPrompt: false, hostTimeoutMs: NATIVE_PROMPT_HOOK_TIMEOUT_S * 1000 }),
   KimiPostToolUse: () => main4({ originAgent: "kimi", source: "hook:kimi" }),
   KimiStop: () => main5()
 };

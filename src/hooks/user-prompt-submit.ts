@@ -21,6 +21,20 @@ export interface UserPromptSubmitOptions {
   structuredContextJson?: boolean;
   /** Event name required inside the native CLI's structured hook output. */
   contextEventName?: 'UserPromptSubmit' | 'BeforeAgent';
+  /** The native CLI kills this process this many ms after spawning it and drops its stdout. */
+  hostTimeoutMs?: number;
+}
+
+/** What performance.now() cannot see: the CLI's `$SHELL -lc` spawn (~40 ms), the stdout write and exit.
+ *  ponytail: a fixed margin measured on Linux (bun 1.4.2, load 3-9); not measured on Windows. */
+const HOST_EXIT_MARGIN_MS = 750;
+
+/** How long homework capture may wait for the worker. 6 s under Claude Code (its hook timeout is 60 s);
+ *  under a native CLI, whatever is left of the host's kill budget, so a slow worker still gets the
+ *  "did not confirm" line to the model instead of the hook dying with nothing said. */
+export function homeworkWaitMs(hostTimeoutMs: number | undefined, elapsedMs: number): number {
+  if (hostTimeoutMs === undefined) return 6_000;
+  return Math.max(0, Math.min(6_000, hostTimeoutMs - elapsedMs - HOST_EXIT_MARGIN_MS));
 }
 
 export async function main(options: UserPromptSubmitOptions = {}): Promise<void> {
@@ -39,9 +53,11 @@ export async function main(options: UserPromptSubmitOptions = {}): Promise<void>
   // may want a word back); recall is skipped — the prompt is not a question about the codebase.
   const homework = parseHomeworkPrompt(prompt);
   if (homework) {
-    // 6 s, not the 1.5 s envelope budget: the write queues behind the writer thread while the observer ingests
-    // this very session (measured 2026-09-18: 2.35 s on a live worker, 20 ms idle). The user is filing an aside.
-    const filed = await workerFetch<{ item: HomeworkItem; open: number }>('/homework/add', { method: 'POST', body: { text: homework, by: payload.session_id ?? 'hook', project: resolveProjectId(payload.cwd) }, timeoutMs: 6_000 });
+    // Up to 6 s, not the 1.5 s envelope budget: the write queues behind the writer thread. Measured 2026-09-25
+    // on a live threaded worker (505 writer RPCs): p50 12 ms, p95 0.9 s, 3.6% over 4.3 s, 2.8% over 6 s, 2.2%
+    // stalled to the 10 s writer-RPC timeout. A native CLI kills the hook at 5 s, so there the wait is cut to
+    // fit (homeworkWaitMs). A wait that runs out does not cancel the add: the writer still completes it.
+    const filed = await workerFetch<{ item: HomeworkItem; open: number }>('/homework/add', { method: 'POST', body: { text: homework, by: payload.session_id ?? 'hook', project: resolveProjectId(payload.cwd) }, timeoutMs: homeworkWaitMs(options.hostTimeoutMs, performance.now()) });
     const line = filed.ok && filed.body ? homeworkFiledLine(filed.body.item) + ` (${filed.body.open} open)`
       : '📝 The worker did not confirm filing this as homework in time — it may still have landed: todo_list() shows; if it is not there, say "noted" and todo_add it yourself.';
     logWorkerFailure('UserPromptSubmit', '/homework/add', filed);

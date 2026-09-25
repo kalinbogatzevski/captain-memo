@@ -233,6 +233,10 @@ export interface WorkerHandle {
   store?: ObservationsStore;
   /** The request handler — exposed so the engine thread can serve it over the channel. */
   handler?: (req: Request) => Promise<Response>;
+  /** Apply a retrieval bump that arrived outside the request path (engine.ts: a reader's search relayed
+   *  to the writer) AND invalidate /stats — a bare store.bumpRetrieval left the cached recall totals
+   *  serving the pre-bump counts. Present exactly when `store` is. */
+  bumpRetrieval?: (ids: number[], source: import('../shared/types.ts').RetrievalSource) => void;
 }
 
 const SearchRequestSchema = z.object({
@@ -2143,6 +2147,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     applyBump(ids, source, opts.onRetrievalBump, obsStore ?? undefined);
     invalidateStats(); // retrieval bumps change /stats recall counts — serve fresh next call
   };
+  const relayedBump = (ids: number[], source: import('../shared/types.ts').RetrievalSource): void => {
+    obsStore!.bumpRetrieval(ids, source);
+    invalidateStats();
+  };
 
   // Local "search everything" → Hit[]. Backs POST /search/all. LOCAL channels only.
   const localSearchAll = async (query: string, topK: number, config: RankConfig): Promise<Hit[]> => {
@@ -3594,7 +3602,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     return {
       port: opts.port,
       handler,
-      ...(obsStore ? { store: obsStore } : {}),
+      ...(obsStore ? { store: obsStore, bumpRetrieval: relayedBump } : {}),
       stop: stopResources,
     };
   }
@@ -3668,7 +3676,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   return {
     port: resolvedPort,
     handler,
-    ...(obsStore ? { store: obsStore } : {}),
+    ...(obsStore ? { store: obsStore, bumpRetrieval: relayedBump } : {}),
     stop: async () => {
       for (const s of gatewaySessions.values()) {
         try { await s.server.close(); } catch { /* best-effort */ }

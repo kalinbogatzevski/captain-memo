@@ -1,7 +1,8 @@
 import { test, expect } from 'bun:test';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { readFileSync, rmSync } from 'fs';
+import { readFileSync, rmSync, mkdtempSync, mkdirSync, writeFileSync, cpSync } from 'fs';
+import { NATIVE_PROMPT_HOOK_TIMEOUT_S } from '../../src/shared/paths.ts';
 
 const ROOT = join(import.meta.dir, '../..');
 const BUNDLE = join(ROOT, 'plugin/dist/captain-memo-hook.js');
@@ -58,6 +59,35 @@ test('SessionStart emits a degraded banner (not silence) when the worker is unre
   await proc.exited;
   expect(out).toContain('systemMessage');
   expect(out).toContain('worker unreachable');
+});
+
+// A GitHub-marketplace install runs this bundle from Claude Code's plugin cache: a copy of plugin/ at
+// ~/.claude/plugins/cache/<m>/<p>/<ver>/, with no skills/ beside it. SessionStart must still refresh the
+// captain-memo skill copies the other CLIs hold (it silently skipped them before plugin/portable/ existed).
+test('SessionStart run from a plugin-cache copy refreshes the injected skill copies', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cm-cache-layout-'));
+  try {
+    const cache = join(root, 'cache', 'captain-memo', 'captain-memo', '0.0.0');
+    cpSync(join(ROOT, 'plugin'), cache, { recursive: true });
+    const home = join(root, 'home');
+    const stale = join(home, '.codex', 'skills', 'captain-memo', 'SKILL.md');
+    mkdirSync(join(stale, '..'), { recursive: true });
+    writeFileSync(stale, 'stale snapshot from the day codex was connected\n');
+    const proc = Bun.spawn(['bun', join(cache, 'dist', 'captain-memo-hook.js'), 'SessionStart'], {
+      stdin: new TextEncoder().encode(JSON.stringify({ source: 'startup' })),
+      env: {
+        ...process.env,
+        HOME: home, USERPROFILE: home,
+        CAPTAIN_MEMO_DATA_DIR: join(root, 'data'),
+        CAPTAIN_MEMO_WORKER_PORT: '1',
+        CAPTAIN_MEMO_SESSION_START_TIMEOUT_MS: '300',
+        CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1',
+      },
+      stdout: 'ignore', stderr: 'ignore',
+    });
+    await proc.exited;
+    expect(readFileSync(stale, 'utf-8')).toBe(readFileSync(join(ROOT, 'skills', 'captain-memo', 'SKILL.md'), 'utf-8'));
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test('committed bundle dispatches exactly one native PostToolUse handler', async () => {
@@ -120,3 +150,35 @@ test('hook bundle built fresh from source is self-contained (guards source regre
     rmSync(out, { force: true });
   }
 });
+
+// Codex / Gemini / Kimi kill the prompt hook NATIVE_PROMPT_HOOK_TIMEOUT_S after spawning it and throw its
+// stdout away. Homework capture used to wait 6 s for the worker regardless, so a slow worker meant the model
+// got the bare `todo:` prompt with no word that it was parked. Now the wait fits the budget and the
+// "did not confirm" line arrives inside it.
+for (const [alias, event] of [
+  ['CodexUserPromptSubmit', 'UserPromptSubmit'],
+  ['GeminiBeforeAgent', 'BeforeAgent'],
+  ['KimiUserPromptSubmit', null],   // plain stdout
+] as const) {
+  test(`${alias}: homework capture answers inside the host's kill budget when the worker is slow`, async () => {
+    const server = Bun.serve({ port: 0, fetch: async () => { await Bun.sleep(8_000); return Response.json({}); } });
+    try {
+      const started = performance.now();
+      const proc = Bun.spawn(['bun', BUNDLE, alias], {
+        stdin: new TextEncoder().encode(JSON.stringify({ session_id: 't', cwd: '/tmp', prompt: 'todo: x' })),
+        env: { ...process.env, CAPTAIN_MEMO_WORKER_PORT: String(server.port) },
+        stdout: 'pipe', stderr: 'ignore',
+      });
+      const out = await new Response(proc.stdout).text();
+      await proc.exited;
+      expect(performance.now() - started).toBeLessThan(NATIVE_PROMPT_HOOK_TIMEOUT_S * 1000);
+      if (event) {
+        const parsed = JSON.parse(out) as { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
+        expect(parsed.hookSpecificOutput.hookEventName).toBe(event);
+        expect(parsed.hookSpecificOutput.additionalContext).toMatch(/did not confirm/);
+      } else {
+        expect(out).toMatch(/did not confirm/);
+      }
+    } finally { server.stop(true); }
+  }, 15_000);
+}
