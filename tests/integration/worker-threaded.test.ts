@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
+import { BOOT_WAIT_MS, tailOf, waitHealthy } from '../support/worker-boot.ts';
 
 // fileURLToPath (not URL.pathname): on Windows `.pathname` is "/C:/…/index.ts"
 // (leading slash before the drive), which `bun <path>` cannot resolve — the
@@ -13,11 +14,6 @@ const procs: Array<{ kill: () => void }> = []; const dirs: string[] = [];
 afterAll(() => { for (const p of procs) try { p.kill(); } catch {} for (const d of dirs) try { rmSync(d, { recursive: true, force: true }); } catch {} });
 
 async function freePort(): Promise<number> { const s = Bun.serve({ port: 0, fetch: () => new Response('') }); const p = s.port ?? 0; s.stop(true); return p; }
-async function waitHealthy(base: string, ms = 20_000) {
-  const end = Date.now() + ms;
-  while (Date.now() < end) { try { if ((await fetch(`${base}/health`)).ok) return; } catch {} await Bun.sleep(150); }
-  throw new Error('never healthy');
-}
 
 test('threaded worker: /health stays fast while the engine is blocked 5s', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'cm-thr-')); dirs.push(dir);
@@ -28,11 +24,11 @@ test('threaded worker: /health stays fast while the engine is blocked 5s', async
     env: { ...process.env, CAPTAIN_MEMO_WORKER_THREADED: '1', CAPTAIN_MEMO_ENABLE_TEST_ENDPOINTS: '1',
       CAPTAIN_MEMO_SKIP_EMBED: '1', CAPTAIN_MEMO_SUMMARIZER_PROVIDER: 'anthropic', ANTHROPIC_API_KEY: '',
       CAPTAIN_MEMO_DATA_DIR: dir, CAPTAIN_MEMO_CONFIG_DIR: dir, CAPTAIN_MEMO_WORKER_PORT: String(port), CAPTAIN_MEMO_WATCH_MEMORY: join(dir, 'mem', '*.md') },
-    stdout: 'ignore', stderr: 'ignore',
+    stdout: 'ignore', stderr: 'pipe',
   });
   procs.push(proc);
   const base = `http://localhost:${port}`;
-  await waitHealthy(base);
+  await waitHealthy(base, proc, tailOf(proc.stderr));
 
   // Block the ENGINE for 5s (don't await), then hammer /health on MAIN.
   void fetch(`${base}/test/block?ms=5000`).catch(() => {});
@@ -59,7 +55,7 @@ test('threaded worker: /health stays fast while the engine is blocked 5s', async
   // not right after the port answers: clearTransition() runs a hair after startThreadedWorker
   // returns, so an immediate check has a sub-millisecond flake window.
   expect(existsSync(join(dir, '.worker-transition'))).toBe(false);
-}, 40_000);
+}, BOOT_WAIT_MS + 20_000);
 
 // A thread_rpc_timeout abandons MAIN's wait; it does NOT cancel the writer. For /remember that is "unconfirmed",
 // not "failed": a flat 503 sent a caller into a retry and BOTH copies landed (field 2026-08-08). Other paths
@@ -72,11 +68,11 @@ test('threaded worker: a /remember that outlives main\'s wait answers 202 write_
       CAPTAIN_MEMO_SKIP_EMBED: '1', CAPTAIN_MEMO_SUMMARIZER_PROVIDER: 'anthropic', ANTHROPIC_API_KEY: '',
       CAPTAIN_MEMO_DATA_DIR: dir, CAPTAIN_MEMO_CONFIG_DIR: dir, CAPTAIN_MEMO_WORKER_PORT: String(port),
       CAPTAIN_MEMO_REMEMBER_MS: '1000', CAPTAIN_MEMO_ENGINE_REQUEST_MS: '1000' },
-    stdout: 'ignore', stderr: 'ignore',
+    stdout: 'ignore', stderr: 'pipe',
   });
   procs.push(proc);
   const base = `http://localhost:${port}`;
-  await waitHealthy(base);
+  await waitHealthy(base, proc, tailOf(proc.stderr));
 
   const block = fetch(`${base}/test/block?ms=4000`);   // pins the WRITER past both 1s deadlines
   await Bun.sleep(200);
@@ -90,4 +86,4 @@ test('threaded worker: a /remember that outlives main\'s wait answers 202 write_
   expect(b.status).toBe(503);
   expect(await b.text()).toContain('thread_rpc_timeout');
   proc.kill();
-}, 40_000);
+}, BOOT_WAIT_MS + 20_000);

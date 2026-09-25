@@ -2294,7 +2294,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           if (typeof repoClaim.is_dirty === 'boolean') setBody.is_dirty = repoClaim.is_dirty;
         }
         const note = setWorkNote(meta, setBody, now);
-        const others = listLocalActive(meta, now);
+        // Decorated like /worknote/active, so an overlap with a dead session's ghost claim says it is stale.
+        const others = decorateStaleness(listLocalActive(meta, now), now);
         const overlaps = overlapsAgainst(note.files, others, note.session_id);
         // TOPIC overlap (2026-09-18): the collision an operator cares about is two sessions on the same THING; a
         // shared exact tag is as loud as a shared glob, and a session already flagged by files is not repeated.
@@ -2353,7 +2354,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         const now = Date.now();
         const repoRoot = url.searchParams.get('repo_root') ?? '';
         if (!repoRoot) return Response.json({ holders: [] });
-        const holders = repoActiveHolders(listLocalActive(meta, now), repoRoot);
+        const holders = repoActiveHolders(decorateStaleness(listLocalActive(meta, now), now), repoRoot);
         return Response.json({ holders });
       }
       if (req.method === 'POST' && url.pathname === '/worknote/clear') {
@@ -3677,6 +3678,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       gatewayServer = undefined;
     }
   }
+
+  // A boot that succeeds but is slow leaves no other trace (the stalled Windows CI boots of #105), so name it.
+  const bootS = Math.round(Date.now() / 1000 - workerStartedAtEpoch);
+  if (bootS > 10) console.error(`[worker] slow boot: ready after ~${bootS} s`);
 
   return {
     port: resolvedPort,

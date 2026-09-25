@@ -15,6 +15,7 @@ import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
 import { ObservationsStore } from '../../src/worker/observations-store.ts';
 import { DEFAULT_SIMILARITY_THRESHOLD } from '../../src/shared/title-similarity.ts';
 import { rmWorkDir } from '../support/worker-temp.ts';
+import { BOOT_SLACK_MS } from '../support/worker-boot.ts';
 
 let worker: WorkerHandle | null = null;
 let workDir = '';
@@ -196,5 +197,5 @@ test('dedup under ingest spike — heartbeat stays fresh, a slice aborts for ing
 // (backup 20s, release-gate 30s, worker-threaded 40s, reader-pool 60s); this was the only
 // one that inherited the default. The timeout is a ceiling, not a target: it does not slow
 // a passing run by a millisecond, it just stops a slow machine from being reported as a
-// broken one.
-}, 30_000);
+// broken one. Plus BOOT_SLACK_MS: an explicit timeout overrides CI's Windows --timeout 90000.
+}, 30_000 + BOOT_SLACK_MS);

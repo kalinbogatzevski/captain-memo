@@ -107,6 +107,15 @@ test('runPreGit — a PEER holder of the repo emits an advisory additionalContex
   expect(stdout).toContain('peer-session');
 });
 
+// #103: a holder whose claim went stale is named as such, but the advice to isolate stays: a stale claim can be a
+// live session that is only idle (claims refresh on write tools), and a mutating git op can wipe its dirty tree.
+test('runPreGit: a stale peer is worded as stale, and even only-stale holders keep the advice to isolate', async () => {
+  stubHolders = [{ session_id: 'ghost-session-1', agent: 'codex', branch: 'main', is_dirty: true, stale: true, age_s: 1800 }];
+  const only = await runPreToolUseHook(gitOpPayload());
+  expect(only).toContain('dirty, stale, last refreshed 30m ago; its session has probably ended');
+  expect(only).toContain('Isolate instead');
+});
+
 test('runPreGit — a SELF-ONLY holder (same session_id as the payload) is silent', async () => {
   stubHolders = [{ session_id: SELF_SESSION, agent: 'claude' }];
   const stdout = await runPreToolUseHook(gitOpPayload());

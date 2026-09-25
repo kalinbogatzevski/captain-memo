@@ -5,13 +5,13 @@
 // Returns rather than prints: the shell branch of pre-tool-use.ts can now produce TWO advisories (this
 // one and a work-board overlap), and stdout carries a single JSON object — two writeStdout calls would
 // emit two concatenated objects and the host would parse neither. The caller merges and emits once.
-import { workerFetch } from './shared.ts';
+import { workerFetch, staleNote } from './shared.ts';
 import { detectRepoRootSync } from '../worker/branch.ts';
 
 const MUTATING = /^(checkout|switch|commit|reset|stash|rebase|merge|cherry-pick|clean|restore)$/;
 
 interface Payload { session_id?: string; cwd?: string; tool_name?: string; tool_input?: { command?: unknown } & Record<string, unknown>; }
-interface Holder { session_id: string; agent?: string; branch?: string; is_dirty?: boolean }
+interface Holder { session_id: string; agent?: string; branch?: string; is_dirty?: boolean; stale?: boolean; age_s?: number }
 interface RepoActiveResp { holders?: Holder[] }
 const HOOK_TIMEOUT_MS = Number(process.env.CAPTAIN_MEMO_PRE_TOOL_USE_TIMEOUT_MS ?? 1500);
 
@@ -50,6 +50,8 @@ export async function runPreGit(payload: Payload): Promise<string | null> {
   if (!res.ok || !res.body?.holders) return null;
   const peers = res.body.holders.filter((h) => h.session_id !== payload.session_id);
   if (peers.length === 0) return null;
-  const who = peers.map((h) => `${(h.session_id ?? '').slice(0, 12)} (${h.agent ?? '?'})${h.branch ? ` on ${h.branch}` : ''}${h.is_dirty ? ', dirty' : ''}`).join(' ; ');
+  const who = peers.map((h) => `${(h.session_id ?? '').slice(0, 12)} (${h.agent ?? '?'})${h.branch ? ` on ${h.branch}` : ''}${h.is_dirty ? ', dirty' : ''}${h.stale ? `, ${staleNote(h)}` : ''}`).join(' ; ');
+  // A stale holder is labelled, never waved through: claims refresh only on write tools, so a live session that is
+  // reading or waiting on its human goes stale after 10 min, and this op can still wipe its uncommitted work.
   return `WORK-BOARD SHARED CHECKOUT: peer session(s) are using ${root} — ${who}. Running \`git ${op}\` here changes that shared working tree for them. Isolate instead: \`git worktree add ../<name> <branch>\` and work there. (advisory)`;
 }

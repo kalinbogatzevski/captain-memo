@@ -326,6 +326,30 @@ test('staleness is computed on read and never written back to the kv', () => {
   expect(stored.age_s).toBeUndefined();
 });
 
+// #103: every overlap/holder builder copies a fixed field list off the peer's note, so a stale mark set by
+// decorateStaleness was dropped on /worknote/set and /worknote/repo-active, and a ghost warned as if it were live.
+test('every overlap and holder builder carries a decorated peer\'s stale/age_s, and adds nothing to an undecorated one', () => {
+  const later = NOW + 47 * 60_000;
+  const ghost: WorkNote = { agent: 'codex', session_id: 'ghost', what: 'same intent', files: ['/r/a.ts'], topics: ['billing'], repo_root: '/r', ts: NOW, ttl_s: 3600, meaningful: true };
+  const [dec] = decorateStaleness([ghost], later);
+  const hits = [
+    ...overlapsAgainst(['/r/a.ts'], [dec!], 'me'),
+    ...topicOverlapsAgainst(['billing'], [dec!], 'me'),
+    ...repoOverlapsAgainst('/r', [dec!], 'me'),
+    ...semanticOverlaps({ session_id: 'me', vec: [1, 0] }, [{ note: dec!, vec: [1, 0] }], 0.5),
+    ...repoActiveHolders([dec!], '/r'),
+  ];
+  expect(hits).toHaveLength(5);
+  for (const h of hits) expect(h).toMatchObject({ stale: true, age_s: 47 * 60 });
+  const plain = [...overlapsAgainst(['/r/a.ts'], [ghost], 'me'), ...repoActiveHolders([ghost], '/r')];
+  for (const h of plain) { expect('stale' in h).toBe(false); expect('age_s' in h).toBe(false); }
+  // /worknote/active's repo_contention and topic_contention rows too: a ghost beside a live holder is marked.
+  const board = decorateStaleness([ghost, { ...ghost, session_id: 'live', ts: later - 60_000 }], later);
+  const rows = [...groupRepoContention(board)[0]!.holders, ...groupTopicContention(board)[0]!.holders];
+  expect(rows.map((h) => [h.session_id, h.stale])).toEqual([['ghost', true], ['live', undefined], ['ghost', true], ['live', undefined]]);
+  for (const h of rows) expect(typeof h.age_s).toBe('number');
+});
+
 test('isStale/claimAgeS agree with the decorated view', () => {
   const old: WorkNote = { agent: 'claude', session_id: 'p1', what: 'x', files: [], ts: NOW, ttl_s: 3600 };
   const later = NOW + 20 * 60_000;

@@ -51,6 +51,7 @@ export interface OverlapHit {
   repo_root?: string;            // the peer's checkout root (files hits): its `<repo_root>/**` is a whole-repo claim
   kind?: 'files' | 'semantic' | 'repo' | 'topics';   // how the collision was detected (absent ⇒ 'files', for back-compat)
   similarity?: number;           // cosine similarity in [0,1], semantic hits only
+  stale?: boolean; age_s?: number;   // the peer's heartbeat view, copied from a decorated note (see heartbeatOf)
 }
 
 /** A live claim paired with the embedding of its meaning text (its `what`). The vector is computed + cached in
@@ -110,6 +111,13 @@ export function isStale(n: WorkNote, now: number): boolean {
  *  claims from, so "is this still real?" is answerable without doing the arithmetic yourself. */
 export function decorateStaleness(notes: WorkNote[], now: number): WorkNote[] {
   return notes.map((n) => ({ ...n, age_s: claimAgeS(n, now), ...(isStale(n, now) ? { stale: true } : {}) }));
+}
+
+/** A decorated note's `stale`/`age_s`, for the builders below that copy a fixed field list off a peer's note.
+ *  Without it every overlap and holder row dropped them (even /worknote/active's contention rows), and a dead
+ *  session's ghost claim warned as live. */
+function heartbeatOf(n: WorkNote): { stale?: boolean; age_s?: number } {
+  return { ...(n.stale ? { stale: true } : {}), ...(typeof n.age_s === 'number' ? { age_s: n.age_s } : {}) };
 }
 
 export interface SetWorkNoteInput {
@@ -218,7 +226,7 @@ export function overlapsAgainst(mineFiles: string[], others: WorkNote[], exclude
     if (o.session_id === excludeSession) continue;
     const overlapping = globsOverlap(mineFiles ?? [], o.files ?? []);
     if (overlapping.length > 0) {
-      hits.push({ agent: o.agent, session_id: o.session_id, ...(o.captain ? { captain: o.captain } : {}), ...(o.repo_root ? { repo_root: o.repo_root } : {}), what: o.what, files: o.files, overlapping, kind: 'files' });
+      hits.push({ agent: o.agent, session_id: o.session_id, ...(o.captain ? { captain: o.captain } : {}), ...(o.repo_root ? { repo_root: o.repo_root } : {}), what: o.what, files: o.files, overlapping, kind: 'files', ...heartbeatOf(o) });
     }
   }
   return hits;
@@ -234,13 +242,13 @@ export function topicOverlapsAgainst(mineTopics: string[], others: WorkNote[], e
     if (o.session_id === excludeSession) continue;
     const shared = (o.topics ?? []).filter((t) => mine.has(t));
     if (shared.length > 0) {
-      hits.push({ agent: o.agent, session_id: o.session_id, ...(o.captain ? { captain: o.captain } : {}), what: o.what, files: o.files, overlapping: shared, kind: 'topics' });
+      hits.push({ agent: o.agent, session_id: o.session_id, ...(o.captain ? { captain: o.captain } : {}), what: o.what, files: o.files, overlapping: shared, kind: 'topics', ...heartbeatOf(o) });
     }
   }
   return hits;
 }
 
-export interface TopicContention { topic: string; holders: { agent: string; session_id: string; captain?: string; what: string }[] }
+export interface TopicContention { topic: string; holders: { agent: string; session_id: string; captain?: string; what: string; stale?: boolean; age_s?: number }[] }
 
 /** Every topic two or more live sessions claim at once, fleet-wide, with the holders — the board's "two people on
  *  the installer" row. Sorted by most holders, then topic. */
@@ -249,7 +257,7 @@ export function groupTopicContention(notes: WorkNote[]): TopicContention[] {
   for (const n of notes) {
     for (const t of n.topics ?? []) {
       const list = byTopic.get(t) ?? [];
-      if (!list.some((h) => h.session_id === n.session_id)) list.push({ agent: n.agent, session_id: n.session_id, ...(n.captain ? { captain: n.captain } : {}), what: n.what });
+      if (!list.some((h) => h.session_id === n.session_id)) list.push({ agent: n.agent, session_id: n.session_id, ...(n.captain ? { captain: n.captain } : {}), what: n.what, ...heartbeatOf(n) });
       byTopic.set(t, list);
     }
   }
@@ -290,7 +298,7 @@ export function semanticOverlaps(
     if (sim >= threshold) {
       hits.push({
         agent: o.note.agent, session_id: sid, ...(o.note.captain ? { captain: o.note.captain } : {}),
-        what: o.note.what, files: o.note.files, overlapping: [], kind: 'semantic', similarity: sim,
+        what: o.note.what, files: o.note.files, overlapping: [], kind: 'semantic', similarity: sim, ...heartbeatOf(o.note),
       });
     }
   }
@@ -326,7 +334,7 @@ export function listFleetActive(kv: WorkNoteKv, now: number): WorkNote[] {
 
 export interface RepoContention {
   repo_root: string;
-  holders: Array<{ session_id: string; agent?: string; branch?: string; is_dirty?: boolean; ts: number }>;
+  holders: Array<{ session_id: string; agent?: string; branch?: string; is_dirty?: boolean; ts: number; stale?: boolean; age_s?: number }>;
   branches: string[];
 }
 
@@ -337,7 +345,7 @@ export function repoOverlapsAgainst(myRepoRoot: string | undefined, others: Work
   const hits: OverlapHit[] = [];
   for (const o of others) {
     if (o.session_id === excludeSession || o.repo_root !== myRepoRoot) continue;
-    hits.push({ agent: o.agent, session_id: o.session_id, ...(o.captain ? { captain: o.captain } : {}), what: o.what, files: o.files, overlapping: [myRepoRoot], kind: 'repo' });
+    hits.push({ agent: o.agent, session_id: o.session_id, ...(o.captain ? { captain: o.captain } : {}), what: o.what, files: o.files, overlapping: [myRepoRoot], kind: 'repo', ...heartbeatOf(o) });
   }
   return hits;
 }
@@ -361,6 +369,7 @@ export function groupRepoContention(notes: WorkNote[]): RepoContention[] {
         session_id: n.session_id, agent: n.agent, ts: n.ts,
         ...(n.branch ? { branch: n.branch } : {}),
         ...(n.is_dirty !== undefined ? { is_dirty: n.is_dirty } : {}),
+        ...heartbeatOf(n),
       })),
       branches: [...new Set(ns.map((n) => n.branch).filter((b): b is string => !!b))],
     });
@@ -374,6 +383,7 @@ export function repoActiveHolders(notes: WorkNote[], repoRoot: string): RepoCont
     session_id: n.session_id, agent: n.agent, ts: n.ts,
     ...(n.branch ? { branch: n.branch } : {}),
     ...(n.is_dirty !== undefined ? { is_dirty: n.is_dirty } : {}),
+    ...heartbeatOf(n),
   }));
 }
 

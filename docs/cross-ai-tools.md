@@ -75,7 +75,7 @@ the worker, so an untrusted, disabled, or broken hook cannot silently turn fallb
 | Runtime | Native contract used | Captain Memo behavior |
 |---|---|---|
 | Codex CLI | Stable `hooks` feature; `UserPromptSubmit`, `PostToolUse`, `Stop` | Probes `codex features list`; installs only when the effective value is `true`. Older or explicitly disabled installs keep rollout capture. Review the managed hooks once in `/hooks`. |
-| Gemini CLI | Experimental hooks; `BeforeAgent`, `AfterTool`, `AfterAgent` | Probes `gemini hooks --help`, enables the two vendor-required settings, and preserves foreign hook groups. Older releases keep transcript capture. |
+| Gemini CLI | Experimental hooks; `BeforeAgent`, `AfterTool`, `AfterAgent` | Probes `gemini hooks --help`, then reads `gemini --version` to pick the switch: `tools.enableHooks` and `hooksConfig.enabled` always, `hooks.enabled` only on 0.24-0.25 (the releases that need it; 0.26+ reject it with "Expected array" on every start). Re-running connect removes a `hooks.enabled` an older connect wrote. Preserves foreign hook groups. Older releases keep transcript capture. |
 | Kimi CLI | Beta hooks introduced in 1.28.0; `UserPromptSubmit`, `PostToolUse`, `Stop` | Version-gated because Kimi exposes no feature-list command. Older releases keep transcript capture. |
 | Antigravity (`agy`) | Hooks exist in 1.1.11, but documented `PostToolUse` omits tool input and result | Keeps its persisted conversation capture; installing a lossy native hook would produce worse observations. |
 | Ollama | Model server/API with tool calling, not an agent lifecycle host | No direct hook is installed. Captain Memo observes the host agent (for example Kimi or opencode) that runs the Ollama-backed loop. |

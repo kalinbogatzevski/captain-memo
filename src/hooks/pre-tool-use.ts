@@ -17,7 +17,7 @@
 // returns cleanly, and the only stdout is an advisory additionalContext note — never a deny. A worker outage,
 // bad payload, or timeout is a silent no-op. stdout is written AT MOST ONCE: the host parses a single JSON
 // object, so the two possible advisories (shared checkout, work-board overlap) are merged into one emit.
-import { readStdinJson, workerFetch, writeStdout, resolveProjectId, logHookError, logWorkerFailure, isMainModule } from './shared.ts';
+import { readStdinJson, workerFetch, writeStdout, resolveProjectId, logHookError, logWorkerFailure, isMainModule, staleNote } from './shared.ts';
 import { parseWrittenPaths, isCoarseClaim } from './shell-writes.ts';
 import { detectRepoRootSync } from '../worker/branch.ts';
 import { globsOverlap } from '../worker/glob-overlap.ts';
@@ -29,7 +29,7 @@ interface PreToolUsePayload {
   tool_input?: { file_path?: unknown; notebook_path?: unknown; command?: unknown } & Record<string, unknown>;
 }
 interface WorkNote { session_id: string; agent?: string; files?: string[]; what?: string }
-export interface OverlapHit { session_id: string; agent?: string; repo_root?: string; files?: string[]; overlapping?: string[]; what?: string; kind?: 'files' | 'semantic' | 'repo' | 'topics'; similarity?: number }
+export interface OverlapHit { session_id: string; agent?: string; repo_root?: string; files?: string[]; overlapping?: string[]; what?: string; kind?: 'files' | 'semantic' | 'repo' | 'topics'; similarity?: number; stale?: boolean; age_s?: number }
 interface SetResp { session_id: string; ttl_s: number; overlaps?: OverlapHit[] }
 interface ActiveResp { claims?: WorkNote[] }
 
@@ -82,7 +82,8 @@ export function formatOverlapWarning(overlaps: OverlapHit[], myRepoRoot: string 
   // that side. A declared `billing/**` is a real claim, not this.
   const whole = (globs: string[], root: string | null | undefined): boolean => !!root && globs.length > 0 && globs.every((g) => g === `${root}/**`);
   const lines = overlaps.map((o) => {
-    const who = `another session on this captain (${(o.session_id ?? '').slice(0, 12)}, ${o.agent ?? '?'})`;
+    const stale = staleNote(o);
+    const who = `another session on this captain (${(o.session_id ?? '').slice(0, 12)}, ${o.agent ?? '?'}${stale ? `; ${stale}` : ''})`;
     const yours = o.overlapping ?? [];
     if (o.kind === 'semantic') {
       return `${who} is working on the same thing by meaning: "${(o.what ?? '').slice(0, 80)}"${typeof o.similarity === 'number' ? ` (~${o.similarity.toFixed(2)})` : ''}`;
@@ -94,7 +95,12 @@ export function formatOverlapWarning(overlaps: OverlapHit[], myRepoRoot: string 
       : whole(yours, myRepoRoot) ? ' (your side is a whole-repo claim from a shell edit whose file could not be named)' : '';
     return `${who} holds ${(theirs.length ? theirs : (o.files ?? [])).join(', ')}, which overlaps your ${yours.join(', ')}${note}`;
   });
-  return `WORK-BOARD OVERLAP: ${lines.join('; ')}. Check the captain-memo work board (work_active) and coordinate, or pick a different area, before continuing.`;
+  // A ghost claim must not block: when every overlap is stale, say so instead of asking to coordinate with nobody.
+  // No "continue": in a compound shell command this merges with pre-git's advice to isolate a mutating git op.
+  const next = overlaps.every((o) => o.stale)
+    ? 'Every overlapping claim is stale, so treat it as information, not a blocker.'
+    : 'Check the captain-memo work board (work_active) and coordinate, or pick a different area, before continuing.';
+  return `WORK-BOARD OVERLAP: ${lines.join('; ')}. ${next}`;
 }
 
 export async function main(): Promise<void> {

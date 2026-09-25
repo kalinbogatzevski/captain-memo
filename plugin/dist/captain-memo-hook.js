@@ -141,6 +141,12 @@ function logWorkerFailure(event, path, res) {
   if (msg)
     logHookError(event, new Error(msg));
 }
+function staleNote(peer) {
+  if (!peer.stale)
+    return "";
+  const ago = typeof peer.age_s === "number" ? `, last refreshed ${Math.round(peer.age_s / 60)}m ago` : "";
+  return `stale${ago}; its session has probably ended`;
+}
 function resolveProjectId(cwd) {
   if (process.env.CAPTAIN_MEMO_PROJECT_ID)
     return process.env.CAPTAIN_MEMO_PROJECT_ID;
@@ -760,6 +766,94 @@ async function restartWorker(sm, name, opts) {
   await sm.restart(name, { graceful: opts.graceful ?? false, port: opts.port, force: true });
 }
 
+// src/shared/self-update.ts
+import { mkdirSync as mkdirSync5, readFileSync as readFileSync5, writeFileSync as writeFileSync5, renameSync as renameSync3 } from "fs";
+import { join as join8 } from "path";
+function compareSemver(a, b) {
+  const parse = (v) => v.replace(/^v/i, "").split("+")[0].split("-")[0].split(".").map((n) => parseInt(n, 10) || 0);
+  const pa = parse(a);
+  const pb = parse(b);
+  for (let i = 0;i < 3; i++) {
+    const da = pa[i] ?? 0;
+    const db = pb[i] ?? 0;
+    if (da > db)
+      return 1;
+    if (da < db)
+      return -1;
+  }
+  return 0;
+}
+function decideUpdateAction(running, marker) {
+  if (marker === null)
+    return "first-run";
+  return compareSemver(running, marker) > 0 ? "upgraded" : "same-or-older";
+}
+function formatUpgradeBanner(from, to) {
+  return [
+    `\u2693 Captain Memo self-upgraded: v${from} \u2192 v${to}`,
+    "  The worker restarts automatically to pick up the new version.",
+    "  Run `captain-memo install` if you want a full refresh (hooks/MCP/services)."
+  ].join(`
+`);
+}
+function formatAutoUpdateBanner(from, to, installFailed) {
+  const lines = [
+    `\u2693 Captain Memo auto-updated: v${from} \u2192 v${to}`,
+    "  Fast-forwarded your checkout to the latest stable tag and restarted the worker."
+  ];
+  if (installFailed)
+    lines.push("  \u26A0 `bun install` failed \u2014 run it in your checkout if the worker misbehaves.");
+  lines.push("  Opt out with CAPTAIN_MEMO_AUTO_UPDATE=0.");
+  return lines.join(`
+`);
+}
+function formatRollbackBanner(from, attempted, rolledBack) {
+  return rolledBack ? [
+    `\u2693 Captain Memo auto-update to v${attempted} FAILED to start \u2014 rolled back to v${from}.`,
+    "  Your worker is running the previous version again. The bad tag is skipped until it changes."
+  ].join(`
+`) : [
+    `\u2693 Captain Memo auto-update to v${attempted} FAILED to start AND rollback failed.`,
+    "  Run `git status` in your checkout and `captain-memo install` to recover."
+  ].join(`
+`);
+}
+function markerPath(dataDir) {
+  return join8(dataDir, MARKER_FILENAME);
+}
+function readMarker(dataDir) {
+  try {
+    const raw = readFileSync5(markerPath(dataDir), "utf-8").trim();
+    return raw.length > 0 ? raw : null;
+  } catch {
+    return null;
+  }
+}
+function writeMarker(dataDir, version) {
+  try {
+    mkdirSync5(dataDir, { recursive: true });
+    const final = markerPath(dataDir);
+    const tmp = `${final}.tmp-${process.pid}`;
+    writeFileSync5(tmp, `${version}
+`, "utf-8");
+    renameSync3(tmp, final);
+  } catch {}
+}
+function consumeUpgradeNotice(dataDir, runningVersion) {
+  try {
+    const marker = readMarker(dataDir);
+    const action = decideUpdateAction(runningVersion, marker);
+    if (action === "same-or-older")
+      return "";
+    writeMarker(dataDir, runningVersion);
+    return action === "upgraded" ? formatUpgradeBanner(marker, runningVersion) : "";
+  } catch {
+    return "";
+  }
+}
+var MARKER_FILENAME = ".install-version";
+var init_self_update = () => {};
+
 // src/shared/plugin-cache.ts
 import { existsSync as existsSync4, readFileSync as readFileSync6, readdirSync as readdirSync2, statSync as statSync3 } from "fs";
 import { homedir as homedir5 } from "os";
@@ -879,6 +973,7 @@ var PROBE_CLEAR, bunYaml, OPENCODE_LOCAL_PROVIDERS, OPENCODE_LOCAL_PROVIDER_KEYS
 var init_cross_ai = __esm(() => {
   init_platform();
   init_paths();
+  init_self_update();
   PROBE_CLEAR = process.stdout.isTTY === true ? "\r\x1B[2K" : "\r";
   bunYaml = globalThis.Bun?.YAML;
   OPENCODE_LOCAL_PROVIDERS = {
@@ -1113,7 +1208,7 @@ async function runPreGit(payload) {
   const peers = res.body.holders.filter((h) => h.session_id !== payload.session_id);
   if (peers.length === 0)
     return null;
-  const who = peers.map((h) => `${(h.session_id ?? "").slice(0, 12)} (${h.agent ?? "?"})${h.branch ? ` on ${h.branch}` : ""}${h.is_dirty ? ", dirty" : ""}`).join(" ; ");
+  const who = peers.map((h) => `${(h.session_id ?? "").slice(0, 12)} (${h.agent ?? "?"})${h.branch ? ` on ${h.branch}` : ""}${h.is_dirty ? ", dirty" : ""}${h.stale ? `, ${staleNote(h)}` : ""}`).join(" ; ");
   return `WORK-BOARD SHARED CHECKOUT: peer session(s) are using ${root} \u2014 ${who}. Running \`git ${op}\` here changes that shared working tree for them. Isolate instead: \`git worktree add ../<name> <branch>\` and work there. (advisory)`;
 }
 var MUTATING, HOOK_TIMEOUT_MS;
@@ -1329,7 +1424,7 @@ import { homedir as homedir9 } from "os";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.44.5",
+  version: "0.44.6",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -1403,94 +1498,11 @@ var package_default = {
 // src/shared/version.ts
 var VERSION = package_default.version;
 
-// src/shared/self-update.ts
-import { mkdirSync as mkdirSync5, readFileSync as readFileSync5, writeFileSync as writeFileSync5, renameSync as renameSync3 } from "fs";
-import { join as join8 } from "path";
-var MARKER_FILENAME = ".install-version";
-function compareSemver(a, b) {
-  const parse = (v) => v.replace(/^v/i, "").split("+")[0].split("-")[0].split(".").map((n) => parseInt(n, 10) || 0);
-  const pa = parse(a);
-  const pb = parse(b);
-  for (let i = 0;i < 3; i++) {
-    const da = pa[i] ?? 0;
-    const db = pb[i] ?? 0;
-    if (da > db)
-      return 1;
-    if (da < db)
-      return -1;
-  }
-  return 0;
-}
-function decideUpdateAction(running, marker) {
-  if (marker === null)
-    return "first-run";
-  return compareSemver(running, marker) > 0 ? "upgraded" : "same-or-older";
-}
-function formatUpgradeBanner(from, to) {
-  return [
-    `\u2693 Captain Memo self-upgraded: v${from} \u2192 v${to}`,
-    "  The worker restarts automatically to pick up the new version.",
-    "  Run `captain-memo install` if you want a full refresh (hooks/MCP/services)."
-  ].join(`
-`);
-}
-function formatAutoUpdateBanner(from, to, installFailed) {
-  const lines = [
-    `\u2693 Captain Memo auto-updated: v${from} \u2192 v${to}`,
-    "  Fast-forwarded your checkout to the latest stable tag and restarted the worker."
-  ];
-  if (installFailed)
-    lines.push("  \u26A0 `bun install` failed \u2014 run it in your checkout if the worker misbehaves.");
-  lines.push("  Opt out with CAPTAIN_MEMO_AUTO_UPDATE=0.");
-  return lines.join(`
-`);
-}
-function formatRollbackBanner(from, attempted, rolledBack) {
-  return rolledBack ? [
-    `\u2693 Captain Memo auto-update to v${attempted} FAILED to start \u2014 rolled back to v${from}.`,
-    "  Your worker is running the previous version again. The bad tag is skipped until it changes."
-  ].join(`
-`) : [
-    `\u2693 Captain Memo auto-update to v${attempted} FAILED to start AND rollback failed.`,
-    "  Run `git status` in your checkout and `captain-memo install` to recover."
-  ].join(`
-`);
-}
-function markerPath(dataDir) {
-  return join8(dataDir, MARKER_FILENAME);
-}
-function readMarker(dataDir) {
-  try {
-    const raw = readFileSync5(markerPath(dataDir), "utf-8").trim();
-    return raw.length > 0 ? raw : null;
-  } catch {
-    return null;
-  }
-}
-function writeMarker(dataDir, version) {
-  try {
-    mkdirSync5(dataDir, { recursive: true });
-    const final = markerPath(dataDir);
-    const tmp = `${final}.tmp-${process.pid}`;
-    writeFileSync5(tmp, `${version}
-`, "utf-8");
-    renameSync3(tmp, final);
-  } catch {}
-}
-function consumeUpgradeNotice(dataDir, runningVersion) {
-  try {
-    const marker = readMarker(dataDir);
-    const action = decideUpdateAction(runningVersion, marker);
-    if (action === "same-or-older")
-      return "";
-    writeMarker(dataDir, runningVersion);
-    return action === "upgraded" ? formatUpgradeBanner(marker, runningVersion) : "";
-  } catch {
-    return "";
-  }
-}
+// src/hooks/session-start.ts
+init_self_update();
 
 // src/worker/self-updater.ts
+init_self_update();
 var DEFAULT_UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 function isUpdateCheckDue(lastCheckMs, nowMs, intervalMs) {
   if (lastCheckMs === null)
@@ -2238,7 +2250,8 @@ function formatOverlapWarning(overlaps, myRepoRoot = null) {
     return null;
   const whole = (globs, root) => !!root && globs.length > 0 && globs.every((g) => g === `${root}/**`);
   const lines = overlaps.map((o) => {
-    const who = `another session on this captain (${(o.session_id ?? "").slice(0, 12)}, ${o.agent ?? "?"})`;
+    const stale = staleNote(o);
+    const who = `another session on this captain (${(o.session_id ?? "").slice(0, 12)}, ${o.agent ?? "?"}${stale ? `; ${stale}` : ""})`;
     const yours = o.overlapping ?? [];
     if (o.kind === "semantic") {
       return `${who} is working on the same thing by meaning: "${(o.what ?? "").slice(0, 80)}"${typeof o.similarity === "number" ? ` (~${o.similarity.toFixed(2)})` : ""}`;
@@ -2251,7 +2264,8 @@ function formatOverlapWarning(overlaps, myRepoRoot = null) {
     const note = whole(theirs, o.repo_root) ? " (a whole-repo claim: it ran a shell edit whose file could not be named, so it may not touch your files at all)" : whole(yours, myRepoRoot) ? " (your side is a whole-repo claim from a shell edit whose file could not be named)" : "";
     return `${who} holds ${(theirs.length ? theirs : o.files ?? []).join(", ")}, which overlaps your ${yours.join(", ")}${note}`;
   });
-  return `WORK-BOARD OVERLAP: ${lines.join("; ")}. Check the captain-memo work board (work_active) and coordinate, or pick a different area, before continuing.`;
+  const next = overlaps.every((o) => o.stale) ? "Every overlapping claim is stale, so treat it as information, not a blocker." : "Check the captain-memo work board (work_active) and coordinate, or pick a different area, before continuing.";
+  return `WORK-BOARD OVERLAP: ${lines.join("; ")}. ${next}`;
 }
 async function main3() {
   let payload = {};

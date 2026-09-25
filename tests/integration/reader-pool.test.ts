@@ -16,11 +16,12 @@
 // /observation/enqueue+flush seed). A throwaway local OpenAI-compatible endpoint
 // supplies a deterministic summary so the spawned worker can actually create an
 // observation (it has no real summarizer credentials).
-import { test, expect, afterAll } from 'bun:test';
+import { test, expect, afterAll, afterEach } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
+import { BOOT_WAIT_MS, tailOf, waitHealthy } from '../support/worker-boot.ts';
 
 // fileURLToPath (not URL.pathname): on Windows `.pathname` is "/C:/…/index.ts",
 // which `bun <path>` cannot resolve. See worker-threaded.test.ts for the why.
@@ -29,8 +30,10 @@ const WORKER = fileURLToPath(new URL('../../src/worker/index.ts', import.meta.ur
 const procs: Array<{ kill: () => void }> = [];
 const dirs: string[] = [];
 const servers: Array<{ stop: (closeActive?: boolean) => void }> = [];
+// Each test's worker dies with its test: left running, it competes for the (slow, on windows-latest) disk
+// with the next test's boot.
+afterEach(() => { for (const p of procs.splice(0)) try { p.kill(); } catch {} });
 afterAll(() => {
-  for (const p of procs) try { p.kill(); } catch {}
   for (const s of servers) try { s.stop(true); } catch {}
   for (const d of dirs) try { rmSync(d, { recursive: true, force: true }); } catch {}
 });
@@ -38,15 +41,6 @@ afterAll(() => {
 async function freePort(): Promise<number> {
   const s = Bun.serve({ port: 0, fetch: () => new Response('') });
   const p = s.port ?? 0; s.stop(true); return p;
-}
-
-async function waitHealthy(base: string, ms = 25_000): Promise<void> {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    try { if ((await fetch(`${base}/health`)).ok) return; } catch {}
-    await Bun.sleep(150);
-  }
-  throw new Error('never healthy');
 }
 
 // Deterministic OpenAI-compatible summarizer endpoint. Echoes a fixed marker
@@ -78,7 +72,7 @@ function startStubSummarizer(): { url: string; stop: () => void } {
 }
 
 function spawnWorker(poolSize: number, extraEnv: Record<string, string> = {}): {
-  proc: ReturnType<typeof Bun.spawn>; base: string; dir: string;
+  proc: ReturnType<typeof Bun.spawn>; base: string; dir: string; tail: () => string;
 } {
   const dir = mkdtempSync(join(tmpdir(), 'cm-rpool-')); dirs.push(dir);
   mkdirSync(join(dir, 'mem'), { recursive: true });
@@ -97,10 +91,10 @@ function spawnWorker(poolSize: number, extraEnv: Record<string, string> = {}): {
       CAPTAIN_MEMO_WATCH_MEMORY: join(dir, 'mem', '*.md'),
       ...extraEnv,
     },
-    stdout: 'ignore', stderr: 'ignore',
+    stdout: 'ignore', stderr: 'pipe',
   });
   procs.push(proc);
-  return { proc, base: `http://localhost:${port}`, dir };
+  return { proc, base: `http://localhost:${port}`, dir, tail: tailOf(proc.stderr) };
 }
 
 async function seedObservation(base: string): Promise<void> {
@@ -124,8 +118,8 @@ async function seedObservation(base: string): Promise<void> {
 
 test('reader pool: /health healthy after boot; stays healthy under a search burst', async () => {
   const port = await freePort();
-  const { base } = spawnWorker(2, { CAPTAIN_MEMO_WORKER_PORT: String(port) });
-  await waitHealthy(base);
+  const { base, proc, tail } = spawnWorker(2, { CAPTAIN_MEMO_WORKER_PORT: String(port) });
+  await waitHealthy(base, proc, tail);
 
   // Assertion 1: healthy after boot.
   const h0 = await fetch(`${base}/health`);
@@ -168,12 +162,12 @@ test('reader pool: /health healthy after boot; stays healthy under a search burs
 
   expect(healthStatuses.length).toBe(40);
   for (const s of healthStatuses) expect(s).toBe(200);
-}, 60_000);
+}, BOOT_WAIT_MS + 35_000);
 
 test('reader pool: a reader-served search forwards its bump to the writer', async () => {
   const stub = startStubSummarizer();
   const port = await freePort();
-  const { base } = spawnWorker(2, {
+  const { base, proc, tail } = spawnWorker(2, {
     CAPTAIN_MEMO_WORKER_PORT: String(port),
     CAPTAIN_MEMO_SUMMARIZER_PROVIDER: 'openai-compatible',
     CAPTAIN_MEMO_OPENAI_ENDPOINT: stub.url,
@@ -184,7 +178,7 @@ test('reader pool: a reader-served search forwards its bump to the writer', asyn
     // the default 5 s TTL, expiry alone passes this test even when the writer never invalidates.
     CAPTAIN_MEMO_STATS_CACHE_MS: '60000',
   });
-  await waitHealthy(base);
+  await waitHealthy(base, proc, tail);
 
   // Seed a real observation (write path → writer). The stub summarizer turns the
   // enqueued event into an observation whose title carries OBS_MARKER.
@@ -214,12 +208,12 @@ test('reader pool: a reader-served search forwards its bump to the writer', asyn
     await Bun.sleep(150);
   }
   expect(searchAfter).toBeGreaterThan(searchBefore);
-}, 60_000);
+}, BOOT_WAIT_MS + 35_000);
 
 test('reader pool N=0: search still served (by the writer) and worker is healthy', async () => {
   const port = await freePort();
-  const { base } = spawnWorker(0, { CAPTAIN_MEMO_WORKER_PORT: String(port) });
-  await waitHealthy(base);
+  const { base, proc, tail } = spawnWorker(0, { CAPTAIN_MEMO_WORKER_PORT: String(port) });
+  await waitHealthy(base, proc, tail);
 
   const res = await fetch(`${base}/search/all`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
@@ -230,4 +224,4 @@ test('reader pool N=0: search still served (by the writer) and worker is healthy
 
   const h = await fetch(`${base}/health`);
   expect(h.status).toBe(200);
-}, 60_000);
+}, BOOT_WAIT_MS + 35_000);

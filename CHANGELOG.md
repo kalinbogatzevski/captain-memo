@@ -7,6 +7,22 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.44.6] — 2026-09-25
+
+### Fixed
+
+- **A dead session's work claim still set off overlap warnings as if it were live.** Every overlap, holder and
+  contention entry now carries `stale` and `age_s`, the PreToolUse warning labels a stale peer (and, when every
+  overlapping claim is stale, says to treat it as information, not a blocker), and the shared-checkout warning
+  labels a stale holder while still advising you to isolate: a dead session can leave uncommitted work behind.
+- **gemini settings written by `connect` were rejected by gemini 0.26 and newer.** From 0.26 every key under
+  `hooks` must be an event list, so `hooks.enabled: true` printed "Expected array" on every start. `connect` now reads
+  the gemini version and writes what it accepts: `tools.enableHooks` and `hooksConfig.enabled` always, `hooks.enabled`
+  only on 0.24-0.25 or when the version cannot be read, and it removes a leftover. `captain-memo doctor` flags a file
+  gemini would reject. Re-run `captain-memo connect gemini` to repair an existing one.
+- **Worker-spawning tests were flaky on Windows CI.** The boot wait scales on Windows and the Windows test timeout
+  is longer; a real hang still fails.
+
 ## [0.44.5] — 2026-09-25
 
 ### Fixed

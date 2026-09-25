@@ -2,10 +2,12 @@
 // `what` + enrich_from_observations; the worker must swap in the session's latest observation TITLE (its real
 // meaning) and mark the claim meaningful so it joins the semantic pass. Boots a worker over a file-backed
 // observations DB seeded with one observation.
-import { test, expect, beforeAll, afterAll } from 'bun:test';
+import { test, expect, beforeAll, afterAll, setSystemTime } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { execSync } from 'child_process';
+import { detectRepoRootSync } from '../../src/worker/branch.ts';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
 import { ObservationsStore } from '../../src/worker/observations-store.ts';
 
@@ -102,4 +104,28 @@ test('/worknote/clear says whether it cleared anything; /worknote/active carries
   })).json() as Promise<{ ok: boolean; cleared: boolean }>;
   expect(await clear()).toMatchObject({ ok: true, cleared: true });
   expect(await clear()).toMatchObject({ ok: true, cleared: false });   // nothing left: says so instead of "ok"
+});
+
+// #103: the stale mark reached only /worknote/active. /worknote/set's overlaps (the PreToolUse warning) and
+// /worknote/repo-active (pre-git) served a dead session's claim as if it were live.
+test('/worknote/set overlaps and /worknote/repo-active mark a peer claim that stopped heartbeating as stale', async () => {
+  const repo = mkdtempSync(join(tmpdir(), 'cm-wn-stale-'));
+  execSync('git init -q', { cwd: repo });
+  const root = detectRepoRootSync(repo)!;
+  const post = (path: string, body: unknown) => fetch(`http://localhost:${port}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const set = async (sid: string) => (await (await post('/worknote/set', { session_id: sid, agent: 'claude', what: 'w', files: [`${root}/a.ts`], ttl_s: 3600 })).json()) as { overlaps: Array<{ session_id: string; stale?: boolean; age_s?: number }> };
+  try {
+    await set('GHOST');
+    setSystemTime(new Date(Date.now() + 15 * 60_000));   // GHOST never refreshes again; its 1 h lease is still live
+    const hits = (await set('LIVE')).overlaps.filter((o) => o.session_id === 'GHOST');
+    expect(hits.length).toBeGreaterThan(0);
+    for (const h of hits) { expect(h.stale).toBe(true); expect(h.age_s!).toBeGreaterThanOrEqual(15 * 60); }
+    const { holders } = (await (await fetch(`http://localhost:${port}/worknote/repo-active?repo_root=${encodeURIComponent(root)}`)).json()) as { holders: Array<{ session_id: string; stale?: boolean }> };
+    expect(holders.find((h) => h.session_id === 'GHOST')?.stale).toBe(true);
+    expect(holders.find((h) => h.session_id === 'LIVE')!.stale).toBeUndefined();
+  } finally {
+    setSystemTime();
+    for (const sid of ['GHOST', 'LIVE']) await post('/worknote/clear', { session_id: sid });
+    rmSync(repo, { recursive: true, force: true });
+  }
 });

@@ -12888,7 +12888,7 @@ function loadWorkerEnv() {
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.44.5",
+  version: "0.44.6",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -13189,7 +13189,7 @@ var TOOLS = [
   },
   {
     name: "work_set",
-    description: 'Coordination board: publish or refresh a transient claim that YOU are working on something right now, then immediately get back any OTHER active sessions on this machine that overlap yours by TOPIC, by FILES, or by MEANING. Call this before diving into a codebase area, and re-call periodically (it is a heartbeat that keeps the lease alive). Other AI sessions on this machine (Claude, Codex, Gemini, Cursor all share one captain) see your claim at once. ALWAYS pass `topics`: 1\u20135 short tags for WHAT the work is about ("billing-rounding", "installer-windows") \u2014 two sessions on one topic are the collision that matters, whatever files they touch; a claim without topics is untitled work. Pass `agent` so the claim reads "codex on this captain", and `files` as the globs you will touch ("billing/**", "src/auth/login.ts"). Claims are advisory leases, not locks \u2014 they auto-expire (default 30 min) so a crashed session never blocks an area. Returns { session_id, topics, overlaps[], semantic }: each overlap says `kind` (topics | files | semantic | repo) and what is shared; `semantic.degraded` true means the meaning-match half is currently off (embedder down) \u2014 then topic and file overlap are all you have, say so if you rely on it.',
+    description: 'Coordination board: publish or refresh a transient claim that YOU are working on something right now, then immediately get back any OTHER active sessions on this machine that overlap yours by TOPIC, by FILES, or by MEANING. Call this before diving into a codebase area, and re-call periodically (it is a heartbeat that keeps the lease alive). Other AI sessions on this machine (Claude, Codex, Gemini, Cursor all share one captain) see your claim at once. ALWAYS pass `topics`: 1\u20135 short tags for WHAT the work is about ("billing-rounding", "installer-windows") \u2014 two sessions on one topic are the collision that matters, whatever files they touch; a claim without topics is untitled work. Pass `agent` so the claim reads "codex on this captain", and `files` as the globs you will touch ("billing/**", "src/auth/login.ts"). Claims are advisory leases, not locks \u2014 they auto-expire (default 30 min) so a crashed session never blocks an area. Returns { session_id, topics, overlaps[], semantic }: each overlap says `kind` (topics | files | semantic | repo) and what is shared, and one with `stale: true` (and `age_s`) is a peer that stopped refreshing its claim, so its session has almost certainly ended: treat it as information, not a blocker; `semantic.degraded` true means the meaning-match half is currently off (embedder down) \u2014 then topic and file overlap are all you have, say so if you rely on it.',
     inputSchema: {
       type: "object",
       properties: {

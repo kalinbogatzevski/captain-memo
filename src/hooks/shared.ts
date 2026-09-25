@@ -157,6 +157,14 @@ export function logWorkerFailure(event: string, path: string, res: FetchResult<u
   if (msg) logHookError(event, new Error(msg));
 }
 
+/** How a work-board advisory words a peer claim the worker marked stale (no heartbeat past the ceiling), or ''
+ *  for a live one. A stale claim's session has almost certainly ended, so it must not read like live work. */
+export function staleNote(peer: { stale?: boolean; age_s?: number }): string {
+  if (!peer.stale) return '';
+  const ago = typeof peer.age_s === 'number' ? `, last refreshed ${Math.round(peer.age_s / 60)}m ago` : '';
+  return `stale${ago}; its session has probably ended`;
+}
+
 /** Coerce hook-time CWD → project_id for non-installed flows. Honors $CAPTAIN_MEMO_PROJECT_ID. */
 export function resolveProjectId(cwd: string | undefined): string {
   if (process.env.CAPTAIN_MEMO_PROJECT_ID) return process.env.CAPTAIN_MEMO_PROJECT_ID;

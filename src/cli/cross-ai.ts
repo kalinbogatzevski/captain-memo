@@ -23,6 +23,7 @@ import { homedir } from 'os';
 import { spawnSync } from 'child_process';
 import { isMac, isWindows } from '../shared/platform.ts';
 import { NATIVE_PROMPT_HOOK_TIMEOUT_S } from '../shared/paths.ts';
+import { compareSemver } from '../shared/self-update.ts';
 
 /** Return to column 0 and ERASE the line, for the in-place per-tool probe line that `connect` and
  *  `install` both repaint. A bare `\r` is not enough: the line is routinely overwritten by a SHORTER
@@ -695,10 +696,42 @@ export function geminiHooksSupported(result: RunResult): boolean {
   return /Manage Gemini CLI hooks|gemini hooks migrate/i.test(`${result.stdout ?? ''}\n${result.stderr ?? ''}`);
 }
 
-/** Enable and merge Gemini's experimental user-level lifecycle hooks. The
- *  user's foreign settings and hook groups survive byte-for-structure; only
- *  Captain Memo commands carrying our marker are replaced. */
-export function mergeGeminiHooks(existingJson: string | null, hookCommand: string, hookBundle: string): string {
+/** The x.y.z from `gemini --version` (its stdout is the version alone; settings warnings go to stderr), or null. A
+ *  preview or nightly prints a suffix (0.62.0-preview.0, 0.62.0-nightly.20260925.gbedef96ef): dropped, since the switch
+ *  follows the release line. */
+export function parseGeminiVersion(result: RunResult): string | null {
+  return result.status === 0 ? /^\s*(\d+\.\d+\.\d+)(?:-[0-9A-Za-z.-]+)?\s*$/m.exec(result.stdout ?? '')?.[1] ?? null : null;
+}
+
+/** Whether this gemini needs the old `hooks.enabled` switch. The switch moved twice; read from each release's settings
+ *  schema and run through its own validator (2026-09-25):
+ *    0.21-0.23  tools.enableHooks (default false). A `hooks.enabled` key fails their schema (hooks.* must be arrays).
+ *    0.24-0.25  tools.enableHooks (default true) AND hooks.enabled (default FALSE): the only releases that need it.
+ *    0.26-0.27  tools.enableHooks AND hooksConfig.enabled (default true); `hooks.enabled` is "Expected array".
+ *    0.28+      hooksConfig.enabled only. The invalid key is a warning printed on every start, not a refusal.
+ *  An unknown version gets the key: a startup warning on a newer CLI beats hooks silently off on 0.24/0.25. */
+export function geminiNeedsHooksEnabledKey(version: string | null | undefined): boolean {
+  return !version || (compareSemver(version, '0.24.0') >= 0 && compareSemver(version, '0.26.0') < 0);
+}
+
+/** Doctor's check: does this Gemini settings file carry a boolean `hooks.enabled` that the CLI answering `version`
+ *  rejects at every start (any release outside 0.24-0.25, see geminiNeedsHooksEnabledKey)? Only `connect` rewrites the
+ *  file, and self-update never runs it, so an install wired before the version gate keeps the old shape. `version` is
+ *  called only when that shape is present, and an unreadable version answers false: doctor cannot tell, so it says
+ *  nothing. */
+export function geminiHooksToggleRejected(settingsJson: string | null, version: () => RunResult): boolean {
+  let hooks: unknown;
+  try { hooks = (JSON.parse(settingsJson ?? '') as { hooks?: unknown } | null)?.hooks; } catch { return false; }
+  if (!hooks || typeof hooks !== 'object' || typeof (hooks as { enabled?: unknown }).enabled !== 'boolean') return false;
+  const v = parseGeminiVersion(version());
+  return v !== null && !geminiNeedsHooksEnabledKey(v);
+}
+
+/** Enable and merge Gemini's lifecycle hooks, for the switch `version` reads (geminiNeedsHooksEnabledKey). A
+ *  `hooks.enabled` an older connect left behind is removed where it is invalid, so re-running connect repairs it.
+ *  The user's foreign settings and hook groups survive byte-for-structure; only Captain Memo commands carrying our
+ *  marker are replaced. */
+export function mergeGeminiHooks(existingJson: string | null, hookCommand: string, hookBundle: string, version?: string | null): string {
   let root: Record<string, unknown> = {};
   if (existingJson && existingJson.trim()) {
     const parsed = JSON.parse(existingJson) as unknown;
@@ -712,10 +745,16 @@ export function mergeGeminiHooks(existingJson: string | null, hookCommand: strin
     : {};
   tools.enableHooks = true;
   root.tools = tools;
+  const hooksConfig = root.hooksConfig && typeof root.hooksConfig === 'object' && !Array.isArray(root.hooksConfig)
+    ? root.hooksConfig as Record<string, unknown>
+    : {};
+  hooksConfig.enabled = true;   // valid on every version checked (0.22-0.61), read from 0.26
+  root.hooksConfig = hooksConfig;
   const hooks = root.hooks && typeof root.hooks === 'object' && !Array.isArray(root.hooks)
     ? root.hooks as Record<string, unknown>
     : {};
-  hooks.enabled = true;
+  if (geminiNeedsHooksEnabledKey(version)) hooks.enabled = true;
+  else delete hooks.enabled;
 
   for (const [event, value] of Object.entries(hooks)) {
     if (!Array.isArray(value)) continue;
@@ -841,7 +880,9 @@ const geminiAdapter: ToolAdapter = {
       const hookBundle = join(dirname(mcpServerPath(ctx.mcpCommand)), 'captain-memo-hook.js');
       try {
         const before = existsSync(settingsPath) ? readFileSync(settingsPath, 'utf-8') : null;
-        const after = mergeGeminiHooks(before, ctx.mcpCommand[0] ?? 'bun', hookBundle);
+        // The hooks switch moved between releases, so the version picks which one to write (one more cold start).
+        const version = parseGeminiVersion(ctx.run('gemini', ['--version'], WIRE_TIMEOUT_MS));
+        const after = mergeGeminiHooks(before, ctx.mcpCommand[0] ?? 'bun', hookBundle, version);
         if (after !== before) {
           mkdirSync(dirname(settingsPath), { recursive: true });
           writeFileSync(settingsPath, after);

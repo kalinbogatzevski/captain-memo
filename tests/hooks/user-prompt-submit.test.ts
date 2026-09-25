@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import { spawn } from 'bun';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
 import { homeworkWaitMs } from '../../src/hooks/user-prompt-submit.ts';
+import { BOOT_SLACK_MS } from '../support/worker-boot.ts';
 
 const FIXTURE = readFileSync(
   join(import.meta.dir, '../fixtures/hooks/user-prompt-submit.input.json'),
@@ -170,7 +171,7 @@ test('UserPromptSubmit — envelope conforms to spec §3 template', async () => 
     await worker.stop();
     rmSync(workDir, { recursive: true, force: true });
   }
-}, 20_000);   // boots a real worker + spawns the hook: ~0.6 s; the 5.3 s once measured here was the boot digest of the REAL recall-audit.jsonl (tests/preload.ts)
+}, 20_000 + BOOT_SLACK_MS);   // boots a real worker (its own timeout, so it adds the Windows boot slack) + spawns the hook: ~0.6 s; the 5.3 s once measured here was the boot digest of the REAL recall-audit.jsonl (tests/preload.ts)
 
 test('UserPromptSubmit — `idea:` files homework instead of recalling, and tells the model in one line', async () => {
   const input = JSON.stringify({ session_id: 's-1', cwd: '/tmp/p', prompt: 'idea: let the banner show what is parked' });

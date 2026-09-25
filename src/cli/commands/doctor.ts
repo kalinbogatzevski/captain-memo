@@ -28,6 +28,7 @@ import { VERSION } from '../../shared/version.ts';
 import { decideWorkerDrift, pickUpgradeTarget, parseRemoteCandidates } from '../../shared/version-drift.ts';
 import { compareSemver } from '../../shared/self-update.ts';
 import { describeSessionOf, readLivePluginPins, readPluginManifest } from '../../shared/plugin-cache.ts';
+import { geminiHooksToggleRejected } from '../cross-ai.ts';
 
 // Lookup a single key from worker.env (CONFIG_DIR per platform, then the /etc
 // system-mode fallback on Linux — workerEnvPaths() supplies the right list).
@@ -628,6 +629,25 @@ export function checkRemember(): Check {
   return check;
 }
 
+/** Every Gemini outside 0.24-0.25 rejects the boolean `hooks.enabled` that connect wrote before it read the version
+ *  (0.26+ prints "Invalid configuration" at every start) until connect rewrites it. Silent when there is nothing to report. */
+function checkGeminiHooksToggle(): void {
+  const path = join(homedir(), '.gemini', 'settings.json');
+  let json: string;
+  try { json = readFileSync(path, 'utf-8'); } catch { return; }   // no Gemini settings: nothing to check
+  let version = '';
+  // 30 s: a cold `gemini --version` took ~24 s on a loaded box (#67). Paid only when the old shape is present.
+  const rejected = geminiHooksToggleRejected(json, () => {
+    const r = spawnSync('gemini', ['--version'], { encoding: 'utf-8', timeout: 30_000 });
+    version = (r.stdout ?? '').trim();
+    return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+  });
+  if (!rejected) return;
+  record({ name: 'gemini hooks', status: 'WARN',
+           detail: `${path.replace(homedir(), '~')} has hooks.enabled, which ${Bun.which('gemini') ?? 'gemini'} ${version} rejects at every start`,
+           remedy: 'captain-memo connect   (rewrites it as hooksConfig.enabled; run it with the Gemini you use first on PATH)' });
+}
+
 function checkPluginRegistration(): void {
   // Plugins are registered with Claude Code's marketplace, not as a symlink
   // under ~/.claude/plugins/. Ask `claude plugin list` for the truth.
@@ -1090,6 +1110,7 @@ export async function doctorCommand(_args: string[]): Promise<number> {
   checkCheckout();
   checkConfig();
   checkRemember();
+  checkGeminiHooksToggle();
   checkPluginRegistration();
   checkPluginManifest();
   checkPluginEntries();

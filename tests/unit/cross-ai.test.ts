@@ -2,7 +2,7 @@ import { test, expect, beforeEach, afterEach, describe } from 'bun:test';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { mergeCursorMcpConfig, mergeVibeMcpConfig, mergeKimiConfig, mergeKimiHooks, kimiHooksSupported, mergeClaudeDesktopConfig, mergeGooseConfig, mergeGeminiHooks, geminiHooksSupported, toBlockYaml, mergeCodexToolApprovals, mergeCodexHooks, codexHooksEnabled, CAPTAIN_MEMO_CODEX_HOOK_MARKER, CAPTAIN_MEMO_GEMINI_HOOK_MARKER, CAPTAIN_MEMO_KIMI_HOOK_BEGIN, CODEX_TOOL_NAMES, gooseConfigPath, gooseConfigCandidates, extractGooseEntry, gooseExtensionEntry, parseOllamaList, connectCrossAi, type Runner } from '../../src/cli/cross-ai.ts';
+import { mergeCursorMcpConfig, mergeVibeMcpConfig, mergeKimiConfig, mergeKimiHooks, kimiHooksSupported, mergeClaudeDesktopConfig, mergeGooseConfig, mergeGeminiHooks, geminiHooksSupported, parseGeminiVersion, geminiHooksToggleRejected, toBlockYaml, mergeCodexToolApprovals, mergeCodexHooks, codexHooksEnabled, CAPTAIN_MEMO_CODEX_HOOK_MARKER, CAPTAIN_MEMO_GEMINI_HOOK_MARKER, CAPTAIN_MEMO_KIMI_HOOK_BEGIN, CODEX_TOOL_NAMES, gooseConfigPath, gooseConfigCandidates, extractGooseEntry, gooseExtensionEntry, parseOllamaList, connectCrossAi, type Runner } from '../../src/cli/cross-ai.ts';
 
 // Bun's native YAML, typed locally so this compiles against an @types/bun predating `Bun.YAML`.
 const YAML = (globalThis as { Bun: { YAML: { parse(s: string): any; stringify(v: unknown): string } } }).Bun.YAML;
@@ -239,14 +239,62 @@ test('Gemini hooks — capability probe and merge preserve foreign settings', ()
   expect(parsed.theme).toBe('dark');
   expect(parsed.tools.enableHooks).toBe(true);
   expect(parsed.hooks.enabled).toBe(true);
+  expect(parsed.hooksConfig.enabled).toBe(true);
   expect(JSON.stringify(parsed)).toContain('foreign-hook');
   expect(JSON.stringify(parsed).match(new RegExp(CAPTAIN_MEMO_GEMINI_HOOK_MARKER, 'g'))).toHaveLength(3);
 });
 
+// gemini 0.26 moved the switch to hooksConfig.enabled and made `hooks.enabled` invalid ("Expected array, received
+// boolean", printed on every start); 0.24/0.25 still need it (default false). Versions checked against each release.
+test('Gemini hooks switch follows the version, and a leftover hooks.enabled is removed on 0.26+', () => {
+  const at = (v: string | null, existing: string | null = null) => JSON.parse(mergeGeminiHooks(existing, 'bun', '/h.js', v));
+  for (const v of ['0.24.0', '0.25.0', null]) expect(at(v).hooks.enabled).toBe(true);   // null: unknown keeps hooks on
+  for (const v of ['0.22.0', '0.23.0', '0.26.0', '0.61.0']) expect(at(v).hooks.enabled).toBeUndefined();
+  for (const v of ['0.23.0', '0.25.0', '0.61.0', null]) {   // the other two switches go in on every version
+    expect(at(v).tools.enableHooks).toBe(true);
+    expect(at(v).hooksConfig.enabled).toBe(true);
+  }
+  const leftover = JSON.stringify({ tools: { enableHooks: true, autoAccept: true }, hooks: { enabled: true, AfterTool: [] } });
+  const repaired = at('0.61.0', leftover);
+  expect(repaired.hooks.enabled).toBeUndefined();
+  expect(repaired.hooksConfig.enabled).toBe(true);
+  expect(repaired.tools).toEqual({ enableHooks: true, autoAccept: true });
+  expect(repaired.hooks.AfterTool).toHaveLength(1);
+  expect(parseGeminiVersion({ status: 0, stdout: '0.61.0\n', stderr: 'Invalid configuration ... 1.2.3' })).toBe('0.61.0');
+  expect(parseGeminiVersion({ status: 0, stdout: 'noise 1.2.3\n0.61.0\n' })).toBe('0.61.0');   // only a line that is the version alone
+  expect(parseGeminiVersion({ status: 0, stdout: '', stderr: '0.61.0\n' })).toBeNull();          // stdout only
+  expect(parseGeminiVersion({ status: 1, stdout: '0.61.0\n' })).toBeNull();
+  // preview / nightly: read as their release line, so they get the modern switch and no "Expected array" warning
+  expect(parseGeminiVersion({ status: 0, stdout: '0.62.0-preview.0\n' })).toBe('0.62.0');
+  expect(parseGeminiVersion({ status: 0, stdout: '0.62.0-nightly.20260925.gbedef96ef\n' })).toBe('0.62.0');
+  expect(at(parseGeminiVersion({ status: 0, stdout: '0.62.0-preview.0\n' })).hooks.enabled).toBeUndefined();
+});
+
+// Self-update never re-runs connect, so doctor is what tells an upgraded install that its old toggle now breaks Gemini.
+test('Gemini hooks: doctor flags a boolean hooks.enabled only under a CLI that rejects it, and probes the version only then', () => {
+  const old = JSON.stringify({ hooks: { enabled: true, BeforeAgent: [] } });
+  let probes = 0;
+  const at = (stdout: string, status = 0) => () => { probes++; return { status, stdout }; };
+  expect(geminiHooksToggleRejected(old, at('0.61.0\n'))).toBe(true);
+  expect(geminiHooksToggleRejected(old, at('0.26.0'))).toBe(true);
+  expect(geminiHooksToggleRejected(old, at('0.62.0-preview.0\n'))).toBe(true);
+  expect(geminiHooksToggleRejected(old, at('0.23.0'))).toBe(true);    // 0.21-0.23: hooks.* must be arrays
+  expect(geminiHooksToggleRejected(old, at('0.25.0'))).toBe(false);   // 0.24/0.25 need it
+  expect(geminiHooksToggleRejected(old, at('0.24.0'))).toBe(false);
+  expect(geminiHooksToggleRejected(old, at('', 1))).toBe(false);      // unreadable: cannot tell, say nothing
+  expect(geminiHooksToggleRejected(old, at('0.61.0', null as unknown as number))).toBe(false);   // timed out
+  expect(probes).toBe(8);
+  const current = mergeGeminiHooks(old, 'bun', '/x/h.js', '0.61.0');
+  for (const file of [current, null, '', 'not json', '[]', JSON.stringify({ hooks: [] })]) expect(geminiHooksToggleRejected(file, at('0.61.0'))).toBe(false);
+  expect(probes).toBe(8);
+});
+
 test('connectCrossAi — Gemini installs supported hooks and keeps transcript fallback for old CLIs', () => {
   let hookProbeTimeout = 0;
+  let versionProbeTimeout = 0;
   const supported: Runner = (cmd, args, timeoutMs) => {
     if (cmd === 'gemini' && args[0] === 'mcp') return { status: 0, stdout: '' };
+    if (cmd === 'gemini' && args[0] === '--version') { versionProbeTimeout = timeoutMs ?? 0; return { status: 0, stdout: '0.61.0\n' }; }
     if (cmd === 'gemini' && args[0] === 'hooks') {
       hookProbeTimeout = timeoutMs ?? 0;
       return { status: 0, stdout: 'Manage Gemini CLI hooks.\n' };
@@ -256,7 +304,32 @@ test('connectCrossAi — Gemini installs supported hooks and keeps transcript fa
   const [native] = connectCrossAi({ only: ['gemini'], mcpCommand: ['bun', MCP_PATH], skillSource, home, run: supported });
   expect(native?.capture).toBe('native-hooks');
   expect(hookProbeTimeout).toBe(60_000);
-  expect(readFileSync(join(home, '.gemini', 'settings.json'), 'utf-8')).toContain('GeminiAfterTool');
+  expect(versionProbeTimeout).toBe(60_000);
+  const written = JSON.parse(readFileSync(join(home, '.gemini', 'settings.json'), 'utf-8'));
+  expect(JSON.stringify(written)).toContain('GeminiAfterTool');
+  expect(written.hooksConfig).toEqual({ enabled: true });   // 0.61 read from --version: no hooks.enabled
+  expect(written.tools).toEqual({ enableHooks: true });
+  expect('enabled' in written.hooks).toBe(false);
+
+  const legacyHome = mkdtempSync(join(tmpdir(), 'captain-memo-gemini-025-'));
+  const read = () => JSON.parse(readFileSync(join(legacyHome, '.gemini', 'settings.json'), 'utf-8'));
+  const answering = (version: { status: number; stdout: string }): Runner => (cmd, args, t) =>
+    cmd === 'gemini' && args[0] === '--version' ? version : supported(cmd, args, t);
+  connectCrossAi({ only: ['gemini'], mcpCommand: ['bun', MCP_PATH], skillSource, home: legacyHome, run: answering({ status: 0, stdout: '0.25.0\n' }) });
+  expect(read().hooks.enabled).toBe(true);
+  expect(read().tools.enableHooks).toBe(true);
+  expect(read().hooksConfig.enabled).toBe(true);
+  // The CLI moved to 0.61: a reconnect drops the hooks.enabled the 0.25 run wrote.
+  connectCrossAi({ only: ['gemini'], mcpCommand: ['bun', MCP_PATH], skillSource, home: legacyHome, run: answering({ status: 0, stdout: '0.61.0\n' }) });
+  expect(read().hooks.enabled).toBeUndefined();
+  expect(read().hooksConfig.enabled).toBe(true);
+  rmSync(legacyHome, { recursive: true, force: true });
+
+  // An unreadable version keeps hooks.enabled: a startup warning on a new CLI beats hooks off on 0.24/0.25.
+  const unknownHome = mkdtempSync(join(tmpdir(), 'captain-memo-gemini-unknown-'));
+  connectCrossAi({ only: ['gemini'], mcpCommand: ['bun', MCP_PATH], skillSource, home: unknownHome, run: answering({ status: 1, stdout: '' }) });
+  expect(JSON.parse(readFileSync(join(unknownHome, '.gemini', 'settings.json'), 'utf-8')).hooks.enabled).toBe(true);
+  rmSync(unknownHome, { recursive: true, force: true });
 
   const oldHome = mkdtempSync(join(tmpdir(), 'captain-memo-gemini-old-'));
   const unsupported: Runner = (cmd, args) => cmd === 'gemini' && args[0] === 'mcp'

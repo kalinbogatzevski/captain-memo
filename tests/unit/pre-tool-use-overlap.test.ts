@@ -51,6 +51,20 @@ test('a topic hit, a repo hit and a semantic hit each read as what they are', ()
   expect(w).not.toContain('holds billing-rounding');   // a topic is never printed as a file
 });
 
+// #103: a ghost claim (its session ended, the lease is running out) must not read like live work, and when it is
+// the only overlap the warning must not tell the caller to go coordinate with it.
+test('a stale peer is worded as stale, and only-stale overlaps do not ask the caller to coordinate', () => {
+  const ghost = { session_id: 'ghost-1', agent: 'codex', kind: 'topics' as const, overlapping: ['billing'], what: 'x', stale: true, age_s: 47 * 60 };
+  const only = formatOverlapWarning([ghost])!;
+  expect(only).toContain('(ghost-1, codex; stale, last refreshed 47m ago; its session has probably ended)');
+  expect(only).toContain('treat it as information, not a blocker');
+  expect(only).not.toContain('coordinate');
+  expect(only).not.toContain('continue');   // it can merge with pre-git's advice to isolate a mutating git op
+  const mixed = formatOverlapWarning([ghost, { session_id: 'live-1', agent: 'claude', kind: 'topics', overlapping: ['billing'], what: 'y' }])!;
+  expect(mixed).toContain('(live-1, claude) holds the same topic');
+  expect(mixed).toContain('coordinate');
+});
+
 test('a DECLARED directory claim is not called whole-repo, and named files beside a coarse claim drop the caveat', () => {
   const declared = formatOverlapWarning([{ session_id: 'p', agent: 'claude', kind: 'files', repo_root: '/repo', files: ['/repo/billing/**'], overlapping: ['/repo/billing/x.ts'] }], '/repo')!;
   expect(declared).toContain('holds /repo/billing/**');
