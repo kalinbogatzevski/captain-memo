@@ -4,7 +4,7 @@
     "name": "Kalin Bogatzevski"
   },
   "metadata": {
-    "description": "Captain Memo \u2014 local memory layer for AI coding agents. Hybrid search, three summarizer providers, self-hosted embedder.",
+    "description": "Captain Memo \u2014 local memory layer for AI coding agents. Hybrid search, six summarizer providers, self-hosted embedder.",
     "homepage": "https://github.com/kalinbogatzevski/captain-memo"
   },
   "plugins": [

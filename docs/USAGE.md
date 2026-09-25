@@ -114,10 +114,11 @@ Work coordination is `work_set` / `work_active` / `work_clear`. Always pass `top
 
 Ideas and todos parked for later, per captain — every AI session on this machine sees the same list. Not a memory (a memory is a fact) and not a work claim (a claim is now): an item has a lifecycle, open → claimed → done.
 
-- Type `idea: …`, `todo: …`, `homework: …` or `later: …` (`идея:` / `за после:`) at the start of a prompt and the prompt hook files it on this machine without spending the turn — the model sees `📝 Filed as homework #N on this captain (not for now): …` and answers "noted".
-- `todo_add(text, topics, project)` files one from a session; `todo_list(status)` shows what is `open` (default), `done` (kept a week) or `all`; `todo_claim(id)` takes one, so every other session on this machine sees it as taken; `todo_done(id, note)` closes it.
-- Every new session lists the open items in its session-start banner.
+- Type `idea: …`, `todo: …`, `homework: …` or `later: …` (`идея:` / `за после:`) at the start of a prompt (then `:`, `-` or `—`) and the prompt hook files it on this machine before the model acts on it. The prompt still reaches the model, with memory recall skipped; the model sees `📝 Filed as homework #N on this captain (not for now): …` and can just answer "noted". The hook runs in Claude Code, and in Codex, Gemini and Kimi where `connect` wired their native hooks (Codex runs them only after you approve them once in `/hooks`). Elsewhere nothing files it automatically: the `todo_add` tool description, and the skill `connect` copies in where the tool reads it, ask the model to file it with `todo_add`. JetBrains gets the `todo_*` tools only once you add the MCP server in the IDE from the snippet `connect` writes.
+- `todo_add(text, topics, project)` files one from a session; `todo_list(status)` shows what is `open` (default), `done` (kept a week) or `all`; `todo_claim(id)` takes one, so every other session on this machine sees it as taken (advisory: claiming again just changes the holder); `todo_done(id, note)` closes it.
+- Claude Code sessions list up to three open items in the session-start banner. Other AI tools have no session-start hook; their model calls `todo_list()`.
 - Worker routes: `POST /homework/add`, `GET /homework/list`, `POST /homework/claim`, `POST /homework/done`.
+- Full guide: [captain-memo.ispcq.com/homework.html](https://captain-memo.ispcq.com/homework.html).
 
 ## Watch paths
 
@@ -306,10 +307,12 @@ captain-memo install-hooks --project
 
 | Hook | Latency budget | Behavior on worker down |
 |---|---|---|
-| `UserPromptSubmit` | 1500 ms (`CAPTAIN_MEMO_HOOK_TIMEOUT_MS`) | No envelope; original prompt still passes through |
+| `UserPromptSubmit` | 1500 ms (`CAPTAIN_MEMO_HOOK_TIMEOUT_MS`); an `idea:` / `todo:` prompt waits a fixed 6 s for the homework write instead, whatever that setting says | No envelope; original prompt still passes through. A homework prompt tells the model it may not have been filed: check `todo_list()`, else `todo_add` it |
 | `SessionStart` | registered with a 60 s timeout; waits ≤15 s for a starting worker, ≤20 s for one that is updating or booting | Prints a banner: the degraded one, or — when the worker left a transition breadcrumb — "updating (vX → vY)" with a note that memory resumes by itself, no restart needed |
-| `PostToolUse` | 100 ms (fire-and-forget) | Event dropped |
+| `PreToolUse` | 1500 ms per worker call (`CAPTAIN_MEMO_PRE_TOOL_USE_TIMEOUT_MS`); Claude Code only | No work-board claim or overlap warning; the tool call proceeds (advisory, never blocks) |
+| `PostToolUse` | 1000 ms to enqueue (`CAPTAIN_MEMO_POST_TOOL_USE_TIMEOUT_MS`) | Event dropped |
 | `Stop` | 5 s drain | Queue persists for next session |
+| `PreCompact` | 5 s to enqueue (`CAPTAIN_MEMO_PRE_COMPACT_TIMEOUT_MS`), registered with a 10 s timeout | Pre-compaction event dropped; compaction proceeds |
 
 ## Migrating from claude-mem
 

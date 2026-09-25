@@ -83,7 +83,7 @@ the worker, so an untrusted, disabled, or broken hook cannot silently turn fallb
 The detailed contract audit and upgrade rules live in
 [Native lifecycle capture](native-lifecycle-capture.md).
 
-**The fast path: `captain-memo connect`.** Every tool below can be wired automatically —
+**The fast path: `captain-memo connect`.** Every tool below except JetBrains can be wired automatically (for JetBrains it writes a snippet you paste in the IDE) —
 `captain-memo connect` detects every installed tool and wires all of them in one shot;
 `captain-memo connect --list` shows what's detected without changing anything;
 `captain-memo connect <tool>` wires just one (`codex | gemini | agy | cursor | opencode | vibe | kimi | vscode | jetbrains`).

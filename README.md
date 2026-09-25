@@ -18,7 +18,7 @@ Captain Memo is a Claude Code plugin — and a **cross-AI local intelligence lay
   <img src="docs/demo.gif" alt="Terminal recording: `captain-memo connect` wires six installed AI tools to one shared worker, then `captain-memo stats` shows four of them writing into the same local corpus" width="820">
 </p>
 
-<p align="center"><sub>One command wires every AI coding tool on the machine. They all read and write <b>one</b> local corpus.</sub></p>
+<p align="center"><sub>One command wires every AI coding tool on the machine (JetBrains takes one paste in the IDE). They all read and write <b>one</b> local corpus.</sub></p>
 
 > **Platforms — Linux, macOS and native Windows (x64).** Linux runs under `systemd --user`; **macOS runs as a per-user launchd LaunchAgent** (no root — see [macOS](#macos) below); Windows runs natively under a per-user Scheduled Task (no WSL, no admin) — see [Windows (native)](#windows-native), or the [WSL2 fallback](#wsl2-fallback). One `ServiceManager` interface, three supervisors; the CLI is identical on all three.
 
@@ -41,7 +41,7 @@ So I sat down to build that "something different" for myself, and ended up with 
 ## What it is
 
 - **Local-first.** Vector store and metadata live on your machine — `sqlite-vec` + SQLite WAL. No cloud database, no per-call billing for retrieval, no network round-trips on the hot path.
-- **Cross-AI — one corpus, many tools.** Claude Code, Codex, Gemini CLI, Antigravity (`agy`, the Gemini-CLI successor), goose, Cursor, opencode, Mistral Vibe, Kimi CLI, VS Code (Copilot), and JetBrains (AI Assistant) all share the same local memory through Captain Memo's MCP server + a portable skill. `captain-memo install` (or `captain-memo connect`) auto-detects the AI tools on your machine and wires each one — no manual setup. Current Codex, Gemini, and Kimi releases also get native lifecycle hooks for automatic recall and observation capture; older or disabled hook implementations stay on the transcript reader automatically. See [docs/cross-ai-tools.md](docs/cross-ai-tools.md).
+- **Cross-AI — one corpus, many tools.** Claude Code, Codex, Gemini CLI, Antigravity (`agy`, the Gemini-CLI successor), goose, Cursor, opencode, Mistral Vibe, Kimi CLI, VS Code (Copilot), and JetBrains (AI Assistant) all share the same local memory through Captain Memo's MCP server + a portable skill. `captain-memo install` (or `captain-memo connect`) auto-detects the AI tools on your machine and wires each one — no manual setup, except JetBrains, whose MCP server you add in the IDE from the snippet `connect` writes. Current Codex, Gemini, and Kimi releases also get native lifecycle hooks for automatic recall and observation capture; older or disabled hook implementations stay on the transcript reader automatically. See [docs/cross-ai-tools.md](docs/cross-ai-tools.md).
 - **Auto-discovered memory — every assistant, not just Claude.** `CAPTAIN_MEMO_WATCH_MEMORY=auto` (the install default) probes the machine and indexes whichever AI memory files actually exist: `~/.claude/CLAUDE.md`, per-project Claude memories, `~/.codex/`, `~/.gemini/`, `~/.cursor/rules/`, repo-level `AGENTS.md` / `CLAUDE.md` / `.github/copilot-instructions.md`. Each doc is tagged with the `tool` it came from. Composes with your own globs (`auto,/my/notes/*.md`). Credentials and session logs are structurally unindexable — every discovery glob must end in `.md`/`.mdc`, which is enforced by a test, not a blocklist.
 - **Virtual Skills — one synchronized skill repository for every AI.** Captain Memo mirrors the user-level `SKILL.md` files installed for Claude Code, Codex, Gemini, Cursor, opencode, Vibe, Kimi and more into its local SQLite corpus, preserving complete instructions, provenance, hashes and portability warnings. Discovery is **AUTO when `CAPTAIN_MEMO_WATCH_SKILLS` is missing**; set it to an explicitly empty value to opt out. Native files remain canonical and edits/deletions synchronize live. Humans can browse with `captain-memo skill list`; connected assistants use `list_skills`, `recommend_skills` and `load_skill`. Imported instructions remain advisory, and the existing backup/restore path carries the repository with the rest of Captain Memo.
 - **Virtual Capabilities — the fleet knows where work can actually run.** Captain Memo auto-discovers installed Gemini/Agy extensions plus Claude and Codex plugins, then stores a sanitized descriptor in the same SQLite corpus: name, description, version, operation names, interface names, and owning runtime. It never imports command bodies, executable configuration, environment values, or credentials. Use `captain-memo capability list`, `capability recommend`, or the `list_capabilities` / `recommend_capabilities` / `get_capability` MCP tools. A result says “delegate this to Gemini on this captain,” not “pretend this plugin runs in every CLI.” Missing `CAPTAIN_MEMO_WATCH_CAPABILITIES` means **AUTO**; explicitly empty opts out.
@@ -60,8 +60,8 @@ So I sat down to build that "something different" for myself, and ended up with 
   - `skip` — keyword-only retrieval (FTS5 only, no vectors)
 - **Auto-injected context.** A `<memory-context>` envelope is added to every user prompt in Claude Code and in native-hook-capable Codex, Gemini, and Kimi releases. The model sees relevant memory, skills, and prior session observations before it answers.
 - **Session observations.** Tool-use events from Claude Code and native-hook-capable Codex, Gemini, and Kimi sessions are captured immediately; transcript readers cover older CLIs plus Agy and opencode. Batched events are summarized into structured observations (type / title / facts / concepts) and indexed into the same hybrid search. Native and transcript paths deduplicate per session.
-- **Work-coordination board.** Before every file-touching tool call — the edit tools, and Bash/PowerShell commands that *write* (`sed -i`, `>`/`>>`, heredocs, `tee`, `Set-Content`) — a `PreToolUse` hook publishes a transient "I'm touching these files" claim to a shared board. Any other AI tool editing overlapping files — on the same captain, and across the fleet once you're federated — is flagged instantly: by file path, by *topic* (a `work_set` claim carries 1–5 short tags for what the work is *about*, so two sessions on "billing-rounding" collide whatever files they touch), and by *meaning* (a semantic pass catches two agents working on the same thing in different files, which a plain glob match misses). Advisory only, never blocks an edit; claims are leases that auto-expire, so a crashed session never leaves a phantom claim behind.
-- **Homework.** Ideas arrive while a session is busy with something else. Type `idea: …` or `todo: …` at the start of a prompt and the hook files it on this machine without spending the turn — the model sees "filed as homework #12, not for now" and says "noted". Every new session lists what is open in its start banner; a session takes an item with `todo_claim` (so no other AI on the machine starts it too) and closes it with `todo_done`. Not a memory (a memory is a fact), not a work claim (a claim is now).
+- **Work-coordination board.** In Claude Code, before every file-touching tool call — the edit tools, and Bash/PowerShell commands that *write* (`sed -i`, `>`/`>>`, heredocs, `tee`, `Set-Content`) — a `PreToolUse` hook publishes a transient "I'm touching these files" claim to a shared board and warns the session when another live claim overlaps it. Other AI tools have no such hook: they appear on the board once they call `work_set`, which answers with the claims that overlap theirs. Overlap is matched by file path, by *topic* (a `work_set` claim carries 1–5 short tags for what the work is *about*, so two sessions on "billing-rounding" collide whatever files they touch), and by *meaning* (a semantic pass catches two agents working on the same thing in different files, which a plain glob match misses). Advisory only, never blocks an edit; claims are leases that auto-expire, so a crashed session never leaves a phantom claim behind.
+- **Homework.** An idea arrives while a session is busy with something else. Type `idea: …` or `todo: …` at the start of a prompt and the prompt hook parks it on this machine as a numbered item, open until a session claims and closes it; in an AI tool with no prompt hook, the model can file it with `todo_add`. [How it works, and which tools do what →](#homework)
 - **Indefinite retention.** No 30-day cleanups. A project takes years; your memory should too.
 
 **One machine is free, forever.** Everything above runs on your own hardware — no account, no server, no key required for the zero-key paths. Nothing is time-limited, feature-gated, or held back. If you end up running agents across *several* machines and want them to share one memory, that's [Captain Fleet](https://fleet.ispcq.com), a separate commercial relay. It is not a trial and this is not a crippled edition; a single machine is the whole product for most people, including me on most days.
@@ -323,7 +323,7 @@ captain-memo uninstall           # clean removal (keeps worker.env as worker.env
 captain-memo uninstall --system  # for the system-mode install
 ```
 
-`captain-memo restart` only says ✓ once a *new* worker process is answering — it compares the worker's start stamp before and after, so it cannot confirm the very process it was about to kill; an unconfirmed restart is reported as unconfirmed, never as success.
+`captain-memo restart` only says ✓ once a *new* worker process is answering. It reads the worker's `instance` stamp from `/health` before and after (a worker older than 0.44.2 has no such field, so it falls back to the start stamp on `/stats`), which means it cannot confirm the very process it was about to kill. It waits at most 30 s. A new process that is still indexing at startup prints "✓ worker restarted — the new process is up and still warming up"; a healthy one prints "✓ worker is healthy". An unconfirmed restart is reported as unconfirmed, never as success.
 
 `uninstall` moves `worker.env` (API keys, summarizer, embedder, anything you added by hand) to `worker.env.bak` instead of deleting it, and the next `captain-memo install` restores it when the live file is missing — so a reinstall comes back with your keys pre-filled (a headless `install --yes` asks nothing). Delete the `.bak` for a clean slate. The installer also copies the file aside before every rewrite, with the same owner-only lock as the live file (0600; icacls on Windows).
 
@@ -403,7 +403,7 @@ These fire when the model decides retrieval would help your prompt — no slash 
 | `status` | Worker health |
 | `todo_add` | Homework: park an idea or a task for later (open → claimed → done); `idea: …` / `todo: …` at the start of a prompt does the same through the hook |
 | `todo_list` | Homework: what is open (default), done (kept a week), or all |
-| `todo_claim` | Homework: take an item so no other session on this machine starts it too |
+| `todo_claim` | Homework: mark an item taken; every session on this machine sees who has it (advisory: claiming again just changes the holder) |
 | `todo_done` | Homework: close an item with a one-line note |
 | `work_set` | Coordination board: publish/refresh "I'm working on X — topics, files"; returns overlapping claims by topic, files or meaning |
 | `work_active` | Coordination board: list live claims with their topics, which topics two sessions hold, and which claims overlap yours |
@@ -413,6 +413,57 @@ These fire when the model decides retrieval would help your prompt — no slash 
 > with Codex rather than Claude, using Captain Memo's own shared memory throughout. The prior
 > architecture, decisions, conventions, and release rules were recalled from the corpus instead of
 > being re-explained by the maintainer.
+
+## Homework
+
+An idea arrives mid-task, and acting on it now would derail the task. Homework parks it: one numbered list of ideas and todos per captain (the worker on this machine), shared by every AI session here, each item open until a session claims it and closes it. The full guide is at [captain-memo.ispcq.com/homework.html](https://captain-memo.ispcq.com/homework.html).
+
+**Filing.** Start a prompt with `idea`, `todo`, `homework` or `later` (also `идея` and `за после`), then `:`, `-` or `—`, then the text. The prompt hook files it on this machine and puts one line in front of the model:
+
+```
+📝 Filed as homework #14 on this captain (not for now): retry the embed call once on a 429 — todo_list() shows the list; the user may just want a short "noted". (3 open)
+```
+
+The prompt still reaches the model, so it can answer "noted"; memory recall is skipped for that prompt. Only the start of the prompt counts, and any prompt that starts that way is filed, even "later - can you check X". A session files one directly with `todo_add(text, topics, project)`; only `todo_add` sets topics.
+
+**The next Claude Code session** shows the open items in its start banner, at most three, then `… N more`:
+
+```
+  Homework   3 open — todo_list() for all, todo_claim(id) before starting one
+             #12 look at the flaky backup test on macOS
+             #13 shorten the install wizard's summarizer question
+             #14 retry the embed call once on a 429
+```
+
+**Which AI tools do what.**
+
+| AI tool | `idea:` capture | Start-of-session list | `todo_*` tools |
+|---|---|---|---|
+| Claude Code | Yes, the prompt hook | Yes, the banner (up to 3 items) | Yes |
+| Codex, Gemini CLI, Kimi CLI | Yes, when `connect` wired their native hooks¹ | No: the model has to call `todo_list()` | Yes |
+| Antigravity (`agy`), opencode, Cursor, Mistral Vibe, VS Code | No: the skill `connect` copies in asks the model to file it with `todo_add`, where the tool reads that skill (best-effort; not verified for every tool) | No | Yes |
+| JetBrains | No | No | Only once you add the MCP server in the IDE (Settings, Tools, AI Assistant, MCP): `connect` cannot register it, it writes a paste-ready snippet to `~/.config/JetBrains/captain-memo-mcp.json` |
+| goose, Claude Desktop | No, and no skill is installed: the `todo_add` tool description is the only guidance | No | Yes |
+
+¹ `connect` wires native hooks only where the CLI supports them (Codex with hooks enabled, Gemini with hook support, Kimi 1.28+); otherwise that CLI behaves like the next row. Codex runs them only after you approve them once in `/hooks`. `connect` registers the prompt hook with a 5 s timeout, while filing can wait up to 6 s for a busy worker, so the filed line may be cut off: check `todo_list()` before filing the item again.
+
+**Lifecycle.** Open, then claimed, then done. A claim marks the item taken: the banner shows `(claimed by …)` and `todo_list` returns who holds it. It is advisory, not a lock: claiming again just changes who holds it, and `todo_done` needs no claim first. Done items stay listable with `todo_list({status: 'done'})` for 7 days, then drop out the next time the list is read. There is no reopen, edit or delete. Text is capped at 2,000 characters, the done note at 500, topics at 5 lowercase-kebab tags of 40 characters. Numbers count up per captain and are never reused.
+
+**Homework, memory or a work claim?**
+
+| | What it holds | Lasts until |
+|---|---|---|
+| Homework (`todo_add`) | Something to do later | Done, then 7 days |
+| Memory (`remember`) | A fact to recall | Kept indefinitely (`forget` removes it) |
+| Work claim (`work_set`) | What a session is doing now | Its lease ends (30 min by default) |
+
+**Seeing the list yourself.** There is no CLI or slash command for it yet. The worker answers on localhost (default port 39888):
+
+```bash
+curl -s 'http://127.0.0.1:39888/homework/list?status=all' | jq
+```
+
+**Storage.** The list lives in the worker's `meta.sqlite3`, so `captain-memo backup` carries it. The list itself is not indexed, so `search_all` does not return homework items (though the observation of a session's `todo_add` call can mention the text); `todo_list` is how you read it.
 
 ## CLI commands (any terminal)
 
@@ -733,7 +784,7 @@ Schema migrations:
 | **Embedder** | Pluggable: hosted Voyage API (default), local voyage-4-nano sidecar (`:8124`), or any OpenAI-compatible `/v1/embeddings` endpoint. |
 | **Summarizer** | Pluggable: Claude Max via OAuth (default, no API key), Codex CLI (ChatGPT plan), Antigravity CLI `agy` (Google account), Anthropic API, `claude -p` subprocess, or any OpenAI-compatible `/v1/chat/completions`. |
 | **MCP server** (stdio) | Exposes 22 tools, including virtual skills plus `list_capabilities` / `recommend_capabilities` / `get_capability` for runtime-aware plugin routing. |
-| **Six hooks** | `SessionStart` (corpus banner), `UserPromptSubmit` (inject memory envelope, ≤1.5 s budget), `PreToolUse` (work-board claim + overlap/git warning, advisory only), `PostToolUse` (queue tool-use events), `Stop` (drain → summarize → index), `PreCompact` (capture before context compaction). |
+| **Six hooks** | `SessionStart` (corpus banner), `UserPromptSubmit` (inject memory envelope, ≤1.5 s budget; an `idea:` / `todo:` prompt is filed as homework instead, waiting ≤6 s), `PreToolUse` (work-board claim + overlap/git warning, advisory only), `PostToolUse` (queue tool-use events), `Stop` (drain → summarize → index), `PreCompact` (capture before context compaction). |
 | **CLI** | The commands above. |
 
 Channels indexed: `memory` (curated user memory files), `skill` (cross-AI Agent Skills, section-level plus a first-class lossless registry), `observation` (summarized session events). Observations age at search time: Tide (on by default) demotes stale hits with a bounded multiplier that never falls below a 0.30 relevance floor, so newer truth ranks above stale truth without losing history. (`CAPTAIN_MEMO_TIDE_ENABLED=0` falls back to the older flat exponential decay, 90-day half-life.)
@@ -751,6 +802,10 @@ Detailed docs: [`docs/USAGE.md`](docs/USAGE.md).
 | 3 — Layer A | claude-mem migration (`inspect-claude-mem`, `migrate-from-claude-mem`) | Shipped |
 | 3 — Layer B | OAuth-direct summarizer (no API key needed) · recency decay · install wizard fast-path defaults | Shipped |
 | 3 — Layers C-G | observation dedup + supersede (`dedup`, `supersede`) · retrieval-quality eval (`eval seed` / `eval run`) · `forget` · doctor staleness checks (`plugin cache version`, `live plugin version`) | Shipped |
+| — | Cross-AI memory: other AI tools share the same corpus through the MCP server and portable skill (0.5.0), wired by `captain-memo connect` (0.5.1) | Shipped |
+| — | Work-coordination board: `work_set` / `work_active` / `work_clear`, Claude Code auto-claims on edit (0.15.0; topics in 0.44.0) | Shipped |
+| — | Virtual Skills (0.37.0) · Virtual Capabilities (0.38.0) | Shipped |
+| — | Homework: `todo_*` tools, `idea:` / `todo:` capture (0.44.0) | Shipped |
 | 3 — remaining | MEMORY.md transformation | Planned |
 
 Typecheck clean. Bun ≥ 1.1.14, TypeScript strict.

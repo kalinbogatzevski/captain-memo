@@ -13184,7 +13184,7 @@ var TOOLS = [
   },
   {
     name: "status",
-    description: "Health check: are voyage and chroma reachable?",
+    description: "Health check: is the captain-memo worker up and healthy? Returns the worker's /health answer (vectors live in-process in sqlite-vec, so there is no separate vector store to reach).",
     inputSchema: { type: "object", properties: {} }
   },
   {
@@ -13205,7 +13205,7 @@ var TOOLS = [
   },
   {
     name: "todo_add",
-    description: 'File HOMEWORK on this captain: an idea or a task for later \u2014 not for now. Kept per captain (every AI session on this machine shares the list; every new session sees the open items at start), with a lifecycle open \u2192 claimed \u2192 done. Use it when the user says "idea:", "todo:", "later:", "note for later", or when you notice work that should happen but not in this session. NOT a memory (that is `remember`: a fact to recall) and NOT a work claim (that is `work_set`: what you are doing right now). Returns the item with its number (#12) and how many are open.',
+    description: 'File HOMEWORK on this captain: an idea or a task for later \u2014 not for now. Kept per captain (every AI session on this machine shares the list; Claude Code sessions see the open items at start, other tools call todo_list), with a lifecycle open \u2192 claimed \u2192 done. Use it when the user says "idea:", "todo:", "later:", "note for later", or when you notice work that should happen but not in this session. NOT a memory (that is `remember`: a fact to recall) and NOT a work claim (that is `work_set`: what you are doing right now). Returns the item with its number (#12) and how many are open.',
     inputSchema: { type: "object", properties: { text: { type: "string", description: "What to do, in one or two lines; the first line is the title." }, topics: { type: "array", items: { type: "string" }, description: "Optional 1\u20135 kebab tags, like work_set topics." }, project: { type: "string", description: "Optional project it belongs to; defaults to this cwd's project." } }, required: ["text"] }
   },
   {
@@ -13215,7 +13215,7 @@ var TOOLS = [
   },
   {
     name: "todo_claim",
-    description: "Take a homework item before starting it, so every other session on this machine sees it as claimed by you and nobody else starts the same one. Re-claiming is allowed (it just updates who has it).",
+    description: "Take a homework item before starting it, so every other session on this machine sees it as claimed by you. Advisory, not a lock: re-claiming is allowed (it just updates who has it).",
     inputSchema: { type: "object", properties: { id: { type: "string", description: 'The item number, e.g. "12" or "#12".' } }, required: ["id"] }
   },
   {

@@ -57,6 +57,9 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
   not; `todo_list/claim/done`). It also refreshes at every Claude Code session start (`src/cli/skill-refresh.ts`,
   refresh-only, never create): it had frozen at `connect` time, so a CLI connected before a tool existed never
   learned it.
+  *Correction (2026-09-25): on a default install, where Claude Code runs the plugin from its cache, this refresh
+  does not run, because the plugin snapshot does not carry the skill file. It works only in `install-hooks` mode.
+  Until that is fixed, re-run `captain-memo connect` after an update to refresh the copies.*
 - The GitHub Release job is idempotent: a release already cut for the tag is not a failure.
 
 ## [0.44.0] — 2026-09-18

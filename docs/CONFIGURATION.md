@@ -232,11 +232,11 @@ Read by `services/embed/`, not by the worker. Set these where the service starts
 
 | Setting | Default | Notes |
 |---|---|---|
-| `CAPTAIN_MEMO_HOOK_TIMEOUT_MS` | `1500` | General hook budget. |
+| `CAPTAIN_MEMO_HOOK_TIMEOUT_MS` | `1500` | Budget for the memory envelope on each prompt (`UserPromptSubmit`), and the `SessionStart` stats timeout when `CAPTAIN_MEMO_SESSION_START_TIMEOUT_MS` is unset. It does not govern homework capture: an `idea:` / `todo:` prompt waits a fixed 6 s for the worker to confirm the write. `PreToolUse`, `PostToolUse` and `PreCompact` have their own settings below. |
 | `CAPTAIN_MEMO_HOOK_BUDGET_TOKENS` | `4000` | Ceiling on injected context per turn. |
 | `CAPTAIN_MEMO_HOOK_DEBUG` | OFF | `1` logs hook decisions to stderr. |
 | `CAPTAIN_MEMO_HOOK_EVENT` | unset | Set by the dispatcher; not an operator setting. |
-| `CAPTAIN_MEMO_SESSION_START_TIMEOUT_MS` | `1500` | |
+| `CAPTAIN_MEMO_SESSION_START_TIMEOUT_MS` | `10000` | How long session-start waits for `/stats`. Unset, it falls back to `CAPTAIN_MEMO_HOOK_TIMEOUT_MS` when that is set, else 10 s. |
 | `CAPTAIN_MEMO_SESSION_START_WAIT_HEALTHY_MS` | `15000` | How long session-start waits for a starting worker. |
 | `CAPTAIN_MEMO_SESSION_START_TRANSITION_WAIT_MS` | `20000` | How long session-start waits for a worker that left a transition breadcrumb (`~/.captain-memo/.worker-transition`: updating or booting) before it reports the worker as still in transition and skips self-heal. |
 | `CAPTAIN_MEMO_PRE_TOOL_USE_TIMEOUT_MS` | `1500` | |
