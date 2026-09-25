@@ -630,7 +630,10 @@ export function checkRemember(): Check {
 }
 
 /** Every Gemini outside 0.24-0.25 rejects the boolean `hooks.enabled` that connect wrote before it read the version
- *  (0.26+ prints "Invalid configuration" at every start) until connect rewrites it. Silent when there is nothing to report. */
+ *  (0.26+ prints "Invalid configuration" at every start) until connect rewrites it. Silent when there is nothing to report.
+ *  0.22 and 0.23 can never be flagged here: with that key present their `gemini --version` exits 52 with empty stdout
+ *  ("Invalid configuration ... hooks.enabled Expected array, received boolean" on stderr, run 2026-09-26), so the
+ *  version reads as unknown and this check stays silent. */
 function checkGeminiHooksToggle(): void {
   const path = join(homedir(), '.gemini', 'settings.json');
   let json: string;
