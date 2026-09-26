@@ -452,7 +452,8 @@ export function mergeVibeMcpConfig(existingToml: string | null, mcpServerPath: s
 // `connect kimi` must leave kimi LAUNCHABLE, and kimi's launchability lives entirely in ~/.kimi/config.toml:
 // a [providers.*] table + [models.<alias>] aliases + a root `default_model` (bare `kimi` has nothing to route
 // to without them). VERIFIED shape (kimi-cli 1.48.0): provider type "openai_legacy", a loopback base_url needs
-// NO api key and NO /login, and `-m <alias>` takes a [models.*] KEY — so the aliases are named after the Ollama
+// no real key and no /login, but the api_key FIELD is required (kimi refuses the file without it, 2026-09-26), so
+// a placeholder is written; and `-m <alias>` takes a [models.*] KEY — so the aliases are named after the Ollama
 // model ids, 1:1. Managed BEGIN/END block: re-running REGENERATES it (so a newly pulled model shows up) and
 // never touches a line outside it. `default_model` is a ROOT key ⇒ it MUST precede all tables (a bare key after
 // a [section] header belongs to THAT table, and kimi then dies with "LLM not set") ⇒ it is PREPENDED — and it is
@@ -500,7 +501,8 @@ export function mergeKimiConfig(existingToml: string | null, opts: { models: str
   const owned = new Set(base.split('\n').map((l) => /^\s*\[\s*([^\]]+?)\s*\]\s*(#.*)?$/.exec(l)?.[1]?.replace(/["'\s]/g, '')).filter(Boolean));
   let block = KIMI_BEGIN + '\n' + (owned.has('providers.ollama') ? '' : '[providers.ollama]\n'
     + 'type = "openai_legacy"\n'
-    + 'base_url = ' + JSON.stringify(endpoint) + '\n');
+    + 'base_url = ' + JSON.stringify(endpoint) + '\n'
+    + 'api_key = "ollama"\n');   // kimi 1.48.0 refuses a provider without api_key ("Field required"); Ollama ignores it
   for (const m of opts.models) {
     if (owned.has('models.' + m)) continue;
     block += '\n[models.' + JSON.stringify(m) + ']\n'

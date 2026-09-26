@@ -7,6 +7,15 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.44.8] — 2026-09-26
+
+### Fixed
+
+- **`connect kimi` wrote a provider kimi refuses to load.** kimi 1.48.0 requires an `api_key` field on every provider
+  ("Field required"), even for a loopback Ollama that ignores it, so a config written only by `connect` stopped kimi
+  from starting at all. The managed block now writes `api_key = "ollama"`; a provider table of your own is left as it
+  is. Re-run `captain-memo connect kimi` to update the managed block.
+
 ## [0.44.7] — 2026-09-26
 
 ### Fixed

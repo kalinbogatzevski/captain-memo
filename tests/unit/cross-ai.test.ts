@@ -778,7 +778,8 @@ test('mergeKimiConfig — writes the loopback provider + one [models.<alias>] pe
   expect(out.startsWith('default_model = "qwen3.5:9b"')).toBe(true);   // ROOT key ⇒ must precede every table
   expect(out).toContain('[providers.ollama]');
   expect(out).toContain('type = "openai_legacy"');
-  expect(out).toContain('base_url = "http://127.0.0.1:11434/v1"');     // loopback ⇒ no api key, no /login
+  expect(out).toContain('base_url = "http://127.0.0.1:11434/v1"');     // loopback ⇒ no real key, no /login
+  expect(out).toContain('api_key = "ollama"');   // but kimi 1.48.0 refuses a provider with no api_key field at all
   expect(out).toContain('[models."qwen3.5:9b"]');                      // the `-m <alias>` key
   expect(out).toContain('[models."gemma4:12b"]');
 });
