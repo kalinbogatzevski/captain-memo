@@ -2,7 +2,7 @@ import { test, expect, beforeEach, afterEach, describe } from 'bun:test';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { mergeCursorMcpConfig, mergeVibeMcpConfig, mergeKimiConfig, mergeKimiHooks, kimiHooksSupported, mergeClaudeDesktopConfig, mergeGooseConfig, mergeGeminiHooks, geminiHooksSupported, parseGeminiVersion, geminiHooksToggleRejected, toBlockYaml, mergeCodexToolApprovals, mergeCodexHooks, codexHooksEnabled, CAPTAIN_MEMO_CODEX_HOOK_MARKER, CAPTAIN_MEMO_GEMINI_HOOK_MARKER, CAPTAIN_MEMO_KIMI_HOOK_BEGIN, CODEX_TOOL_NAMES, gooseConfigPath, gooseConfigCandidates, extractGooseEntry, gooseExtensionEntry, parseOllamaList, connectCrossAi, type Runner } from '../../src/cli/cross-ai.ts';
+import { mergeCursorMcpConfig, mergeVibeMcpConfig, mergeKimiConfig, kimiSmallContexts, mergeKimiHooks, kimiHooksSupported, mergeClaudeDesktopConfig, mergeGooseConfig, mergeGeminiHooks, geminiHooksSupported, parseGeminiVersion, geminiHooksToggleRejected, toBlockYaml, mergeCodexToolApprovals, mergeCodexHooks, codexHooksEnabled, CAPTAIN_MEMO_CODEX_HOOK_MARKER, CAPTAIN_MEMO_GEMINI_HOOK_MARKER, CAPTAIN_MEMO_KIMI_HOOK_BEGIN, CODEX_TOOL_NAMES, gooseConfigPath, gooseConfigCandidates, extractGooseEntry, gooseExtensionEntry, parseOllamaList, connectCrossAi, type Runner } from '../../src/cli/cross-ai.ts';
 
 // Bun's native YAML, typed locally so this compiles against an @types/bun predating `Bun.YAML`.
 const YAML = (globalThis as { Bun: { YAML: { parse(s: string): any; stringify(v: unknown): string } } }).Bun.YAML;
@@ -781,6 +781,32 @@ test('mergeKimiConfig — writes the loopback provider + one [models.<alias>] pe
   expect(out).toContain('base_url = "http://127.0.0.1:11434/v1"');     // loopback ⇒ no api key, no /login
   expect(out).toContain('[models."qwen3.5:9b"]');                      // the `-m <alias>` key
   expect(out).toContain('[models."gemma4:12b"]');
+});
+
+test('mergeKimiConfig — max_context_size clears kimi\'s 50,000-token compaction reserve plus its ~20K preamble', () => {
+  // At 32768 kimi-cli 1.48.0 compacted before every step and the prompt never reached the model (2026-09-26).
+  const sizes = [...mergeKimiConfig(null, { models: ['qwen3.5:9b', 'gemma4:12b'] }).matchAll(/^max_context_size = (\d+)$/gm)].map((m) => Number(m[1]));
+  expect(sizes).toEqual([131072, 131072]);
+  expect(Math.min(...sizes)).toBeGreaterThan(50_000 + 20_000);
+});
+
+test('mergeKimiConfig — a hand-written config keeps its own tables: the block never duplicates one (kimi refuses duplicate TOML tables)', () => {
+  // A config written by hand before the managed block existed: the same provider and model tables, no markers.
+  const hand = 'default_model = "qwen3.5:9b"\n\n[providers.ollama]\ntype = "openai_legacy"\nbase_url = "http://127.0.0.1:11434/v1"\n\n[models."qwen3.5:9b"]\nprovider = "ollama"\nmodel = "qwen3.5:9b"\nmax_context_size = 32768\n';
+  const out = mergeKimiConfig(hand, { models: ['qwen3.5:9b', 'gemma4:12b'] });
+  const count = (h: string) => out.split('\n').filter((l) => l.trim() === h).length;
+  expect(count('[providers.ollama]')).toBe(1);
+  expect(count('[models."qwen3.5:9b"]')).toBe(1);
+  expect(count('[models."gemma4:12b"]')).toBe(1);   // the one the owner lacked is still added
+  expect(out.startsWith(hand.trimEnd())).toBe(true);   // the owner's lines untouched, their 32768 included
+  expect(mergeKimiConfig(out, { models: ['qwen3.5:9b', 'gemma4:12b'] })).toBe(out);   // a re-run is byte-stable
+});
+
+test('kimiSmallContexts — names the owner\'s own model tables below ~70K, never the managed block\'s', () => {
+  const hand = '[providers.ollama]\ntype = "openai_legacy"\n\n[models."qwen3.5:9b"]\nprovider = "ollama"\nmax_context_size = 32768\n\n[models.big]\nmax_context_size = 262144\n';
+  const merged = mergeKimiConfig(hand, { models: ['qwen3.5:9b', 'gemma4:12b'] });
+  expect(kimiSmallContexts(merged)).toEqual(['qwen3.5:9b (32768)']);
+  expect(kimiSmallContexts(mergeKimiConfig(null, { models: ['qwen3.5:9b'] }))).toEqual([]);   // the managed block is fine
 });
 
 test('mergeKimiConfig — regenerates the managed block, preserves foreign tables + a user-chosen default', () => {

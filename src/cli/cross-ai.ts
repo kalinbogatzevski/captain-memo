@@ -462,7 +462,30 @@ export function mergeVibeMcpConfig(existingToml: string | null, mcpServerPath: s
 const KIMI_BEGIN = '# >>> captain-memo (managed by `captain-memo connect kimi`) >>>';
 const KIMI_END = '# <<< captain-memo <<<';
 const KIMI_LOCAL_ENDPOINT = 'http://127.0.0.1:11434/v1';   // ponytail: loopback Ollama, the only verified provider
-const KIMI_MAX_CONTEXT = 32768;
+// kimi-cli 1.48.0 compacts the conversation whenever its tokens + reserved_context_size (50,000 by default, its
+// config.py) reach max_context_size, and its own system prompt plus tool schemas are ~20K tokens before any MCP
+// server. At 32768 every step compacted first, so the prompt never reached the model: the request carried the system
+// message alone (2026-09-26, against a mock server that logged the request; 65536 and 131072 delivered it). This is kimi's
+// budget, not the model's: the Ollama server's own context length still bounds what the model actually reads.
+const KIMI_MAX_CONTEXT = 131072;
+// Below this kimi compacts before the prompt reaches the model: its 50,000-token reserve plus its ~20K preamble.
+const KIMI_MIN_CONTEXT = 70_000;
+
+/** The owner's OWN [models.*] tables (outside the managed block) whose max_context_size is below KIMI_MIN_CONTEXT,
+ *  as "alias (size)". `connect` never edits those tables, so it names them instead of reporting a quiet success. */
+export function kimiSmallContexts(toml: string): string[] {
+  const esc = (x: string): string => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const outside = toml.replace(new RegExp(esc(KIMI_BEGIN) + '[\\s\\S]*?' + esc(KIMI_END)), '');
+  const out: string[] = [];
+  let table = '';
+  for (const line of outside.split('\n')) {
+    const t = /^\s*\[\s*([^\]]+?)\s*\]/.exec(line);
+    if (t) { table = t[1]!.replace(/["'\s]/g, ''); continue; }
+    const m = /^\s*max_context_size\s*=\s*(\d+)/.exec(line);
+    if (m && table.startsWith('models.') && Number(m[1]) < KIMI_MIN_CONTEXT) out.push(`${table.slice(7)} (${m[1]})`);
+  }
+  return out;
+}
 
 export function mergeKimiConfig(existingToml: string | null, opts: { models: string[]; endpoint?: string }): string {
   // Drop any previous managed block — this is a regenerate, not an append. Trailing whitespace goes with it so
@@ -472,11 +495,14 @@ export function mergeKimiConfig(existingToml: string | null, opts: { models: str
     '',
   ).replace(/\s+$/, '');
   const endpoint = opts.endpoint ?? KIMI_LOCAL_ENDPOINT;
-  let block = KIMI_BEGIN + '\n'
-    + '[providers.ollama]\n'
+  // A table the owner declared OUTSIDE the block (a hand-written config) is theirs, and writing it again
+  // would be a duplicate TOML table, which kimi refuses to load: the block skips it.
+  const owned = new Set(base.split('\n').map((l) => /^\s*\[\s*([^\]]+?)\s*\]\s*(#.*)?$/.exec(l)?.[1]?.replace(/["'\s]/g, '')).filter(Boolean));
+  let block = KIMI_BEGIN + '\n' + (owned.has('providers.ollama') ? '' : '[providers.ollama]\n'
     + 'type = "openai_legacy"\n'
-    + 'base_url = ' + JSON.stringify(endpoint) + '\n';
+    + 'base_url = ' + JSON.stringify(endpoint) + '\n');
   for (const m of opts.models) {
+    if (owned.has('models.' + m)) continue;
     block += '\n[models.' + JSON.stringify(m) + ']\n'
       + 'provider = "ollama"\n'
       + 'model = ' + JSON.stringify(m) + '\n'
@@ -1124,6 +1150,8 @@ const kimiAdapter: ToolAdapter = {
           mkdirSync(dirname(cfgPath), { recursive: true });
           writeFileSync(cfgPath, merged);
         }
+        const small = kimiSmallContexts(merged);
+        if (small.length) details.push(`max_context_size in your own ~/.kimi/config.toml is below about 70,000 for ${small.join(', ')}: kimi compacts before your prompt reaches the model, so raise it there (connect leaves your own tables alone)`);
       } catch (e) {
         details.push('config.toml: ' + (e as Error).message);
       }

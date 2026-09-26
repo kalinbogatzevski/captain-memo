@@ -7,6 +7,19 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.44.7] — 2026-09-26
+
+### Fixed
+
+- **`connect kimi` wrote a context size at which kimi never sent your prompt.** kimi compacts its conversation
+  whenever its tokens plus a 50,000-token reserve reach the model's `max_context_size`, and its own instructions and
+  tools take about 20,000 tokens. At the 32,768 that `connect` wrote, every step compacted first, so the model saw its
+  system prompt alone, without any error. `connect` now writes 131,072 for the models it manages, and names any model
+  table of your own below about 70,000, which it never edits: raise that one yourself. It also no longer duplicates a
+  provider or model table you declared yourself outside its managed block (kimi refuses a config with duplicate
+  tables). Re-run `captain-memo connect kimi` to update the managed block. This is kimi's budget, not the model's: an Ollama server's own context
+  length still limits what the model reads.
+
 ## [0.44.6] — 2026-09-25
 
 ### Fixed
