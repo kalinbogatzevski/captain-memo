@@ -4,6 +4,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { ObservationQueue } from '../../src/worker/observation-queue.ts';
 import type { RawObservationEvent } from '../../src/shared/types.ts';
+import { BOOT_SLACK_MS } from '../support/worker-boot.ts';
 
 // observation_queue never deleted anything — markDone only flips status. One live install reached
 // 235,899 done rows in a 610.9 MB queue.db, all of it work already finished and written to
@@ -74,4 +75,7 @@ test('reclaims disk — a DELETE alone leaves the file just as large', () => {
   expect(after).toBeLessThan(before / 2);   // the file actually shrank, not just the row count
   queue.close();   // Windows cannot unlink an open file; POSIX can, which hid this
   rmSync(dir, { recursive: true, force: true });
-});
+// Its own timeout: ~2 s idle but 5.6-8.7 s at load 4-5 (2026-09-27), so a bare `bun test`'s 5 s default failed it on
+// a busy host. Plus BOOT_SLACK_MS: an explicit timeout overrides CI's Windows --timeout 90000, and this test's I/O is
+// what the slow Windows disk stalls.
+}, 30_000 + BOOT_SLACK_MS);
