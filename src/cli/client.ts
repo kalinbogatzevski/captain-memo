@@ -30,6 +30,21 @@ export async function workerGetOptional(path: string, timeoutMs?: number): Promi
   }
 }
 
+/** The reason a worker gave in its JSON error body (`detail`, else `error`), for a one-line message; the whole
+ *  message when there is none. workerGet/workerPost errors read `<path> → <status>: <body>`. */
+export function workerErrorReason(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  const at = msg.indexOf('{');
+  if (at >= 0) {
+    try {
+      const j = JSON.parse(msg.slice(at)) as { detail?: unknown; error?: unknown };
+      const r = j.detail ?? j.error;
+      if (typeof r === 'string' && r) return r;
+    } catch { /* not JSON: fall through to the message */ }
+  }
+  return msg;
+}
+
 export async function workerHealthy(): Promise<boolean> {
   try {
     const result = await workerGet('/health') as { healthy: boolean };

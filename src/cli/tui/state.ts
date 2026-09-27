@@ -8,7 +8,12 @@
 import type { Key } from './keys.ts';
 import type { RecallView, RecallSort } from '../../worker/observations-store.ts';
 
-export type Mode = 'dashboard' | 'table' | 'detail' | 'help' | 'sources' | 'tokens';
+export type Mode = 'dashboard' | 'table' | 'detail' | 'help' | 'sources' | 'tokens' | 'homework';
+
+/** One homework row as the [h] panel shows it (the shell sets them in display order). */
+export interface HwRow { id: string; open: boolean; claimed_by?: string }
+/** A claim or done the shell runs against the worker; it clears on the 'acted' event. */
+export interface HwRequest { op: 'claim' | 'done'; id: string; note?: string }
 
 export interface TopState {
   mode: Mode;
@@ -33,6 +38,12 @@ export interface TopState {
   // scroll the clipped frame body instead, as far as the panel renders.
   // max/page are measured by the shell after each render (the 'frame' event).
   frame: { scroll: number; max: number; page: number };
+  // homework panel: its own selection (the table's would reset on every view switch),
+  // the done-note prompt, and a takeover armed by a first `c` on someone else's claim.
+  hw: { rows: HwRow[]; sel: number; scroll: number; note: { active: boolean; buffer: string; id: string }; takeover: string | null };
+  hwBy: string;                 // who `top` claims and closes as (set by the shell)
+  hwRequest: HwRequest | null;  // an action for the shell to run
+  notice: string | null;        // one line of feedback in the homework panel
   // help overlay returns to whichever mode opened it
   helpReturn: Mode;
   // lifecycle
@@ -43,7 +54,9 @@ export type Event =
   | { type: 'key'; key: Key }
   | { type: 'data'; ids: number[] }
   | { type: 'resize'; pageSize: number }
-  | { type: 'frame'; max: number; page: number };
+  | { type: 'frame'; max: number; page: number }
+  | { type: 'homework'; rows: HwRow[] }
+  | { type: 'acted'; notice: string };
 
 const VIEWS: RecallView[] = ['surfaced', 'recalled', 'recent', 'themes'];
 const SORTS: RecallSort[] = ['total', 'auto', 'search', 'drill', 'recency'];
@@ -72,6 +85,10 @@ export function initialState(): TopState {
     detailId: null,
     detailScroll: 0,
     frame: { scroll: 0, max: 0, page: 1 },
+    hw: { rows: [], sel: 0, scroll: 0, note: { active: false, buffer: '', id: '' }, takeover: null },
+    hwBy: 'top',
+    hwRequest: null,
+    notice: null,
     helpReturn: 'dashboard',
     quit: false,
   };
@@ -117,6 +134,11 @@ function reduceEvent(state: TopState, event: Event): TopState {
     // where it was, and only a frame that shrank past it pulls the view back.
     return { ...state, frame: { scroll: clamp(state.frame.scroll, 0, event.max), max: event.max, page: event.page } };
   }
+  if (event.type === 'homework') {
+    const sel = clamp(state.hw.sel, 0, Math.max(0, event.rows.length - 1));
+    return { ...state, hw: hwFollow({ ...state.hw, rows: event.rows, sel }, hwPageSize(state)) };
+  }
+  if (event.type === 'acted') return { ...state, hwRequest: null, notice: event.notice };
   if (event.type === 'data') {
     const rowIds = event.ids;
     const selection = clamp(state.selection, 0, Math.max(0, rowIds.length - 1));
@@ -138,6 +160,7 @@ function reduceEvent(state: TopState, event: Event): TopState {
     case 'help':       return reduceHelp(state, key);
     case 'sources':    return reduceSources(state, key);
     case 'tokens':     return reduceTokens(state, key);
+    case 'homework':   return reduceHomework(state, key);
   }
 }
 
@@ -146,7 +169,7 @@ function reduceEvent(state: TopState, event: Event): TopState {
  *  Windows report: only the table could scroll). The table pages its selection and the
  *  detail view its own body, and clipFrame must not promise them keys nobody routes. */
 export function scrollsFrame(mode: Mode): boolean {
-  return mode !== 'table' && mode !== 'detail';
+  return mode !== 'table' && mode !== 'detail' && mode !== 'homework';
 }
 
 /** j/k, ↑/↓, PgUp/PgDn, Home/End over the clipped frame body; null for any other key
@@ -194,6 +217,7 @@ function reduceDashboard(s: TopState, key: Key): TopState {
       case 'T': return enterTable(s, 'themes');   // uppercase: lowercase t is the type filter
       case 'a': return { ...s, mode: 'sources' };
       case 'm': return { ...s, mode: 'tokens' };
+      case 'h': return openHomework(s);
       case '+': return { ...s, refreshMs: clamp(s.refreshMs + REFRESH_STEP, MIN_REFRESH, MAX_REFRESH) };
       case '-': return { ...s, refreshMs: clamp(s.refreshMs - REFRESH_STEP, MIN_REFRESH, MAX_REFRESH) };
       case '?': return openHelp(s);
@@ -217,6 +241,7 @@ function reduceTokens(s: TopState, key: Key): TopState {
       case 'T': return enterTable(s, 'themes');   // uppercase: lowercase t is the type filter
       case 'm': return { ...s, mode: 'dashboard' };
       case 'a': return { ...s, mode: 'sources' };
+      case 'h': return openHomework(s);
       case '+': return { ...s, refreshMs: clamp(s.refreshMs + REFRESH_STEP, MIN_REFRESH, MAX_REFRESH) };
       case '-': return { ...s, refreshMs: clamp(s.refreshMs - REFRESH_STEP, MIN_REFRESH, MAX_REFRESH) };
       case '?': return openHelp(s);
@@ -235,6 +260,7 @@ function reduceSources(s: TopState, key: Key): TopState {
       case 'n': return enterTable(s, 'recent');
       case 'T': return enterTable(s, 'themes');   // uppercase: lowercase t is the type filter
       case 'a': return { ...s, mode: 'dashboard' };
+      case 'h': return openHomework(s);
       case '+': return { ...s, refreshMs: clamp(s.refreshMs + REFRESH_STEP, MIN_REFRESH, MAX_REFRESH) };
       case '-': return { ...s, refreshMs: clamp(s.refreshMs - REFRESH_STEP, MIN_REFRESH, MAX_REFRESH) };
       case '?': return openHelp(s);
@@ -279,6 +305,7 @@ function reduceTable(s: TopState, key: Key): TopState {
         case 'T': return enterTable(s, 'themes');   // uppercase: lowercase t is the type filter
         case 'a': return { ...s, mode: 'sources' };   // AI-sources chart tab
         case 'm': return { ...s, mode: 'tokens' };    // live per-session token flow
+        case 'h': return openHomework(s);             // homework panel
         case 'j': return followScroll({ ...s, selection: clamp(s.selection + 1, 0, lastIndex) });
         case 'k': return followScroll({ ...s, selection: clamp(s.selection - 1, 0, lastIndex) });
         case 'g': return followScroll({ ...s, selection: 0 });
@@ -305,6 +332,95 @@ function reduceDetail(s: TopState, key: Key): TopState {
       if (key.value === 'j') return { ...s, detailScroll: s.detailScroll + 1 };
       if (key.value === 'k') return { ...s, detailScroll: Math.max(0, s.detailScroll - 1) };
       if (key.value === 'q') return { ...s, quit: true };
+      return s;
+    default:
+      return s;
+  }
+}
+
+// ── homework ([h]) ──────────────────────────────────────────────────────────
+
+/** Rows the homework list shows: the table's page size less the selected item's
+ *  detail block under it, so list + detail + prompt fit the same terminal height. */
+export const HW_DETAIL_ROWS = 6;
+export function hwPageSize(s: TopState): number {
+  return Math.max(3, s.pageSize - HW_DETAIL_ROWS);
+}
+
+function hwFollow(hw: TopState['hw'], page: number): TopState['hw'] {
+  let scroll = hw.scroll;
+  if (hw.sel < scroll) scroll = hw.sel;
+  else if (hw.sel >= scroll + page) scroll = hw.sel - page + 1;
+  return { ...hw, scroll: Math.max(0, scroll) };
+}
+
+function openHomework(s: TopState): TopState {
+  return { ...s, mode: 'homework', notice: null, hw: { ...s.hw, note: { active: false, buffer: '', id: '' }, takeover: null } };
+}
+
+function reduceHomework(s0: TopState, key: Key): TopState {
+  // The done-note prompt swallows keystrokes as text: Enter closes the item, Esc cancels.
+  if (s0.hw.note.active) {
+    const note = s0.hw.note;
+    if (key.type === 'enter') {
+      const text = note.buffer.trim();
+      return { ...s0, hw: { ...s0.hw, note: { active: false, buffer: '', id: '' } },
+        hwRequest: { op: 'done', id: note.id, ...(text ? { note: text } : {}) } };
+    }
+    if (key.type === 'escape') return { ...s0, hw: { ...s0.hw, note: { active: false, buffer: '', id: '' } }, notice: 'Not closed.' };
+    if (key.type === 'backspace') return { ...s0, hw: { ...s0.hw, note: { ...note, buffer: note.buffer.slice(0, -1) } } };
+    if (key.type === 'char' && note.buffer.length < 500) return { ...s0, hw: { ...s0.hw, note: { ...note, buffer: note.buffer + key.value } } };
+    return s0;
+  }
+
+  // Any other key clears the last notice, and disarms a takeover unless it is the second `c`.
+  const armed = s0.hw.takeover;
+  const s: TopState = { ...s0, notice: null, hw: { ...s0.hw, takeover: null } };
+  const last = Math.max(0, s.hw.rows.length - 1);
+  const page = hwPageSize(s);
+  const move = (sel: number): TopState => ({ ...s, hw: hwFollow({ ...s.hw, sel: clamp(sel, 0, last) }, page) });
+  const row = s.hw.rows[s.hw.sel];
+
+  switch (key.type) {
+    case 'down':     return move(s.hw.sel + 1);
+    case 'up':       return move(s.hw.sel - 1);
+    case 'pagedown': return move(s.hw.sel + page);
+    case 'pageup':   return move(s.hw.sel - page);
+    case 'home':     return move(0);
+    case 'end':      return move(last);
+    case 'escape':   return { ...s, mode: 'dashboard' };
+    case 'char':
+      switch (key.value) {
+        case 'j': return move(s.hw.sel + 1);
+        case 'k': return move(s.hw.sel - 1);
+        case 'g': return move(0);
+        case 'G': return move(last);
+        case 'c': {
+          if (!row) return s;
+          if (!row.open) return { ...s, notice: `#${row.id} is already done.` };
+          // Claiming over someone else's claim takes a second `c`: the claim is advisory,
+          // but taking a session's item without noticing it would be a silent surprise.
+          if (row.claimed_by && row.claimed_by !== s.hwBy && armed !== row.id) {
+            return { ...s, hw: { ...s.hw, takeover: row.id }, notice: `#${row.id} is claimed by ${row.claimed_by}. Press c again to take it over.` };
+          }
+          return { ...s, hwRequest: { op: 'claim', id: row.id } };
+        }
+        case 'd':
+          if (!row) return s;
+          if (!row.open) return { ...s, notice: `#${row.id} is already done.` };
+          return { ...s, hw: { ...s.hw, note: { active: true, buffer: '', id: row.id } } };
+        case 'h': return { ...s, mode: 'dashboard' };
+        case 's': return enterTable(s, 'surfaced');
+        case 'r': return enterTable(s, 'recalled');
+        case 'n': return enterTable(s, 'recent');
+        case 'T': return enterTable(s, 'themes');
+        case 'a': return { ...s, mode: 'sources' };
+        case 'm': return { ...s, mode: 'tokens' };
+        case '+': return { ...s, refreshMs: clamp(s.refreshMs + REFRESH_STEP, MIN_REFRESH, MAX_REFRESH) };
+        case '-': return { ...s, refreshMs: clamp(s.refreshMs - REFRESH_STEP, MIN_REFRESH, MAX_REFRESH) };
+        case '?': return openHelp(s);
+        case 'q': return { ...s, quit: true };
+      }
       return s;
     default:
       return s;

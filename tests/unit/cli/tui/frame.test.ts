@@ -119,3 +119,84 @@ test('detail frame — shows the full observation and a back hint', () => {
   expect(text).toContain('fact one');
   expect(text).toContain('Esc');   // back affordance
 });
+
+// ── homework ─────────────────────────────────────────────────────────────────
+import { orderHomework } from '../../../../src/cli/tui/frame.ts';
+import type { HomeworkView } from '../../../../src/cli/stats-render.ts';
+
+const nowMs = Date.now();
+const HW: HomeworkView[] = [
+  { id: '4', text: 'port the scroll fix\nsecond line of detail', topics: ['top'], project: 'captain-memo', by: 'sess-x', created_at: nowMs - 3_600_000 },
+  { id: '7', text: 'cockpit board', topics: [], by: 'sess-y', created_at: nowMs - 7_200_000, claimed_by: 'sess-a', claimed_at: nowMs - 60_000 },
+  { id: '2', text: 'old one', topics: [], by: 'sess-z', created_at: nowMs - 86_400_000, done_at: nowMs - 600_000, done_by: 'sess-z', note: 'shipped in 0.44.9' },
+  { id: '3', text: 'older done', topics: [], by: 'sess-z', created_at: nowMs - 86_400_000, done_at: nowMs - 6_000_000, done_by: 'sess-z' },
+];
+const hwFrame = (s: TopState, homework: HomeworkView[] | null) =>
+  buildFrame(s, { homework }, { cols: 100, rows: 40 }).map(stripAnsi);
+
+test('orderHomework — open in filing order, then done, most recently closed first', () => {
+  expect(orderHomework([HW[2]!, HW[0]!, HW[3]!, HW[1]!]).map((i) => i.id)).toEqual(['4', '7', '2', '3']);
+});
+
+test('homework frame — counts, rows with claim and done state, and the selected item in full', () => {
+  const s = run(initialState(), ch('h'), { type: 'homework', rows: orderHomework(HW).map((i) => ({ id: i.id, open: !i.done_at })) });
+  const lines = hwFrame(s, orderHomework(HW));
+  const all = lines.join('\n');
+  expect(all).toContain('2 open · 1 claimed · 2 done this week');
+  expect(lines.find((l) => l.includes('#7'))).toContain('claimed by sess-a');
+  expect(lines.find((l) => l.includes('#2 '))).toContain('✓ done');
+  expect(lines.find((l) => l.startsWith(' ▸'))).toContain('#4');
+  expect(all).toContain('#4 · captain-memo · filed by sess-x 1h ago');
+  expect(all).toContain('second line of detail');
+  expect(all).toContain('#top');
+  expect(lines.at(-1)).toContain('[c]laim');
+  expect(lines.every((l) => l.length <= 100)).toBe(true);
+});
+
+test('homework frame — a done item shows its close note; the prompt shows while typing a note', () => {
+  const s = run(initialState(), ch('h'), { type: 'homework', rows: orderHomework(HW).map((i) => ({ id: i.id, open: !i.done_at })) });
+  expect(hwFrame(run(s, ch('j'), ch('j')), orderHomework(HW)).join('\n')).toContain('note: shipped in 0.44.9');
+  const typing = run(s, ch('d'), ch('o'), ch('k'));
+  expect(hwFrame(typing, orderHomework(HW)).join('\n')).toContain('Close #4 with a note (optional). Enter closes it, Esc cancels: ok');
+});
+
+test('homework frame — control characters in item text never reach the terminal', () => {
+  const evil: HomeworkView[] = [{ id: '9', text: 'hi\x1b[2Jthere', topics: ['x\x1b[31m'], by: 'b\x07', created_at: nowMs }];
+  const s = run(initialState(), ch('h'), { type: 'homework', rows: [{ id: '9', open: true }] });
+  const raw = buildFrame(s, { homework: evil }, { cols: 100, rows: 40 }).join('\n');
+  expect(raw).not.toContain('\x1b[2J');
+  expect(raw).not.toContain('\x07');
+  expect(stripAnsi(raw)).toContain('hi [2Jthere');
+});
+
+test('homework frame — honest when the worker does not report homework, and when nothing is parked', () => {
+  const s = run(initialState(), ch('h'));
+  expect(hwFrame(s, null).join('\n')).toContain('does not report homework');
+  expect(hwFrame(s, []).join('\n')).toContain('nothing parked');
+});
+
+test('dashboard frame — the Homework section lists the first open items; absent when not reported', () => {
+  const withHw = buildFrame(initialState(), { stats: STATS, homework: orderHomework(HW).filter((i) => !i.done_at) }, { cols: 100, rows: 60 }).map(stripAnsi);
+  const at = withHw.findIndex((l) => l.includes('Homework ─'));
+  expect(at).toBeGreaterThan(0);
+  expect(withHw[at + 1]).toContain('2 open · 1 claimed');
+  expect(withHw[at + 2]).toContain('#4');
+  expect(withHw[at + 3]).toContain('claimed by sess-a');
+  expect(withHw.at(-1)).toContain('[h]omework');
+  const without = buildFrame(initialState(), { stats: STATS }, { cols: 100, rows: 60 }).map(stripAnsi);
+  expect(without.some((l) => l.includes('Homework ─'))).toBe(false);
+});
+
+test('dashboard hint bar — fits the terminal, dropping the rarest keys first; help and quit always stay', () => {
+  const at = (cols: number) => stripAnsi(buildFrame(initialState(), { stats: STATS }, { cols, rows: 60 }).at(-1)!);
+  expect(at(140)).toContain('[+/-]rate');
+  const hundred = at(100);
+  expect(hundred.length).toBeLessThanOrEqual(99);
+  expect(hundred).toContain('[h]omework');
+  expect(hundred).not.toContain('[+/-]rate');
+  for (const cols of [60, 80, 100]) {
+    expect(at(cols).length).toBeLessThanOrEqual(cols - 1);
+    expect(at(cols)).toContain('[?]help');
+    expect(at(cols)).toContain('[q]uit');
+  }
+});

@@ -299,6 +299,9 @@ export interface RenderOpts {
   panelWidth?: number;
   /** Optional right-aligned status on the header line (the `top` live clock). */
   headerRight?: string;
+  /** Open homework (GET /homework/list). `top` passes it, since its [h] panel acts on it;
+   *  absent or null ⇒ no section, so `captain-memo stats` renders as before. */
+  homework?: HomeworkView[] | null;
 }
 
 export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string[] {
@@ -320,6 +323,13 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
     out.push(...st.head, st.embedder, ...st.tail);
   }
   out.push('');
+
+  // Homework sits right under the status block: it is the one section that asks you to
+  // do something, so it must not be the first thing a short terminal clips.
+  if (opts.homework) {
+    out.push(...renderHomeworkBlock(opts.homework, panelWidth));
+    out.push('');
+  }
 
   // CORPUS + EFFICIENCY: side by side in wide mode, stacked when narrow.
   const cols = splitColumnWidths(panelWidth, 3);
@@ -1079,4 +1089,58 @@ function renderRecallEntry(
     `     ${cyanBold(count)}  ${dim(`[${r.type}]`)} ${titleTrim}${dim(similar)}`,
     `           ${breakdown}`,
   ];
+}
+
+// ── Homework ────────────────────────────────────────────────────────────────
+
+/** One homework item as `top` shows it (GET /homework/list). `local` is set only by a
+ *  build that files local items (kept off the hub); the others never send it. */
+export interface HomeworkView {
+  id: string;
+  text: string;
+  topics: string[];
+  project?: string;
+  by: string;
+  created_at: number;
+  claimed_by?: string;
+  claimed_at?: number;
+  done_at?: number;
+  done_by?: string;
+  note?: string;
+  local?: boolean;
+}
+
+/** Homework text is typed by people and sessions: strip control characters (ESC among
+ *  them) so an item can never move the cursor or recolour the terminal. */
+export function hwClean(s: unknown): string {
+  return String(s ?? '').replace(/[\x00-\x1f\x7f]/g, ' ');
+}
+
+/** First line of an item, cleaned. */
+export function hwFirstLine(text: string): string {
+  return hwClean(String(text).split('\n')[0]);
+}
+
+const HW_DASH_ITEMS = 3;
+
+/** The dashboard's Homework section: the open count, the first few open items, and
+ *  where to act on them. Open items only; the [h] panel shows the done ones too. */
+export function renderHomeworkBlock(items: HomeworkView[], panelWidth: number): string[] {
+  const open = items.filter((i) => !i.done_at);
+  const claimed = open.filter((i) => i.claimed_by).length;
+  const out: string[] = [sectionRule('Homework', panelWidth)];
+  if (open.length === 0) {
+    out.push(`   ${dim('none open · start a prompt with "todo:" or "idea:" to park one for later')}`);
+    return out;
+  }
+  out.push(`   ${cyanBold(String(open.length))} ${dim('open')} ${dim('·')} ${claimed} ${dim('claimed')}`
+    + `   ${dim('[h] to see all, claim or close')}`);
+  for (const it of open.slice(0, HW_DASH_ITEMS)) {
+    const tail = it.claimed_by ? `  ${gold(`claimed by ${hwClean(it.claimed_by).slice(0, 24)}`)}` : '';
+    const idCol = `#${it.id}`.padEnd(5);
+    const room = Math.max(12, panelWidth - 5 - idCol.length - visibleWidth(tail));
+    out.push(`   ${cyan(idCol)} ${trimTitle(hwFirstLine(it.text), room)}${tail}`);
+  }
+  if (open.length > HW_DASH_ITEMS) out.push(`   ${dim(`… ${open.length - HW_DASH_ITEMS} more`)}`);
+  return out;
 }

@@ -210,8 +210,8 @@ test('frame scroll — j/k ↑/↓ PgUp/PgDn Home/End move the offset within [0,
   expect(s.mode).toBe('dashboard');                         // scrolling never leaves the panel
 });
 
-test('frame scroll — the same keys scroll the federation, sources, tokens and help panels', () => {
-  for (const open of [ch('f'), ch('a'), ch('m'), ch('?')]) {
+test('frame scroll — the same keys scroll the sources, tokens and help panels', () => {
+  for (const open of [ch('a'), ch('m'), ch('?')]) {
     const s = run(initialState(), open, tall, ch('j'), k({ type: 'down' }));
     expect(s.frame.scroll).toBe(2);
   }
@@ -249,4 +249,73 @@ test("frame scroll — a refresh clamps the offset to the new frame and never ju
   s = run(s, { type: 'frame', max: 0, page: 1 });    // frame fits now
   expect(s.frame.scroll).toBe(0);
   expect(run(s, ch('j')).frame.scroll).toBe(0);      // nothing to scroll
+});
+
+// ── homework panel ([h]) ─────────────────────────────────────────────────────
+const HW_ROWS: Event = { type: 'homework', rows: [
+  { id: '4', open: true },
+  { id: '7', open: true, claimed_by: 'sess-a' },
+  { id: '2', open: false },
+] };
+const hwState = (...events: Event[]) => run({ ...initialState(), hwBy: 'kalin (top)' }, ch('h'), HW_ROWS, ...events);
+
+test('homework — h opens the panel from the dashboard, table, sources and tokens; h and Esc go back', () => {
+  expect(run(initialState(), ch('h')).mode).toBe('homework');
+  for (const from of [ch('s'), ch('a'), ch('m')]) expect(run(initialState(), from, ch('h')).mode).toBe('homework');
+  expect(run(initialState(), ch('h'), ch('h')).mode).toBe('dashboard');
+  expect(run(initialState(), ch('h'), k({ type: 'escape' })).mode).toBe('dashboard');
+});
+
+test('homework — j/k and arrows move the selection, clamped to the rows', () => {
+  expect(hwState(ch('j'), ch('j'), ch('j'), ch('j')).hw.sel).toBe(2);
+  expect(hwState(ch('j'), k({ type: 'up' }), k({ type: 'up' })).hw.sel).toBe(0);
+  expect(hwState(ch('G')).hw.sel).toBe(2);
+  // A refresh that shrinks the list pulls the selection back inside it.
+  expect(run(hwState(ch('G')), { type: 'homework', rows: [{ id: '4', open: true }] }).hw.sel).toBe(0);
+  // The panel pages its own list: the frame scroll stays at 0.
+  expect(hwState(ch('j')).frame.scroll).toBe(0);
+});
+
+test('homework — c claims an open unclaimed item at once', () => {
+  expect(hwState(ch('c')).hwRequest).toEqual({ op: 'claim', id: '4' });
+});
+
+test('homework — c on someone else\'s claim asks first; the second c takes it over; any other key disarms', () => {
+  const armed = hwState(ch('j'), ch('c'));
+  expect(armed.hwRequest).toBeNull();
+  expect(armed.notice).toContain('claimed by sess-a');
+  expect(run(armed, ch('c')).hwRequest).toEqual({ op: 'claim', id: '7' });
+  expect(run(armed, ch('k'), ch('j'), ch('c')).hwRequest).toBeNull();     // moved away: armed again, not claimed
+});
+
+test('homework — re-claiming your own item needs no confirmation', () => {
+  const s = run(hwState(), { type: 'homework', rows: [{ id: '4', open: true, claimed_by: 'kalin (top)' }] }, ch('c'));
+  expect(s.hwRequest).toEqual({ op: 'claim', id: '4' });
+});
+
+test('homework — d opens the note prompt; Enter closes with the note, Esc cancels', () => {
+  const p = hwState(ch('d'));
+  expect(p.hw.note).toEqual({ active: true, buffer: '', id: '4' });
+  const typed = run(p, ch('s'), ch('h'), ch('i'), ch('p'), k({ type: 'backspace' }), ch('p'));
+  expect(typed.mode).toBe('homework');                                   // letters are text, not panel keys
+  expect(run(typed, k({ type: 'enter' })).hwRequest).toEqual({ op: 'done', id: '4', note: 'ship' });
+  expect(run(p, k({ type: 'enter' })).hwRequest).toEqual({ op: 'done', id: '4' });   // an empty note is no note
+  const cancelled = run(typed, k({ type: 'escape' }));
+  expect(cancelled.hwRequest).toBeNull();
+  expect(cancelled.hw.note.active).toBe(false);
+  expect(cancelled.mode).toBe('homework');
+});
+
+test('homework — a done item cannot be claimed or closed again', () => {
+  const s = hwState(ch('G'), ch('c'));
+  expect(s.hwRequest).toBeNull();
+  expect(s.notice).toContain('already done');
+  expect(run(hwState(ch('G')), ch('d')).hw.note.active).toBe(false);
+});
+
+test('homework — acted clears the request and shows the outcome; the next key clears the notice', () => {
+  const s = run(hwState(ch('c')), { type: 'acted', notice: 'Claimed #4.' });
+  expect(s.hwRequest).toBeNull();
+  expect(s.notice).toBe('Claimed #4.');
+  expect(run(s, ch('j')).notice).toBeNull();
 });

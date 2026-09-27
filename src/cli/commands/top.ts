@@ -9,11 +9,12 @@
 // Replaces the old `watch`-based wrapper: a real TUI can sort, filter, page and
 // drill, which `watch` (a dumb reprint loop) never could.
 
-import { workerGet, workerGetOptional } from '../client.ts';
-import { renderStats, type StatsResponse } from '../stats-render.ts';
+import { userInfo } from 'node:os';
+import { workerGet, workerGetOptional, workerPost, workerErrorReason } from '../client.ts';
+import { renderStats, type StatsResponse, type HomeworkView } from '../stats-render.ts';
 import { parseKey } from '../tui/keys.ts';
 import { initialState, reduce, scrollsFrame, type TopState, type Event } from '../tui/state.ts';
-import { buildFrame, clipFrame, frameScrollRange, type FrameData, type Dims, type RecallRowView, type DetailObs, type SessionUsageRow } from '../tui/frame.ts';
+import { buildFrame, clipFrame, frameScrollRange, orderHomework, type FrameData, type Dims, type RecallRowView, type DetailObs, type SessionUsageRow } from '../tui/frame.ts';
 
 const ALT_ON = '\x1b[?1049h';
 const ALT_OFF = '\x1b[?1049l';
@@ -60,6 +61,11 @@ export async function topCommand(args: string[]): Promise<number> {
   if (Number.isFinite(intervalArg) && intervalArg > 0) {
     state = { ...state, refreshMs: Math.max(500, Math.round(intervalArg * 1000)) };
   }
+
+  // Who a claim or close from `top` is recorded as: the person at the terminal.
+  let who = 'top';
+  try { who = `${userInfo().username} (top)`; } catch { /* no passwd entry: keep 'top' */ }
+  state = { ...state, hwBy: who };
 
   const data: FrameData = {};
   let loadedDetailId: number | null = null;
@@ -115,8 +121,19 @@ export async function topCommand(args: string[]): Promise<number> {
       let detail: DetailObs | undefined;
       let detailId: number | null = null;
 
+      let homework: HomeworkView[] | null | undefined;
       if (state.mode === 'dashboard') {
-        stats = await workerGet('/stats') as StatsResponse;
+        // The Homework section rides every dashboard tick. /homework/list is a KV prefix
+        // scan: ~15 ms for 109 items on a dev captain (2026-09-27), under 1% of the worker
+        // at the default 2 s refresh and ~3% at the fastest (0.5 s).
+        const [s, h] = await Promise.all([
+          workerGet('/stats') as Promise<StatsResponse>,
+          workerGetOptional('/homework/list?status=open') as Promise<{ items: HomeworkView[] } | null>,
+        ]);
+        stats = s; homework = h ? orderHomework(h.items) : null;
+      } else if (state.mode === 'homework') {
+        const h = await workerGetOptional('/homework/list?status=all') as { items: HomeworkView[] } | null;
+        homework = h ? orderHomework(h.items) : null;
       } else if (state.mode === 'help') {
         stats = await workerGet('/stats') as StatsResponse;
       } else if (state.mode === 'sources') {
@@ -150,6 +167,10 @@ export async function topCommand(args: string[]): Promise<number> {
       if (snapshot(state) !== reqSig) return;   // user navigated away; discard stale result
 
       if (stats) data.stats = stats;
+      if (homework !== undefined) {
+        data.homework = homework;
+        dispatch({ type: 'homework', rows: (homework ?? []).map((i) => ({ id: i.id, open: !i.done_at, ...(i.claimed_by ? { claimed_by: i.claimed_by } : {}) })) });
+      }
       if (sessions) data.sessions = sessions;
       if (page) { data.page = page; dispatch({ type: 'data', ids: page.rows.map(r => r.id) }); }
       if (detail) { data.detail = detail; loadedDetailId = detailId; }
@@ -197,7 +218,8 @@ export async function topCommand(args: string[]): Promise<number> {
     timerMs = state.refreshMs;
     timer = setInterval(async () => {
       // Auto-refresh only the live views; detail/help/filter-input stay put.
-      if ((state.mode === 'dashboard' || state.mode === 'table' || state.mode === 'sources') && !state.filter.active) {
+      if ((state.mode === 'dashboard' || state.mode === 'table' || state.mode === 'sources' || state.mode === 'homework')
+          && !state.filter.active && !state.hw.note.active) {
         await fetchForMode();
         render();
       }
@@ -228,6 +250,20 @@ export async function topCommand(args: string[]): Promise<number> {
       }
       const after = snapshot(state);
       needFetch = modeBefore !== state.mode || before !== after;
+      // A claim or close asked for in the homework panel. Cleared before the request goes
+      // out, so a key pressed while it is in flight can never send it twice.
+      const req = state.hwRequest;
+      if (req) {
+        dispatch({ type: 'acted', notice: req.op === 'claim' ? `Claiming #${req.id}…` : `Closing #${req.id}…` });
+        render();
+        try {
+          await workerPost(`/homework/${req.op}`, { id: req.id, by: state.hwBy, ...(req.note ? { note: req.note } : {}) });
+          dispatch({ type: 'acted', notice: req.op === 'claim' ? `Claimed #${req.id} as ${state.hwBy}.` : `Closed #${req.id}.` });
+        } catch (err) {
+          dispatch({ type: 'acted', notice: `Could not ${req.op === 'claim' ? 'claim' : 'close'} #${req.id}: ${workerErrorReason(err).slice(0, 160)}` });
+        }
+        needFetch = true;
+      }
       if (needFetch) await fetchForMode();
       ensureTimer();
       render();

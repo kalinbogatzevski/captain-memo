@@ -8,9 +8,9 @@
 import {
   bold, boldRed, cyan, cyanBold, dim, gold, green, padVisibleEnd, visibleWidth,
 } from '../../shared/ansi.ts';
-import { renderStats, renderSourceBars, type StatsResponse } from '../stats-render.ts';
+import { renderStats, renderSourceBars, hwClean, hwFirstLine, type StatsResponse, type HomeworkView } from '../stats-render.ts';
 import { LOGS_DIR } from '../../shared/paths.ts';
-import type { TopState } from './state.ts';
+import { hwPageSize, type TopState } from './state.ts';
 
 export interface RecallRowView {
   id: number;
@@ -66,6 +66,9 @@ export interface FrameData {
   sessions?: { window_ms: number; sessions: SessionUsageRow[] };
   page?: { rows: RecallRowView[]; total: number };
   detail?: DetailObs;
+  /** Homework, in display order (orderHomework): open only on the dashboard, open and
+   *  done-this-week in the [h] panel. null ⇒ the worker does not report it (older build). */
+  homework?: HomeworkView[] | null;
   /** The most recent worker fetch failed — everything on screen is the last-good
    *  snapshot, not live. Drives the prominent stale-data banner so a dead/zombie
    *  worker can't masquerade as live (the clock keeps ticking regardless). */
@@ -92,6 +95,7 @@ export function buildFrame(state: TopState, data: FrameData, dims: Dims): string
       case 'help':       return helpFrame(state, dims);
       case 'sources':    return sourcesFrame(state, data, dims);
       case 'tokens':     return tokensFrame(state, data, dims);
+      case 'homework':   return homeworkFrame(state, data, dims);
     }
   })();
   // A dead/zombie worker keeps the last-good stats on screen with a live clock —
@@ -129,8 +133,8 @@ export function frameScrollRange(lineCount: number, rows: number): { max: number
  *  screen. Pure and exported so the invariant is unit-testable.
  *
  *  An overflowing frame also gets a position line (`▼ 12 more · j/k scroll`) above the
- *  pinned tail: the panels with no row navigation of their own (dashboard, federation,
- *  sources, help) were simply cut at the terminal height, and a Windows user's only way
+ *  pinned tail: the panels with no row navigation of their own (dashboard, sources,
+ *  tokens, help) were simply cut at the terminal height, and a Windows user's only way
  *  to see the rest was `captain-memo stats`. It is its own row rather than appended to
  *  the hint bar — that bar is already ~110 columns wide, and a wrapped tail line costs a
  *  physical row and re-creates the very overflow this clips. A frame that fits gets no
@@ -248,6 +252,15 @@ function hintBar(parts: string[]): string {
   return '  ' + parts.map(p => dim(p)).join('  ');
 }
 
+/** The hint bar, cut to fit `cols`: a wrapped hint line costs a physical row, which
+ *  clips the frame. It drops the entries just before [?]help / [q]uit, so the rarest
+ *  go first and those two always stay; [?]help still lists every key. */
+export function fitHintBar(parts: string[], cols: number): string {
+  const p = [...parts];
+  while (p.length > 3 && 2 + p.join('  ').length > cols - 1) p.splice(p.length - 3, 1);
+  return hintBar(p);
+}
+
 function ruleLine(cols: number): string {
   return '  ' + dim('─'.repeat(Math.max(0, cols - 2)));
 }
@@ -259,12 +272,13 @@ function dashboardFrame(state: TopState, data: FrameData, dims: Dims): string[] 
     ? renderStats(data.stats, {
         panelWidth: dims.cols,
         headerRight: dim(liveStamp(state.refreshMs)),
+        ...(data.homework ? { homework: data.homework } : {}),
       })
     : [dim('  (worker unreachable)')];
   return [
     ...body,
     '',
-    hintBar(['[s]urfaced', '[r]ecalled', '[n]recent', '[T]hemes', '[a]I-sources', '[m]tokens', '[+/-]rate', '[?]help', '[q]uit']),
+    fitHintBar(['[s]urfaced', '[r]ecalled', '[n]recent', '[T]hemes', '[h]omework', '[a]I-sources', '[m]tokens', '[+/-]rate', '[?]help', '[q]uit'], dims.cols),
   ];
 }
 
@@ -342,6 +356,94 @@ function tokensFrame(state: TopState, data: FrameData, dims: Dims): string[] {
   out.push('  ' + dim('cache-read is the same context re-sent each turn — it dwarfs fresh, so share is of fresh'));
   out.push('');
   out.push(hintBar(['[s]urfaced', '[r]ecalled', '[T]hemes', '[a]I-sources', '[m/Esc]back', '[+/-]rate', '[?]help', '[q]uit']));
+  return out;
+}
+
+// ── homework ─────────────────────────────────────────────────────────────────
+
+/** Display order, shared by the frame and the shell's selection rows: open items in the
+ *  order they were filed, then the done ones, most recently closed first. */
+export function orderHomework(items: HomeworkView[]): HomeworkView[] {
+  const open = items.filter((i) => !i.done_at);
+  const done = items.filter((i) => i.done_at).sort((a, b) => (b.done_at ?? 0) - (a.done_at ?? 0));
+  return [...open, ...done];
+}
+
+const HW_ID_W = 5;
+const HW_AGE_W = 4;
+
+function hwAgo(ms: number | undefined): string {
+  return ms ? fmtAge(Math.max(0, Math.floor((Date.now() - ms) / 1000))) : '—';
+}
+
+function homeworkFrame(state: TopState, data: FrameData, dims: Dims): string[] {
+  const cols = dims.cols;
+  const out: string[] = [
+    spread(`  ${cyanBold('CAPTAIN MEMO')} ${dim('top — homework')}`, dim(liveStamp(state.refreshMs)), cols),
+    ruleLine(cols),
+  ];
+  const hint = hintBar(['[↑↓]select', '[c]laim', '[d]one', '[h/Esc]back', '[+/-]rate', '[?]help', '[q]uit']);
+  const items = data.homework;
+  if (items == null) {
+    out.push('', '  ' + dim('this worker does not report homework (an older captain-memo), or it could not be read'), '', hint);
+    return out;
+  }
+  const open = items.filter((i) => !i.done_at);
+  out.push(`  ${cyanBold(String(open.length))} ${dim('open')} ${dim('·')} ${open.filter((i) => i.claimed_by).length} ${dim('claimed')}`
+    + ` ${dim('·')} ${items.length - open.length} ${dim('done this week')}   ${dim('what your sessions parked for later')}`);
+  out.push('');
+  if (items.length === 0) {
+    out.push('  ' + dim('nothing parked. Start a prompt with "todo:" or "idea:" in any session to file one.'));
+  }
+
+  const win = items.slice(state.hw.scroll, state.hw.scroll + hwPageSize(state));
+  win.forEach((it, i) => {
+    const sel = state.hw.scroll + i === state.hw.sel;
+    const done = !!it.done_at;
+    const status = done
+      ? green('✓ done')
+      : it.claimed_by ? gold(`claimed by ${hwClean(it.claimed_by).slice(0, 24)}`) : '';
+    const local = it.local ? dim('[local] ') : '';
+    const tail = local + status;
+    const textW = Math.max(12, cols - 3 - HW_ID_W - 1 - 2 - visibleWidth(tail) - 1 - HW_AGE_W - 1);
+    const text = trimTo(hwFirstLine(it.text), textW).padEnd(textW);
+    const idCol = `#${it.id}`.padEnd(HW_ID_W);
+    out.push(` ${sel ? cyan('▸') : ' '}${done ? dim(idCol) : cyan(idCol)} `
+      + (done ? dim(text) : sel ? bold(text) : text)
+      + `  ${tail} ${dim(hwAgo(done ? it.done_at : it.created_at).padStart(HW_AGE_W))}`);
+  });
+
+  // The selected item in full: who filed it and when, its whole text, topics, the close note.
+  const it = items[state.hw.sel];
+  if (it) {
+    out.push(ruleLine(cols));
+    const meta = [`#${it.id}`];
+    if (it.project) meta.push(hwClean(it.project));
+    meta.push(`filed by ${hwClean(it.by)} ${hwAgo(it.created_at)} ago`);
+    if (it.done_at) meta.push(`done by ${hwClean(it.done_by)} ${hwAgo(it.done_at)} ago`);
+    else if (it.claimed_by) meta.push(`claimed by ${hwClean(it.claimed_by)} ${hwAgo(it.claimed_at)} ago`);
+    if (it.local) meta.push('local: stays on this captain');
+    out.push('  ' + dim(trimTo(meta.join(' · '), cols - 4)));
+    const note = it.note ? `note: ${hwClean(it.note)}` : '';
+    const budget = note ? 2 : 3;
+    const body = String(it.text).split('\n').map(hwClean).flatMap((l) => wrap(l, cols - 4));
+    // Fits HW_DETAIL_ROWS: rule + meta + `budget` text rows (the last one says what is cut) + topics/note.
+    const shown = body.length > budget ? body.slice(0, budget - 1) : body;
+    for (const l of shown) out.push('  ' + l);
+    const cut = body.length - shown.length;
+    if (cut > 0) out.push('  ' + dim(`… ${cut} more line${cut === 1 ? '' : 's'}`));
+    const extra = [it.topics.length ? cyan('#' + it.topics.map(hwClean).join(' #')) : '', note ? dim(trimTo(note, cols - 6)) : ''].filter(Boolean);
+    if (extra.length) out.push('  ' + extra.join('  '));
+  }
+
+  out.push('');
+  if (state.hw.note.active) {
+    out.push(`  ${cyan(`Close #${state.hw.note.id}`)} ${dim('with a note (optional). Enter closes it, Esc cancels:')} `
+      + `${bold(hwClean(state.hw.note.buffer))}${cyan('▏')}`);
+  } else {
+    out.push(state.notice ? '  ' + gold(hwClean(state.notice)) : '');
+  }
+  out.push(hint);
   return out;
 }
 
@@ -505,6 +607,7 @@ function helpFrame(state: TopState, dims: Dims): string[] {
     row('g / G', 'jump to top / bottom'),
     row('⏎ Enter', 'open the selected observation (counts as a drill)'),
     row('Esc', 'back one level (detail → table → dashboard)'),
+    row('h', 'open the Homework panel: c claims the selected item, d closes it'),
     '',
     H('Shape the table'),
     row('Tab', 'cycle view: Surfaced ▸ Recalled ▸ Recent'),

@@ -50,7 +50,7 @@ test('a terminal too short for even the header degrades without throwing', () =>
 });
 
 // Scrolling (2026-09-17, Windows report): only the observation table could scroll; the
-// dashboard / federation / sources / help panels were cut at the terminal height with no
+// dashboard / sources / tokens / help panels were cut at the terminal height with no
 // way to see the rest. clipFrame now takes a body offset and adds a position line above
 // the pinned tail — only while the frame overflows, so a frame that fits is untouched.
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');

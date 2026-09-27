@@ -501,6 +501,7 @@ navigable table you can reshape in place:
 
 - `s` / `r` / `n` — Surfaced / Recalled / Recent views
 - `a` — the **AI-sources** chart: observations per originating tool (claude-code / codex / agy / gemini / …)
+- `h` — the **Homework** panel: every item your sessions parked for later (open, then done this week), the selected one in full; `c` claims it, `d` closes it with an optional note. The dashboard lists the first few open ones.
 - `↑↓` / `j` `k`, `PgUp` / `PgDn`, `g` / `G` — move + page the selection
 - `o` sort · `t` type filter · `/` find-by-title · `c` collapse near-duplicates
 - `Tab` cycle views (in the table) · `+` / `-` refresh rate (on the dashboard)
