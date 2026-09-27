@@ -788,17 +788,19 @@ function decideUpdateAction(running, marker) {
     return "first-run";
   return compareSemver(running, marker) > 0 ? "upgraded" : "same-or-older";
 }
-function formatUpgradeBanner(from, to) {
+function formatUpgradeBanner(from, to, news = []) {
   return [
     `\u2693 Captain Memo self-upgraded: v${from} \u2192 v${to}`,
+    ...news,
     "  The worker restarts automatically to pick up the new version.",
     "  Run `captain-memo install` if you want a full refresh (hooks/MCP/services)."
   ].join(`
 `);
 }
-function formatAutoUpdateBanner(from, to, installFailed) {
+function formatAutoUpdateBanner(from, to, installFailed, news = []) {
   const lines = [
     `\u2693 Captain Memo auto-updated: v${from} \u2192 v${to}`,
+    ...news,
     "  Fast-forwarded your checkout to the latest stable tag and restarted the worker."
   ];
   if (installFailed)
@@ -839,16 +841,16 @@ function writeMarker(dataDir, version) {
     renameSync3(tmp, final);
   } catch {}
 }
-function consumeUpgradeNotice(dataDir, runningVersion) {
+function consumeUpgrade(dataDir, runningVersion) {
   try {
     const marker = readMarker(dataDir);
     const action = decideUpdateAction(runningVersion, marker);
     if (action === "same-or-older")
-      return "";
+      return null;
     writeMarker(dataDir, runningVersion);
-    return action === "upgraded" ? formatUpgradeBanner(marker, runningVersion) : "";
+    return action === "upgraded" ? { from: marker, to: runningVersion } : null;
   } catch {
-    return "";
+    return null;
   }
 }
 var MARKER_FILENAME = ".install-version";
@@ -1424,7 +1426,7 @@ import { homedir as homedir9 } from "os";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.44.9",
+  version: "0.44.10",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -1500,6 +1502,19 @@ var VERSION = package_default.version;
 
 // src/hooks/session-start.ts
 init_self_update();
+
+// src/shared/whats-new.ts
+init_self_update();
+var NEWS_MAX = 5;
+function newsLines(items, max = NEWS_MAX) {
+  if (items.length === 0)
+    return [];
+  const multi = new Set(items.map((i) => i.version)).size > 1;
+  const lines = ["  What changed:", ...items.slice(0, max).map((i) => `  \u2022 ${i.text}${multi ? ` (${i.version})` : ""}`)];
+  if (items.length > max)
+    lines.push(`  \u2026 and ${items.length - max} more in CHANGELOG.md`);
+  return lines;
+}
 
 // src/worker/self-updater.ts
 init_self_update();
@@ -1821,7 +1836,7 @@ async function main2() {
               updatedThisSession = true;
               if (res.to)
                 writeMarker(DATA_DIR, res.to);
-              autoUpdateNotice = formatAutoUpdateBanner(res.from, res.to ?? "?", res.installFailed);
+              autoUpdateNotice = formatAutoUpdateBanner(res.from, res.to ?? "?", res.installFailed, res.to ? await fetchNews(res.from, res.to) : []);
             } else {
               const rolled = res.priorSha ? rollbackTo(port, installDir, res.priorSha, process.execPath) : false;
               markTransition({ phase: "updating", to: res.from });
@@ -1924,7 +1939,8 @@ async function main2() {
   } catch (err) {
     logHookError("SessionStart", err);
   }
-  const upgradeNotice = consumeUpgradeNotice(DATA_DIR, VERSION);
+  const upgrade = consumeUpgrade(DATA_DIR, VERSION);
+  const upgradeNotice = upgrade ? formatUpgradeBanner(upgrade.from, upgrade.to, await fetchNews(upgrade.from, upgrade.to)) : "";
   const notices = [autoUpdateNotice, upgradeNotice].filter(Boolean).join(`
 
 `);
@@ -1960,6 +1976,14 @@ if (isMainModule(import.meta)) {
   } catch (err) {
     logHookError("SessionStart", err);
     process.exit(0);
+  }
+}
+async function fetchNews(from, to) {
+  try {
+    const r = await workerFetch(`/whats-new?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { method: "GET", timeoutMs: 1000 });
+    return r.ok && r.body ? newsLines(r.body.items) : [];
+  } catch {
+    return [];
   }
 }
 

@@ -7,6 +7,14 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.44.10] — 2026-09-27
+
+### Added
+
+- **The upgrade banner says what changed.** After an update, the one-time "Captain Memo self-upgraded" (or
+  "auto-updated") banner at the start of your next session now lists the headlines of what changed since your last
+  version, read from the CHANGELOG: up to five, then how many more. It still shows once per upgrade.
+
 ## [0.44.9] — 2026-09-27
 
 ### Added
