@@ -7,6 +7,27 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.44.9] — 2026-09-27
+
+### Added
+
+- **Homework in `captain-memo top`.** The dashboard has a Homework section under the status block: how many items
+  are open and claimed, and the first three. Press `h` for the Homework panel: every open item, then the ones closed
+  this week, with the selected one in full (who filed it and when, its project, its whole text, its topics and the
+  close note). `c` claims the selected item in your name (`<user> (top)`), and `d` closes it, with an optional
+  note typed at the prompt (Enter closes, Esc cancels). Claiming an item a session already holds takes a second `c`,
+  so you never take one over without noticing. Control characters in item text are stripped before it is drawn.
+
+### Fixed
+
+- **`top` panels scroll on a short terminal.** Only the observation table could scroll: the dashboard, AI-sources,
+  token-flow and help panels were cut at the terminal height, with no way to see the rest. `j`/`k`, the arrows,
+  PgUp/PgDn and Home/End now scroll them, and a position line above the hint bar says where you are. (From the
+  federation line, where it shipped on 2026-09-18.)
+- **The dashboard hint bar fits the terminal.** At the width of a common terminal it wrapped, which cost a row and
+  pushed the header off the top. It now drops its rarest keys first and always keeps `[?]help` and `[q]uit`; `?`
+  still lists every key.
+
 ## [0.44.8] — 2026-09-26
 
 ### Fixed
