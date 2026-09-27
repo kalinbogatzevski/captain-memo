@@ -187,3 +187,66 @@ test("AI-sources tab — 'a' opens it; a/Esc close it; s/r/n jump to the table",
   expect(run(initialState(), ch('s'), ch('a')).mode).toBe('sources'); // from a table view too
   expect(run(s, ch('s')).mode).toBe('table');
 });
+
+// Frame scroll (2026-09-17, Windows report): the panels without row navigation of their
+// own were cut at the terminal height with no way to see the rest. The shell measures
+// the clipped frame after each render ('frame' event); the keys move within that range.
+const tall: Event = { type: 'frame', max: 10, page: 4 };
+
+test('frame scroll — j/k ↑/↓ PgUp/PgDn Home/End move the offset within [0, max] on the dashboard', () => {
+  let s = run(initialState(), tall);
+  s = run(s, ch('j'), ch('j'), k({ type: 'down' }));
+  expect(s.frame.scroll).toBe(3);
+  s = run(s, k({ type: 'pagedown' }));
+  expect(s.frame.scroll).toBe(7);
+  s = run(s, k({ type: 'pagedown' }));
+  expect(s.frame.scroll).toBe(10);                          // clamped at max
+  s = run(s, ch('k'), k({ type: 'up' }));
+  expect(s.frame.scroll).toBe(8);
+  s = run(s, k({ type: 'pageup' }), k({ type: 'pageup' }), k({ type: 'pageup' }));
+  expect(s.frame.scroll).toBe(0);                           // clamped at 0
+  expect(run(s, k({ type: 'end' })).frame.scroll).toBe(10);
+  expect(run(s, k({ type: 'end' }), k({ type: 'home' })).frame.scroll).toBe(0);
+  expect(s.mode).toBe('dashboard');                         // scrolling never leaves the panel
+});
+
+test('frame scroll — the same keys scroll the federation, sources, tokens and help panels', () => {
+  for (const open of [ch('f'), ch('a'), ch('m'), ch('?')]) {
+    const s = run(initialState(), open, tall, ch('j'), k({ type: 'down' }));
+    expect(s.frame.scroll).toBe(2);
+  }
+});
+
+test('frame scroll — the table and the detail view keep their own scroll; the frame offset stays 0', () => {
+  const t = run(initialState(), ch('s'), { type: 'data', ids: [1, 2, 3] }, tall, ch('j'), k({ type: 'down' }));
+  expect(t.selection).toBe(2);
+  expect(t.frame.scroll).toBe(0);
+  const d = run(t, k({ type: 'enter' }), tall, ch('j'), k({ type: 'down' }));
+  expect(d.mode).toBe('detail');
+  expect(d.detailScroll).toBe(2);
+  expect(d.frame.scroll).toBe(0);
+});
+
+test('frame scroll — the offset resets on every mode change', () => {
+  const s = run(initialState(), tall, ch('j'), ch('j'), ch('j'));
+  expect(s.frame.scroll).toBe(3);
+  expect(run(s, ch('a')).frame.scroll).toBe(0);                          // → sources
+  expect(run(s, ch('s')).frame.scroll).toBe(0);                          // → table
+  expect(run(s, ch('?')).frame.scroll).toBe(0);                          // → help
+  const help = run(s, ch('?'), tall, ch('j'), ch('j'));
+  expect(help.frame.scroll).toBe(2);
+  expect(run(help, k({ type: 'escape' })).frame.scroll).toBe(0);         // help → back
+  expect(run(s, ch('+')).frame.scroll).toBe(3);                          // same panel: kept
+});
+
+test("frame scroll — a refresh clamps the offset to the new frame and never jumps a view that still fits", () => {
+  let s = run(initialState(), tall, k({ type: 'end' }));
+  expect(s.frame.scroll).toBe(10);
+  s = run(s, { type: 'frame', max: 12, page: 4 });   // a queue row appeared: view stays put
+  expect(s.frame.scroll).toBe(10);
+  s = run(s, { type: 'frame', max: 6, page: 4 });    // terminal grew: pulled back into range
+  expect(s.frame.scroll).toBe(6);
+  s = run(s, { type: 'frame', max: 0, page: 1 });    // frame fits now
+  expect(s.frame.scroll).toBe(0);
+  expect(run(s, ch('j')).frame.scroll).toBe(0);      // nothing to scroll
+});

@@ -29,6 +29,10 @@ export interface TopState {
   // detail
   detailId: number | null;
   detailScroll: number;
+  // frame scroll — the panels with no row navigation of their own (scrollsFrame)
+  // scroll the clipped frame body instead, as far as the panel renders.
+  // max/page are measured by the shell after each render (the 'frame' event).
+  frame: { scroll: number; max: number; page: number };
   // help overlay returns to whichever mode opened it
   helpReturn: Mode;
   // lifecycle
@@ -38,7 +42,8 @@ export interface TopState {
 export type Event =
   | { type: 'key'; key: Key }
   | { type: 'data'; ids: number[] }
-  | { type: 'resize'; pageSize: number };
+  | { type: 'resize'; pageSize: number }
+  | { type: 'frame'; max: number; page: number };
 
 const VIEWS: RecallView[] = ['surfaced', 'recalled', 'recent', 'themes'];
 const SORTS: RecallSort[] = ['total', 'auto', 'search', 'drill', 'recency'];
@@ -66,6 +71,7 @@ export function initialState(): TopState {
     filter: { active: false, buffer: '' },
     detailId: null,
     detailScroll: 0,
+    frame: { scroll: 0, max: 0, page: 1 },
     helpReturn: 'dashboard',
     quit: false,
   };
@@ -98,7 +104,19 @@ function cycle<T>(list: T[], current: T): T {
 }
 
 export function reduce(state: TopState, event: Event): TopState {
+  const next = reduceEvent(state, event);
+  // Leaving a panel drops its frame scroll: the next one opens at the top. Done here,
+  // once, rather than at every mode transition (enterTable, openHelp, Esc, …).
+  return next.mode === state.mode ? next : { ...next, frame: { ...next.frame, scroll: 0 } };
+}
+
+function reduceEvent(state: TopState, event: Event): TopState {
   if (event.type === 'resize') return followScroll({ ...state, pageSize: Math.max(1, event.pageSize) });
+  if (event.type === 'frame') {
+    // Clamp rather than reset: a refresh that changes the row count keeps the view
+    // where it was, and only a frame that shrank past it pulls the view back.
+    return { ...state, frame: { scroll: clamp(state.frame.scroll, 0, event.max), max: event.max, page: event.page } };
+  }
   if (event.type === 'data') {
     const rowIds = event.ids;
     const selection = clamp(state.selection, 0, Math.max(0, rowIds.length - 1));
@@ -108,6 +126,11 @@ export function reduce(state: TopState, event: Event): TopState {
   const key = event.key;
   if (key.type === 'ctrl-c') return { ...state, quit: true };
 
+  if (scrollsFrame(state.mode)) {
+    const scrolled = reduceFrameScroll(state, key);
+    if (scrolled) return scrolled;
+  }
+
   switch (state.mode) {
     case 'dashboard':  return reduceDashboard(state, key);
     case 'table':      return reduceTable(state, key);
@@ -116,6 +139,37 @@ export function reduce(state: TopState, event: Event): TopState {
     case 'sources':    return reduceSources(state, key);
     case 'tokens':     return reduceTokens(state, key);
   }
+}
+
+/** Panels with no row navigation of their own: a static block that clipFrame cuts at
+ *  the terminal height, so their navigation keys scroll the frame body instead (the
+ *  Windows report: only the table could scroll). The table pages its selection and the
+ *  detail view its own body, and clipFrame must not promise them keys nobody routes. */
+export function scrollsFrame(mode: Mode): boolean {
+  return mode !== 'table' && mode !== 'detail';
+}
+
+/** j/k, ↑/↓, PgUp/PgDn, Home/End over the clipped frame body; null for any other key
+ *  so the mode's own reducer sees it. */
+function reduceFrameScroll(s: TopState, key: Key): TopState | null {
+  const { scroll, max, page } = s.frame;
+  let to: number;
+  switch (key.type) {
+    case 'down':     to = scroll + 1; break;
+    case 'up':       to = scroll - 1; break;
+    case 'pagedown': to = scroll + page; break;
+    case 'pageup':   to = scroll - page; break;
+    case 'home':     to = 0; break;
+    case 'end':      to = max; break;
+    case 'char':
+      if (key.value === 'j') to = scroll + 1;
+      else if (key.value === 'k') to = scroll - 1;
+      else return null;
+      break;
+    default:
+      return null;
+  }
+  return { ...s, frame: { ...s.frame, scroll: clamp(to, 0, max) } };
 }
 
 function openHelp(s: TopState): TopState {

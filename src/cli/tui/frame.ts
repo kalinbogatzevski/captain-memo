@@ -103,24 +103,59 @@ export function buildFrame(state: TopState, data: FrameData, dims: Dims): string
   return frame;
 }
 
+// Rows clipFrame pins when a frame overflows: wordmark + rule, the hint bar (or whatever
+// the shell put last — the worker-error line), and the position line it adds.
+const HEAD = 2, TAIL = 1, POSITION = 1;
+
+/** How far an overflowing frame's body can scroll (`max`, 0 when it fits) and how many
+ *  body rows are visible (`page`, what PgUp/PgDn move by). The shell feeds this to the
+ *  state after every buildFrame so the offset is clamped to the frame actually drawn:
+ *  a refresh that changes the row count keeps the view where it was, and a jump past
+ *  the end does not need as many key presses to come back. */
+export function frameScrollRange(lineCount: number, rows: number): { max: number; page: number } {
+  if (lineCount <= rows || rows <= HEAD + TAIL + POSITION) return { max: 0, page: 1 };
+  const visible = rows - HEAD - TAIL - POSITION;
+  return { max: lineCount - HEAD - TAIL - visible, page: visible };
+}
+
 /** Fit a frame to the terminal, keeping the two header rows and the hint bar pinned
- *  and dropping from the bottom of the body.
+ *  and showing the body from `offset` (0 = top; clamped to the frame; null = the panel
+ *  pages its own content, so drop from the bottom as before with no position line).
  *
  *  Without this the render loop wrote every line from HOME and let the alt-screen
  *  buffer scroll, so a panel taller than the terminal pushed its own wordmark off the
  *  top — the user saw the BOTTOM of the dashboard and had no way to tell. It also made
  *  every row-count change (a queue row appearing when work arrives) move the whole
- *  screen. Pure and exported so the invariant is unit-testable. */
-export function clipFrame(lines: string[], rows: number): string[] {
+ *  screen. Pure and exported so the invariant is unit-testable.
+ *
+ *  An overflowing frame also gets a position line (`▼ 12 more · j/k scroll`) above the
+ *  pinned tail: the panels with no row navigation of their own (dashboard, federation,
+ *  sources, help) were simply cut at the terminal height, and a Windows user's only way
+ *  to see the rest was `captain-memo stats`. It is its own row rather than appended to
+ *  the hint bar — that bar is already ~110 columns wide, and a wrapped tail line costs a
+ *  physical row and re-creates the very overflow this clips. A frame that fits gets no
+ *  position line, so it renders exactly as before. */
+export function clipFrame(lines: string[], rows: number, offset: number | null = 0): string[] {
   if (rows <= 0) return [];
   if (lines.length <= rows) return lines;
-  const HEAD = 2, TAIL = 1;
   // Too short to hold the pinned rows themselves — take what fits from the top rather
   // than emit head+tail and overflow anyway.
   if (rows <= HEAD + TAIL) return lines.slice(0, rows);
+  // A panel that scrolls itself (table selection, detail body), or a terminal with no
+  // room for the position line: clip as before rather than promise keys nobody routes.
+  if (offset === null || rows <= HEAD + TAIL + POSITION) {
+    return [...lines.slice(0, HEAD), ...lines.slice(HEAD, HEAD + (rows - HEAD - TAIL)), ...lines.slice(-TAIL)];
+  }
+  const { max } = frameScrollRange(lines.length, rows);
+  const off = Math.max(0, Math.min(max, offset));
+  const parts: string[] = [];
+  if (off > 0) parts.push(`▲ ${off}`);
+  if (off < max) parts.push(`▼ ${max - off} more`);
+  parts.push('j/k scroll');
   return [
     ...lines.slice(0, HEAD),
-    ...lines.slice(HEAD, HEAD + (rows - HEAD - TAIL)),
+    ...lines.slice(HEAD + off, HEAD + off + (rows - HEAD - TAIL - POSITION)),
+    '  ' + dim(parts.join(' · ')),
     ...lines.slice(-TAIL),
   ];
 }
