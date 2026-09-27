@@ -36,9 +36,10 @@ export function decideUpdateAction(running: string, marker: string | null): Upda
 }
 
 /** The user-facing banner shown in the SessionStart systemMessage on an upgrade. */
-export function formatUpgradeBanner(from: string, to: string): string {
+export function formatUpgradeBanner(from: string, to: string, news: string[] = []): string {
   return [
     `⚓ Captain Memo self-upgraded: v${from} → v${to}`,
+    ...news,
     '  The worker restarts automatically to pick up the new version.',
     '  Run `captain-memo install` if you want a full refresh (hooks/MCP/services).',
   ].join('\n');
@@ -47,9 +48,10 @@ export function formatUpgradeBanner(from: string, to: string): string {
 /** Banner for the OPT-IN autonomous git self-update (CAPTAIN_MEMO_AUTO_UPDATE=1). Distinct from
  *  formatUpgradeBanner because here Captain actively fast-forwarded the checkout + restarted the
  *  worker itself, rather than just noticing a marketplace refresh. */
-export function formatAutoUpdateBanner(from: string, to: string, installFailed?: boolean): string {
+export function formatAutoUpdateBanner(from: string, to: string, installFailed?: boolean, news: string[] = []): string {
   const lines = [
     `⚓ Captain Memo auto-updated: v${from} → v${to}`,
+    ...news,
     '  Fast-forwarded your checkout to the latest stable tag and restarted the worker.',
   ];
   if (installFailed) lines.push('  ⚠ `bun install` failed — run it in your checkout if the worker misbehaves.');
@@ -97,16 +99,22 @@ export function writeMarker(dataDir: string, version: string): void {
   }
 }
 
-/** Read marker → decide → persist the running version → return the upgrade banner (or '').
- *  Silent on first run and when unchanged/older. Never throws (fail-open). */
-export function consumeUpgradeNotice(dataDir: string, runningVersion: string): string {
+/** Read marker → decide → persist the running version → the upgrade to announce ({from, to}), or null.
+ *  Null on first run and when unchanged/older. Never throws (fail-open). */
+export function consumeUpgrade(dataDir: string, runningVersion: string): { from: string; to: string } | null {
   try {
     const marker = readMarker(dataDir);
     const action = decideUpdateAction(runningVersion, marker);
-    if (action === 'same-or-older') return '';
+    if (action === 'same-or-older') return null;
     writeMarker(dataDir, runningVersion);
-    return action === 'upgraded' ? formatUpgradeBanner(marker!, runningVersion) : '';
+    return action === 'upgraded' ? { from: marker!, to: runningVersion } : null;
   } catch {
-    return '';
+    return null;
   }
+}
+
+/** consumeUpgrade, formatted: the upgrade banner (or ''), without the what's-new lines the hook adds. */
+export function consumeUpgradeNotice(dataDir: string, runningVersion: string): string {
+  const up = consumeUpgrade(dataDir, runningVersion);
+  return up ? formatUpgradeBanner(up.from, up.to) : '';
 }

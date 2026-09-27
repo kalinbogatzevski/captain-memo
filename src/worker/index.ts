@@ -1,5 +1,5 @@
 import { join, dirname, basename } from 'path';
-import { statSync, readdirSync, chmodSync, existsSync, unlinkSync } from 'node:fs';
+import { statSync, readdirSync, chmodSync, existsSync, unlinkSync, readFileSync } from 'node:fs';
 import { detectBranchSyncCached } from './branch.ts';
 import { z } from 'zod';
 import { MetaStore } from './meta.ts';
@@ -46,6 +46,7 @@ import { setWorkNote, inheritDeclaredIntent, leaseSeconds, listLocalActive, clea
 import { resolveRepoClaim } from './repo-claim.ts';
 import { warmWorknoteVecs, semanticOverlapPass, hasIntent, SEMANTIC_ENABLED, semanticStatus } from './worknote-semantic.ts';
 import { addHomework, listHomework, claimHomework, doneHomework } from './homework.ts';
+import { whatsNew } from '../shared/whats-new.ts';
 import { centroid } from '../shared/vector-math.ts';
 import { PendingEmbedQueue } from './pending-embed-queue.ts';
 import { chunkObservation } from './chunkers/observation.ts';
@@ -2313,6 +2314,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // `semantic` says whether the meaning half of overlap detection is working RIGHT NOW: a degraded pass used
         // to report "no overlap" indistinguishably from a real no-overlap.
         return Response.json({ session_id: note.session_id, ttl_s: note.ttl_s, topics: note.topics ?? [], overlaps, semantic: semanticStatus() });
+      }
+      // #129 WHAT'S NEW: the CHANGELOG headlines between two versions, for the one-time upgrade banner the
+      // SessionStart hook shows. Read from this checkout's own CHANGELOG.md, once per upgrade; none if it is missing.
+      if (req.method === 'GET' && url.pathname === '/whats-new') {
+        const from = url.searchParams.get('from') ?? '', to = url.searchParams.get('to') ?? '';
+        let log = '';
+        try { log = readFileSync(join(import.meta.dir, '..', '..', 'CHANGELOG.md'), 'utf8'); } catch { /* no CHANGELOG: no news */ }
+        return Response.json({ items: from && to ? whatsNew(log, from, to).slice(0, 20) : [] });
       }
       // ── Homework: ideas and todos parked for later (open → claimed → done), per captain ──────
       if (req.method === 'POST' && url.pathname === '/homework/add') {

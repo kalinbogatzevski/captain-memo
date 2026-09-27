@@ -5,7 +5,8 @@ import { readStdinJson, writeStdout, workerFetch, logHookError, workerFailureMes
 import type { HomeworkItem } from '../worker/homework.ts';
 import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS, DEFAULT_WORKER_PORT, DATA_DIR } from '../shared/paths.ts';
 import { VERSION } from '../shared/version.ts';
-import { consumeUpgradeNotice, formatAutoUpdateBanner, formatRollbackBanner, writeMarker } from '../shared/self-update.ts';
+import { consumeUpgrade, formatUpgradeBanner, formatAutoUpdateBanner, formatRollbackBanner, writeMarker } from '../shared/self-update.ts';
+import { newsLines, type NewsItem } from '../shared/whats-new.ts';
 import { runAutoUpdate, rollbackTo, isUpdateCheckDue, DEFAULT_UPDATE_CHECK_INTERVAL_MS, type UpdaterPort } from '../worker/self-updater.ts';
 import { ensureWorkerHealthy } from '../shared/worker-health.ts';
 import { markTransition, readTransition, clearTransition, markSessionDegraded, type WorkerTransition } from '../shared/worker-transition.ts';
@@ -239,7 +240,7 @@ export async function main(): Promise<void> {
             if (healthy) {
               updatedThisSession = true;   // suppress the self-heal restart below (VERSION is now frozen-stale)
               if (res.to) writeMarker(DATA_DIR, res.to);
-              autoUpdateNotice = formatAutoUpdateBanner(res.from, res.to ?? '?', res.installFailed);
+              autoUpdateNotice = formatAutoUpdateBanner(res.from, res.to ?? '?', res.installFailed, res.to ? await fetchNews(res.from, res.to) : []);
             } else {
               // New code didn't boot (bad deps / crash-loop). Roll the checkout back to the prior
               // sha and restart the OLD, known-good code rather than strand the worker dead.
@@ -392,10 +393,11 @@ export async function main(): Promise<void> {
   // Self-upgrade notice: if the plugin VERSION advanced since the last
   // session (Claude Code auto-fetched a newer marketplace version, or a re-install landed),
   // announce it once. The existing self-heal above already restarted the now-stale worker;
-  // this just surfaces it. consumeUpgradeNotice persists the new marker and returns '' when
+  // this just surfaces it. consumeUpgrade persists the new marker and returns null when
   // there's nothing to say. Best-effort — never throws, never touches config/worker.env.
-  const upgradeNotice = consumeUpgradeNotice(DATA_DIR, VERSION);
-  // autoUpdateNotice (this session's active pull) takes precedence; consumeUpgradeNotice covers the
+  const upgrade = consumeUpgrade(DATA_DIR, VERSION);
+  const upgradeNotice = upgrade ? formatUpgradeBanner(upgrade.from, upgrade.to, await fetchNews(upgrade.from, upgrade.to)) : '';
+  // autoUpdateNotice (this session's active pull) takes precedence; consumeUpgrade covers the
   // marketplace-refresh path. Only one normally fires — the auto-update path advances the marker so
   // it doesn't double-announce — but combine defensively in case both have something to say.
   const notices = [autoUpdateNotice, upgradeNotice].filter(Boolean).join('\n\n');
@@ -447,5 +449,16 @@ if (isMainModule(import.meta)) {
   } catch (err) {
     logHookError('SessionStart', err);
     process.exit(0);
+  }
+}
+
+/** #129: what changed between two versions, for the one-time upgrade banner: the headlines the worker reads from
+ *  its CHANGELOG (GET /whats-new). Best-effort: no lines on any failure, and the banner still says what updated. */
+async function fetchNews(from: string, to: string): Promise<string[]> {
+  try {
+    const r = await workerFetch<{ items: NewsItem[] }>(`/whats-new?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { method: 'GET', timeoutMs: 1_000 });
+    return r.ok && r.body ? newsLines(r.body.items) : [];
+  } catch {
+    return [];
   }
 }

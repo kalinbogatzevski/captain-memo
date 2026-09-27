@@ -44,3 +44,10 @@ test('file, list, claim, done — and the open list follows', async () => {
   expect((await post('/homework/done', { id: '99', by: 'x' })).status).toBe(404);
   expect((await post('/homework/add', { text: '   ' })).status).toBe(400);
 }, 20_000);
+
+test('#129: /whats-new reads this checkout\'s CHANGELOG, bounded; no range, no items', async () => {
+  const r = await (await fetch(base + '/whats-new?from=0.0.0&to=999.0.0')).json() as { items: Array<{ version: string; text: string }> };
+  expect(r.items).toHaveLength(20);
+  expect(typeof r.items[0]!.text).toBe('string');
+  expect(((await (await fetch(base + '/whats-new')).json()) as { items: unknown[] }).items).toEqual([]);
+});
