@@ -284,7 +284,67 @@ interface PreflightResult {
   remedy?: string;
 }
 
-function preflight(opts: { wantLocalEmbedder: boolean }): PreflightResult[] {
+/** A /proc file's text, or null where there is none: /proc is Linux-only (reading it on macOS threw ENOENT). */
+export function readProc(path: string): string | null {
+  return existsSync(path) ? readFileSync(path, 'utf-8') : null;
+}
+
+/** The local embedder's CPU and RAM rows. `cpuinfo`/`meminfo` are /proc's text, or null off Linux: the SIMD probe
+ *  is then skipped with a WARN, and RAM comes from os.totalmem(). */
+export function hardwareChecks(cpuinfo: string | null, meminfo: string | null): PreflightResult[] {
+  const out: PreflightResult[] = [];
+
+  // CPU instruction set (informational; numpy<2 path works without AVX2)
+  if (cpuinfo === null) {
+    out.push({ name: 'CPU', status: 'WARN', detail: 'not checked — the AVX2/SSE4 probe reads /proc/cpuinfo (Linux only)' });
+  } else {
+    const flags = (cpuinfo.match(/^flags\s*:\s*(.+)/m) ?? [])[1] ?? '';
+    const hasAVX2 = /\bavx2\b/.test(flags);
+    const hasSSE4 = /\bsse4_2\b/.test(flags);
+    if (hasAVX2) {
+      out.push({ name: 'CPU', status: 'OK', detail: 'x86_64 with AVX2 (fast path)' });
+    } else if (hasSSE4) {
+      out.push({ name: 'CPU', status: 'WARN', detail: 'x86_64 with SSE4.2 but no AVX2 (slower embedder, ~10x)',
+                 remedy: 'embedder still works (uses numpy<2). For best speed run on AVX2-capable hardware (most CPUs since ~2014).' });
+    } else {
+      out.push({ name: 'CPU', status: 'WARN', detail: 'old x86_64 (no AVX2/SSE4) — embedder will be very slow' });
+    }
+  }
+
+  // RAM
+  const memTotalGb = meminfo === null
+    ? totalMemGb()
+    : Number((meminfo.match(/^MemTotal:\s+(\d+)\s+kB/m) ?? [])[1] ?? '0') / 1024 / 1024;
+  if (memTotalGb >= 4) {
+    out.push({ name: 'RAM', status: 'OK', detail: `${memTotalGb.toFixed(1)} GB` });
+  } else if (memTotalGb >= 2) {
+    out.push({ name: 'RAM', status: 'WARN', detail: `${memTotalGb.toFixed(1)} GB (4 GB+ recommended; embedder + worker peak ~3 GB)` });
+  } else {
+    out.push({ name: 'RAM', status: 'FAIL', detail: `${memTotalGb.toFixed(1)} GB (insufficient for local embedder)`,
+               remedy: 'use a remote embedder (provider=openai-compatible) or upgrade RAM' });
+  }
+  return out;
+}
+
+/** The local sidecar has no macOS path — install-embedder.sh is systemd + GNU `df -BM` with no Darwin branch — so on a
+ *  Mac it FAILs up front with the way out, instead of on Python/disk checks that fail for the wrong reason. */
+export function sidecarPlatformCheck(mac: boolean): PreflightResult | null {
+  return mac ? { name: 'Embedder', status: 'FAIL', detail: 'local-sidecar runs on Linux and Windows only (no macOS build)',
+                 remedy: 'pick a hosted embedder: voyage-hosted or openai-compatible (re-run install, or pass --embedder voyage-hosted)' } : null;
+}
+
+/** The embedder menu. macOS is not offered local-sidecar (sidecarPlatformCheck). */
+export function embedderChoices(mac: boolean): { value: EmbedderProvider; label: string; recommended?: boolean }[] {
+  return [
+    { value: 'voyage-hosted', label: 'Voyage hosted API (fast on any hardware, ~$0.30/year typical use, needs free API key)', recommended: true },
+    ...(mac ? [] : [{ value: 'local-sidecar' as const, label: 'Local voyage-4-nano sidecar (private, free, but ~6 GB install + needs AVX2 CPU)' }]),
+    { value: 'openai-compatible', label: 'External /v1/embeddings (Ollama / OpenAI / OpenRouter / your own)' },
+    { value: 'skip', label: 'Skip — keyword-only retrieval (works without any embedder)' },
+  ];
+}
+
+/** `mac` gates only the local-sidecar check (a parameter so a test on Linux can take the macOS path). */
+export function preflight(opts: { wantLocalEmbedder: boolean }, mac = isMac): PreflightResult[] {
   const out: PreflightResult[] = [];
 
   // OS
@@ -324,6 +384,9 @@ function preflight(opts: { wantLocalEmbedder: boolean }): PreflightResult[] {
     }
   }
 
+  const noSidecar = opts.wantLocalEmbedder ? sidecarPlatformCheck(mac) : null;
+  if (noSidecar) { out.push(noSidecar); return out; }
+
   // Python (only relevant if installing local embedder)
   if (opts.wantLocalEmbedder) {
     const pyRes = spawnSync('python3', ['--version'], { encoding: 'utf-8' });
@@ -353,32 +416,7 @@ function preflight(opts: { wantLocalEmbedder: boolean }): PreflightResult[] {
     return out;
   }
 
-  // CPU instruction set (informational; numpy<2 path works without AVX2)
-  const cpu = readFileSync('/proc/cpuinfo', 'utf-8');
-  const flags = (cpu.match(/^flags\s*:\s*(.+)/m) ?? [])[1] ?? '';
-  const hasAVX2 = /\bavx2\b/.test(flags);
-  const hasSSE4 = /\bsse4_2\b/.test(flags);
-  if (hasAVX2) {
-    out.push({ name: 'CPU', status: 'OK', detail: 'x86_64 with AVX2 (fast path)' });
-  } else if (hasSSE4) {
-    out.push({ name: 'CPU', status: 'WARN', detail: 'x86_64 with SSE4.2 but no AVX2 (slower embedder, ~10x)',
-               remedy: 'embedder still works (uses numpy<2). For best speed run on AVX2-capable hardware (most CPUs since ~2014).' });
-  } else {
-    out.push({ name: 'CPU', status: 'WARN', detail: 'old x86_64 (no AVX2/SSE4) — embedder will be very slow' });
-  }
-
-  // RAM
-  const meminfo = readFileSync('/proc/meminfo', 'utf-8');
-  const memTotalKb = Number((meminfo.match(/^MemTotal:\s+(\d+)\s+kB/m) ?? [])[1] ?? '0');
-  const memTotalGb = memTotalKb / 1024 / 1024;
-  if (memTotalGb >= 4) {
-    out.push({ name: 'RAM', status: 'OK', detail: `${memTotalGb.toFixed(1)} GB` });
-  } else if (memTotalGb >= 2) {
-    out.push({ name: 'RAM', status: 'WARN', detail: `${memTotalGb.toFixed(1)} GB (4 GB+ recommended; embedder + worker peak ~3 GB)` });
-  } else {
-    out.push({ name: 'RAM', status: 'FAIL', detail: `${memTotalGb.toFixed(1)} GB (insufficient for local embedder)`,
-               remedy: 'use a remote embedder (provider=openai-compatible) or upgrade RAM' });
-  }
+  out.push(...hardwareChecks(readProc('/proc/cpuinfo'), readProc('/proc/meminfo')));
 
   // Disk in /opt (target dir for embedder venv + model)
   if (opts.wantLocalEmbedder) {
@@ -542,7 +580,8 @@ export function loadExistingConfig(envPath: string): Partial<WizardConfig> {
   return cfg;
 }
 
-export function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOptions): WizardConfig {
+/** `mac` picks the embedder menu (embedderChoices); a parameter so a test on Linux can see the macOS one. */
+export function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOptions, mac = isMac): WizardConfig {
   // Default to interactive (TTY) behaviour when no options were threaded
   // through — preserves the original prompt-everything path exactly.
   const nonInteractive = opts?.nonInteractive ?? false;
@@ -634,12 +673,7 @@ export function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOpt
     opts?.embedder ?? (nonInteractive ? existing?.embedder : undefined),
     nonInteractive,
     'Which embedder should I use for vector search?',
-    [
-      { value: 'voyage-hosted', label: 'Voyage hosted API (fast on any hardware, ~$0.30/year typical use, needs free API key)', recommended: true },
-      { value: 'local-sidecar', label: 'Local voyage-4-nano sidecar (private, free, but ~6 GB install + needs AVX2 CPU)' },
-      { value: 'openai-compatible', label: 'External /v1/embeddings (Ollama / OpenAI / OpenRouter / your own)' },
-      { value: 'skip', label: 'Skip — keyword-only retrieval (works without any embedder)' },
-    ],
+    embedderChoices(mac),
   );
 
   let embedderEndpoint = 'http://127.0.0.1:8124/v1/embeddings';
