@@ -661,8 +661,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           ...source, files: await expandWatchPaths(source.paths),
         })));
         indexingState.total = expanded.reduce((n, source) => n + source.files.length, 0);
+        let visited = 0;
         for (const source of expanded) {
           for (const file of source.files) {
+            // An unchanged file returns from indexFile before any real await (read, stat, sha, skip), so the pass
+            // over ~1,600 memory files ran as one block at boot (~0.5-0.9 s). A turn every 32 files.
+            if (++visited % 32 === 0) await new Promise<void>(r => setImmediate(r));
             try {
               await ingest.indexFile(file, source.channel);
               indexingState.done++;
@@ -736,6 +740,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         for (;;) {
           const batch = store.listMissingStoredTokens(BACKFILL_BATCH);
           if (batch.length === 0) break;
+          await new Promise<void>(r => setImmediate(r));   // one batch per turn: the loop had no await at all
           for (const obs of batch) {
             try {
               const rawChunks = chunkObservation(obs);
@@ -1158,7 +1163,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           const removed = obsQueue!.pruneDone(cutoff);
           if (removed > 0) {
             console.log(`[queue] retention: removed ${removed} finished row(s) older than ${retentionDays}d`);
-            if (removed >= RECLAIM_AT) { obsQueue!.reclaim(); console.log('[queue] retention: reclaimed disk'); }
+            // Not VACUUMed here: it rewrites the whole queue.db on the writer (~8 s on a 356 MB file). Freed pages are
+            // reused by later writes; `captain-memo maintenance` shrinks the file, off the worker.
+            if (removed >= RECLAIM_AT) console.log('[queue] retention: run `captain-memo maintenance` to return the freed space to disk');
           }
         } catch (err) {
           console.error('[queue] retention sweep failed: ' + (err as Error).message);
@@ -2485,7 +2492,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
               enabled: tideConfig.enabled,
               tiering_enabled: tideConfig.tieringEnabled,
               relevance_floor: tideConfig.relevanceFloor,
-              ...obsStore.getTideStats(),
+              ...obsStore.getTideStats(obsTotal),
             }
           : undefined;
         // Quartermaster snapshot: switch + dedup state and the cosine gate, plus

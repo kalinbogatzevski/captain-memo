@@ -322,8 +322,8 @@ test('ObservationsStore — schema_versions records all migrations after constru
   const db = new Database(join(workDir, 'observations.db'), { readonly: true });
   const rows = getAppliedVersions(db);
   db.close();
-  expect(rows).toHaveLength(24);
-  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]);
+  expect(rows).toHaveLength(25);
+  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]);
   expect(rows.map(r => r.name)).toEqual([
     'add_branch',
     'add_work_tokens',
@@ -349,6 +349,7 @@ test('ObservationsStore — schema_versions records all migrations after constru
       'add_theme_declines',
     'add_promotion_declines_and_shadow',
     'add_idle_pass_indexes',
+    'add_tide_sweep_and_stored_null_indexes',
   ]);
   store = new ObservationsStore(join(workDir, 'observations.db'));
 });

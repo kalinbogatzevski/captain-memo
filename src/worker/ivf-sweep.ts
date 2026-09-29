@@ -5,7 +5,7 @@
 // newly-unclustered chunks, OR rebalance one batch of already-clustered ones.
 // Never more than one of those per tick, so cost per call stays predictable.
 import {
-  targetClusterCount, seedCentroids, miniBatchUpdate,
+  targetClusterCount, seedCentroids, miniBatchUpdate, nearestInBatch,
   type IvfConfig, type Centroid,
 } from './ivf.ts';
 
@@ -95,10 +95,9 @@ export async function runIvfSweepSlice(deps: IvfSweepDeps): Promise<IvfSweepResu
 
   const unclustered = deps.getUnclusteredChunks(collection, cfg.sweepBatch);
   if (unclustered.length > 0) {
+    const items = unclustered.map(u => ({ id: u.chunkId, vector: u.embedding }));
     const { centroids: updated, assignments } = miniBatchUpdate(
-      unclustered.map(u => ({ id: u.chunkId, vector: u.embedding })),
-      centroids,
-      cfg,
+      items, centroids, cfg, await nearestInBatch(items, centroids, deps.yieldToLoop),
     );
     const byId = new Map(unclustered.map(u => [u.chunkId, u.embedding]));
     deps.reassignClusterBatch(assignments.map(a => ({
@@ -113,10 +112,9 @@ export async function runIvfSweepSlice(deps: IvfSweepDeps): Promise<IvfSweepResu
   // (avoids needless delete+reinsert for chunks that are still correctly placed).
   const sample = deps.sampleClusteredVectors(collection, cfg.sweepBatch);
   if (sample.length === 0) return EMPTY_RESULT;
+  const items = sample.map(s => ({ id: s.chunkId, vector: s.embedding }));
   const { centroids: updated, assignments } = miniBatchUpdate(
-    sample.map(s => ({ id: s.chunkId, vector: s.embedding })),
-    centroids,
-    cfg,
+    items, centroids, cfg, await nearestInBatch(items, centroids, deps.yieldToLoop),
   );
   const currentClusterById = new Map(sample.map(s => [s.chunkId, s.clusterId]));
   const embeddingById = new Map(sample.map(s => [s.chunkId, s.embedding]));

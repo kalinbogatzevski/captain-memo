@@ -2,7 +2,7 @@
 import { test, expect } from 'bun:test';
 import {
   DEFAULT_IVF_CONFIG, loadIvfConfig, targetClusterCount,
-  nearestCentroid, nearestCentroids, miniBatchUpdate, seedCentroids, defaultSample,
+  nearestCentroid, nearestCentroids, miniBatchUpdate, nearestInBatch, seedCentroids, defaultSample,
   type Centroid,
 } from '../../src/worker/ivf.ts';
 
@@ -106,4 +106,15 @@ test('defaultSample — returns k distinct indices in [0, n)', () => {
 test('defaultSample — k >= n returns all indices, no duplicates, no throw', () => {
   const indices = defaultSample(3, 10);
   expect(new Set(indices)).toEqual(new Set([0, 1, 2]));
+});
+
+test('miniBatchUpdate — nearest computed ahead (nearestInBatch, with yields) gives the identical update', async () => {
+  const cs: Centroid[] = Array.from({ length: 9 }, (_, k) => ({
+    clusterId: 100 + k, hitCount: 1 + k, vector: Array.from({ length: 16 }, (_, j) => Math.sin(k * 1.7 + j)),
+  }));
+  const batch = Array.from({ length: 30 }, (_, i) => ({ id: `v${i}`, vector: Array.from({ length: 16 }, (_, j) => Math.cos(i * 0.9 + j)) }));
+  let yields = 0;
+  const pre = await nearestInBatch(batch, cs, async () => { yields++; });
+  expect(yields).toBe(batch.length);
+  expect(miniBatchUpdate(batch, cs, DEFAULT_IVF_CONFIG, pre)).toEqual(miniBatchUpdate(batch, cs, DEFAULT_IVF_CONFIG));
 });

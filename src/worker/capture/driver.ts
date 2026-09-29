@@ -74,6 +74,11 @@ export async function runCaptureTick(
       // the event count at the PREVIOUS byte marker before slicing the current
       // extract. Otherwise the upgrade would replay almost the whole session.
       if (cursor && cursor.marker !== ref.marker && src.eventCountAtMarker) {
+        // A turn between the two whole-file parses, so a large rollout holds the worker for one of them at a time
+        // (~3 s each on a 64 MB codex session). Safe before markIngested: nothing has been enqueued yet, so the
+        // worst a shutdown here costs is the re-parse the comment below describes.
+        // ponytail: two blocks instead of one; a byte-offset cursor that parses only the appended tail removes both.
+        await yieldToLoop();
         const reconstructed = src.eventCountAtMarker(ref, cursor.marker);
         if (reconstructed !== null) already = reconstructed;
       }

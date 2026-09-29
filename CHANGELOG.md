@@ -7,6 +7,31 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.45.2] — 2026-09-29
+
+### Fixed
+
+- **`/stats` no longer holds the worker for seconds.** Two tide counts and a maximum were full scans of the
+  observations table (about 1.1 s each on a 209,000-row store) because their queries did not restate the partial
+  indexes built for them; they now use them. The per-channel chunk split is reused until a chunk is added or removed,
+  and the AI-sources count no longer sorts every row. `/stats` is what session start, `top` and the CLI ask for.
+- **Background jobs hold the worker for milliseconds, not seconds.** Measured on the reference store:
+  the tide sweep, every minute, 2 x 1.06 s to 2 x 25 ms (new covering index); the hourly queue clean-up
+  1.3 s to 21 ms even when nothing is due; replacing a memory file's vectors 1.2 s to 6 ms (the vector
+  table cannot use its key for a list of ids, so each is deleted on its own); the index sweep's minute
+  rebalance and each multi-chunk insert are split into ~12 ms steps. At start-up, the stored-token check
+  (about 1 s) and the pass over unchanged memory files (about 0.5-0.9 s) no longer run as one block.
+- **The queue file is no longer compacted inside the worker.** After a clean-up of 5,000 or more rows the worker
+  used to rewrite the whole queue database (about 8 s on 356 MB). Freed space is reused by new rows;
+  `captain-memo maintenance` still shrinks the file, outside the worker.
+- **Codex capture parses a large session in two steps instead of one**, with a pause in between.
+
+### Added
+
+- **The worker says what blocked it.** When its writer is held for more than a second, one log line names the last
+  background job and request that ran: `[engine] writer blocked ~N ms: last timer …; last http …`.
+- A one-time migration (v25) adds two indexes on first start, a few seconds on the reference store.
+
 ## [0.45.1] — 2026-09-29
 
 ### Fixed

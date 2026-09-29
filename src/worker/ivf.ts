@@ -220,11 +220,14 @@ export function miniBatchUpdate(
   batch: ReadonlyArray<{ id: string; vector: number[] | Float32Array }>,
   centroids: readonly Centroid[],
   cfg: IvfConfig,
+  /** Each item's nearestCentroid against these same centroids, already computed (nearestInBatch), so a caller can
+   *  spread that work across event-loop turns. Absent: computed here, in one go. */
+  precomputed?: ReadonlyArray<{ clusterId: number } | null>,
 ): { centroids: Centroid[]; assignments: Array<{ id: string; clusterId: number }> } {
   const assignments: Array<{ id: string; clusterId: number }> = [];
   const byCluster = new Map<number, Array<number[] | Float32Array>>();
-  for (const item of batch) {
-    const nearest = nearestCentroid(item.vector, centroids);
+  for (const [i, item] of batch.entries()) {
+    const nearest = precomputed ? precomputed[i] : nearestCentroid(item.vector, centroids);
     if (!nearest) continue;
     assignments.push({ id: item.id, clusterId: nearest.clusterId });
     const list = byCluster.get(nearest.clusterId) ?? [];
@@ -241,6 +244,21 @@ export function miniBatchUpdate(
     return { clusterId: c.clusterId, vector, hitCount };
   });
   return { centroids: next, assignments };
+}
+
+/** nearestCentroid for each item, with a yield between items: 64 of them at ~12 ms each held the writer ~0.8 s every
+ *  sweep minute on the reference store (477 x 1024). Feed the result to miniBatchUpdate with the SAME centroids. */
+export async function nearestInBatch(
+  batch: ReadonlyArray<{ vector: number[] | Float32Array }>,
+  centroids: readonly Centroid[],
+  yieldToLoop: () => Promise<void>,
+): Promise<Array<{ clusterId: number } | null>> {
+  const out: Array<{ clusterId: number } | null> = [];
+  for (const item of batch) {
+    out.push(nearestCentroid(item.vector, centroids));
+    await yieldToLoop();
+  }
+  return out;
 }
 
 /** Seed initial centroids via the Forgy method: sample k vectors from the

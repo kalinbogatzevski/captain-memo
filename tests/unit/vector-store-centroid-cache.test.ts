@@ -4,8 +4,8 @@
 // measured 92-202 ms per call on the live store (2026-09-16), paid by each reader on each search while
 // the centroids only move on a sweep tick. The cache must (1) hand back the same set without re-parsing,
 // (2) never hide a structural change (a rebuild allocates NEW ids — probing dead ids returns nothing),
-// (3) be dropped by the instance that rewrites the set, so the writer's sweep never updates stale
-// centroids, and (4) refresh on its TTL so per-tick drift reaches readers.
+// (3) be REPLACED by the instance that rewrites the set with exactly what it wrote, so the writer's sweep never
+// updates stale centroids, and (4) refresh on its TTL so per-tick drift reaches readers.
 import { test, expect } from 'bun:test';
 import { mkdtempSync } from 'fs';
 import { join } from 'path';
@@ -54,6 +54,21 @@ test('the instance that rewrites the set never reads its own stale copy', async 
     expect(writer.getCentroids('c')[0]!.vector[0]).toBeCloseTo(0.1);
     writer.setCentroids('c', cents([1, 2], 0.7));                 // same ids, same count: only the vectors moved
     expect(writer.getCentroids('c')[0]!.vector[0]).toBeCloseTo(0.7);
+    writer.close();
+  } finally { rmWorkDir(dir); }
+});
+
+test('the writer caches what it wrote, float32-exact, past the TTL', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-centroid-cache-'));
+  try {
+    const writer = open(dir, false, 1);
+    await writer.ensureCollection('c');
+    writer.setCentroids('c', cents([1, 2], 0.1234567891234));   // not float32-representable
+    await new Promise(r => setTimeout(r, 5));                     // past this writer's 1 ms TTL
+    const cached = writer.getCentroids('c');
+    expect(writer.getCentroids('c')).toBe(cached);                // served from the write-through entry
+    const fresh = open(dir, true).getCentroids('c');
+    expect(cached).toEqual(fresh);                                // identical to a read from disk
     writer.close();
   } finally { rmWorkDir(dir); }
 });

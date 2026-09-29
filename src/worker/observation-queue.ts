@@ -164,7 +164,9 @@ export class ObservationQueue {
 
   /** Test seam: backdate a row's completion so retention can be exercised deterministically. */
   _setProcessedAt(id: number, epochSeconds: number): void {
-    this.db.query('UPDATE observation_queue SET processed_at_epoch = ? WHERE id = ?').run(epochSeconds, id);
+    // created_at follows it back when needed: pruneDone relies on processed >= created, as markDone guarantees.
+    this.db.query('UPDATE observation_queue SET processed_at_epoch = ?1, created_at_epoch = MIN(created_at_epoch, ?1) WHERE id = ?2')
+      .run(epochSeconds, id);
   }
 
   /** Drop finished rows completed before `olderThanEpoch`. Returns how many went.
@@ -182,8 +184,11 @@ export class ObservationQueue {
    *  duplicate-of-pending either way, and the amplification that made the repair necessary is fixed —
    *  but this is why the default window is generous rather than a day or two. */
   pruneDone(olderThanEpoch: number): number {
+    // `created_at_epoch < ?1` is implied (markDone stamps processed_at at completion, so processed >= created) and
+    // lets idx_obsq_status(status, created_at_epoch) range-scan only the eligible rows. Without it every done row's
+    // fat payload was read to test processed_at: 1.3 s on the writer every hour even when nothing was due (118k rows).
     const r = this.db
-      .query("DELETE FROM observation_queue WHERE status = 'done' AND processed_at_epoch < ?")
+      .query("DELETE FROM observation_queue WHERE status = 'done' AND created_at_epoch < ?1 AND processed_at_epoch < ?1")
       .run(olderThanEpoch);
     return Number(r.changes ?? 0);
   }

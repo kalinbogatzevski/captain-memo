@@ -372,6 +372,19 @@ export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
                  WHERE archived = 0 AND (from_auto + from_search + from_drill) > 0`);
     },
   },
+  {
+    // v25 — two more full scans of the fat table, measured on the 209k-row reference corpus (2026-09-29):
+    //   tierSweepCandidates   ~1 060 ms x 2 passes, every 60 s tide sweep → 25 ms (covering, no sort)
+    //   countMissingStoredTokens  ~1 000 ms at every boot, for 0 rows       → ~0 ms
+    version: 25,
+    name: 'add_tide_sweep_and_stored_null_indexes',
+    up: (db) => {
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_obs_tide_sweep ON observations(
+                 tide_state, COALESCE(last_surfaced_at, created_at_epoch), id, created_at_epoch, last_surfaced_at, stability_days)
+                 WHERE is_anchored = 0 AND from_drill = 0`);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_obs_stored_null ON observations(id) WHERE stored_tokens IS NULL');
+    },
+  },
 ];
 
 export type NewObservation = Omit<
@@ -753,31 +766,34 @@ export class ObservationsStore {
   /** Observation counts grouped by originating AI agent (origin_agent), for the
    *  "AI sources" chart in /stats and `top`. null → 'unknown'. */
   countByOrigin(): Record<string, number> {
+    // Grouped on the bare column so idx_obs_origin streams in order; grouping on COALESCE(...) sorted all 209k
+    // entries in a temp b-tree (340 → ~90 ms, 2026-09-29). null → 'unknown' here instead.
     const rows = this.db
-      .query("SELECT COALESCE(origin_agent, 'unknown') AS o, COUNT(*) AS n FROM observations GROUP BY o")
-      .all() as Array<{ o: string; n: number }>;
+      .query('SELECT origin_agent AS o, COUNT(*) AS n FROM observations GROUP BY origin_agent')
+      .all() as Array<{ o: string | null; n: number }>;
     const out: Record<string, number> = {};
-    for (const r of rows) out[r.o] = r.n;
+    for (const r of rows) { const k = r.o ?? 'unknown'; out[k] = (out[k] ?? 0) + r.n; }
     return out;
   }
 
   /**
-   * Aggregate Tide lifecycle counters for /stats. Cheap by construction: the
-   * dormant/archived tallies ride the partial index `idx_obs_tide_state`
-   * (WHERE tide_state != 'active'), and `active` is derived by subtraction so the
-   * common-case majority is never scanned. `anchored` and the max are simple
-   * full-table aggregates (fast on the observation channel; /stats is not hot).
+   * Aggregate Tide lifecycle counters for /stats, each on a partial index. The WHERE must restate the index
+   * predicate literally: `tide_state = 'dormant'` does not imply idx_obs_tide_state's `tide_state != 'active'` to
+   * SQLite's planner, and a bare MAX(stability_days) does not use idx_obs_stability, so both were full scans of
+   * the fat table, ~1.1 s each (2026-09-29; now ~30 ms). `active` is derived by subtraction.
    */
-  getTideStats(): TideStats {
+  getTideStats(total: number = this.countAll()): TideStats {
     const n = (sql: string): number =>
       (this.db.query(sql).get() as { n: number }).n;
-    const total = this.countAll();
-    const dormant = n("SELECT COUNT(*) AS n FROM observations WHERE tide_state = 'dormant'");
-    const archived = n("SELECT COUNT(*) AS n FROM observations WHERE tide_state = 'archived'");
+    const byState = new Map((this.db
+      .query("SELECT tide_state AS s, COUNT(*) AS n FROM observations WHERE tide_state != 'active' GROUP BY tide_state")
+      .all() as Array<{ s: string; n: number }>).map(r => [r.s, r.n]));
+    const dormant = byState.get('dormant') ?? 0;
+    const archived = byState.get('archived') ?? 0;
     const strengthened = n('SELECT COUNT(*) AS n FROM observations WHERE stability_days IS NOT NULL');
     const anchored = n('SELECT COUNT(*) AS n FROM observations WHERE is_anchored = 1');
     const maxRow = this.db
-      .query('SELECT MAX(stability_days) AS m FROM observations')
+      .query('SELECT MAX(stability_days) AS m FROM observations WHERE stability_days IS NOT NULL')
       .get() as { m: number | null };
     return {
       strengthened,

@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite';
 import { ensureExtensionCapableSqlite, isExtensionLoadingUnsupported, MACOS_SQLITE_REMEDY } from '../shared/sqlite-extensions.ts';
 import * as sqliteVec from 'sqlite-vec';
 import { readPaged } from '../shared/paged-read.ts';
-import { DEFAULT_IVF_CONFIG, nearestCentroid, nearestCentroids, type IvfConfig, type Centroid } from './ivf.ts';
+import { DEFAULT_IVF_CONFIG, nearestCentroids, nearestInBatch, type IvfConfig, type Centroid } from './ivf.ts';
 
 export interface VectorStoreOptions {
   dbPath: string;
@@ -125,7 +125,7 @@ export class VectorStore {
   private dimension: number;
   private ivfConfig: IvfConfig;
   private centroidCacheTtlMs: number;
-  private centroidCache = new Map<string, { fp: string; at: number; centroids: Centroid[] }>();
+  private centroidCache = new Map<string, { fp: string; at: number; own?: boolean; centroids: Centroid[] }>();
 
   constructor(opts: VectorStoreOptions) {
     // macOS links Bun against Apple's libsqlite3, which is built WITHOUT extension
@@ -212,6 +212,19 @@ export class VectorStore {
     // up, up to sweepIntervalMs later. Fetched once per add() call, not once
     // per collection-less-common-case; cheap even so (a few hundred rows).
     const centroids = this.getCentroids(collection);
+    for (const item of items) {
+      if (item.embedding.length !== this.dimension) {
+        throw new Error(
+          `embedding length ${item.embedding.length} does not match expected dimension ${this.dimension}`
+        );
+      }
+    }
+    // Clusters are assigned BEFORE the transaction, a turn apart: each nearestCentroid is ~12 ms against 477 x 1024,
+    // and a 39-chunk memory file ran them back to back inside it (~430 ms on the writer, 2026-09-29).
+    const clusterIds = centroids.length > 0
+      ? (await nearestInBatch(items.map(i => ({ vector: i.embedding })), centroids,
+          () => new Promise<void>(r => setImmediate(r)))).map(n => n ? n.clusterId : UNCLUSTERED)
+      : items.map(() => UNCLUSTERED);
 
     const deleteVec = this.db.query(`DELETE FROM vec_chunks_p WHERE chunk_id = ?`);
     const insertVec = this.db.query(
@@ -222,15 +235,9 @@ export class VectorStore {
     );
 
     const tx = this.db.transaction(() => {
-      for (const item of items) {
-        if (item.embedding.length !== this.dimension) {
-          throw new Error(
-            `embedding length ${item.embedding.length} does not match expected dimension ${this.dimension}`
-          );
-        }
+      for (const [i, item] of items.entries()) {
         const blob = new Uint8Array(new Float32Array(item.embedding).buffer);
-        const nearest = centroids.length > 0 ? nearestCentroid(item.embedding, centroids) : null;
-        const clusterId = nearest ? nearest.clusterId : UNCLUSTERED;
+        const clusterId = clusterIds[i]!;
         // vec0 does not support INSERT OR REPLACE — delete first, then insert
         deleteVec.run(item.id);
         insertVec.run(item.id, clusterId, blob);
@@ -310,14 +317,17 @@ export class VectorStore {
   async delete(collection: string, ids: string[]): Promise<void> {
     if (ids.length === 0) return;
     const placeholders = ids.map(() => '?').join(',');
-    this.db
-      .query(`DELETE FROM vec_chunks_p WHERE chunk_id IN (${placeholders})`)
-      .run(...ids);
-    this.db
-      .query(
-        `DELETE FROM vec_chunk_meta WHERE collection_name = ? AND chunk_id IN (${placeholders})`
-      )
-      .run(collection, ...ids);
+    // One primary-key delete per id: vec0 cannot use its key for an IN list and scans every vector instead —
+    // 1 164 ms for 10 ids against 5.7 ms this way (254k vectors, 2026-09-29), on every memory-file change.
+    const delVec = this.db.query('DELETE FROM vec_chunks_p WHERE chunk_id = ?');
+    this.db.transaction(() => {
+      for (const id of ids) delVec.run(id);
+      this.db
+        .query(
+          `DELETE FROM vec_chunk_meta WHERE collection_name = ? AND chunk_id IN (${placeholders})`
+        )
+        .run(collection, ...ids);
+    })();
   }
 
   async query(collection: string, embedding: number[], topK: number): Promise<VectorQueryResult[]> {
@@ -522,7 +532,9 @@ export class VectorStore {
     // lag by the TTL. Callers never mutate the array (nearestCentroids / miniBatchUpdate copy).
     const now = Date.now();
     const hit = this.centroidCache.get(collection);
-    if (hit && now - hit.at < this.centroidCacheTtlMs && this.centroidFingerprint(collection) === hit.fp) return hit.centroids;
+    // An entry this store wrote itself (setCentroids) holds exactly what is on disk, so only the fingerprint can
+    // invalidate it (a rebuild elsewhere); the TTL is for same-id drift written by ANOTHER process.
+    if (hit && (hit.own || now - hit.at < this.centroidCacheTtlMs) && this.centroidFingerprint(collection) === hit.fp) return hit.centroids;
     const rows = this.db
       .query(`SELECT cluster_id, hit_count, centroid FROM vec_cluster_centroids WHERE collection_name = ?`)
       .all(collection) as Array<{ cluster_id: number; hit_count: number; centroid: Uint8Array }>;
@@ -557,7 +569,12 @@ export class VectorStore {
       }
     });
     tx();
-    this.centroidCache.delete(collection);   // the sweep reads back what it just wrote, never a stale copy
+    // Write-through, rounded to float32 exactly as a re-read would return it. Dropping the entry instead made the
+    // sweep's next getCentroids re-read and Array.from 477 x 1024 floats: 215-293 ms on the writer every minute.
+    this.centroidCache.set(collection, {
+      fp: this.centroidFingerprint(collection), at: Date.now(), own: true,
+      centroids: centroids.map(c => ({ clusterId: c.clusterId, vector: Array.from(new Float32Array(c.vector)), hitCount: c.hitCount })),
+    });
   }
 
   /** Allocate `n` globally-unique cluster ids (never reused, never reset per
