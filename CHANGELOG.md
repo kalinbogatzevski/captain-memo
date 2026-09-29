@@ -7,6 +7,27 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.44.11] — 2026-09-29
+
+### Security
+
+- **Credentials are redacted from recalled memory.** Automatic recall and the search tools showed snippets exactly
+  as stored, so an API token kept in a memory file could reach an unrelated session through a fuzzy match. Now
+  credential-shaped values (vendor token prefixes, JWT and bearer tokens, passwords in URLs, `password=`-style
+  secrets, PEM private keys) are replaced with `[REDACTED:<kind>]` in everything that shows a snippet, titles
+  included, and the snippet is cut only after redaction, so a key that straddles the cut is never half-shown.
+  `get_full` still returns the real document when you ask for it. `remember` no longer names a memory or its file
+  after a secret in its body.
+
+### Fixed
+
+- **Every recalled hit stays visible, and the counts are true.** When the prompt budget was tight the recall block
+  was cut from the end, which dropped the session observations while still counting them, marking them as used and
+  feeding them to Local Dreaming. The budget is now shared between the hits that won a slot, and the counts, the
+  recall log and the usage stats cover only what was shown.
+- **`captain-memo install` on macOS no longer crashes in preflight** with the local embedder, and says up front that
+  the local embedder is not available on macOS (pick a hosted one).
+
 ## [0.44.10] — 2026-09-27
 
 ### Added
