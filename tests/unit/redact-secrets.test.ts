@@ -223,7 +223,11 @@ test('adversarial runs stay linear', () => {
     '\\/A lines+END': 'x -----END RSA PRIVATE KEY-----\n' + '\\/A\n'.repeat(16_000) + '!',
     '\\/ run+END': '\\/'.repeat(32_743) + '!-----END RSA PRIVATE KEY-----',
     '60-char \\/ lines+END': 'x -----END RSA PRIVATE KEY-----\n' + ('\\/' + 'A'.repeat(60) + '\n').repeat(1_039) + '!',    // Review round 3: a 64K+ run of '|a' or '.a' after token= fell off JSC's fast path in kvIsProse (22 → 323 ms at 128 KB).
-    '|a after token=': 'token=a' + '|a'.repeat(65_536) + '!', '.a after token=': 'token=a' + '.a'.repeat(131_072) + '1',
+    '|a after token=': 'token=a' + '|a'.repeat(65_536) + '!', '.a after token=': 'token=a' + '.a'.repeat(131_072) + '1',    // #192's rules: bounded command windows, the table pass, the XML / connect / env shapes, spaced and hex key bodies.
+    'snmpwalk×': 'snmpwalk -c '.repeat(5_000), 'AUTH lines': 'AUTH x\n'.repeat(10_000), 'table rows': '| password |\n|---|\n' + '| a |\n'.repeat(10_000),
+    'pipes': '|'.repeat(60_000), '<password>×': '<password>'.repeat(6_000), 'new PDO(': 'new PDO(' + 'a'.repeat(60_000),
+    'b64 words': ('A'.repeat(60) + ' ').repeat(1_000) + '!', 'hex lines': ('0'.repeat(32) + '\n').repeat(2_000) + '!', '|a|+spaces': '|a|\n' + ' '.repeat(50_000) + 'x', 'spaces+|x|': ' '.repeat(50_000) + '|x|', 'setx KEY×': 'setx ' + 'KEY'.repeat(20_000) + '!', 'Environment=KEY×': 'Environment="A' + 'KEY'.repeat(20_000) + '=' + 'v'.repeat(1_000), 'pin columns': '|' + 'pin|'.repeat(8_192) + '\n|---|\n' + '||\n'.repeat(5_000),
+    'парола+spaces': 'парола' + ' '.repeat(50_000) + '!', 'парола за×': 'парола за '.repeat(6_000),
   };
   const slow: string[] = [];
   for (const [name, s] of Object.entries(cases)) {
@@ -374,4 +378,74 @@ test('review round 3: prose between code spans, where a secret lives, CI lookups
     `x\n-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,FAKE\n\n${L}`, 'The runner key:\n-----BEGIN RSA PRIVATE KEY-----\n']) {
     expect({ s, leaked: /FAKEkey|BEGIN/.test(redactSecrets(s).text) }).toEqual({ s, leaked: false });
   }
+});
+
+// #192 (2026-09-29): command-line flags, config and XML shapes, db connect calls, markdown password columns, more keywords,
+// env values with ';' ',' or spaces, Telegram tokens, Bulgarian prose, keys joined by spaces, hex key bodies, quoted PGP keys.
+test('#192: the shapes the first review deferred are redacted, and their look-alikes are not', () => {
+  const L = 'FAKEkeyAAAAbbbbCCCCdddd0000eeeeFFFFgggg1111hhhhIIIIjjjj2222kkkkLL';
+  const MISS192 = [
+    'redis-cli -h cache -p 6379 -a FAKEpw2026x ping', 'redis-cli --pass FAKEpw2026x ping', '127.0.0.1:6379> AUTH FAKEpw2026x', 'AUTH FAKEpw2026x',
+    'requirepass FAKEpw2026x', 'masterauth FAKEpw2026x', '    command: redis-server --requirepass FAKEpw2026x', 'mongo -u admin -p FAKEpw2026x --authenticationDatabase admin',
+    'mongosh "mongodb://h" --username admin --password FAKEpw2026x', 'snmpwalk -v2c -c FAKEcomm2026 10.0.0.1', 'snmp-server community FAKEcomm2026 RO',
+    'ipmitool -I lanplus -H 10.0.0.5 -U ADMIN -P FAKEpw2026x chassis status', 'smbclient //nas/share -U admin%FAKEpw2026x', 'docker login -u fakeuser -p FAKEpw2026x registry.example',
+    "echo 'root:FAKEpw2026x' | chpasswd", 'echo "kalin:FAKEpw2026x" | sudo chpasswd', 'setx DB_PASSWORD FAKEpw2026x',
+    '<password>FAKEpw2026x</password>', '<db:password>FAKEpw2026x</db:password>', '<apiKey>FAKEfake0000FAKE</apiKey>',
+    "$db = mysqli_connect('localhost', 'root', 'FAKEpw2026x', 'erp');", "$c = new mysqli('db', 'app', 'FAKEpw2026x', 'erp');", "mysqli_real_connect($link, 'db', 'app', 'FAKEpw2026x');",
+    "$pdo = new PDO('mysql:host=db;dbname=erp', 'app', 'FAKEpw2026x');",
+    '| host | user | password |\n|------|------|----------|\n| olt1 | admin | FAKEpw2026x |', '| password | FAKEpw2026x |', '| **Password** | FAKEpw2026x |',
+    'REDIS_AUTH=FAKEpw2026x', 'SMTP_CREDENTIALS=FAKEpw2026x', 'PASSCODE=FAKEpw2026x', "define('AUTH_KEY', 'FAKEpw2026xFAKEsalt');", 'MASTER_KEY=FAKEpw2026x',
+    'network={\n  ssid="home"\n  psk="FAKEpw2026x"\n}', 'DB_PASSWORD=FAKE;pw2026x', 'DB_PASSWORD=FAKE,pw2026x', 'Environment="DB_PASSWORD=FAKE pw2026x"',
+    'bot 123456789:AAFAKEfake0000FAKEfake0000FAKEfake00', 'парола: FAKEpw2026x', 'паролата за OLT-а е FAKEpw2026x', 'Парола за root: FAKEpw2026x', 'паролата е сменена на FAKEpw2026x',
+    `JWT_PRIVATE_KEY="-----BEGIN PRIVATE KEY----- ${L} ${L} ${L} -----END PRIVATE KEY-----"`, `${L} ${L} ${L}`, `${L} ${L} -----END PRIVATE KEY-----"`,
+    '> -----BEGIN PGP PRIVATE KEY BLOCK-----\n>\n' + Array(152).fill('> ' + L).join('\n') + '\n> -----END PGP PRIVATE KEY BLOCK-----\nafter',
+  ];
+  for (const s of MISS192) expect({ s, leaked: /FAKE|fa4e|FaKe/.test(redactSecrets(s).text) }).toEqual({ s, leaked: false });
+  const FP192 = [
+    'OAuth: supported', 'auth: required', 'Auth: via the gateway', 'snmpwalk -v2c -c public 10.0.0.1', 'mongo -p --authenticationDatabase admin',
+    '| Field | Type | Required |\n|---|---|---|\n| password | string | yes |', '| password | required |', '| token | The API token used for auth |', '| Name | Value |\n|---|---|\n| a | b |',
+    'AUTH required', 'the AUTH command takes a password', '<password></password>', '<password>${DB_PASS}</password>', "mysqli_connect($host, $user, $pass, $db);",
+    'docker login registry.example', 'credentials: stored in 1Password', 'Credentials: see the vault', 'requirepass yes', 'The bot 123 posted a message',
+    'парола: задължителна', 'паролата е в сейфа', 'DB_HOST=db,replica', 'API_KEY=${API_KEY}', 'Environment="PATH=/usr/bin:/bin"',
+    'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 d41d8cd98f00b204e9800998ecf8427ed41d8cd98f00b204e9800998ecf8427e',
+    // A chunk of UUIDs or MD5s is not an OpenVPN static key body (that rule was dropped for exactly this).
+    ['550e8400e29b41d4a716446655440000', 'd41d8cd98f00b204e9800998ecf8427e', '098f6bcd4621d373cade4e832627b4f6', '5d41402abc4b2a76b9719d911017c592'].join('\n'),
+  ];
+  for (const s of FP192) expect(redactSecrets(s)).toEqual({ text: s, count: 0 });
+  // Only the secret goes: the table, the call, the user and a trailing comment stay.
+  expect(redactSecrets('| host | user | password |\n|------|------|----------|\n| olt1 | admin | FAKEpw2026x |').text)
+    .toBe('| host | user | password |\n|------|------|----------|\n| olt1 | admin | [REDACTED] |');
+  expect(redactSecrets("$db = mysqli_connect('localhost', 'root', 'FAKEpw2026x', 'erp');").text).toBe("$db = mysqli_connect('localhost', 'root', '[REDACTED]', 'erp');");
+  expect(redactSecrets('smbclient //nas/share -U admin%FAKEpw2026x').text).toBe('smbclient //nas/share -U admin%[REDACTED]');
+  expect(redactSecrets('DB_PASSWORD=FAKE;pw2026x # note').text).toBe('DB_PASSWORD=[REDACTED] # note');
+});
+
+test('#192 review: the shapes it found leaking are redacted, and the look-alikes it found redacted stay', () => {
+  const MISS2 = [
+    "$db = mysqli_connect($host, 'root', 'FAKEpw2026x', 'erp');", "$c = new mysqli($host, 'app', 'FAKEpw2026x', 'erp');", "$db = mysqli_connect(DB_HOST, 'root', 'FAKEpw2026x');",
+    "$pdo = new PDO($dsn, $user, 'FAKEpw2026x');", 'AUTH default FAKEpw2026x', '127.0.0.1:6379> AUTH alice FAKEpw2026x',
+    'curl https://api.telegram.org/bot123456789:AAFAKEfake0000FAKEfake0000FAKEfake00/sendMessage', '{"cmd":"redis-cli -a \\"FAKEpw2026x\\" ping"}',
+    '{"cmd":"docker login -u u -p \\"FAKEpw2026x\\" reg"}', '<Password xsi:type="xsd:string">FAKEpw2026x</Password>', '<Pass encoding="base64">RkFLRXB3MjAyNng=</Pass>',
+    '<password><![CDATA[FAKEpw2026x]]></password>', '<password>\n  FAKEpw2026x\n</password>', 'Pre-shared key: FAKEpw2026x', 'Pre Shared Key: FAKEpw2026x',
+    'Парола:FAKEpw2026x', 'парола=FAKEpw2026x', '**Парола**: FAKEpw2026x', 'парола: fakepw2026x', 'паролата на root е FAKEpw2026x', 'паролата ми е FAKEpw2026x',
+    'паролата е променена на FAKEpw2026x', '| Device | Admin password |\n|---|---|\n| olt1 | FAKEpw2026x |', '| Host | User | Root Password |\n|---|---|---|\n| olt1 | root | FAKEpw2026x |',
+    'host | user | password\n--- | --- | ---\nolt1 | admin | FAKEpw2026x', '| Setting | Value | Notes |\n|---|---|---|\n| password | FAKEpw2026x | rotate |',
+    'environment:\n  - DB_PASSWORD=Qz7FAKE;pw2026x', 'ENV DB_PASSWORD=Qz7FAKE;pw2026x', 'docker run -e DB_PASSWORD=Qz7FAKE;pw2026x app',
+    'Environment="DB_USER=app" "DB_PASSWORD=Qz7FAKE pw2026x"', 'Environment=DB_PASSWORD=Qz7FAKE;pw2026x', '%any %any : PSK "FAKEpw2026x"',
+  ];
+  for (const s of MISS2) expect({ s, leaked: /FAKE|fake(?!user)/.test(redactSecrets(s).text) }).toEqual({ s, leaked: false });
+  const FP2 = [
+    "mysqli_connect($host, 'app', $pass, 'erp');", 'Смених паролата на Mikrotik1 акаунта.', 'Нулирах паролата на Router2 машината', 'паролата на db1 е в .pgpass',
+    '| Token | Description | Example |\n|---|---|---|\n| `{YYYY}` | year | 2026 |\n| `--ink` | ink colour | #000 |', '| Pass | Count |\n|---|---|\n| run | 1875 |',
+    '| Pin | Function |\n|---|---|\n| GPIO17 | LED |', '| Name | Secret |\n|---|---|\n| hub | GITLAB_TOKEN |', '| Field | Type |\n|---|---|\n| password | `string` |',
+    '| Setting | Value |\n|---|---|\n| password | (none) |', "fetch('/api', { method: 'POST', credentials: 'include' })", '"credentials": "same-origin"', 'Old DB credentials: host=db1 user=kkb',
+    'psk: 8-63 characters', 'Look for -----BEGIN PRIVATE KEY----- /etc/ssl/private/server.key and chmod it', '// Pre-auth: only a valid hello', 'Post-auth: all frames are sealed',
+    're-auth: 24 hours', 'smtp_auth: login', 'BASIC_AUTH=true', 'AUTH now uses setDescription', 'AUTH is required when requirepass is set', 'requirepass redis.conf',
+    '> AUTH needed first', 'AUTH WRONGPASS', 'redis-cli -a prints a warning', 'docker login -p insecure', 'head -c 100 file', 'setx MAX_TOKENS 4000',
+    'T_PASS=0; T_FAIL=0', 'ALLOWED_AUTH=basic,token', 'SSH_AUTH_SOCK=/tmp/ssh-x', 'XAUTHORITY=/home/k/.Xauthority', 'MAX_TOKENS=4000', 'PGPASSFILE=/home/k/.pgpass',
+    'CAPTAIN_MEMO_TOKEN_FILE=/etc/x', '<password>string</password>', '<password>?</password>', '<savePassword>true</savePassword>', '<nextPageToken>abc123XYZ</nextPageToken>',
+    '<max_token>4096</max_token>', '<password>%DB_PASS%</password>', '<password>#{db.pass}</password>', '<password>@DB_PASS@</password>', "// mysqli_connect('host', 'user', 'PASSWORD', 'db');",
+    "echo 'user:PASSWORD' | chpasswd", 'CA_CERT="-----BEGIN CERTIFICATE----- MIIDdzCCAl+gAwIBAgIEAgAAuTANBgkqhkiG9w0BAQUFADBaMQswCQYDVQQGEwJJRTESMBAGA1UEChMJQmFsdGltb3JlMRMwEQYDVQQLEwpDeWJlclRydXN0MSIwIAYD MIIDdzCCAl+gAwIBAgIEAgAAuTANBgkqhkiG9w0BAQUFADBaMQswCQYDVQQGEwJJRTESMBAGA1UEChMJQmFsdGltb3JlMRMwEQYDVQQLEwpDeWJlclRydXN0MSIwIAYD -----END CERTIFICATE-----"',
+  ];
+  for (const s of FP2) expect(redactSecrets(s)).toEqual({ text: s, count: 0 });
 });

@@ -7,6 +7,21 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.44.14] — 2026-09-29
+
+### Security
+
+- **Still more credential shapes are redacted.** Passwords given to `redis-cli -a` / `--pass`, redis `AUTH` (with or
+  without a user), `requirepass` / `masterauth`, `mongo -p`, `ipmitool -P`, `smbclient -U user%…`, `docker login -p`,
+  Windows `setx`, `echo 'user:…' | chpasswd`, an SNMP community and an ipsec `PSK`; XML elements (`<password>`, with
+  attributes or CDATA); the password argument of `mysqli_connect`, `new mysqli` and `new PDO`; a markdown table's password
+  column, or the value of a `password` row; `REDIS_AUTH`, `SMTP_CREDENTIALS`, passcodes, `AUTH_KEY`, `MASTER_KEY` and
+  pre-shared keys; a systemd `Environment=` value with spaces and a `.env` / compose / Dockerfile / `docker -e` value with
+  `;` or `,`; Telegram bot tokens; a password written in Bulgarian ("парола: …", "паролата за OLT-а е …"); and a private
+  key pasted onto one line with spaces, or quoted in a note up to 16 KB. A review against the local corpus kept the new
+  rules quiet: they change 3 of 100 000 real chunks, all genuine, and every rule stays linear on hostile input. Recall
+  pays about 4 ms more per prompt for it.
+
 ## [0.44.13] — 2026-09-29
 
 ### Security

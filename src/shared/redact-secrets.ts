@@ -20,14 +20,17 @@ type Rule = {
   /** What the text must contain: without it the rule is not run at all. A literal-led test is a fast scan, where a rule
    *  that opens with a lookbehind is tried at every position. Over 87 704 real chunks (24.6 MB, 2026-09-29) they took the
    *  redactor from 31.1 to 20.7 µs per chunk, byte-identical output, and one recall of 150 candidates of 1-2 KB from 14.7
-   *  to 10.3 ms (0.65.2: 16.3 µs, 7.3 ms, with 287 chunks redacted where this catches 761). */
+   *  to 10.3 ms (0.65.2: 16.3 µs, 7.3 ms, with 287 chunks redacted where this catches 761). Plain String.includes tests
+   *  instead were slower, not faster (81.5 µs): each is its own full scan, one alternation regex is one. With #192's rules
+   *  (0.66.1): 28.7 µs per chunk and 13.6 ms per recall, against 19.4 µs and 9.7 ms for 0.66.0 on the same chunks. */
   needs?: RegExp;
   /** Also read json_encode's escaped slash '\/' as '/' (see slashRuns). */
   slashes?: true;
 };
 
 const KV_KEYWORD = 'secret[_ -]access[_ -]key|secret[_ -]?key|signing[_ -]?key|encryption[_ -]?key|app[_ -]?key|'
-  + 'pass(?:word|wd|phrase)?|pwd|secret|api[_ -]?key|access[_ -]?key|private[_ -]?key|auth[_ -]?token|token|'
+  + 'pass(?:word|wd|phrase|code)?|pwd|secret|api[_ -]?key|access[_ -]?key|private[_ -]?key|auth[_ -]?token|auth[_ -]?key|'
+  + 'master[_ -]?key|pre[_ -]?shared[_ -]?key|psk|redis[_-]?auth|smtp[_-]?credentials|token|'
   + 'x-[a-z0-9]+(?:-[a-z0-9]+){0,3}-test';   // a custom X-<name>-Test header whose value is a shared secret
 
 /** A value that is a word, a flag, a score or a rule list, not a secret: secret: true, (using password: YES),
@@ -54,7 +57,7 @@ function kvIsProse(m: RegExpExecArray): boolean {
   if (!bare && /^\s|\s$/.test(value)) return true;
   // Where a secret lives, not the secret: a file path, a URL or op:// reference, a token endpoint, a CI/shell lookup.
   if (/^(?:~?\/|\.\.?\/)|^[a-z][a-z0-9+.-]*:\/\/|^(?:GET|POST|PUT|PATCH|DELETE) \/|^\$\{\{|^\$\(/i.test(value)) return true;
-  if (HASH_NAME.test(value) || /^-+$|^-----/.test(value)) return true;   // Signing key: RS256; a dash rule or a cut armour line
+  if (HASH_NAME.test(value) || /^-+$|^-----/.test(value) || /^\d+[-.:]\d+$/.test(value)) return true;   // Signing key: RS256; a dash rule or a cut armour line
   // (using password: YES): the ')' closes the prose; so do 'string):' and a bold '**'. Trimmed by hand: /[)\]}.]+$/
   // restarts at every char of a run it then fails on ('token=' + 25 000 '.' + 'x': 1.2 s).
   let start = 0, end = value.length;
@@ -142,21 +145,32 @@ const ARMOR = String.raw`(?:[A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?|OpenVPN [\w -]{0,40
 const NL = String.raw`(?:\r?\n|\\r\\n|\\n)`;   // a real newline, or a JSON-escaped one (\n, \r\n)
 /** What follows a BEGIN line of a real key: a key line (16+ base64 chars) or a header (Proc-Type:, Comment:, Version:) on the
  *  next line, after at most one blank line (PGP), or the end of the text (the chunk holds only the head), or the body glued
- *  to it. Not prose: '-----BEGIN … KEY----- on its own line', nor a header alone in a code fence followed by the note. */
-const BEGIN_END = String.raw`(?=[ \t]*(?:${NL}[ \t]*(?:>[ \t]*)?(?:${NL}[ \t]*(?:>[ \t]*)?)?(?:[A-Za-z0-9+/]{16}|[A-Z][A-Za-z-]+: )|(?:${NL}[ \t]*)?$)|[A-Za-z0-9+/])`;
+ *  to it or joined to it by spaces (JWT_PRIVATE_KEY="-----BEGIN PRIVATE KEY----- MIIE… -----END PRIVATE KEY-----"). Not prose: '-----BEGIN … KEY----- on its own line', nor a header alone in a code fence followed by the note. */
+const BEGIN_END = String.raw`(?=[ \t]*(?:${NL}[ \t]*(?:>[ \t]*)?(?:${NL}[ \t]*(?:>[ \t]*)?)?(?:[A-Za-z0-9+/]{16}|[A-Z][A-Za-z-]+: )|(?:${NL}[ \t]*)?$)|[A-Za-z0-9+/]|[ \t]+[A-Za-z0-9+/]{60})`;
+/** A command-line value: JSON-escaped, single- or double-quoted, or bare (stopping at a code span's backtick, ')' or ','). */
+const CLI_VALUE = String.raw`(?:\\"([^"\\\n]*)\\"|'([^'\n]*)'|"([^"\n]*)"|([^\s'"\x60),]+))`;
+const cliValue = (m: RegExpExecArray) => m[1] ?? m[2] ?? m[3] ?? m[4];
+/** A value a command's docs write where the secret goes: a word, a flag, a file name, a short number, a stand-in. */
+const notCliSecret = (v: string | undefined) => !v || PLACEHOLDER.test(v) || DUMMY.test(v) || /^[$<[{-]/.test(v) || /^[A-Z]{2,20}$/.test(v)
+  || NOT_A_SECRET.test(v) || /^(?:public|private)$/.test(v) || /^[a-z]+$/.test(v) || /^\d{1,6}$/.test(v) || /^[\w-]+\.[a-z]{2,5}$/i.test(v);
+/** An env-var name that ends in a secret word, at most 64 chars (two unbounded runs around the word were quadratic).
+ *  MAX_TOKENS, PGPASSFILE, SSH_AUTH_SOCK, CAPTAIN_MEMO_TOKEN_FILE do not end in one. */
+const ENV_NAME = String.raw`[A-Z_][A-Z0-9_]{0,60}?(?:PASSWORD|PASSWD|PASS|PWD|SECRET|TOKEN|API_KEY|PASSCODE|REDIS_AUTH|CREDENTIALS)`;
+/** One argument of a db connect call before the password: a string, a $variable (with ->, [] and quotes) or a CONSTANT. */
+const DB_ARG = String.raw`(?:'[^'\n]*'|"[^"\n]*"|\$[\w>\[\]'"-]{1,64}|[A-Za-z_][\w:]{0,63})`;
 /** A key line's frame: trailing spaces (a markdown hard break) before the newline, indent and a '> ' quote after it. */
 const LINE_TAIL = String.raw`[ \t]*${NL}[ \t]*(?:>[ \t]*)?`;
 
 const RULES: Rule[] = [
   // Paired, or a lone BEGIN through the end of the text: a key the chunker split keeps its head in one chunk. PGP's
-  // armour ends in 'PRIVATE KEY BLOCK-----'. A PEM key body is a few KB (RSA-8192 ~6.4 KB), so the scan stops at
-  // 10 000 chars: unbounded, 2 000 BEGINs with no END took 160 ms, each one scanning to the end of the text.
-  // ponytail: a lone BEGIN more than 10 000 chars before the end of a longer text stays; chunks are far shorter.
+  // armour ends in 'PRIVATE KEY BLOCK-----'. A PEM key body is a few KB (RSA-8192 ~6.4 KB, a 4096-bit PGP key quoted with
+  // '> ' ~10.1 KB), so the scan stops at 16 000 chars: unbounded, 2 000 BEGINs with no END took 160 ms, each one scanning
+  // to the end of the text. ponytail: a lone BEGIN more than 16 000 chars before the end of a longer text stays.
   // SSH2's armour is '---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----'; OpenVPN's static key is mixed case.
   // One rule per armour, each END a single literal: the lazy scan finds a literal fast, and one char at a time a quantifier
   // (-{4,5}: 2 000 BEGINs 47 ms → 421 ms) or even two literals (205 ms).
-  { kind: 'private-key', needs: /-----BEGIN /, re: new RegExp(String.raw`-----BEGIN ${ARMOR}-----${BEGIN_END}[\s\S]{0,10000}?(?:-----END ${ARMOR}-----|$)`, 'g') },
-  { kind: 'private-key', needs: /---- BEGIN /, re: new RegExp(String.raw`---- BEGIN ${ARMOR} ----${BEGIN_END}[\s\S]{0,10000}?(?:---- END ${ARMOR} ----|$)`, 'g') },
+  { kind: 'private-key', needs: /-----BEGIN /, re: new RegExp(String.raw`-----BEGIN ${ARMOR}-----${BEGIN_END}[\s\S]{0,16000}?(?:-----END ${ARMOR}-----|$)`, 'g') },
+  { kind: 'private-key', needs: /---- BEGIN /, re: new RegExp(String.raw`---- BEGIN ${ARMOR} ----${BEGIN_END}[\s\S]{0,16000}?(?:---- END ${ARMOR} ----|$)`, 'g') },
   // ...and its tail in another: base64 lines (real or JSON-escaped \n, optionally indented) ending in the END line.
   // It starts only where a block of such lines starts (a chunk may start with the n of a cut \n), never on a line
   // inside one, so a long base64 blob with no END is one linear scan: 3 000 lines took 2.6 s with every line a start
@@ -179,6 +193,11 @@ const RULES: Rule[] = [
   // '-' + 20 000 spaces 0.77 s (a cut END line allowed to end on a space: 50 000 spaces, 4.9 s).
   { kind: 'base64-block', skip: notKeyBody, slashes: true,
     re: new RegExp(String.raw`^\s*(?=\S)(?:[A-Z ]*-{1,5}${NL})?(?:\\r\\n|\\n)?[ \t]*(?:>[ \t]*)?(${B64_LINE}(?:${LINE_TAIL}${B64_LINE}){0,1000})(?:${NL}(?:-{1,5}(?:[A-Z ]*[A-Z])?)?|\\r\\?|\\)?\s*$`, 'g') },
+  // A key body joined by spaces (a PEM pasted into one env value), cut out of its BEGIN/END by the chunker: two or more
+  // runs of 60+ base64 chars (PEM lines are 64) with a capital, a small letter and a digit, maybe running into the END.
+  // ponytail: the short last line of such a body stays.
+  { kind: 'private-key', needs: /[A-Za-z0-9+/]{60} [A-Za-z0-9+/]{60}/, skip: (m) => !/[A-Z]/.test(m[0]) || !/[a-z]/.test(m[0]) || !/\d/.test(m[0]),
+    re: new RegExp(String.raw`(?<![A-Za-z0-9+/=])(?<!-----[ \t]{0,4})[A-Za-z0-9+/]{60,}={0,2}(?: [A-Za-z0-9+/]{60,}={0,2}){1,300}(?: [A-Za-z0-9+/=]*-----END ${ARMOR}-----)?`, 'g') },
   { kind: 'gitlab-token', needs: /gl[a-z]{1,5}-/, re: /(?<![A-Za-z0-9_-])gl(?:pat|ptt|imt|ffct|wt|rtr|rt|dt|ft|oas|soat|cbt|agent)-[A-Za-z0-9_-]{16,}/g },
   { kind: 'github-token', needs: /gh[pousr]_|github_pat_/, re: /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})/g },
   { kind: 'anthropic-key', needs: /sk-ant-/, re: /(?<![A-Za-z0-9_-])sk-ant-[A-Za-z0-9_-]{20,}/g },
@@ -187,6 +206,8 @@ const RULES: Rule[] = [
   { kind: 'aws-key', needs: /AKIA/, re: /\bAKIA[0-9A-Z]{16}\b/g },
   { kind: 'google-key', needs: /AIza/, re: /\bAIza[0-9A-Za-z_-]{35}\b/g },
   { kind: 'jwt', needs: /eyJ/, re: /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g },
+  // A Telegram bot token: <bot id>:AA<35 chars>.
+  { kind: 'telegram-token', needs: /:AA/, re: /(?:(?<![A-Za-z0-9_:-])|(?<=\/bot))\d{8,10}:AA[A-Za-z0-9_-]{30,}/g },
   // Voyage AI (the embedder key this product asks for). Starts a run, like jwt.
   { kind: 'voyage-key', needs: /pa-/, re: /(?<![A-Za-z0-9_-])pa-[A-Za-z0-9_-]{40,}/g, skip: isSlug },
   // A credential has a digit, a capital or base64 padding; 'Basic authentication-mechanism' is prose.
@@ -200,6 +221,25 @@ const RULES: Rule[] = [
   // is at most 32 chars.
   { kind: 'url-password', needs: /:\\?\/\\?\//, re: /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]{0,31}:\\?\/\\?\/[^\s/:@\\]*:([^\s@/\\]{1,})@/gi, value: (m) => m[1],
     skip: (m) => PLACEHOLDER.test(m[1]!) || DUMMY.test(m[1]!) },   // https://gitlab-ci-token:${CI_JOB_TOKEN}@…, redis://:$REDIS_PASSWORD@…
+  // systemd's Environment="DB_PASSWORD=a b" (quoted, the value runs to its quote; several may share the line) or
+  // Environment=DB_PASSWORD=a;b, and a .env / compose ('- K=v') / Dockerfile ('ENV K=v') / 'docker run -e K=v' assignment
+  // whose value has ';' or ',' in it (kv's value stops there): the whole value goes.
+  { kind: 'env-value', needs: /Environment=|[A-Z0-9_](?:PASSWORD|PASSWD|PASS|PWD|SECRET|TOKEN|API_KEY|PASSCODE|AUTH|CREDENTIALS)=/,
+    re: new RegExp(String.raw`(?<=\bEnvironment=(?:[^\n]{0,300}[ \t])?)(["'])${ENV_NAME}=([^"'\n]+)\1|\bEnvironment=${ENV_NAME}=([^\s"']+)|(?:(?<![^\n])[ \t]*(?:export[ \t]+|-[ \t]+|ENV[ \t]+)?|(?<=[ \t])(?:-e|--env)[ \t=]+)${ENV_NAME}=([^\s'"#]*[;,][^\s'"#]*)`, 'g'),
+    value: (m) => (m[2] ?? m[3] ?? m[4])?.replace(/[;,]+$/, ''),
+    skip: (m) => { const v = (m[2] ?? m[3] ?? m[4] ?? '').replace(/[;,]+$/, ''); return v.length < 4 || PLACEHOLDER.test(v) || DUMMY.test(v) || /^\$/.test(v) || NOT_A_SECRET.test(v) || /^[\d.,;:-]+$/.test(v); } },
+  // <password>…</password>, <db:Password xsi:type="xsd:string">…</db:Password>, <Pass>…</Pass>, <apiKey>…</apiKey>, CDATA, a
+  // value on its own line. Not <…Token>: nextPageToken and ContinuationToken are pagination. Flags (savePassword: true), SOAP
+  // sample types ('string'), '?', %VAR%, #{…}, @…@ and ${…} are stand-ins.
+  { kind: 'xml-secret', needs: /<\/[\w.:-]*(?:pass|pwd|secret|key)/i,
+    re: /<([\w.:-]{0,40}?(?:password|passwd|pass|pwd|passphrase|secret|api[_-]?key))(?:\s[^<>\n]{0,200})?>\s{0,20}(?:<!\[CDATA\[([^\]\n]{1,200})\]\]>|([^<\s][^<\n]{0,199}?))\s{0,20}<\/\1>/gi,
+    value: (m) => m[2] ?? m[3],
+    skip: (m) => { const v = (m[2] ?? m[3])!; return NOT_A_SECRET.test(v) || PLACEHOLDER.test(v) || DUMMY.test(v) || /^\?+$|^%\w+%$|^#\{.*\}$|^@\w+@$|^\$|^\{|^\d{1,6}$/.test(v); } },
+  // mysqli_connect($host, 'user', 'PASS', …), new mysqli(DB_HOST, $u, 'PASS'), mysqli_real_connect($link, h, u, 'PASS'),
+  // new PDO($dsn, $user, 'PASS'): the password argument, when it is a literal.
+  { kind: 'db-connect', needs: /connect|mysqli|PDO/,
+    re: new RegExp(String.raw`\b(?:(?:mysqli_connect|mysql_connect|new\s+mysqli)\s*\(\s*${DB_ARG}\s*,\s*${DB_ARG}\s*,\s*|mysqli_real_connect\s*\(\s*${DB_ARG}\s*,\s*${DB_ARG}\s*,\s*${DB_ARG}\s*,\s*|new\s+PDO\s*\(\s*${DB_ARG}\s*,\s*${DB_ARG}\s*,\s*)(['"])([^'"\n]+)\1`, 'g'),
+    value: (m) => m[2], skip: (m) => notCliSecret(m[2]) },
   // password=…, DB_PASSWORD=…, PGPASSWORD=…, export VOYAGE_API_KEY=…, {"password": "…"}, 'db_pass' => '…', x-api-key: …,
   // define('DB_PASSWORD', '…') (a quoted key, a comma, a quoted value), $cfg['db_password'] = '…', os.environ["API_KEY"] = …,
   // {\"password\":\"…\"} (JSON inside a JSON string), **Password:** … (markdown bold). A bare value stops at '&' (a URL's
@@ -208,14 +248,24 @@ const RULES: Rule[] = [
   // identifier is one attempt, not one per character); a quoted value runs to its closing quote; '::' is a path
   // (Token::Kind), not an assignment. kvIsProse drops prose. The comma's lookbehind runs on a comma only: ahead of it,
   // it rescanned the whitespace run at every backtrack ('password' + 20 000 spaces: 0.78 s).
-  { kind: 'kv', needs: /pass|pwd|secret|key|token|-test/i, re: new RegExp(`(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]{0,64}?(${KV_KEYWORD}))(?:\\\\?["'])?\\]?(?:\\*{1,2}|__)?[ \\t]*(=>|[:=](?!:)|,(?<=["'][ \\t]*,)(?=[ \\t]*["']))(?:\\*{1,2}|__)?[ \\t]*(?:\\\\"([^"\\\\\\n]{4,})\\\\"|"([^"\\n]{4,})"|'([^'\\n]{4,})'|\\x60([^\\x60\\n]{4,})\\x60|["']?([^\\s"',;\\x60&]{4,}))`, 'gi'),
+  { kind: 'kv', needs: /pass|pwd|secret|key|token|-test|redis.auth|credentials|psk/i, re: new RegExp(`(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]{0,64}?(${KV_KEYWORD}))(?:\\\\?["'])?\\]?(?:\\*{1,2}|__)?[ \\t]*(=>|[:=](?!:)|,(?<=["'][ \\t]*,)(?=[ \\t]*["']))(?:\\*{1,2}|__)?[ \\t]*(?:\\\\"([^"\\\\\\n]{4,})\\\\"|"([^"\\n]{4,})"|'([^'\\n]{4,})'|\\x60([^\\x60\\n]{4,})\\x60|["']?([^\\s"',;\\x60&]{4,}))`, 'gi'),
     value: (m) => m[4] ?? m[5] ?? m[6] ?? m[7] ?? m[8], skip: kvIsProse },
   // A password on a command line: mysql -u root -pSECRET (glued to -p: `mysql -p word` names a database), sshpass -p
   // SECRET, curl -u user:SECRET. Only after that command (ssh -p2222, gcc -pthread), within 200 chars of it:
   // unbounded, 'mysql -u root '×5 000 on one line took 470 ms. curl's user is one separator then at most 256 chars: a
   // '[ \t=]*' beside a user class that also takes '=' split a '=' run every way ('curl -u' + 20 000 '=': 293 ms).
-  { kind: 'cli-password', needs: /mysql|mariadb|sshpass|curl/, re: /(?:\b(?:mysql|mysqldump|mysqladmin|mariadb(?:-dump|-admin)?)\b[^\n|;&]{0,200}?\s-p|\bsshpass\b[^\n|;&]{0,200}?\s-p[ \t]*|\bcurl\b[^\n|;&]{0,200}?\s(?:-u|--user)(?:[ \t]+|=)?['"]?[^\s:'"]{1,256}:)(?:'([^'\n]*)'|"([^"\n]*)"|([^\s'"\x60),]+))/g,
-    value: (m) => m[1] ?? m[2] ?? m[3], skip: (m) => { const v = (m[1] ?? m[2] ?? m[3])!; return PLACEHOLDER.test(v) || DUMMY.test(v) || /^[$<[{]/.test(v) || /^[A-Z]{2,20}$/.test(v); } },   // -pSECRET: a stand-in
+  { kind: 'cli-password', needs: /mysql|mariadb|sshpass|curl/, re: new RegExp(String.raw`(?:\b(?:mysql|mysqldump|mysqladmin|mariadb(?:-dump|-admin)?)\b[^\n|;&]{0,200}?\s-p|\bsshpass\b[^\n|;&]{0,200}?\s-p[ \t]*|\bcurl\b[^\n|;&]{0,200}?\s(?:-u|--user)(?:[ \t]+|=)?['"]?[^\s:'"]{1,256}:)${CLI_VALUE}`, 'g'),
+    value: cliValue, skip: (m) => { const v = cliValue(m)!; return PLACEHOLDER.test(v) || DUMMY.test(v) || /^[$<[{]/.test(v) || /^[A-Z]{2,20}$/.test(v); } },   // -pSECRET: a stand-in
+  // More command lines: redis-cli -a / --pass, redis AUTH [user] (at a line start or a '> ' prompt), requirepass /
+  // masterauth, mongo -p, an SNMP community (snmpwalk -c, snmp-server community), ipmitool -P, smbclient -U user%PASS, docker
+  // login -p, Windows setx <NAME ending in PASSWORD, SECRET, TOKEN…> <value>, ipsec.secrets ': PSK "…"'. Each command's window
+  // is bounded like mysql's. Prose after a command ('AUTH is required', 'requirepass redis.conf') is not a value.
+  { kind: 'cli-password', needs: /redis-cli|AUTH|requirepass|masterauth|mongo|snmp|ipmitool|smbclient|docker|setx|PSK/,
+    re: new RegExp(String.raw`(?:\bredis-cli\b[^\n|;&]{0,200}?\s(?:-a|--pass)[ \t]+|(?:(?<![^\n])[ \t]*|> )AUTH[ \t]+(?:[A-Za-z0-9_.-]{1,64}[ \t]+(?=\S))?|\b(?:requirepass|masterauth)[ \t]+|\bmongo(?:sh|dump|restore|import|export)?\b[^\n|;&]{0,200}?\s(?:-p|--password)(?:[ \t]+|=)|\bsnmp(?:walk|get|getnext|bulkwalk|bulkget|set|table|trap)\b[^\n|;&]{0,200}?\s-c[ \t]*|\bsnmp-server[ \t]+community[ \t]+|\bipmitool\b[^\n|;&]{0,200}?\s-P[ \t]*|\bsmbclient\b[^\n|;&]{0,200}?\s(?:-U|--user(?:name)?)(?:[ \t]+|=)?['"]?[^\s%'"]{1,256}%|\bdocker[ \t]+login\b[^\n|;&]{0,200}?\s(?:-p|--password)(?:[ \t]+|=)|\bsetx[ \t]+[A-Za-z0-9_]{0,60}(?:PASSWORD|PASS|PWD|SECRET|TOKEN|KEY)[ \t]+|:[ \t]*PSK[ \t]+)${CLI_VALUE}`, 'g'),
+    value: cliValue, skip: (m) => notCliSecret(cliValue(m)) },
+  // echo 'user:PASS' | chpasswd
+  { kind: 'cli-password', needs: /chpasswd/, re: /\becho[ \t]+(['"]?)[^\s:'"|]{1,64}:([^\s'"|]+)\1[ \t]*\|[ \t]*(?:sudo[ \t]+)?chpasswd\b/g,
+    value: (m) => m[2], skip: (m) => notCliSecret(m[2]) },
   // Prose, the way observations write it: "…with password Qz7…", "the password is …", "pw for the OLT: …", "the root
   // password has been changed to …", "the password is now …", "token \x60…\x60", "**password** …". Only a secret-looking value
   // (PROSE_VALUE) goes: 'password field is required', 'password must be 12+ chars', 'the password is SHA256-hashed', a
@@ -223,6 +273,14 @@ const RULES: Rule[] = [
   // value. Every optional piece is bounded (four words, four connectives), so a run of spaces is scanned a fixed
   // number of times.
   { kind: 'prose-password', needs: /pass|pw|token|secret|api|-test/i, re: new RegExp(String.raw`(?:\b(?:password|passwd|passphrase|pw|token|secret|api[ _-]?key)|(?<![\w-])x-[a-z0-9]+(?:-[a-z0-9]+){0,3}-test(?:[ \t]+(?:header|value))?)\b(?:\*{1,2}|__)?(?:[ \t]+for(?:[ \t]+[^\s:]{1,40}){1,4}?(?:[ \t]+(?:is|was)\b|[ \t]*[:=]))?(?:[ \t]+(?:is|was|been|has|got|now|still|will|be|changed|set|reset|updated|as|to)\b){0,4}(?:[ \t]*[:=—–→-])?(?:\*{1,2}|__)?(?:[ \t]+|[ \t]*\n[ \t]*)${PROSE_VALUE}`, 'gi'),
+    value: (m) => m[1], skip: (m) => HASH_NAME.test(m[1]!) || m[1]!.includes('(') || !/[A-Za-z]/.test(m[1]!) || (!quotedValue(m) && notMixedCase(m)) },
+  // The same in Bulgarian. As a key: "Парола:X", "парола=X", "**Парола**: X" (any case; a Cyrillic word after it is prose).
+  { kind: 'prose-password', needs: /[Пп]арол/, re: /(?<![\p{L}\p{N}_])(?:\*\*|__)?[Пп]арол(?:ата|а)(?:\*\*|__)?[ \t]*[:=](?:\*\*)?[ \t]*(?:\x60([^\x60\n]{4,})\x60|"([^"\n]{4,})"|'([^'\n]{4,})'|([^\s'"\x60,;*]{4,}))/gu,
+    value: (m) => m[1] ?? m[2] ?? m[3] ?? m[4],
+    skip: (m) => { const v = (m[1] ?? m[2] ?? m[3] ?? m[4])!; return NOT_A_SECRET.test(v) || PLACEHOLDER.test(v) || DUMMY.test(v) || /^\p{Script=Cyrillic}+[.,]?$/u.test(v); } },
+  // As prose: "паролата за OLT-а е …", "Парола за root: …", "паролата на root е …" (the 'за/на <what>' clause needs its 'е' or
+  // ':', so the <what> — a device, an account — is never the value), "паролата ми е …", "паролата е сменена на …".
+  { kind: 'prose-password', needs: /[Пп]арол/, re: new RegExp(String.raw`(?<![\p{L}\p{N}_])[Пп]арол(?:ата|ите|а|и)(?![\p{L}])(?:[ \t]+(?:ми|му|й))?(?:[ \t]+(?:за|на)(?:[ \t]+[^\s:]{1,40}){1,4}?(?:[ \t]+(?:е|беше)(?![\p{L}])|[ \t]*[:=]))?(?:[ \t]+(?:е|беше|вече|нова)(?![\p{L}])){0,3}(?:[ \t]+(?:сменена|променена|зададена)[ \t]+на)?(?:[ \t]*[:=—–→-])?(?:\*{1,2}|__)?(?:[ \t]+|[ \t]*\n[ \t]*)${PROSE_VALUE}`, 'giu'),
     value: (m) => m[1], skip: (m) => HASH_NAME.test(m[1]!) || m[1]!.includes('(') || !/[A-Za-z]/.test(m[1]!) || (!quotedValue(m) && notMixedCase(m)) },
 ];
 
@@ -248,10 +306,53 @@ function slashRuns(text: string, r: Rule): { text: string; count: number } {
   return { text: out + text.slice(last), count };
 }
 
+/** A markdown table with a password column (its header ends in password, passwd, pwd, passphrase, secret, API key or
+ *  парола: 'Admin password' too): that column's cells go; and in a key/value table (a two-cell row, or a header with a Value
+ *  column) the value of a row whose key is one, or 'token'. Only a cell that looks like a secret goes: one token of 4+
+ *  chars with a digit, mixed case or a symbol, and not a word, an env-var NAME, a placeholder, {…}, --css-var or (none).
+ *  Rows with or without outer pipes, at most 32 columns; no regex spans a whole line, so it is one linear pass (a separator
+ *  regex with \s* around an optional '|' was quadratic on a long indented line: 64 KiB, 9.6 s). */
+const SECRET_HEAD = /(?:^|[\s_-])(?:password|passwd|pwd|passphrase|secret|api[ _-]?key|парола)$/i;
+const TABLE_WORD = /passw|pwd|passphrase|secret|api[ _-]?key|парола|token/i;
+function tableCells(text: string): { text: string; count: number } {
+  const lines = text.split('\n');
+  let count = 0, cols: number[] = [], valueCol = -1, inTable = false;
+  const cellsOf = (l: string) => { let t = l.trim(); if (t.startsWith('|')) t = t.slice(1); if (t.endsWith('|')) t = t.slice(0, -1); return t.split('|'); };
+  const sep = (l: string | undefined) => l !== undefined && l.includes('---') && cellsOf(l).every((c) => /^:?-{3,}:?$/.test(c.trim()));
+  const bare = (c: string) => c.trim().replace(/^\*\*(.*)\*\*$/, '$1').replace(/^\x60(.*)\x60$/, '$1').trim();
+  const take = (c: string) => {
+    const v = bare(c);
+    return v.length >= 4 && !/\s/.test(v) && /\d|[A-Z].*[a-z]|[a-z].*[A-Z]|[^\w]/.test(v) && !NOT_A_SECRET.test(v) && !PLACEHOLDER.test(v)
+      && !DUMMY.test(v) && !/^[A-Z][A-Z0-9_]+$|^\{.*\}$|^\(.*\)$|^--|^\d+$|^\[REDACTED/.test(v);
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i]!;
+    if (!l.includes('|')) { inTable = false; continue; }
+    if (sep(l)) continue;
+    const cells = cellsOf(l);
+    if (cells.length > 32) { inTable = false; continue; }
+    if (sep(lines[i + 1])) {   // a header
+      inTable = true;
+      cols = cells.flatMap((c, j) => (SECRET_HEAD.test(bare(c)) ? [j] : []));
+      valueCol = cells.findIndex((c) => /^(?:value|стойност)$/i.test(bare(c)));
+      continue;
+    }
+    const hit = new Set(inTable ? cols : []);
+    const keyCol = cells.length === 2 ? 1 : inTable ? valueCol : -1;
+    if (keyCol > 0 && (SECRET_HEAD.test(bare(cells[0]!)) || /^token$/i.test(bare(cells[0]!)))) hit.add(keyCol);
+    if (!hit.size) continue;
+    const parts = l.split('|'), off = l.trim().startsWith('|') ? 1 : 0;
+    let changed = false;
+    for (const j of hit) if (cells[j] !== undefined && take(cells[j]!)) { parts[j + off] = ' [REDACTED] '; count++; changed = true; }
+    if (changed) lines[i] = parts.join('|');
+  }
+  return count ? { text: lines.join('\n'), count } : { text, count: 0 };
+}
+
 /** Replace every credential-shaped value in `text`; count = replacements made. */
 export function redactSecrets(text: string): { text: string; count: number } {
-  let count = 0;
-  let out = text;
+  // The table pass only where a secret column can be: a third of real chunks hold a '|' (code, tables), few name one.
+  let { text: out, count } = text.includes('|') && TABLE_WORD.test(text) ? tableCells(text) : { text, count: 0 };
   for (const r of RULES) {
     if (r.needs && !r.needs.test(out)) continue;
     if (r.slashes && out.includes('\\/')) { const s = slashRuns(out, r); out = s.text; count += s.count; continue; }
