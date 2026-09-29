@@ -67,6 +67,7 @@ export class PendingEmbedQueue {
   constructor(path: string) {
     this.db = new Database(path);
     this.db.exec('PRAGMA journal_mode = WAL;');
+    this.db.exec('PRAGMA synchronous = NORMAL;');   // see observations-store.ts
     this.db.exec(SCHEMA);
     this.migrate();
   }

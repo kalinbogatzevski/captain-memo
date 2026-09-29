@@ -322,8 +322,8 @@ test('ObservationsStore — schema_versions records all migrations after constru
   const db = new Database(join(workDir, 'observations.db'), { readonly: true });
   const rows = getAppliedVersions(db);
   db.close();
-  expect(rows).toHaveLength(23);
-  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]);
+  expect(rows).toHaveLength(24);
+  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]);
   expect(rows.map(r => r.name)).toEqual([
     'add_branch',
     'add_work_tokens',
@@ -348,6 +348,7 @@ test('ObservationsStore — schema_versions records all migrations after constru
       'clamp_runaway_stability',
       'add_theme_declines',
     'add_promotion_declines_and_shadow',
+    'add_idle_pass_indexes',
   ]);
   store = new ObservationsStore(join(workDir, 'observations.db'));
 });
@@ -1165,7 +1166,7 @@ test('P3 — supersededAmong empty input returns empty set', () => {
   expect(store.supersededAmong([])).toEqual(new Set());
 });
 
-test('P3 — supersedeCandidateWindow emits older→newest pairs per (project,branch) entity', () => {
+test('P3 — supersedeCandidateWindow emits older→newest pairs per (project,branch) entity', async () => {
   const a = store.insert({ ...tideBase, project_id: 'p1', branch: 'main', title: 'talq v0.6.0' });
   const b = store.insert({ ...tideBase, project_id: 'p1', branch: 'main', title: 'talq v0.10.0' });
   const c = store.insert({ ...tideBase, project_id: 'p1', branch: 'main', title: 'talq v0.51.12' });
@@ -1176,7 +1177,7 @@ test('P3 — supersedeCandidateWindow emits older→newest pairs per (project,br
   w.run('UPDATE observations SET from_search = 1');
   w.close();
 
-  const cands = store.supersedeCandidateWindow(500);
+  const cands = await store.supersedeCandidateWindow(500);
   // a,b superseded by c (the newest p1 version); d isolated in p2
   const olderIds = cands.map(x => x.older.id).sort((x, y) => x - y);
   expect(olderIds).toEqual([a, b]);
@@ -1186,7 +1187,7 @@ test('P3 — supersedeCandidateWindow emits older→newest pairs per (project,br
   }
 });
 
-test('P3 — supersedeCandidateWindow ignores unparseable / single-version / equal-version sets', () => {
+test('P3 — supersedeCandidateWindow ignores unparseable / single-version / equal-version sets', async () => {
   store.insert({ ...tideBase, title: 'no version A' });
   store.insert({ ...tideBase, title: 'no version B' });
   store.insert({ ...tideBase, title: 'solo v1.0.0' });
@@ -1195,7 +1196,7 @@ test('P3 — supersedeCandidateWindow ignores unparseable / single-version / equ
   const w = new Database(join(workDir, 'observations.db'));
   w.run('UPDATE observations SET from_search = 1');
   w.close();
-  expect(store.supersedeCandidateWindow(500)).toEqual([]);
+  expect(await store.supersedeCandidateWindow(500)).toEqual([]);
 });
 
 test('P3 — supersedeLinkCount + listSupersedeEvents reflect open links', () => {

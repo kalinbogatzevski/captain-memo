@@ -1,6 +1,7 @@
 import { Database } from 'bun:sqlite';
 import type { ChannelType, Document } from '../shared/types.ts';
 import { STOPWORDS } from './rerank.ts';
+import { readPaged } from '../shared/paged-read.ts';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS documents (
@@ -14,6 +15,8 @@ CREATE TABLE IF NOT EXISTS documents (
   metadata TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_documents_project_channel ON documents(project_id, channel);
+-- channelCount() walks this one entry per channel (/stats/lite, every ~10 s).
+CREATE INDEX IF NOT EXISTS idx_documents_channel ON documents(channel);
 
 CREATE TABLE IF NOT EXISTS skills (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -240,6 +243,7 @@ export class MetaStore {
     this.db = new Database(path, opts?.readonly ? { readonly: true } : undefined);
     if (!opts?.readonly) {
       this.db.exec('PRAGMA journal_mode = WAL;');
+      this.db.exec('PRAGMA synchronous = NORMAL;');   // see observations-store.ts
       this.db.exec('PRAGMA foreign_keys = ON;');
       this.db.exec(SCHEMA);
     }
@@ -526,6 +530,47 @@ export class MetaStore {
       chunk: { ...chunkRow, metadata: JSON.parse(chunkRow.metadata) },
       document: { ...docRow, metadata: JSON.parse(docRow.metadata) },
     };
+  }
+
+  totalChunks(): number {
+    return (this.db.query('SELECT COUNT(*) AS n FROM chunks').get() as { n: number }).n;
+  }
+
+  /** How many channels hold documents. /stats/lite used Object.keys(stats().by_channel).length, a
+   *  chunks×documents GROUP BY that held the writer 700 ms every ~10 s; this seeks idx_documents_channel
+   *  once per distinct channel: 0.06 ms on 225k documents (2026-09-29). */
+  channelCount(): number {
+    return (this.db
+      .query(
+        `WITH RECURSIVE c(ch) AS (
+           SELECT MIN(channel) FROM documents
+           UNION ALL
+           SELECT (SELECT MIN(channel) FROM documents WHERE channel > c.ch) FROM c WHERE c.ch IS NOT NULL
+         ) SELECT COUNT(ch) AS n FROM c`,
+      )
+      .get() as { n: number }).n;
+  }
+
+  /** chunk_id → observation id for every observation chunk, by the document's source path
+   *  (observation:<project>:<id>). NOT parsed from the chunk id: claude-mem imports carry
+   *  observation:<n>:… chunk ids whose <n> is not ours. Paged: this replaced a getChunkById per
+   *  chunk, 228k of them, 31.6 s synchronous on the writer. */
+  async observationIdsByChunk(yieldToLoop?: () => Promise<void>): Promise<Map<string, number>> {
+    const q = this.db.query(
+      `SELECT chunks.id AS id, chunks.chunk_id AS chunk_id, documents.source_path AS source_path
+         FROM chunks JOIN documents ON documents.id = chunks.document_id
+        WHERE chunks.id > ? ORDER BY chunks.id LIMIT ?`,
+    );
+    const out = new Map<string, number>();
+    const rows = await readPaged(
+      (after, limit) => q.all(after, limit) as Array<{ id: number; chunk_id: string; source_path: string }>,
+      r => r.id, yieldToLoop,
+    );
+    for (const r of rows) {
+      const m = /^observation:[^:]*:(\d+)$/.exec(r.source_path);
+      if (m) out.set(r.chunk_id, Number(m[1]));
+    }
+    return out;
   }
 
   stats(): { total_chunks: number; by_channel: Record<string, number> } {

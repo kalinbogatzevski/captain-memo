@@ -24,23 +24,23 @@ const add = (s: ObservationsStore, title: string, createdAt: number) =>
     created_at_epoch: createdAt, branch: null, work_tokens: 1, stored_tokens: 1,
   } as never);
 
-test('finds a version pair even when NEITHER row has ever been surfaced', () => {
+test('finds a version pair even when NEITHER row has ever been surfaced', async () => {
   const { s, dir } = store();
   add(s, 'Bump captain-memo version to 0.1.1', 1000);
   add(s, 'Bump captain-memo version to 0.1.4', 2000);
-  const out = s.supersedeCandidateWindow(500);
+  const out = await s.supersedeCandidateWindow(500);
   expect(out.length).toBe(1);
   expect(out[0]!.older.version).toBe('0.1.1');
   expect(out[0]!.newer.version).toBe('0.1.4');
   s.close(); rmSync(dir, { recursive: true, force: true });
 });
 
-test('finds a pair whose rows are far apart in time (a chain spanning months)', () => {
+test('finds a pair whose rows are far apart in time (a chain spanning months)', async () => {
   const { s, dir } = store();
   add(s, 'Bump captain-memo version to 0.1.5', 1_000_000);
   for (let i = 0; i < 60; i++) add(s, 'unrelated note ' + i, 1_500_000 + i);
   add(s, 'Bump captain-memo version to 0.27.25', 9_000_000);
-  const out = s.supersedeCandidateWindow(10);   // a small window must not hide the pair
+  const out = await s.supersedeCandidateWindow(10);   // a small window must not hide the pair
   expect(out.length).toBe(1);
   s.close(); rmSync(dir, { recursive: true, force: true });
 });
@@ -48,19 +48,19 @@ test('finds a pair whose rows are far apart in time (a chain spanning months)', 
 // A calendar-style version parses as semver: 2026.0512.24 reads as 2026.512.24 and dominates a real
 // v3.12. Without a creation-order check the machine would mark the NEWER note stale — the one failure
 // this whole feature must never produce.
-test('refuses a pair whose "older" version was actually written LATER', () => {
+test('refuses a pair whose "older" version was actually written LATER', async () => {
   const { s, dir } = store();
   add(s, 'Bump ERP_DEPLOY_VERSION to 2026.0512.24', 5000);   // higher semver, written FIRST
   add(s, 'Bump ERP_DEPLOY_VERSION to 3.12', 9000);           // lower semver, written LATER
-  expect(s.supersedeCandidateWindow(500)).toEqual([]);
+  expect(await s.supersedeCandidateWindow(500)).toEqual([]);
   s.close(); rmSync(dir, { recursive: true, force: true });
 });
 
-test('still emits when version order and creation order agree', () => {
+test('still emits when version order and creation order agree', async () => {
   const { s, dir } = store();
   add(s, 'Bump thing to 1.0.0', 1000);
   add(s, 'Bump thing to 2.0.0', 5000);
-  expect(s.supersedeCandidateWindow(500).length).toBe(1);
+  expect((await s.supersedeCandidateWindow(500)).length).toBe(1);
   s.close(); rmSync(dir, { recursive: true, force: true });
 });
 
@@ -68,17 +68,17 @@ test('still emits when version order and creation order agree', () => {
 // linked. linkSupersede is idempotent, so nothing was corrupted — but the sweep re-proposed the same
 // finished work every hour, and each re-proposal costs a vector read and a cosine compare in the
 // slice. Harmless while the pass was opt-in and effectively nobody ran it; now it is on by default.
-test('a pair already linked is not proposed again — the sweep converges', () => {
+test('a pair already linked is not proposed again — the sweep converges', async () => {
   const { s, dir } = store();
   const older = add(s, 'Bump thing to 1.0.0', 1000);
   const newer = add(s, 'Bump thing to 2.0.0', 5000);
-  expect(s.supersedeCandidateWindow(500).length).toBe(1);   // first sweep sees it
+  expect((await s.supersedeCandidateWindow(500)).length).toBe(1);   // first sweep sees it
 
   s.linkSupersede(older, newer, {
     entityKey: 'thing', olderVersion: '1.0.0', newerVersion: '2.0.0', atEpoch: 6000,
   });
 
-  expect(s.supersedeCandidateWindow(500)).toEqual([]);      // second sweep has nothing left to do
+  expect(await s.supersedeCandidateWindow(500)).toEqual([]);      // second sweep has nothing left to do
   s.close(); rmSync(dir, { recursive: true, force: true });
 });
 
@@ -86,13 +86,13 @@ test('a pair already linked is not proposed again — the sweep converges', () =
 // operator lowering CAPTAIN_MEMO_QM_DEDUP_WINDOW to bound supersede's work got no effect at all.
 // Safe to honour only because of the convergence fix above: without it, capping would permanently
 // starve whichever partitions sorted last, since finished pairs never left the candidate set.
-test('windowLimit caps the number of emitted pairs', () => {
+test('windowLimit caps the number of emitted pairs', async () => {
   const { s, dir } = store();
   for (let i = 1; i <= 6; i++) {
     add(s, `Bump package-${i} to 1.0.0`, 1000 + i);
     add(s, `Bump package-${i} to 2.0.0`, 5000 + i);
   }
-  expect(s.supersedeCandidateWindow(500).length).toBe(6);   // uncapped: every pair
-  expect(s.supersedeCandidateWindow(2).length).toBe(2);     // capped
+  expect((await s.supersedeCandidateWindow(500)).length).toBe(6);   // uncapped: every pair
+  expect((await s.supersedeCandidateWindow(2)).length).toBe(2);     // capped
   s.close(); rmSync(dir, { recursive: true, force: true });
 });

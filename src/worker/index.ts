@@ -1377,6 +1377,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 
   // Shared representative-vector accessor: centroid of an observation's chunk vectors.
   // Used by both QM auto-dedup and the P3 supersede sweep.
+  /** One event-loop turn, for the passes' paged reads (shared/paged-read.ts). */
+  const breathe = (): Promise<void> => new Promise<void>(r => setImmediate(r));
   const repVec = (obsId: number): Float32Array | null => {
     const doc = meta.getDocument(`observation:${opts.projectId}:${obsId}`);
     if (!doc) return null;
@@ -1393,15 +1395,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
    * because a row's meaning is spread over its chunks and any of them may carry the cluster.
    * Rebuilt per pass: clusters move as the index grows, and the read is a single scan.
    */
-  const clusterObservationIds = (): number[][] => {
+  const clusterObservationIds = async (yieldToLoop: () => Promise<void>): Promise<number[][]> => {
+    const obsByChunk = await meta.observationIdsByChunk(yieldToLoop);
     const out: number[][] = [];
-    for (const chunkIds of vector.clusterMembership(collectionName).values()) {
+    for (const chunkIds of (await vector.clusterMembership(collectionName, yieldToLoop)).values()) {
       const ids = new Set<number>();
       for (const cid of chunkIds) {
-        const found = meta.getChunkById(cid);
-        if (!found) continue;
-        const m = /^observation:[^:]*:(\d+)$/.exec(found.document.source_path);
-        if (m) ids.add(Number(m[1]));
+        const id = obsByChunk.get(cid);
+        if (id !== undefined) ids.add(id);
       }
       if (ids.size > 1) out.push([...ids]);
     }
@@ -1430,9 +1431,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // faster AND more, because cosine runs inside the loop instead of rejecting a
         // title-greedy grouping afterwards. Per-row KNN was built, measured at ~107 ms a query,
         // and rejected: slower than what it replaced.
-        candidates: () => findDedupGroupsByCluster({
-          rows: qmStore.allDedupCandidateRows(),
-          clusters: clusterObservationIds(),
+        candidates: async () => findDedupGroupsByCluster({
+          rows: await qmStore.allDedupCandidateRows(breathe),
+          clusters: await clusterObservationIds(breathe),
           representativeVector: repVec,
           cosineThreshold: qmConfig.dedupCosineThreshold,
           titleThreshold: qmConfig.dedupTitleThreshold,
@@ -1488,7 +1489,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       if (qmSupersedePromise) return;
       const startedAt = Math.floor(Date.now() / 1000);
       qmSupersedePromise = runQmSupersedeSlice({
-        candidates: () => qmStore.supersedeCandidateWindow(qmConfig.supersedeWindow),
+        candidates: () => qmStore.supersedeCandidateWindow(qmConfig.supersedeWindow, breathe),
         representativeVector: repVec,
         isProtected: (id) => qmStore.isProtected(id),
         linkSupersede: (older, newer, m) => qmStore.linkSupersede(older, newer, m),

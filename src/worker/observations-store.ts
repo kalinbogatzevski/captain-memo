@@ -8,6 +8,7 @@ import { mergeBlocked } from '../shared/merge-guard.ts';
 import { parseVersion, compareVersion } from './version-parse.ts';
 import { asOriginAgent } from '../shared/origin-agent.ts';
 import type { OriginAgent } from '../shared/origin-agent.ts';
+import { readPaged, PAGE_ROWS } from '../shared/paged-read.ts';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS observations (
@@ -350,6 +351,27 @@ export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_promotion_shadow_verdict ON promotion_shadow(verdict)');
     },
   },
+  {
+    // v24 — the idle passes' reads, which run ON the writer and stalled every request behind them.
+    // Measured on the 209k-row reference corpus (316 MB), 2026-09-29:
+    //   lastActivityEpoch        1 006 ms → 0.0 ms   (two index MAXes instead of a full scan)
+    //   sameSessionCandidateRows 3 927 ms → ~26 ms SQL (index-only; ~180 ms with building the JS rows)
+    //   themeCandidateRows         557 ms → ~26 ms SQL
+    // The from_* columns were added last, after the large text columns, so reading them from the table
+    // walks each row's overflow pages; idx_obs_surfaced_rank carries every column both reads return.
+    version: 24,
+    name: 'add_idle_pass_indexes',
+    up: (db) => {
+      db.exec('CREATE INDEX IF NOT EXISTS idx_obs_created ON observations(created_at_epoch)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_obs_surfaced_at ON observations(last_surfaced_at) WHERE last_surfaced_at IS NOT NULL');
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_obs_surfaced_session ON observations(session_id)
+                 WHERE archived = 0 AND (from_auto + from_search + from_drill) > 0`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_obs_surfaced_rank ON observations(
+                 COALESCE(last_surfaced_at, created_at_epoch) DESC, id DESC, session_id, type, title, project_id, branch,
+                 created_at_epoch, from_auto, from_search, from_drill, archived, last_surfaced_at)
+                 WHERE archived = 0 AND (from_auto + from_search + from_drill) > 0`);
+    },
+  },
 ];
 
 export type NewObservation = Omit<
@@ -613,6 +635,9 @@ export class ObservationsStore {
     this.db.exec('PRAGMA busy_timeout = 5000;');
     if (!opts?.readonly) {
       this.db.exec('PRAGMA journal_mode = WAL;');
+      // WAL + NORMAL: commits stop waiting on an fsync (the WAL is synced at checkpoint). No corruption risk;
+      // an OS crash or power cut can lose the last commits, an app crash cannot. Insert 5.5 → 0.7 ms (2026-09-29).
+      this.db.exec('PRAGMA synchronous = NORMAL;');
       this.db.exec(SCHEMA);
       applyMigrations(this.db, OBSERVATIONS_STORE_MIGRATIONS);
     }
@@ -1410,13 +1435,16 @@ export class ObservationsStore {
    * already built, so the population costs a single scan rather than a cross-product. Measured
    * 2026-08-11: 130,555 rows read in 456 ms, walked in 28.5 s, 882 groups / 1,846 rows folded.
    */
-  allDedupCandidateRows(): Array<RawTopRow & { project_id: string; branch: string | null }> {
-    return this.db
-      .query(
-        `SELECT id, type, title, project_id, branch, from_auto, from_search, from_drill
-           FROM observations WHERE archived = 0`,
-      )
-      .all() as Array<RawTopRow & { project_id: string; branch: string | null }>;
+  allDedupCandidateRows(yieldToLoop?: () => Promise<void>): Promise<Array<RawTopRow & { project_id: string; branch: string | null }>> {
+    // Paged (shared/paged-read.ts): one .all() of 201k rows held the writer for 2.4 s.
+    const q = this.db.query(
+      `SELECT id, type, title, project_id, branch, from_auto, from_search, from_drill
+         FROM observations WHERE archived = 0 AND id > ? ORDER BY id LIMIT ?`,
+    );
+    return readPaged(
+      (after, limit) => q.all(after, limit) as Array<RawTopRow & { project_id: string; branch: string | null }>,
+      r => r.id, yieldToLoop,
+    );
   }
 
   private surfacedWindowRows(
@@ -1458,19 +1486,28 @@ export class ObservationsStore {
    *  every hour the sweep re-proposed the same finished work and paid a vector read plus a cosine compare
    *  per re-proposal. An already-superseded row is never the newest version of its entity, so excluding
    *  it can never hide a head — it only stops us re-deciding what we already decided. */
-  private versionCandidateRows(): Array<{ id: number; title: string; project_id: string; branch: string | null; created_at_epoch: number }> {
-    return this.db
-      .query(
-        `SELECT id, title, project_id, branch, created_at_epoch
-           FROM observations
-          WHERE archived = 0 AND superseded_by IS NULL
-          ORDER BY created_at_epoch DESC`,
-      )
-      .all() as Array<{ id: number; title: string; project_id: string; branch: string | null; created_at_epoch: number }>;
+  private async versionCandidateRows(yieldToLoop?: () => Promise<void>): Promise<Array<{ id: number; title: string; project_id: string; branch: string | null; created_at_epoch: number }>> {
+    type Row = { id: number; title: string; project_id: string; branch: string | null; created_at_epoch: number };
+    // Paged by id (one .all() held the writer 2.0 s), then put back in the newest-first order it had.
+    const q = this.db.query(
+      `SELECT id, title, project_id, branch, created_at_epoch
+         FROM observations
+        WHERE archived = 0 AND superseded_by IS NULL AND id > ? ORDER BY id LIMIT ?`,
+    );
+    return readPaged((after, limit) => q.all(after, limit) as Row[], r => r.id, yieldToLoop);
   }
 
-  supersedeCandidateWindow(windowLimit: number): SupersedeCandidate[] {
-    const rows = this.versionCandidateRows();
+  async supersedeCandidateWindow(windowLimit: number, yieldToLoop?: () => Promise<void>): Promise<SupersedeCandidate[]> {
+    // Parse first, with a yield every PAGE_ROWS rows: ~2% of titles carry a version, and parsing all
+    // 200k in one go held the writer ~1 s. Only the parsed rows are then sorted back newest-first.
+    const rows: Array<{ id: number; project_id: string; branch: string | null; created_at_epoch: number; pv: NonNullable<ReturnType<typeof parseVersion>> }> = [];
+    let n = 0;
+    for (const r of await this.versionCandidateRows(yieldToLoop)) {
+      const pv = parseVersion(r.title);
+      if (pv) rows.push({ id: r.id, project_id: r.project_id, branch: r.branch, created_at_epoch: r.created_at_epoch, pv });
+      if (++n % PAGE_ROWS === 0) await yieldToLoop?.();
+    }
+    rows.sort((a, b) => b.created_at_epoch - a.created_at_epoch || b.id - a.id);
     const partitions = new Map<string, typeof rows>();
     for (const r of rows) {
       const key = JSON.stringify([r.project_id, r.branch]);
@@ -1482,8 +1519,7 @@ export class ObservationsStore {
     for (const bucket of partitions.values()) {
       const byEntity = new Map<string, Array<{ id: number; version: import('./version-parse.ts').SemVer; created_at_epoch: number }>>();
       for (const r of bucket) {
-        const pv = parseVersion(r.title);
-        if (!pv) continue;
+        const pv = r.pv;
         const arr = byEntity.get(pv.entityKey);
         const item = { id: r.id, version: pv.version, created_at_epoch: r.created_at_epoch };
         if (arr) arr.push(item);
@@ -1597,12 +1633,14 @@ export class ObservationsStore {
                 from_auto, from_search, from_drill
            FROM observations
           WHERE archived = 0 ${surfacedGate}
-            AND session_id IN (
+            -- The unary + keeps the planner off idx_obs_session for this term, so the outer read
+            -- walks idx_obs_surfaced_rank (v24) in order, index-only: 3.9 s → ~26 ms.
+            AND +session_id IN (
               SELECT session_id FROM observations
                WHERE archived = 0 ${surfacedGate}
                GROUP BY session_id HAVING COUNT(*) > 1
             )
-          ORDER BY COALESCE(last_surfaced_at, created_at_epoch) DESC
+          ORDER BY COALESCE(last_surfaced_at, created_at_epoch) DESC, id DESC
           LIMIT ?`,
       )
       .all(limit) as Array<{
@@ -1623,7 +1661,10 @@ export class ObservationsStore {
   lastActivityEpoch(): number | null {
     const row = this.db
       .query(
-        `SELECT MAX(MAX(COALESCE(last_surfaced_at, 0), created_at_epoch)) AS t FROM observations`,
+        // Two index MAXes (v24), not a scan of every row: 1 006 ms → 0.0 ms. Scalar max() is NULL
+        // when the table is empty, so a fresh install still reads as unknown.
+        `SELECT MAX(COALESCE((SELECT MAX(last_surfaced_at) FROM observations WHERE last_surfaced_at IS NOT NULL), 0),
+                    (SELECT MAX(created_at_epoch) FROM observations)) AS t`,
       )
       .get() as { t: number | null } | undefined;
     return row?.t ?? null;
@@ -1664,7 +1705,7 @@ export class ObservationsStore {
            FROM observations
           WHERE archived = 0 ${themeGate}
             AND session_id != 'theme'
-          ORDER BY COALESCE(last_surfaced_at, created_at_epoch) DESC
+          ORDER BY COALESCE(last_surfaced_at, created_at_epoch) DESC, id DESC
           LIMIT ?`,
       )
       .all(limit) as Array<{

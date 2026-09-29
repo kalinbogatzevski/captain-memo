@@ -42,6 +42,7 @@ export class ObservationQueue {
   constructor(path: string) {
     this.db = new Database(path);
     this.db.exec('PRAGMA journal_mode = WAL;');
+    this.db.exec('PRAGMA synchronous = NORMAL;');   // see observations-store.ts
     this.db.exec(SCHEMA);
     applyMigrations(this.db, OBSERVATION_QUEUE_MIGRATIONS);
     // Startup recovery: rows stuck in 'processing' from a worker crash should

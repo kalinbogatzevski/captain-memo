@@ -7,6 +7,26 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.45.0] — 2026-09-29
+
+### Fixed
+
+- **The worker no longer freezes while it tidies memory.** The background passes ran their database reads in one
+  blocking step on the worker's single writer, so every request queued behind them: a 70-second freeze once an hour,
+  5-second stalls every minute and 4-second ones every ten, each timing out calls that go to the writer. The hourly
+  dedup looked up 228,000 chunks one at a time (31.6 s) and read every vector to learn its cluster (7.9 s); the
+  once-a-minute index sweep searched every vector for unassigned ones (5.3 s, finding none). These reads now go through
+  indexes and come in small pages with a pause between them, so no single step holds the writer for more than about
+  20 ms. Measured on a 209,000-observation store: the idle-pass candidate reads went from 3.9 s to about 0.2 s, the
+  last-activity check from 1 s to under 2 ms, and the corpus channel count from 0.7 s to 0.06 ms.
+
+### Changed
+
+- **Faster writes.** The databases now commit without waiting for the disk each time (SQLite's `synchronous = NORMAL`,
+  its recommended setting in WAL mode): an observation insert went from 5.5 ms to 0.7 ms. This cannot corrupt a
+  database, and an application crash loses nothing; an OS crash or power cut can lose the last few commits.
+- A one-time migration (v24) adds the indexes on first start; on the reference store that takes about 10 s.
+
 ## [0.44.14] — 2026-09-29
 
 ### Security

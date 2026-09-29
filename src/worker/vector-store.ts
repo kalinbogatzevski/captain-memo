@@ -1,6 +1,7 @@
 import { Database } from 'bun:sqlite';
 import { ensureExtensionCapableSqlite, isExtensionLoadingUnsupported, MACOS_SQLITE_REMEDY } from '../shared/sqlite-extensions.ts';
 import * as sqliteVec from 'sqlite-vec';
+import { readPaged } from '../shared/paged-read.ts';
 import { DEFAULT_IVF_CONFIG, nearestCentroid, nearestCentroids, type IvfConfig, type Centroid } from './ivf.ts';
 
 export interface VectorStoreOptions {
@@ -148,10 +149,48 @@ export class VectorStore {
     this.centroidCacheTtlMs = opts.centroidCacheTtlMs ?? 30_000;
     if (!opts.readonly) {
       this.db.exec('PRAGMA journal_mode = WAL;');
+      this.db.exec('PRAGMA synchronous = NORMAL;');   // see observations-store.ts
       this.db.exec(SCHEMA.replace(/__DIM__/g, String(opts.dimension))
         .replace(/__CHUNK__/g, String(VEC_CHUNK_SIZE)));
       this.db.exec(SEED_SEQ); // unchanged from Task 2 — keep this line, don't drop it
+      this.ensureShadowIndexes();
     }
+  }
+
+  /** Indexes on sqlite-vec's plain shadow tables, for the sweep's reads by cluster (shadowIdsInCluster).
+   *  sqlite-vec never reads them; SQLite keeps them current on its writes. A table rebuild drops them,
+   *  so rebuildChunkLayout calls this again. A shadow layout this code does not know is left alone. */
+  private ensureShadowIndexes(): void {
+    try {
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_vec_chunks_p_rowids_chunk ON vec_chunks_p_rowids(chunk_id)');
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_vec_chunks_p_chunks_partition ON vec_chunks_p_chunks(partition00)');
+    } catch { /* unknown shadow layout: the reads fall back to the vec0 scan */ }
+  }
+
+  /** Up to `limit` vector ids (chunk ids) whose cluster is (or, `inCluster` false, is not) `clusterId`,
+   *  off the shadow tables, or null when their layout is unknown. A plain vec0 SELECT on cluster_id does
+   *  not narrow by partition: `WHERE cluster_id = -1` walked every vector, 5.3 s on the writer every
+   *  60 s sweep tick to find nothing on a converged index; this is ~0.1 ms (2026-09-29). */
+  private shadowIdsInCluster(clusterId: number, inCluster: boolean, limit: number): string[] | null {
+    try {
+      // CROSS JOIN keeps the planner on the partition index; the other order scans every rowid.
+      return (this.db
+        .query(`SELECT r.id AS id FROM vec_chunks_p_chunks c
+                  CROSS JOIN vec_chunks_p_rowids r ON r.chunk_id = c.chunk_id
+                 WHERE c.partition00 ${inCluster ? '=' : '!='} ? LIMIT ?`)
+        .all(clusterId, limit) as Array<{ id: string }>).map(r => r.id);
+    } catch { return null; }
+  }
+
+  /** vec0 rows by primary key, one lookup each: an IN list over vec0 scans the table again (1.5 s for 64). */
+  private vecRowsById(ids: string[]): Array<{ chunk_id: string; embedding: Uint8Array; cluster_id: number }> {
+    const q = this.db.query('SELECT chunk_id, embedding, cluster_id FROM vec_chunks_p WHERE chunk_id = ?');
+    const out: Array<{ chunk_id: string; embedding: Uint8Array; cluster_id: number }> = [];
+    for (const id of ids) {
+      const r = q.get(id) as { chunk_id: string; embedding: Uint8Array; cluster_id: number } | null;
+      if (r) out.push(r);
+    }
+    return out;
   }
 
   /**
@@ -217,7 +256,32 @@ export class VectorStore {
    * The collection filter is applied in JS rather than as a JOIN: vec_chunks_p is a vec0 virtual
    * table and joining it is not reliably planned, whereas both reads are a single scan each.
    */
-  clusterMembership(collection: string): Map<number, string[]> {
+  async clusterMembership(collection: string, yieldToLoop?: () => Promise<void>): Promise<Map<number, string[]>> {
+    // sqlite-vec keeps the partition key in its own plain shadow tables: _rowids maps each vector to
+    // its storage chunk, _chunks holds that chunk's partition value. Reading them directly gives the
+    // same pairs as the vec0 scan below (254 790 of 254 790, sqlite-vec 0.1.9) in pages, where the
+    // vec0 scan also reads every embedding: 7.9 s synchronous on the writer. A layout this code does
+    // not know (another sqlite-vec version) throws, and the proven scan answers instead.
+    try {
+      const q = this.db.query(
+        `SELECT r.rowid AS rid, c.partition00 AS cluster_id, r.id AS chunk_id
+           -- CROSS JOIN fixes the order: driven from vec_chunk_meta the planner sorted every page (~1 s each).
+           FROM vec_chunks_p_rowids r
+           CROSS JOIN vec_chunks_p_chunks c ON c.chunk_id = r.chunk_id
+           CROSS JOIN vec_chunk_meta m ON m.collection_name = ? AND m.chunk_id = r.id
+          WHERE r.rowid > ? ORDER BY r.rowid LIMIT ?`,
+      );
+      const rows = await readPaged(
+        (after, limit) => q.all(collection, after, limit) as Array<{ rid: number; cluster_id: number; chunk_id: string }>,
+        r => r.rid, yieldToLoop,
+      );
+      const out = new Map<number, string[]>();
+      for (const r of rows) {
+        const bucket = out.get(r.cluster_id);
+        if (bucket) bucket.push(r.chunk_id); else out.set(r.cluster_id, [r.chunk_id]);
+      }
+      return out;
+    } catch { /* unknown shadow layout: fall through to the vec0 scan */ }
     const mine = new Set<string>();
     for (const r of this.db
       .query(`SELECT chunk_id FROM vec_chunk_meta WHERE collection_name = ?`)
@@ -311,6 +375,7 @@ export class VectorStore {
       this.db.exec(`DROP TABLE vec_chunks_p_relay`);
     });
     tx();
+    this.ensureShadowIndexes();
     return { moved };
   }
 
@@ -517,7 +582,8 @@ export class VectorStore {
     // until after the join. Taking candidates from the vec table FIRST bounds the work to `limit`
     // rows, and the collection check is then a prefix match on the (collection_name, chunk_id)
     // primary key over exactly those ids.
-    const candidates = this.db
+    const ids = this.shadowIdsInCluster(UNCLUSTERED, true, limit);
+    const candidates = ids ? this.vecRowsById(ids) : this.db
       .query(`SELECT chunk_id, embedding FROM vec_chunks_p WHERE cluster_id = ${UNCLUSTERED} LIMIT ?`)
       .all(limit) as Array<{ chunk_id: string; embedding: Uint8Array }>;
     return this.filterToCollection(collection, candidates);
@@ -570,7 +636,8 @@ export class VectorStore {
   ): Array<{ chunkId: string; embedding: Float32Array; clusterId: number }> {
     // Two-step, as above. This one also needs each row's current cluster, so it keeps its own
     // map rather than going through filterToCollection.
-    const candidates = this.db
+    const ids = this.shadowIdsInCluster(UNCLUSTERED, false, limit);
+    const candidates = ids ? this.vecRowsById(ids) : this.db
       .query(`SELECT chunk_id, embedding, cluster_id FROM vec_chunks_p
                WHERE cluster_id != ${UNCLUSTERED} LIMIT ?`)
       .all(limit) as Array<{ chunk_id: string; embedding: Uint8Array; cluster_id: number }>;

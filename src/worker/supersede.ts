@@ -13,7 +13,7 @@ import type { SupersedeCandidate } from './observations-store.ts';
 const HEARTBEAT_EVERY = 32;
 
 export interface QmSupersedeDeps {
-  candidates: () => SupersedeCandidate[];
+  candidates: () => SupersedeCandidate[] | Promise<SupersedeCandidate[]>;
   representativeVector: (obsId: number) => Float32Array | null;
   isProtected: (obsId: number) => boolean;
   linkSupersede: (
@@ -39,7 +39,7 @@ export async function runQmSupersedeSlice(deps: QmSupersedeDeps): Promise<QmSupe
   if (!deps.cfg.enabled || !deps.cfg.supersedeEnabled) return res; // off by default
   const atEpoch = deps.now();
   let seen = 0;
-  for (const cand of deps.candidates()) {
+  for (const cand of await deps.candidates()) {
     if (seen > 0 && seen % HEARTBEAT_EVERY === 0) {
       await deps.yieldToLoop();
       if (deps.shouldAbort()) { res.aborted = true; return res; }
