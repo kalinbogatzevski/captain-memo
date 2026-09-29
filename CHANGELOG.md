@@ -7,6 +7,38 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.44.13] — 2026-09-29
+
+### Security
+
+- **More credential shapes are redacted from recalled memory.** The redactor now also catches:
+  - `.env` and config secrets under prefixed or UPPERCASE names (`DB_PASSWORD=`, `MYSQL_PWD=`,
+    `export VOYAGE_API_KEY=`);
+  - quoted keys in JSON (also JSON inside a JSON string), PHP and Python (`"password": "…"`,
+    `$cfg['db']['password'] = '…'`, `define('DB_PASSWORD', '…')`, `os.environ["API_KEY"] = …`);
+  - backticked values (`` password: `…` ``), markdown bold keys (`**Password:**`), and spaced names (`API key: …`,
+    `Secret access key: …`);
+  - an `Authorization` header with any scheme or none, and a custom `X-…-Test` header;
+  - passwords on command lines (`mysql -pSECRET`, `sshpass -p`, `curl -u user:SECRET`) and in `redis://:password@host`;
+  - bare Voyage `pa-` keys and more GitLab token kinds (`glptt-`, `glimt-`, `glffct-`, `glwt-`, `glrtr-`);
+  - a password or token written as prose ("the password for admin is …", "pw for the OLT: …", a quoted or
+    backticked value);
+  - PGP, SSH2, PuTTY (`.ppk`) and OpenVPN private keys;
+  - private keys split across chunks: a chunk holding only the BEGIN line, only the tail and END line, or only key
+    lines, including quoted (`> `), escaped (`\r\n`, `\/`) and markdown hard-broken lines.
+
+  Ordinary text is left alone:
+  - the word "password";
+  - placeholders (`$DB_PASSWORD`, `${CI_JOB_TOKEN}`, `<your-password>`, `sk-...`, `YOUR_API_KEY_HERE`);
+  - where a secret lives rather than the secret: a file path, a URL or `op://` reference, a token endpoint,
+    `${{ secrets.X }}`, `$(cat …)`;
+  - code: references, calls and type names (`config.apiKey`, `u2.password`, `getToken(1)`, `password: string`);
+  - test verdicts (`PASS: price set`), env-var names, constants (`token: TOKEN`) and sudoers `NOPASSWD:`;
+  - algorithm names ("the password is SHA256-hashed", `Signing key: RS256`) and kebab slugs (`sk-learn-…`);
+  - the prose between two code spans, and a BEGIN line quoted in prose or alone in a code fence.
+
+  Every rule runs in linear time on hostile input, so a peer's message cannot stall recall.
+
 ## [0.44.12] — 2026-09-29
 
 ### Security
