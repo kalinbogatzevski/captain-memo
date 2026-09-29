@@ -7,6 +7,18 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.45.4] — 2026-09-30
+
+### Fixed
+
+- **No long stall ten minutes after a restart.** The first theme pass after the worker starts loaded every
+  observation (201,000 rows, which it never used) and built its chunk map with a JSON scan over every chunk, in one
+  block: 15 s on the reference store. It now skips the observations and reads the map in pages; the longest hold is
+  about 0.15 s.
+- **Theme evidence no longer mixes up imported memories.** Chunks imported from claude-mem carry that tool's own
+  observation numbers, and the evidence map credited their recalls to whichever of our observations had the same
+  number (12,797 chunks on the reference store). They are now matched by their document, as everywhere else.
+
 ## [0.45.3] — 2026-09-29
 
 ### Fixed

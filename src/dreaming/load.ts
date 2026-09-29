@@ -58,6 +58,10 @@ function dataDir(): string {
 export async function loadDreamInputs(
   sinceEpoch: number,
   projectId?: string,
+  /** The worker's theme pass reads only coOccurrence. It passes the chunk → observation map it already builds
+   *  paged (MetaStore.observationIdsByChunk) and skips the observation list: on the reference store these two
+   *  reads were 12.8 s and 3.7 s, synchronous, on the writer (2026-09-29). */
+  opts?: { docToObs?: Map<string, number>; skipObservations?: boolean },
 ): Promise<DreamInputs> {
   const dir = dataDir();
   const obsPath = join(dir, 'observations.db');
@@ -68,8 +72,8 @@ export async function loadDreamInputs(
     throw new Error(`observations.db not found at ${obsPath}`);
   }
 
-  const observations = readObservations(obsPath, sinceEpoch, projectId);
-  const docToObs = existsSync(metaPath) ? readDocToObsMap(metaPath) : new Map<string, number>();
+  const observations = opts?.skipObservations ? [] : readObservations(obsPath, sinceEpoch, projectId);
+  const docToObs = opts?.docToObs ?? (existsSync(metaPath) ? readDocToObsMap(metaPath) : new Map<string, number>());
   const coOccurrence = existsSync(auditPath)
     ? await buildCoOccurrence(auditPath, docToObs, sinceEpoch, projectId)
     : new Map<string, number>();

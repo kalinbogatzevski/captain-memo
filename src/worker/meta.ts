@@ -562,14 +562,15 @@ export class MetaStore {
         WHERE chunks.id > ? ORDER BY chunks.id LIMIT ?`,
     );
     const out = new Map<string, number>();
-    const rows = await readPaged(
-      (after, limit) => q.all(after, limit) as Array<{ id: number; chunk_id: string; source_path: string }>,
-      r => r.id, yieldToLoop,
-    );
-    for (const r of rows) {
-      const m = /^observation:[^:]*:(\d+)$/.exec(r.source_path);
-      if (m) out.set(r.chunk_id, Number(m[1]));
-    }
+    // Mapped page by page, inside the read: a loop over all 228k rows after it was one ~0.8 s block of its own.
+    await readPaged((after, limit) => {
+      const rows = q.all(after, limit) as Array<{ id: number; chunk_id: string; source_path: string }>;
+      for (const r of rows) {
+        const m = /^observation:[^:]*:(\d+)$/.exec(r.source_path);
+        if (m) out.set(r.chunk_id, Number(m[1]));
+      }
+      return rows;
+    }, r => r.id, yieldToLoop);
     return out;
   }
 

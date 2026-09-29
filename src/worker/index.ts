@@ -1725,7 +1725,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // 2026-08-10: 20,321 co-occurrence pairs instead of 49,395, so clusters in the busiest
         // projects were scored on evidence that excluded their own project's recalls. Unfiltered:
         // 18 clusters instead of 16, and the new ones are erp-platform's.
-        const dream = await loadDreamInputs(0, undefined).catch(() => { coRetrievalFailed = true; return null; });
+        // docToObs from document paths, paged: the json_extract map in load.ts also mapped 12,797 claude-mem import
+        // chunks (observation:<their id>:…) onto OUR observation of the same number, crediting their recalls to
+        // unrelated rows.
+        const dream = await meta.observationIdsByChunk(breathe)
+          .then(docToObs => loadDreamInputs(0, undefined, { docToObs, skipObservations: true }))
+          .catch(() => { coRetrievalFailed = true; return null; });
         const surfaces = themeStore.surfaceCounts();
         // Evidence adjacency, built once per pass from the same map coRetrieval reads. This is the
         // index that lets the clusterer walk the 44,100 pairs that could possibly be cluster edges
