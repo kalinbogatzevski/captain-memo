@@ -7,6 +7,13 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.44.12] — 2026-09-29
+
+### Security
+
+- **Dependency advisory cleared.** `ip-address`, pulled in through the MCP SDK's rate limiter, is raised to 10.7.2 for
+  two advisories in how it classifies IPv6 ranges (GHSA-rpw4-54j3-4h4q, GHSA-2vr4-cq9g-pvrc). `bun audit` is clean.
+
 ## [0.44.11] — 2026-09-29
 
 ### Security

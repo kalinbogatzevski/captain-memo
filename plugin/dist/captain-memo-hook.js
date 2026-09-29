@@ -1426,7 +1426,7 @@ import { homedir as homedir9 } from "os";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.44.11",
+  version: "0.44.12",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -1488,7 +1488,7 @@ var package_default = {
     "body-parser": "^2.3.0",
     "@hono/node-server": "^2.0.5",
     "fast-uri": "^3.1.6",
-    "ip-address": "^10.4.0"
+    "ip-address": "^10.7.2"
   },
   devDependencies: {
     "@types/bun": "^1.1.0",
