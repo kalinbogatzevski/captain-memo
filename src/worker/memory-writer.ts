@@ -1,3 +1,5 @@
+import { redactSecrets } from '../shared/redact-secrets.ts';
+import { createHash } from 'crypto';
 import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'fs';
 import { join, basename } from 'path';
 import { z } from 'zod';
@@ -112,17 +114,27 @@ export function resolveTargetDir(input: RememberInput, rememberDir: string): str
   return rememberDir;
 }
 
-/** Fill missing frontmatter via the LLM transport; never throw — fall back deterministically. */
+/** Fill missing frontmatter via the LLM transport; never throw — fall back deterministically.
+ *  No credential-shaped value goes into the frontmatter. Name, description and slug (the filename, so the doc_id and the
+ *  title) are labels that every search hit and the envelope carry; only the body is redacted on the way out, and
+ *  `get_full` still serves it whole. So the LLM and the fallback both get the body redacted (the fallback made its raw
+ *  first line the name and the slug), and a caller's name and description are redacted. A caller's slug is kept: it
+ *  names the file to update. */
 export async function fillFrontmatter(input: RememberInput, generate: SummarizerTransport): Promise<Frontmatter> {
-  const complete = input.name && input.description && input.slug;
+  const own = {
+    name: input.name && redactSecrets(input.name).text,
+    description: input.description && redactSecrets(input.description).text,
+  };
+  const complete = own.name && own.description && input.slug;
   if (complete) {
-    return { name: input.name!, description: input.description!, slug: input.slug!, type: input.type };
+    return { name: own.name!, description: own.description!, slug: input.slug!, type: input.type };
   }
+  const body = redactSecrets(input.body).text;
   try {
     const res = await generate({
       model: '', // transport resolves its own model chain
       system: FILL_SYSTEM,
-      user: `TYPE: ${input.type}\nBODY:\n${input.body}`,
+      user: `TYPE: ${input.type}\nBODY:\n${body}`,
       max_tokens: 400,
     });
     const text = res.content.find(c => c.type === 'text')?.text ?? '';
@@ -130,16 +142,21 @@ export async function fillFrontmatter(input: RememberInput, generate: Summarizer
     const json = JSON.parse(match ? match[0] : text);
     const parsed = FrontmatterSchema.parse({ ...json, type: json.type ?? input.type });
     return {
-      name: input.name ?? parsed.name,
-      description: input.description ?? parsed.description,
+      name: own.name ?? parsed.name,
+      description: own.description ?? parsed.description,
       slug: input.slug ?? parsed.slug,
       type: input.type,
     };
   } catch {
-    const fb = deterministicFrontmatter(input.body, input.type);
+    const fb = deterministicFrontmatter(body, input.type);
+    // Two secrets of one shape redact to one first line, so to one slug: a collision would fold the second memory into
+    // the first (mergeBody, no undo). The raw body's hash keeps them apart.
+    if (fb.slug !== deterministicFrontmatter(input.body, input.type).slug) {
+      fb.slug = `${fb.slug}-${createHash('sha256').update(input.body).digest('hex').slice(0, 8)}`;
+    }
     return {
-      name: input.name ?? fb.name,
-      description: input.description ?? fb.description,
+      name: own.name ?? fb.name,
+      description: own.description ?? fb.description,
       slug: input.slug ?? fb.slug,
       type: input.type,
     };

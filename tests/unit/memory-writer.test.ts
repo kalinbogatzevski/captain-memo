@@ -363,3 +363,37 @@ test('writeMemory — a filename collision still folds, and reports no near-dupl
   expect(embed).not.toHaveBeenCalled();
   rmSync(dir, { recursive: true, force: true });
 });
+
+// 2026-09-29: with no summarizer configured the fallback made the body's raw first line the name and the slug and its
+// first 280 chars the description: chunk metadata and the filename (doc_id, the envelope title), which the snippet's
+// redaction never touches. slugify turns '=' into '-', so the kv rule no longer matched the filename. Made-up secrets.
+test('writeMemory — no credential reaches the frontmatter or the filename; two secrets of one shape stay two files', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-w-'));
+  try {
+    const a = await writeMemory({ body: 'GITLAB_TOKEN=glpat-FAKEfakeFAKEfake0000 for the runner\nrotate yearly', type: 'reference', projectContext: {}, targetDirOverride: dir }, fullDeps() as any);
+    const b = await writeMemory({ body: 'GITLAB_TOKEN=glpat-FAKEfakeFAKEfake1111 for the runner\nrotate yearly', type: 'reference', projectContext: {}, targetDirOverride: dir }, fullDeps() as any);
+    const c = await writeMemory({ body: 'password=hunter2xyz for the staging box\nrotate yearly', type: 'reference', projectContext: {}, targetDirOverride: dir }, fullDeps() as any);
+    if (!a.ok || !b.ok || !c.ok) throw new Error('write failed');
+    expect(a.action).toBe('created');
+    expect(b.action).toBe('created');
+    expect(a.path).not.toBe(b.path);
+    for (const [r, secret] of [[a, 'glpat-'], [b, 'glpat-'], [c, 'hunter2xyz']] as const) {
+      expect(r.path).not.toContain(secret);
+      expect(r.doc_id).not.toContain(secret);
+      const fm = readFileSync(r.path, 'utf-8').split('\n---\n')[0]!;
+      expect(fm).not.toContain(secret);
+      const meta = chunkMemoryFile(readFileSync(r.path, 'utf-8'), r.path)[0]!.metadata as Record<string, unknown>;
+      expect(JSON.stringify(meta)).not.toContain(secret);
+      expect(readFileSync(r.path, 'utf-8')).toContain(secret);   // the body keeps it: get_full serves it
+    }
+    expect(readFileSync(a.path, 'utf-8')).toContain('name: GITLAB_TOKEN=[REDACTED:gitlab-token] for the runner');
+    expect(readFileSync(c.path, 'utf-8')).toContain('name: password=[REDACTED] for the staging box');
+    // The LLM gets the body redacted too, and a caller's own name and description are redacted.
+    const generate = mock(async (_req: { user: string }) => { throw new Error('offline'); });
+    const fm = await fillFrontmatter({ body: 'token: glpat-FAKEfakeFAKEfake2222', type: 'reference', name: 'deploy glpat-FAKEfakeFAKEfake2222', description: 'uses glpat-FAKEfakeFAKEfake2222', projectContext: {} }, generate as any);
+    expect(generate.mock.calls[0]![0].user).not.toContain('glpat-');
+    expect(JSON.stringify(fm)).not.toContain('glpat-');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

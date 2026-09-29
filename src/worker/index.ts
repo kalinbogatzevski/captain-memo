@@ -110,6 +110,7 @@ import { runCaptureTick } from './capture/driver.ts';
 import { createWorkerMetrics, recordEmbed, recordIndexResult } from './metrics.ts';
 import { computeEfficiency } from './efficiency.ts';
 import { countTokens } from '../shared/tokens.ts';
+import { looksLikeCredential, redactSecrets } from '../shared/redact-secrets.ts';
 import { VERSION } from '../shared/version.ts';
 import { EDITION } from '../shared/edition.ts';
 
@@ -1997,6 +1998,21 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     return tideConfig.enabled ? raw : applyRecencyDecay(raw);
   };
 
+  /** A search hit's snippet: redacted, THEN cut to 600 chars — cut first, a secret split by the cap no longer matches.
+   *  get_full stays the explicit way to read the real value. */
+  const searchSnippet = (text: string): string => redactSecrets(text).text.slice(0, 600);
+  /** A search hit's title and metadata labels (the frontmatter name / description, an observation title, a section
+   *  heading) redacted too: the whole hit goes to the model, and a heading or first line can be the secret. doc_id and
+   *  source_path are get_full's lookup keys and stay. A copy: `m` is the stored chunk metadata. */
+  const redactHitLabels = <T extends { title: string; metadata: Record<string, unknown> }>(h: T): T => {
+    const metadata = { ...h.metadata };
+    for (const k of ['name', 'description', 'title', 'section_title']) {
+      const v = metadata[k];
+      if (typeof v === 'string') metadata[k] = redactSecrets(v).text;
+    }
+    return { ...h, title: redactSecrets(h.title).text, metadata };
+  };
+
   const searchByChannel = async (
     query: string,
     channel: 'memory' | 'skill' | 'capability' | 'observation',
@@ -2045,17 +2061,17 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         if (!hasMatch) continue;
       }
 
-      results.push({
+      results.push(redactHitLabels({
         doc_id: lookup.chunk.chunk_id,
         source_path: lookup.document.channel === 'capability'
           ? `capability:${String(m.source_agent ?? 'unknown')}/${String(m.name ?? m.capability_id ?? 'unknown')}`
           : lookup.document.source_path,
         title: (m.section_title ?? m.filename_id ?? m.title ?? m.name ?? 'Untitled') as string,
-        snippet: lookup.chunk.text.slice(0, 600),
+        snippet: searchSnippet(lookup.chunk.text),
         score: f.score,
         channel: lookup.document.channel,
         metadata: m,
-      });
+      }));
       if (results.length >= topK) break;
     }
     return results;
@@ -2166,17 +2182,17 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       if (!lookup) return null;
       const { chunk, document } = lookup;
       const titleMeta = chunk.metadata as Record<string, unknown>;
-      return {
+      return redactHitLabels({
         doc_id: chunk.chunk_id,
         source_path: document.channel === 'capability'
           ? `capability:${String(titleMeta.source_agent ?? 'unknown')}/${String(titleMeta.name ?? titleMeta.capability_id ?? 'unknown')}`
           : document.source_path,
         title: (titleMeta.section_title ?? titleMeta.filename_id ?? titleMeta.title ?? titleMeta.name ?? 'Untitled') as string,
-        snippet: chunk.text.slice(0, 600),
+        snippet: searchSnippet(chunk.text),
         score: f.score,
         channel: document.channel,
-        metadata: chunk.metadata,
-      };
+        metadata: chunk.metadata as Record<string, unknown>,
+      });
     }).filter((r): r is NonNullable<typeof r> => r !== null);
     return demoteSuperseded(dropArchived(results), config.supersedePenalty) as Hit[];
   };
@@ -3407,12 +3423,18 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           if (!lookup) continue;
           if (!channelsRequested.includes(lookup.document.channel as 'memory' | 'skill' | 'observation')) continue;
           const m = lookup.chunk.metadata as Record<string, unknown>;
+          const text = lookup.chunk.text;
           candidates.push({
             doc_id: lookup.chunk.chunk_id,
             channel: lookup.document.channel,
             source_path: lookup.document.source_path,
             title: (m.section_title ?? m.filename_id ?? m.title ?? 'Untitled') as string,
-            snippet: lookup.chunk.text.slice(0, snippetChars),
+            // A credential-shaped chunk goes whole: formatEnvelope redacts, THEN cuts to the budget. Cut here first,
+            // a secret split by the cap (a private key losing its END line) no longer matches and half of it is injected.
+            // Cost of the check (2026-09-29, 1.5 KB slices of README.md, median of 25): 15 candidates 1.8 ms, 150 (top_k 50)
+            // 15 ms, one 100 KB chunk 6.9 ms — the prose, base64-block, CLI and repeat rules cost what skipping the key-tail
+            // scan on text with no END line saves (1.9 / 16 / 7.5 ms before them). The first redactor: 0.3 / 4 / 1 ms.
+            snippet: looksLikeCredential(text) ? text : text.slice(0, snippetChars),
             score: f.score,
             metadata: m,
           });
@@ -3433,7 +3455,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           budget_tokens: budget,
           hits,
           degradation_flags: flags,
+          snippet_chars: snippetChars,
         });
+        // Only what the envelope carries is audited and bumped: over budget formatEnvelope drops the lowest-ranked
+        // hits whole, and a hit the model never saw was not recalled (nor a co-retrieval pair for dreaming).
+        const rendered = new Set(result.rendered_ids);
+        const shown = hits.filter(h => rendered.has(h.doc_id));
 
         // Fire-and-forget recall audit (default-ON; disable via CAPTAIN_MEMO_RECALL_AUDIT=0).
         // fused already carries .boosts from applyBoosts (BoostedItem); build a
@@ -3452,13 +3479,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             rank_profile: cfg.profile,
             ...(rawPrompt !== trimmed && { prompt: rawPrompt }),
             injected_tokens: result.used_tokens,
-            hits: hits.map(h => {
+            hits: shown.map(h => {
               const boosts = fusedBoostMap.get(h.doc_id);
               return {
                 doc_id: h.doc_id,
                 channel: h.channel,
                 score: h.score,
-                snippet: h.snippet.slice(0, 200),
+                // A credential-shaped hit's snippet is its whole raw chunk: redact before the cut, as the envelope does.
+                snippet: redactSecrets(h.snippet).text.slice(0, 200),
                 ...(boosts && Object.keys(boosts).length > 0 && { boosts }),
               };
             }),
@@ -3470,7 +3498,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // (fires on every UserPromptSubmit), so without it the recall stats
         // are starved — pre-v5 this gap is exactly why the corpus showed
         // ~0% recalled despite continuous use.
-        bumpRetrievalFromResults(hits, 'auto');
+        bumpRetrievalFromResults(shown, 'auto');
 
         return Response.json({
           envelope: result.envelope,

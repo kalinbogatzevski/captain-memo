@@ -5,6 +5,18 @@ export function countTokens(text: string): number {
   return encode(text).length;
 }
 
+// ponytail: a text longer than limit × 16 chars is taken as not fitting `limit` tokens without encoding it — the
+// encoder is the cost (64 KiB of English: ~30 ms; one 5 000-char run of a letter: 650 ms to truncate). True of prose
+// and code (measured 2026-09-28, gpt-tokenizer, chars/token: English 5.2, Bulgarian 2.0, TypeScript 4.1, JSON 2.8, a
+// run of one letter 8); a long run of whitespace or of one separator character ('-', '=': 40-125 chars/token) is then
+// cut shorter than it had to be — under the budget, never over.
+const MAX_CHARS_PER_TOKEN = 16;
+
+/** countTokens, or `limit + 1` for a text too long to fit `limit` tokens. */
+export function countTokensUpTo(text: string, limit: number): number {
+  return text.length > limit * MAX_CHARS_PER_TOKEN ? limit + 1 : countTokens(text);
+}
+
 const TRUNCATION_MARKER = '… [truncated]';
 
 /**
@@ -16,10 +28,10 @@ const TRUNCATION_MARKER = '… [truncated]';
  */
 export function truncateToTokenBudget(text: string, budgetTokens: number): string {
   if (budgetTokens <= 0) return TRUNCATION_MARKER;
-  if (countTokens(text) <= budgetTokens) return text;
+  if (countTokensUpTo(text, budgetTokens) <= budgetTokens) return text;
 
   let lo = 0;
-  let hi = text.length;
+  let hi = Math.min(text.length, budgetTokens * MAX_CHARS_PER_TOKEN);
   // Reserve some tokens for the marker itself
   const markerTokens = countTokens(TRUNCATION_MARKER);
   const target = Math.max(0, budgetTokens - markerTokens);
