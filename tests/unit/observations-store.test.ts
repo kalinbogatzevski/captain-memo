@@ -259,6 +259,24 @@ test('tierSweepCandidates — bounded, oldest-first, excludes drilled/anchored/a
   ts.close();
 });
 
+test('tierSweepCandidates gate — old rows too stable to flip no longer fill the window (the 53 h wedge)', () => {
+  const cfg = { ...DEFAULT_TIDE_CONFIG, enabled: true };
+  const ts = new ObservationsStore(join(workDir, 'tide-gate.db'), { tideConfig: cfg });
+  const DAY = 86_400, now = 1_700_000_000 + 400 * DAY;
+  // Three OLD rows with huge stability (buoyancy ~0.99, never flip) ahead of one YOUNGER flippable row.
+  const stable = [1, 2, 3].map(i => ts.insert({ ...tideBase, created_at_epoch: 1_700_000_000 + i }));
+  const sinkable = ts.insert({ ...tideBase, created_at_epoch: 1_700_000_000 + 100 * DAY });
+  const raw = new Database(join(workDir, 'tide-gate.db'));
+  for (const id of stable) raw.run('UPDATE observations SET stability_days = 100000 WHERE id = ?', [id]);
+  raw.run('UPDATE observations SET stability_days = 1 WHERE id = ?', [sinkable]);
+  raw.run('UPDATE observations SET stability_days = 0 WHERE id = ?', [stable[2]!]);   // S <= 0 reads as buoyancy 1
+  raw.close();
+  const gate = { nowEpoch: now, threshold: cfg.ebbThreshold, w20: cfg.w20, s0: cfg.s0.observation };
+  expect(ts.tierSweepCandidates('active', 3, now).map(c => c.id)).toEqual(stable);              // ungated: the wedge
+  expect(ts.tierSweepCandidates('active', 3, now, gate).map(c => c.id)).toEqual([sinkable]);    // gated: past it
+  ts.close();
+});
+
 test('bumpRetrieval — a recall surfaces a sunk row back to active (surface rail)', () => {
   const cfg = { ...DEFAULT_TIDE_CONFIG, enabled: true };
   const ts = new ObservationsStore(join(workDir, 'tide-surface.db'), { tideConfig: cfg });

@@ -7,6 +7,17 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.45.3] — 2026-09-29
+
+### Fixed
+
+- **Tide tiering moves again.** The sweep that lets long-unused observations sink to dormant (lower in search
+  ranking, never deleted, and back to active the moment they are recalled) took the oldest 256 rows past the age
+  floor each minute. When those were too stable to sink, the same 256 came back every tick and every row behind
+  them waited forever: on the reference store no row had moved for 53 hours while 7,573 qualified. The sweep now
+  asks only for rows whose buoyancy is actually below the threshold (still confirmed row by row), so a
+  store that had stalled catches up at up to 256 rows a minute.
+
 ## [0.45.2] — 2026-09-29
 
 ### Fixed

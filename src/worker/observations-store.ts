@@ -1155,17 +1155,28 @@ export class ObservationsStore {
    */
   tierSweepCandidates(
     state: 'active' | 'dormant', limit: number, olderThanEpoch: number,
+    gate?: import('./tide-sweep.ts').TideSweepGate,
   ): Array<TideRow & { id: number; tide_state: TideState }> {
+    // gate: computeBuoyancy < threshold, rearranged so SQL can test it on indexed columns:
+    // 1/(1 + w20*age/S) < T  <=>  w20*age > (1/T - 1)*S, for S > 0 (S <= 0 reads as buoyancy 1: never flips).
+    // `>=` rather than `>`: a boundary row is left to tierDecision, never dropped by float rounding here.
+    const gateSql = gate
+      ? `AND COALESCE(stability_days, ?4) > 0
+         AND ?5 * (?6 - COALESCE(last_surfaced_at, created_at_epoch)) >= ?7 * COALESCE(stability_days, ?4) * 86400`
+      : '';
+    const params: Array<string | number> = [state, olderThanEpoch, limit];
+    if (gate) params.push(gate.s0, gate.w20, gate.nowEpoch, 1 / gate.threshold - 1);
     const rows = this.db
       .query(
         `SELECT id, created_at_epoch, last_surfaced_at, stability_days, from_drill, is_anchored
            FROM observations
-          WHERE tide_state = ? AND is_anchored = 0 AND from_drill = 0
-            AND COALESCE(last_surfaced_at, created_at_epoch) < ?
+          WHERE tide_state = ?1 AND is_anchored = 0 AND from_drill = 0
+            AND COALESCE(last_surfaced_at, created_at_epoch) < ?2
+            ${gateSql}
           ORDER BY COALESCE(last_surfaced_at, created_at_epoch) ASC
-          LIMIT ?`,
+          LIMIT ?3`,
       )
-      .all(state, olderThanEpoch, limit) as Array<{
+      .all(...params) as Array<{
         id: number;
         created_at_epoch: number;
         last_surfaced_at: number | null;

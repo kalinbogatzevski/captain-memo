@@ -12,7 +12,7 @@ import {
 export interface TideSweepDeps {
   /** Bounded, oldest-first candidates for one pass, filtered to a single source tier
    *  ('active' for the ebb pass, 'dormant' for the archive pass). See ObservationsStore. */
-  candidates: (state: 'active' | 'dormant', limit: number, olderThanEpoch: number) => Array<TideRow & { id: number; tide_state: TideState }>;
+  candidates: (state: 'active' | 'dormant', limit: number, olderThanEpoch: number, gate?: TideSweepGate) => Array<TideRow & { id: number; tide_state: TideState }>;
   /** Persist one downward tier flip (writer-only). */
   setTideState: (id: number, state: TideState, atEpoch: number) => void;
   /** True when ingest/embedding work is queued or running — the slice yields to it. */
@@ -23,6 +23,12 @@ export interface TideSweepDeps {
   /** Hand control back to the event loop (so the heartbeat fires). Injected for tests. */
   yieldToLoop: () => Promise<void>;
 }
+
+/** The buoyancy test, for the candidate query to apply in SQL: only rows whose buoyancy is below `threshold` at
+ *  `nowEpoch`. Without it the oldest-first window filled with old rows too stable to flip, came back unchanged every
+ *  tick, and hid every flippable row behind it: 34,173 rows past the age floor, the head 256 none of them, 7,573
+ *  flippable, no flip in 53 h (2026-09-29). tierDecision stays the final word. */
+export interface TideSweepGate { nowEpoch: number; threshold: number; w20: number; s0: number }
 
 export interface TideSweepResult {
   scanned: number;
@@ -49,7 +55,11 @@ export async function runTideSweepSlice(deps: TideSweepDeps): Promise<TideSweepR
   // One pass over a single source tier. Returns true if it aborted (ingest preempt).
   const runPass = async (state: 'active' | 'dormant', olderThanEpoch: number): Promise<boolean> => {
     if (deps.shouldAbort()) { result.aborted = true; return true; }
-    for (const cand of deps.candidates(state, cfg.sweepBatch, olderThanEpoch)) {
+    const gate: TideSweepGate = {
+      nowEpoch, threshold: state === 'active' ? cfg.ebbThreshold : cfg.archiveThreshold,
+      w20: cfg.w20, s0: cfg.s0.observation,
+    };
+    for (const cand of deps.candidates(state, cfg.sweepBatch, olderThanEpoch, gate)) {
       if (deps.shouldAbort()) { result.aborted = true; return true; } // re-checked every iteration
       result.scanned++;
       const buoyancy = computeBuoyancy(cand, nowEpoch, cfg);
