@@ -1379,6 +1379,15 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // Used by both QM auto-dedup and the P3 supersede sweep.
   /** One event-loop turn, for the passes' paged reads (shared/paged-read.ts). */
   const breathe = (): Promise<void> => new Promise<void>(r => setImmediate(r));
+  /** The corpus state each quartermaster pass last saw through to a clean finish that changed nothing: the newest
+   *  observation written or surfaced (lastActivityEpoch) AND the newest vector written (writeMark), since a row's
+   *  vectors arrive after the row, and a pass that ran in between saw it without one. An idle machine changes nothing between passes, yet on dev
+   *  (24 h to 2026-09-29) semantic and theme each ran ~200 s every 10 min, 20 runs for 10 and 5 merges, and dedup
+   *  ~200-500 s an hour: the worker's steady CPU. A pass whose corpus has not moved since then is skipped; a
+   *  forced run is not. In memory, so a restart runs each pass once. */
+  const passSettledAt = new Map<'dedup' | 'semantic' | 'theme', string>();
+  const corpusMark = (activity: number | null): string => `${activity}|${vector.writeMark()}`;
+  const passSettled = (job: 'dedup' | 'semantic' | 'theme', mark: string): boolean => passSettledAt.get(job) === mark;
   const repVec = (obsId: number): Float32Array | null => {
     const doc = meta.getDocument(`observation:${opts.projectId}:${obsId}`);
     if (!doc) return null;
@@ -1420,6 +1429,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     const qmStore = obsStore;
     qmDedupTimer = setInterval(() => {
       if (qmDedupPromise) return;
+      const dedupMark = corpusMark(qmStore.lastActivityEpoch());
+      if (passSettled('dedup', dedupMark)) return;
       const startedAt = Math.floor(Date.now() / 1000);
       const dedupIngestBusy = () => processBatchPromise != null || (obsQueue?.pendingCount() ?? 0) > 0;
       let dedupAbortedInCandidates = false;
@@ -1460,6 +1471,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             rowsScanned: r.scanned, merges: r.merges, skippedNoVector: r.skippedNoVector,
             abortedForIngest: r.aborted || dedupAbortedInCandidates, errored: false });
           const gaveUp = r.aborted || dedupAbortedInCandidates;
+          if (!gaveUp && r.merges === 0) passSettledAt.set('dedup', dedupMark);
           if (r.merges > 0 || gaveUp) {
             console.error(`[qm-dedup] folded ${r.merges} member(s) from ${r.scanned} group(s)`
               + (gaveUp ? ' — ABORTED for ingest before finishing' : ''));
@@ -1564,6 +1576,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         activeSessions: opts.activeSessionCount?.() ?? 0,
       }, { minIdleSeconds: qmConfig.semanticMinIdleSeconds });
       if (!force && !forcedNow('semantic') && !idle) return null;
+      const settledRun = !force && !forcedNow('semantic');
+      const semanticMark = corpusMark(lastActivity);
+      if (settledRun && passSettled('semantic', semanticMark)) return null;
 
       const startedAt = nowS;
       // A BACKLOG sweep does not step aside for ingest.
@@ -1621,6 +1636,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             rowsScanned: r.scanned, merges: r.merges, skippedNoVector: r.skippedNoVector,
             abortedForIngest: r.aborted || abortedInCandidates, errored: false });
           const gaveUp = r.aborted || abortedInCandidates;
+          if (settledRun && !gaveUp && r.merges === 0) passSettledAt.set('semantic', semanticMark);
           if (r.merges > 0 || gaveUp) {
             console.error(`[qm-semantic] folded ${r.merges} restatement(s) from ${r.scanned} group(s)`
               + (gaveUp ? ' — ABORTED for ingest before finishing' : '')
@@ -1669,6 +1685,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         activeSessions: opts.activeSessionCount?.() ?? 0,
       }, { minIdleSeconds: qmConfig.semanticMinIdleSeconds });
       if (!force && !forcedNow('theme') && !idle) return null;
+      const settledThemeRun = !force && !forcedNow('theme');
+      const themeMark = corpusMark(lastActivity);
+      if (settledThemeRun && passSettled('theme', themeMark)) return null;
+      let coRetrievalFailed = false;
 
       const startedAt = nowS;
       // Load the co-retrieval evidence ONCE per pass. This is the signal that makes a theme a
@@ -1698,7 +1718,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // 2026-08-10: 20,321 co-occurrence pairs instead of 49,395, so clusters in the busiest
         // projects were scored on evidence that excluded their own project's recalls. Unfiltered:
         // 18 clusters instead of 16, and the new ones are erp-platform's.
-        const dream = await loadDreamInputs(0, undefined).catch(() => null);
+        const dream = await loadDreamInputs(0, undefined).catch(() => { coRetrievalFailed = true; return null; });
         const surfaces = themeStore.surfaceCounts();
         // Evidence adjacency, built once per pass from the same map coRetrieval reads. This is the
         // index that lets the clusterer walk the 44,100 pairs that could possibly be cluster edges
@@ -1798,6 +1818,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             rowsScanned: r.clustersConsidered, merges: r.themesWritten, skippedNoVector: r.declined,
             abortedForIngest: r.aborted || clusterWalkAborted, errored: r.failed > 0 });
           const gaveUp = r.aborted || clusterWalkAborted;
+          if (settledThemeRun && !gaveUp && !coRetrievalFailed && r.failed === 0 && r.themesWritten === 0) passSettledAt.set('theme', themeMark);
           if (r.themesWritten > 0 || gaveUp) {
             console.error(`[qm-theme] considered ${r.clustersConsidered}, wrote ${r.themesWritten}, declined ${r.declined}`
               + (gaveUp ? ' — ABORTED for ingest before finishing the cluster walk' : ''));

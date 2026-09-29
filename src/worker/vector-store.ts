@@ -489,6 +489,13 @@ export class VectorStore {
 
   /** Total vector count for a collection — drives the clustering-size
    *  threshold and K sizing. */
+  /** Moves whenever a vector is written: add() is INSERT OR REPLACE on vec_chunk_meta, so every new or re-embedded
+   *  vector takes a higher rowid. The index sweep's cluster moves never touch this table, so they do not move it.
+   *  A primary-key MAX, ~0 ms. */
+  writeMark(): number | null {
+    return (this.db.query('SELECT MAX(rowid) AS m FROM vec_chunk_meta').get() as { m: number | null }).m;
+  }
+
   countVectors(collection: string): number {
     // Counted from the meta table ALONE. The joined form measured **114,711 ms** against the real
     // 143k-vector store versus 16 ms this way — and it ran once per sweep slice, on the writer

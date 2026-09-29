@@ -22,8 +22,8 @@
 // byte offset already parsed, and each poll reads only what was appended. Re-reading
 // whole transcripts on a ~10s cadence is what this exists to avoid.
 
-import { stat, open, readdir, readFile } from 'fs/promises';
-import { readdirSync, readFileSync } from 'fs';
+import { stat, open, readFile } from 'fs/promises';
+import { readdirSync, readFileSync, statSync } from 'fs';
 import type { Dirent } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
@@ -354,6 +354,9 @@ const AGENT_FILE_RE = /^agent-[0-9a-f]+\.jsonl$/i;
 /** Read the appended bytes of one transcript into its accumulator and sum the buckets that
  *  fall inside the window. Shared by the top-level session scan and the agent scan below —
  *  one implementation, so the two can never drift on how a token is counted. */
+/** Bytes read and parsed per step by accumulate(): ~1 MB of transcript JSON parses in a few ms. */
+const DIGEST_CHUNK = 1 << 20;
+
 async function accumulate(
   path: string, size: number, now: number, windowMs: number, mtimeMs = 0,
 ): Promise<{ t: Totals; wFresh: number; wOut: number; wCr: number }> {
@@ -386,10 +389,26 @@ async function accumulate(
     const fh = await open(path, 'r').catch(() => null);
     if (fh) {
       try {
-        const len = size - from;
-        const buf = Buffer.allocUnsafe(len);
-        const { bytesRead } = await fh.read(buf, 0, len, from);
-        t.offset = Math.max(t.offset, from + digest(buf.toString('utf8', 0, bytesRead), t));
+        // In DIGEST_CHUNK pieces, each read awaited, so the engine breathes between them. One read of the
+        // whole unread tail parsed a cold transcript in a single block: up to 7.6 s on the writer during the
+        // all-time scan after a restart (2026-09-29). digest() stops at the last complete line, so a piece
+        // that ends mid-line (or mid-character) is picked up whole by the next one.
+        let pos = from, want = DIGEST_CHUNK;
+        while (pos < size) {
+          const len = Math.min(want, size - pos);
+          const buf = Buffer.allocUnsafe(len);
+          const { bytesRead } = await fh.read(buf, 0, len, pos);
+          if (bytesRead === 0) break;
+          const used = digest(buf.toString('utf8', 0, bytesRead), t);
+          if (used === 0) {
+            if (pos + bytesRead >= size) break;   // only a line still being written: next poll
+            want *= 2;                            // one line longer than the piece: widen for it
+            continue;
+          }
+          pos += used;
+          want = DIGEST_CHUNK;
+          t.offset = Math.max(t.offset, pos);
+        }
       } catch {
         /* transient read failure — keep what we have, retry next poll */
       } finally {
@@ -429,7 +448,7 @@ const WF_DONE = new Map<string, { key: string; done: Set<string> }>();
  *  error. */
 async function finishedAgents(wfDir: string): Promise<Set<string>> {
   const jpath = join(wfDir, 'journal.jsonl');
-  const st = await stat(jpath).catch(() => null);
+  let st: ReturnType<typeof statSync> | null = null; try { st = statSync(jpath); } catch { /* no journal */ }
   if (!st) return new Set<string>();   // no journal ⇒ report every agent, as before
   const key = st.size + ':' + Math.round(st.mtimeMs);
   const hit = WF_DONE.get(wfDir);
@@ -473,7 +492,7 @@ async function workflowNames(subagentsDir: string, sessionId: string): Promise<M
   const collect = async (dir: string): Promise<void> => {
     let files: string[];
     try {
-      files = await readdir(dir);
+      files = readdirSync(dir);
     } catch {
       return;   // no scripts here — the agents stay unnamed, which is honest
     }
@@ -492,7 +511,7 @@ async function workflowNames(subagentsDir: string, sessionId: string): Promise<M
   // wf_ ids. Only reached when the local directory did not already answer.
   try {
     const root = transcriptsRoot();
-    const projects = await readdir(root, { withFileTypes: true });
+    const projects = readdirSync(root, { withFileTypes: true });
     for (const p of projects) {
       if (!p.isDirectory()) continue;
       const alt = join(root, p.name, sessionId, 'workflows', 'scripts');
@@ -553,6 +572,14 @@ function teamLeadSession(teamName: string): string | undefined {
   return lead;
 }
 
+/** A yield every 200 transcripts the walk visits. The walk's stats are synchronous (see readNativeSessionUsage), and
+ *  a folder of hundreds of idle sessions, or the 3,600 agent transcripts the all-time scan visits, was otherwise one
+ *  block of ~200 ms. */
+let walkedFiles = 0;
+function walkBreath(): Promise<void> | undefined {
+  return ++walkedFiles % 200 === 0 ? new Promise<void>(r => setImmediate(r)) : undefined;
+}
+
 /** Depth-bounded scan of one session's agent transcripts. Recurses exactly one level into
  *  `workflows/<wf_id>/`, which is the only nesting Claude Code produces — a wider walk
  *  would be speculative and would cost a stat per stray file. Best-effort throughout: a
@@ -570,7 +597,7 @@ async function scanAgents(
   const done = (workflowId !== undefined && !includeFinished) ? await finishedAgents(dirPath) : new Set<string>();
   let entries: Dirent[];
   try {
-    entries = await readdir(dirPath, { withFileTypes: true });
+    entries = readdirSync(dirPath, { withFileTypes: true });
   } catch {
     return;   // no agents for this session — by far the common case
   }
@@ -580,7 +607,7 @@ async function scanAgents(
       if (workflowId !== undefined) continue;
       if (e.name === 'workflows') {
         let wfs: Dirent[];
-        try { wfs = await readdir(join(dirPath, e.name), { withFileTypes: true }); } catch { continue; }
+        try { wfs = readdirSync(join(dirPath, e.name), { withFileTypes: true }); } catch { continue; }
         // One readdir for the whole session, and only for a session that ran a workflow.
         const wfNames = await workflowNames(dirPath, parentSessionId);
         for (const wf of wfs) {
@@ -607,12 +634,13 @@ async function scanAgents(
     // bookkeeping, not a session — and reporting that as an agent invents a row with no
     // tokens and no meaning.
     if (!AGENT_FILE_RE.test(e.name)) continue;
+    await walkBreath();
     // Its own journal reported a result for this one: it is finished, not idle.
     if (done.has(e.name.slice('agent-'.length, -'.jsonl'.length))) continue;
     const path = join(dirPath, e.name);
     let size = 0, mtimeMs = 0;
     try {
-      const st = await stat(path);
+      const st = statSync(path);
       size = st.size; mtimeMs = st.mtimeMs;
     } catch { continue; }
     if (now - mtimeMs > windowMs) continue;   // idle ⇒ not live, same rule as a session
@@ -642,6 +670,9 @@ async function scanAgents(
   }
 }
 
+// The directory walk is SYNCHRONOUS on purpose: ~2,500 readdir/stat per call, and each awaited fs call costs Bun
+// ~0.4 ms of CPU. Async, one 30-minute scan walked 1,246 transcripts in 502 ms of CPU; sync, 35 ms, a 35 ms block,
+// on the 10 s telemetry poll that runs it twice (2026-09-29). File CONTENTS are still read asynchronously.
 export async function readNativeSessionUsage(
   windowMs = 30 * 60_000,
   now = Date.now(),
@@ -654,7 +685,7 @@ export async function readNativeSessionUsage(
   const root = transcriptsRoot();
   let projectDirs: string[];
   try {
-    projectDirs = (await readdir(root, { withFileTypes: true }))
+    projectDirs = readdirSync(root, { withFileTypes: true })
       .filter(d => d.isDirectory())
       .map(d => join(root, d.name));
   } catch {
@@ -666,7 +697,7 @@ export async function readNativeSessionUsage(
   for (const dir of projectDirs) {
     let names: string[];
     try {
-      names = await readdir(dir);
+      names = readdirSync(dir);
     } catch {
       continue;
     }
@@ -674,12 +705,13 @@ export async function readNativeSessionUsage(
       if (!name.endsWith('.jsonl')) continue;
       const sessionId = name.slice(0, -'.jsonl'.length);
       if (!SESSION_ID_RE.test(sessionId)) continue;
+      await walkBreath();
       const path = join(dir, name);
 
       let size = 0;
       let mtimeMs = 0;
       try {
-        const st = await stat(path);
+        const st = statSync(path);
         size = st.size;
         mtimeMs = st.mtimeMs;
       } catch {

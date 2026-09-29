@@ -160,9 +160,22 @@ test('concurrent scans never advance the offset past what was actually digested'
   const src = readFileSync(join(import.meta.dir, '../../src/worker/native-session-usage.ts'), 'utf8');
   const acc = src.slice(src.indexOf('async function accumulate'), src.indexOf('// Sum the buckets'));
   expect(acc).toMatch(/const from = t\.offset;/);          // captured before the awaits
-  expect(acc).toMatch(/fh\.read\(buf, 0, len, from\)/);    // and used for the read itself
+  expect(acc).toMatch(/let pos = from/);                   // and the reads advance from it, locally
+  expect(acc).toMatch(/fh\.read\(buf, 0, len, pos\)/);
   expect(acc).toMatch(/t\.offset = Math\.max\(t\.offset,/); // idempotent write
   expect(acc).not.toMatch(/t\.offset \+=/);                 // never a blind advance
+});
+
+test('a transcript past one read piece (1 MB) is summed whole, a line longer than a piece included', async () => {
+  // accumulate() digests in 1 MB pieces so a cold transcript never parses in one block; lines that
+  // straddle a piece boundary, and a single line longer than a piece, must still count exactly once.
+  const pad = (k: number) => JSON.stringify({ type: 'user', message: { content: 'x'.repeat(k) } }) + '\n';
+  let body = '';
+  for (let i = 0; i < 40; i++) body += pad(40_000) + msgId(`m${i}`, 10, 1);   // ~1.6 MB, boundaries mid-line
+  body += pad(2_500_000) + msgId('big', 10, 1);                                 // one 2.5 MB line
+  writeTranscript(SID, body);
+  const [s] = await readNativeSessionUsage();
+  expect(s!.input_tokens).toBe(410);
 });
 
 test('sums provider-reported usage across a transcript', async () => {

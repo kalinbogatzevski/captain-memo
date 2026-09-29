@@ -7,6 +7,24 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.45.1] — 2026-09-29
+
+### Fixed
+
+- **The worker idles instead of spinning.** Measured on dev after 0.66.2 it still used about 30% of a core with
+  nothing to do. The biggest single cost was the session-usage scan behind the fleet telemetry: it walked every
+  transcript with one awaited file call at a time, and each of those costs Bun about 0.4 ms of CPU, so one scan
+  of 1,246 transcripts spent 500 ms of CPU and ran twice every 10 seconds. The walk is now synchronous
+  (35 ms), cutting the two scans from 1.2 s and 0.6 s of CPU to under 0.1 s each.
+- **Transcripts are read in 1 MB pieces.** A cold transcript used to be parsed in one go, holding the worker for
+  up to 7.6 s during the all-time usage scan after a restart; the longest hold is now about 0.2 s.
+- **Tidy-up passes skip when nothing has changed.** The semantic, theme and dedup passes re-ran every 10 minutes
+  (dedup hourly) on an idle machine, each for minutes, to find the same few groups again. A pass now skips when no
+  observation has been written or surfaced, and no vector written, since its last clean run that changed nothing. Forced runs
+  (`captain-memo consolidate`) always run, and a restart runs each pass once.
+- **Nearest-cluster search is 1.8x faster** (22 → 12 ms on 477 clusters): every new vector, every search probe and
+  the index sweep use it. Same answers, verified on 500 stored vectors.
+
 ## [0.45.0] — 2026-09-29
 
 ### Fixed

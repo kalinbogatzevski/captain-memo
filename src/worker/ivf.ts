@@ -132,10 +132,61 @@ export interface Centroid {
 
 /** Nearest centroid to `vector` by cosine similarity (highest similarity wins).
  *  Returns null only when `centroids` is empty. */
+/** The centroids as one contiguous block of unit vectors, built once per centroid array (callers never mutate one:
+ *  getCentroids caches it, miniBatchUpdate returns a new array). Ranking is then a dot product over half the bytes of
+ *  477 separate number[] and no norms: on the dev host, where anything past ~0.5 MB streams from memory at ~22 ns a
+ *  float, a nearest-centroid search over 477 x 1024 went from 18.8 ms to ~10 ms, and add(), every search probe and
+ *  the sweep's 64-item rebalance each pay it. */
+interface PackedCentroids { dim: number; unit: Float32Array }
+const PACKED = new WeakMap<readonly Centroid[], PackedCentroids | null>();
+
+function packed(centroids: readonly Centroid[]): PackedCentroids | null {
+  let p = PACKED.get(centroids);
+  if (p !== undefined) return p;
+  const dim = centroids[0]?.vector.length ?? 0;
+  p = dim > 0 && centroids.every(c => c.vector.length === dim) ? { dim, unit: new Float32Array(centroids.length * dim) } : null;
+  if (p) {
+    centroids.forEach((c, k) => {
+      let n = 0;
+      for (let j = 0; j < dim; j++) n += c.vector[j]! * c.vector[j]!;
+      const inv = n > 0 ? 1 / Math.sqrt(n) : 0;   // a zero centroid scores 0, as cosine() does
+      for (let j = 0; j < dim; j++) p!.unit[k * dim + j] = c.vector[j]! * inv;
+    });
+  }
+  PACKED.set(centroids, p);
+  return p;
+}
+
+/** Each centroid's similarity rank score for `vector` (cosine up to a positive factor), or null to use cosine(). */
+function packedScores(vector: number[] | Float32Array, centroids: readonly Centroid[]): Float64Array | null {
+  const p = packed(centroids);
+  if (!p || vector.length !== p.dim) return null;   // a length mismatch keeps cosine()'s answer of 0 for every centroid
+  const { dim, unit } = p;
+  const out = new Float64Array(centroids.length);
+  for (let k = 0, o = 0; k < centroids.length; k++, o += dim) {
+    let s0 = 0, s1 = 0, s2 = 0, s3 = 0, j = 0;
+    for (; j + 3 < dim; j += 4) {
+      s0 += vector[j]! * unit[o + j]!; s1 += vector[j + 1]! * unit[o + j + 1]!;
+      s2 += vector[j + 2]! * unit[o + j + 2]!; s3 += vector[j + 3]! * unit[o + j + 3]!;
+    }
+    for (; j < dim; j++) s0 += vector[j]! * unit[o + j]!;
+    out[k] = s0 + s1 + s2 + s3;
+  }
+  return out;
+}
+
 export function nearestCentroid(
   vector: number[] | Float32Array,
   centroids: readonly Centroid[],
 ): { clusterId: number; similarity: number } | null {
+  const scores = packedScores(vector, centroids);
+  if (scores) {
+    let bi = -1;
+    for (let k = 0; k < scores.length; k++) if (bi < 0 || scores[k]! > scores[bi]!) bi = k;
+    if (bi < 0) return null;
+    // The exact figure for the winner, so the similarity a caller sees is cosine()'s, as before.
+    return { clusterId: centroids[bi]!.clusterId, similarity: cosine(vector, centroids[bi]!.vector) };
+  }
   let best: { clusterId: number; similarity: number } | null = null;
   for (const c of centroids) {
     const sim = cosine(vector, c.vector);
@@ -150,8 +201,9 @@ export function nearestCentroids(
   centroids: readonly Centroid[],
   m: number,
 ): Centroid[] {
-  return [...centroids]
-    .map(c => ({ c, sim: cosine(vector, c.vector) }))
+  const scores = packedScores(vector, centroids);
+  return centroids
+    .map((c, k) => ({ c, sim: scores ? scores[k]! : cosine(vector, c.vector) }))
     .sort((a, b) => b.sim - a.sim)
     .slice(0, m)
     .map(x => x.c);
