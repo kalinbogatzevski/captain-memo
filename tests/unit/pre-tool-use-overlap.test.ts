@@ -30,7 +30,8 @@ test('a peer whose only claim is whole-repo is labelled, and my files are not pr
     files: ['/repo/**'], overlapping: ['/repo/admin/rpc.php', '/repo/notes/functions.php'],
   }])!;
   expect(w).toContain('holds /repo/**, which overlaps your /repo/admin/rpc.php, /repo/notes/functions.php');
-  expect(w).toContain('a whole-repo claim: it ran a shell edit whose file could not be named');
+  expect(w).toContain('a whole-repo claim from a shell edit whose file could not be named: it may hold your file, so tell the user before writing');
+  expect(w).not.toContain('may not touch your files');   // 2026-09-30: that phrase is why real warnings were dismissed
 });
 
 test('my own whole-repo claim is labelled as mine', () => {
@@ -51,18 +52,21 @@ test('a topic hit, a repo hit and a semantic hit each read as what they are', ()
   expect(w).not.toContain('holds billing-rounding');   // a topic is never printed as a file
 });
 
-// #103: a ghost claim (its session ended, the lease is running out) must not read like live work, and when it is
-// the only overlap the warning must not tell the caller to go coordinate with it.
-test('a stale peer is worded as stale, and only-stale overlaps do not ask the caller to coordinate', () => {
+// #103: a ghost claim must not read like live work. 2026-09-30: but "stale" only means no recent edit (a live session
+// that was reading got overwritten), so even a stale-only overlap says tell the user before writing, never "carry on".
+test('a stale peer is worded as no recent edit, and a stale-only overlap still says tell the user before writing', () => {
   const ghost = { session_id: 'ghost-1', agent: 'codex', kind: 'topics' as const, overlapping: ['billing'], what: 'x', stale: true, age_s: 47 * 60 };
   const only = formatOverlapWarning([ghost])!;
-  expect(only).toContain('(ghost-1, codex; stale, last refreshed 47m ago; its session has probably ended)');
-  expect(only).toContain('treat it as information, not a blocker');
-  expect(only).not.toContain('coordinate');
+  expect(only).toContain('(ghost-1, codex; stale: no edit for 47m, may be reading or ended)');
+  expect(only).toContain('tell the user which session holds it before writing the same files');
+  expect(only).not.toContain('probably ended');
+  expect(only).not.toContain('not a blocker');
   expect(only).not.toContain('continue');   // it can merge with pre-git's advice to isolate a mutating git op
   const mixed = formatOverlapWarning([ghost, { session_id: 'live-1', agent: 'claude', kind: 'topics', overlapping: ['billing'], what: 'y' }])!;
   expect(mixed).toContain('(live-1, claude) holds the same topic');
-  expect(mixed).toContain('coordinate');
+  expect(mixed).toContain('Stop and tell the user which session holds it');
+  expect(mixed).toContain('never edit or deploy over another session\'s claim');
+  expect(mixed).not.toContain('fleet_send');   // OSS has no peer channel: the user decides
 });
 
 test('a DECLARED directory claim is not called whole-repo, and named files beside a coarse claim drop the caveat', () => {

@@ -11,6 +11,7 @@ const TEST_DATA_DIR = mkdtempSync(join(tmpdir(), 'captain-memo-hooktest-'));
 import { readFileSync } from 'fs';
 import { spawn } from 'bun';
 import { VERSION } from '../../src/shared/version.ts';
+import { LOCAL_ARTICLES } from '../../src/hooks/local-articles.ts';
 
 let port = 0;
 const FIXTURE = readFileSync(
@@ -74,6 +75,23 @@ test('SessionStart — fetches /stats and prints corpus banner', async () => {
 test('SessionStart — exits 0 even when worker unreachable', async () => {
   const { exitCode } = await runHook({ CAPTAIN_MEMO_WORKER_PORT: '1', CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1' });
   expect(exitCode).toBe(0);
+});
+
+// The full SKILL.md reaches Claude only as a model-invoked skill, so a session that never reads it had no rules.
+// The local articles (work-board Foundation first) ride in on the hook envelope, beside the banner.
+test('SessionStart — injects the local articles as additionalContext', async () => {
+  const { stdout, exitCode } = await runHook();
+  expect(exitCode).toBe(0);
+  const env = JSON.parse(stdout);
+  expect(env.hookSpecificOutput?.hookEventName).toBe('SessionStart');
+  expect(env.hookSpecificOutput?.additionalContext).toBe(LOCAL_ARTICLES);
+  expect(env.systemMessage).toContain('Captain Memo');   // banner still intact alongside it
+});
+
+test('SessionStart — the articles are injected even when the worker is unreachable', async () => {
+  const { stdout, exitCode } = await runHook({ CAPTAIN_MEMO_WORKER_PORT: '1', CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1' });
+  expect(exitCode).toBe(0);
+  expect(JSON.parse(stdout).hookSpecificOutput?.additionalContext).toBe(LOCAL_ARTICLES);
 });
 
 test('SessionStart — current worker: shows banner, no heal attempted', async () => {

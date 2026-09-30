@@ -7,6 +7,37 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.49.0] — 2026-09-30
+
+### Added
+
+- **Every Claude Code session now starts with a short set of working rules, and the work board comes first.**
+  Before its first edit a session looks at the board (`work_active`), claims every file it will write or deploy
+  as absolute paths (`work_set`), looks again before a commit, a checkout, reset, stash or add, and before every
+  deploy, and never edits or deploys over another session's claim: it stops and tells you which session holds
+  it. It clears its claim only once the change is committed and deployed. The rest of the rules cover searching
+  memory before acting, verifying instead of guessing, "committed is not deployed", asking when intent is
+  unclear, homework, running work next to its data, and your time. On 2026-09-30 two sessions sharing one
+  checkout skipped these steps and each deployed over the other's work. Other AIs get the work-board rules
+  through the captain-memo skill.
+
+### Changed
+
+- **A stale claim no longer reads as "its session has probably ended".** Claims refresh on edits only, so a
+  session that is reading or testing looks stale while it is still working. The warning now says "no edit for
+  N min, may be reading or ended", and even a stale-only overlap says to tell you before writing the same files.
+- **Overlap warnings say to stop and tell you which session holds the file**, and never to edit or deploy over it.
+- **A whole-repo claim no longer says it "may not touch your files at all".** That line is why real warnings were
+  dismissed. It now says the claim may hold your file.
+- The captain-memo skill carries the same work-board rules.
+
+### Fixed
+
+- **`work_set` with relative paths now matches other claims.** Relative paths are resolved against the
+  repository root, so a claim on `hr/rpc.php` and an edit of the same file are seen as the same file.
+- **Editing no longer shortens a lease you declared.** After `work_set` with a longer lease, each edit cut it back
+  to the 30 minute default, so a session that stopped editing to read or test lost its claim early.
+
 ## [0.48.0] — 2026-09-30
 
 ### Fixed

@@ -112,7 +112,8 @@ test('runPreGit — a PEER holder of the repo emits an advisory additionalContex
 test('runPreGit: a stale peer is worded as stale, and even only-stale holders keep the advice to isolate', async () => {
   stubHolders = [{ session_id: 'ghost-session-1', agent: 'codex', branch: 'main', is_dirty: true, stale: true, age_s: 1800 }];
   const only = await runPreToolUseHook(gitOpPayload());
-  expect(only).toContain('dirty, stale, last refreshed 30m ago; its session has probably ended');
+  expect(only).toContain('dirty, stale: no edit for 30m, may be reading or ended');
+  expect(only).not.toContain('probably ended');
   expect(only).toContain('Isolate instead');
 });
 

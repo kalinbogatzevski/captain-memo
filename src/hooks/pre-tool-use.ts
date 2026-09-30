@@ -74,8 +74,8 @@ async function publishClaim(sid: string, cwd: string | undefined, touched: strin
 /** The overlap advisory, or null. For each peer it names the PEER's own matching paths. The worker's `overlapping` is
  *  the CALLER's side of the match, which the warning used to print under the peer's id (and call every peer "another
  *  captain"), so two sessions on one checkout each looked like they were editing the other's files. A whole-repo claim
- *  (`<repo>/**`, what a shell edit the parser cannot name becomes) is labelled as such, on either side, so it is not
- *  read as the peer touching your file. */
+ *  (`<repo>/**`, what a shell edit the parser cannot name becomes) is labelled as such, on either side, and still
+ *  says it may hold your file: "may not touch your files at all" is why real warnings were dismissed (2026-09-30). */
 export function formatOverlapWarning(overlaps: OverlapHit[], myRepoRoot: string | null = null): string | null {
   if (overlaps.length === 0) return null;
   // Whole-repo = EXACTLY `<repo_root>/**` (what main() narrows an unnamed shell edit to), and nothing more specific on
@@ -91,15 +91,16 @@ export function formatOverlapWarning(overlaps: OverlapHit[], myRepoRoot: string 
     if (o.kind === 'topics') return `${who} holds the same topic: ${yours.join(', ')} ("${(o.what ?? '').slice(0, 80)}")`;
     if (o.kind === 'repo') return `${who} works in the same repository (${yours.join(', ')})`;
     const theirs = globsOverlap(o.files ?? [], yours);
-    const note = whole(theirs, o.repo_root) ? ' (a whole-repo claim: it ran a shell edit whose file could not be named, so it may not touch your files at all)'
-      : whole(yours, myRepoRoot) ? ' (your side is a whole-repo claim from a shell edit whose file could not be named)' : '';
+    const note = whole(theirs, o.repo_root) ? ' (a whole-repo claim from a shell edit whose file could not be named: it may hold your file, so tell the user before writing)'
+      : whole(yours, myRepoRoot) ? ' (your side is a whole-repo claim from a shell edit; the file named here is theirs, so tell the user before you write it)' : '';
     return `${who} holds ${(theirs.length ? theirs : (o.files ?? [])).join(', ')}, which overlaps your ${yours.join(', ')}${note}`;
   });
-  // A ghost claim must not block: when every overlap is stale, say so instead of asking to coordinate with nobody.
+  // Stale only means no recent edit (a session that is reading refreshes nothing), so even an all-stale overlap says
+  // tell the user first; it just does not read like a live peer. There is no peer channel here, the user decides.
   // No "continue": in a compound shell command this merges with pre-git's advice to isolate a mutating git op.
   const next = overlaps.every((o) => o.stale)
-    ? 'Every overlapping claim is stale, so treat it as information, not a blocker.'
-    : 'Check the captain-memo work board (work_active) and coordinate, or pick a different area, before continuing.';
+    ? 'Every overlapping claim is stale (no recent edit, not necessarily ended): tell the user which session holds it before writing the same files.'
+    : 'Stop and tell the user which session holds it (work_active shows the board); never edit or deploy over another session\'s claim.';
   return `WORK-BOARD OVERLAP: ${lines.join('; ')}. ${next}`;
 }
 

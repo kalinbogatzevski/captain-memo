@@ -13,6 +13,19 @@ import { DEFAULT_WORKER_PORT } from './shared/paths.ts';
 import { loadWorkerEnv } from './shared/worker-env.ts';
 import { VERSION } from './shared/version.ts';
 import { resolveProjectId } from './hooks/shared.ts';
+import { detectRepoRootSync } from './worker/branch.ts';
+import { isAbsolute, resolve } from 'path';
+
+/** work_set `files` as the board compares them: absolute. The hook claims absolute paths and the overlap check is
+ *  plain string logic, so a relative "hr/rpc.php" matched nothing, ever (2026-09-30: two sessions' declared claims
+ *  on the same file were invisible to each other). Relative = relative to this session's repository root, else its
+ *  cwd. A process whose cwd is '/' has no session directory, so its paths pass through unchanged. */
+export function absoluteClaimFiles(files: unknown[], cwd: string): unknown[] {
+  if (!cwd || cwd === '/' || files.every((f) => typeof f !== 'string' || isAbsolute(f))) return files;
+  const base = detectRepoRootSync(cwd) ?? cwd;
+  // resolve() drops a trailing '/', which the overlap check reads as "this directory and everything under it".
+  return files.map((f) => (typeof f === 'string' && !isAbsolute(f) ? resolve(base, f.trim() === '' || f.trim() === '.' ? '**' : f) + (/[\\/]$/.test(f) ? '/' : '') : f));
+}
 
 // Seed worker.env so a custom CAPTAIN_MEMO_WORKER_PORT set there is honored even
 // when Claude Code launches the MCP server without that var in its environment.
@@ -256,13 +269,13 @@ export const TOOLS = [
   {
     name: 'work_set',
     description:
-      'Coordination board: publish or refresh a transient claim that YOU are working on something right now, then immediately get back any OTHER active sessions on this machine that overlap yours by TOPIC, by FILES, or by MEANING. Call this before diving into a codebase area, and re-call periodically (it is a heartbeat that keeps the lease alive). Other AI sessions on this machine (Claude, Codex, Gemini, Cursor all share one captain) see your claim at once. ALWAYS pass `topics`: 1–5 short tags for WHAT the work is about ("billing-rounding", "installer-windows") — two sessions on one topic are the collision that matters, whatever files they touch; a claim without topics is untitled work. Pass `agent` so the claim reads "codex on this captain", and `files` as the globs you will touch ("billing/**", "src/auth/login.ts"). Claims are advisory leases, not locks — they auto-expire (default 30 min) so a crashed session never blocks an area. Returns { session_id, topics, overlaps[], semantic }: each overlap says `kind` (topics | files | semantic | repo) and what is shared, and one with `stale: true` (and `age_s`) is a peer that stopped refreshing its claim, so its session has almost certainly ended: treat it as information, not a blocker; `semantic.degraded` true means the meaning-match half is currently off (embedder down) — then topic and file overlap are all you have, say so if you rely on it.',
+      'Coordination board: publish or refresh a transient claim that YOU are working on something right now, then immediately get back any OTHER active sessions on this machine that overlap yours by TOPIC, by FILES, or by MEANING. Call this before diving into a codebase area, and re-call periodically (it is a heartbeat that keeps the lease alive). Other AI sessions on this machine (Claude, Codex, Gemini, Cursor all share one captain) see your claim at once. ALWAYS pass `topics`: 1–5 short tags for WHAT the work is about ("billing-rounding", "installer-windows") — two sessions on one topic are the collision that matters, whatever files they touch; a claim without topics is untitled work. Pass `agent` so the claim reads "codex on this captain", and `files` as EVERY file you will write or deploy, as absolute paths (a relative path is resolved against the repository root of this session). Claims are advisory leases, not locks — they auto-expire (default 30 min) so a crashed session never blocks an area. Returns { session_id, topics, overlaps[], semantic }: each overlap says `kind` (topics | files | semantic | repo) and what is shared, and one with `stale: true` (and `age_s`) is a peer with no recent edit, not necessarily ended (it may only be reading or testing): never edit or deploy over it, stop and tell the user which session holds it; `semantic.degraded` true means the meaning-match half is currently off (embedder down) — then topic and file overlap are all you have, say so if you rely on it.',
     inputSchema: {
       type: 'object',
       properties: {
         what: { type: 'string', description: 'Short description, e.g. "refactoring the billing module".' },
         topics: { type: 'array', items: { type: 'string' }, description: 'What the work is ABOUT, 1–5 short kebab tags, e.g. ["billing-rounding", "invoice-pdf"]. Normalised to lowercase-kebab; "Fleet Keys" and "fleet-keys" are the same topic.' },
-        files: { type: 'array', items: { type: 'string' }, description: 'Globs you will touch, e.g. ["billing/**"].' },
+        files: { type: 'array', items: { type: 'string' }, description: 'Paths or globs you will write, absolute or relative to this repository\'s root, e.g. ["/srv/app/billing/**"] or ["billing/**"].' },
         agent: { type: 'string', description: 'Your AI label: claude | codex | gemini | cursor.' },
         ttl_s: { type: 'number', description: 'Lease seconds (default 1800, clamped 60..28800).' },
         session_id: { type: 'string', description: 'Stable id for your session; omit to use this MCP process default.' },
@@ -293,7 +306,7 @@ export const TOOLS = [
   {
     name: 'work_active',
     description:
-      'Coordination board: list the live work claims on this captain with their topics, `topic_contention` (every topic two or more sessions hold right now, with who), and, if you pass your session_id, `overlaps_with_mine` by topic / files / repo. `semantic.degraded` true means meaning-match is off (embedder down) — the board is then topics + files only. Call this to see who else is working on what before you start. READ `stale` BEFORE YOU DEFER TO A CLAIM: every row carries age_s (seconds since it was last refreshed) and stale:true once that passes the ceiling. A claim is a heartbeat: a session that is genuinely working re-publishes it constantly, so a stale claim almost always means that session DIED and its lease is merely running out the clock. Treat a stale claim as information, not as a blocker: say you saw it and proceed. Deferring to a ghost blocks real work for the rest of its TTL, which is worse than having no board at all.',
+      'Coordination board: list the live work claims on this captain with their topics, `topic_contention` (every topic two or more sessions hold right now, with who), and, if you pass your session_id, `overlaps_with_mine` by topic / files / repo. `semantic.degraded` true means meaning-match is off (embedder down) — the board is then topics + files only. Call this to see who else is working on what before you start. READ `stale` BEFORE YOU DEFER TO A CLAIM: every row carries age_s (seconds since it was last refreshed) and stale:true once that passes the ceiling. A claim is refreshed by edits, so stale means no recent edit: the session may have died, or may only be reading or testing (on 2026-09-30 a live one was taken for dead and its work overwritten). Before writing files a stale claim holds, stop and tell the user which session holds it and let them decide. Never wait out a stale lease on your own: that blocks real work for the rest of its TTL.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -303,7 +316,7 @@ export const TOOLS = [
   },
   {
     name: 'work_clear',
-    description: 'Coordination board: drop your work claim when the task is done (releases the lease immediately instead of waiting for it to expire). Reports what it ACTUALLY did: cleared:true when a claim was removed, cleared:false when this captain held no claim with that session_id, so nothing was cleared.',
+    description: 'Coordination board: drop your work claim once the task is committed AND deployed, not before (releases the lease immediately instead of waiting for it to expire). Reports what it ACTUALLY did: cleared:true when a claim was removed, cleared:false when this captain held no claim with that session_id, so nothing was cleared.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -450,8 +463,8 @@ export async function dispatchTool(
         break;
       }
       case 'work_set': {
-        const a = (args ?? {}) as { session_id?: string };
-        result = await workerPost(workerBase, '/worknote/set', { ...a, session_id: a.session_id || sessionId });
+        const a = (args ?? {}) as { session_id?: string; files?: unknown };
+        result = await workerPost(workerBase, '/worknote/set', { ...a, ...(Array.isArray(a.files) ? { files: absoluteClaimFiles(a.files, cwd()) } : {}), session_id: a.session_id || sessionId });
         break;
       }
       case 'todo_add': {

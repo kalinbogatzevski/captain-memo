@@ -3,6 +3,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { readStdinJson, writeStdout, workerFetch, logHookError, workerFailureMessage, isMainModule } from './shared.ts';
 import type { HomeworkItem } from '../worker/homework.ts';
+import { LOCAL_ARTICLES } from './local-articles.ts';
 import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS, DEFAULT_WORKER_PORT, DATA_DIR } from '../shared/paths.ts';
 import { VERSION } from '../shared/version.ts';
 import { consumeUpgrade, formatUpgradeBanner, formatAutoUpdateBanner, formatRollbackBanner, writeMarker } from '../shared/self-update.ts';
@@ -407,6 +408,10 @@ export async function main(): Promise<void> {
   const hw = stats.ok && stats.body ? await workerFetch<{ items: HomeworkItem[] }>('/homework/list?status=open', { method: 'GET', timeoutMs: 1500 }) : null;
   const homework = hw?.ok && hw.body ? hw.body.items : [];
 
+  // The work-board Foundation and the local articles go into THIS session's context (local-articles.ts says why).
+  // Static text, so it rides on every branch below: a session whose worker is down still gets the rules.
+  const articles = { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: LOCAL_ARTICLES } };
+
   if (stats.ok && stats.body) {
     // Claude Code's SessionStart hook protocol expects a JSON envelope on
     // stdout. The `systemMessage` field becomes the visible banner shown
@@ -414,6 +419,7 @@ export async function main(): Promise<void> {
     // text on stdout is silently discarded.
     writeStdout(JSON.stringify({
       continue: true,
+      ...articles,
       systemMessage: withNotice(formatBanner(stats.body, homework)),
     }));
   } else if (inTransition) {
@@ -426,6 +432,7 @@ export async function main(): Promise<void> {
       `worker ${inTransition.phase} (breadcrumb ${Math.round((Date.now() - inTransition.ts) / 1000)}s old) — still unreachable after the transition wait; self-heal skipped`));
     writeStdout(JSON.stringify({
       continue: true,
+      ...articles,
       systemMessage: withNotice(formatTransitionBanner(inTransition, willAnnounce)),
     }));
   } else {
@@ -438,6 +445,7 @@ export async function main(): Promise<void> {
     markSessionDegraded(payload.session_id ?? '');
     writeStdout(JSON.stringify({
       continue: true,
+      ...articles,
       systemMessage: withNotice(formatDegradedBanner(stats.timedOut ? 'worker timed out' : 'worker not reachable')),
     }));
   }

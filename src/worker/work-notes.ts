@@ -190,6 +190,10 @@ export function inheritDeclaredIntent(kv: WorkNoteKv, input: SetWorkNoteInput, n
   if (!prev || !isLive(prev, now) || !prev.declared || !(typeof prev.declared_until === 'number' && now < prev.declared_until)) return false;
   if (normalizeTopics(input.topics).length === 0 && prev.topics?.length) input.topics = prev.topics;
   input.what = prev.what;
+  // The hook sends no ttl_s, so without this every edit cut a declared 2 h lease back to the 30 min default: a session
+  // that stopped editing to read or test lost its claim early (2026-09-30 incident, work_set 7200 s stored as 1800 s).
+  // Capped at what is left of the declaration (at least the default), so an edit just before it ends leaves no 2 h ghost.
+  if (input.ttl_s === undefined && typeof prev.ttl_s === 'number') input.ttl_s = Math.min(prev.ttl_s, Math.max(leaseSeconds(undefined), Math.ceil((prev.declared_until - now) / 1000)));
   input.declared = true;
   input.declared_until = prev.declared_until;
   return true;

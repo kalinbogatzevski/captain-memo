@@ -53,14 +53,22 @@ It is local-first: the corpus lives on this machine, not in a vendor cloud.
 The same shared worker also runs a **work-coordination board** — "who is working on what right now" across
 every AI session on this machine. Use it to avoid two agents clobbering the same files, or the same thing
 in different files:
-- **Before editing a shared area**, call `work_set(what, { topics, files, agent })`. `topics` is 1–5 short
+- **First, `work_active()`**: see what other sessions hold before your first edit. **Then, before touching
+  anything**, call `work_set(what, { topics, files, agent })` with `files` as ABSOLUTE paths covering every
+  file you will write, append to or deploy. Call `work_active()` again before writing a shared file, before a
+  commit, a checkout / reset / stash / add, and before every deploy: deploy only if the remote md5 equals what
+  you last read, never a copy built earlier or "HEAD + my hunk" around another session's work. If another
+  session holds your file, never edit or deploy over it: stop and tell the user which session holds it. A
+  stale claim means no recent edit, not that the session ended. One tree per session (`git worktree add`);
+  in a shared tree, `git add <paths>`, never `-A`. `topics` is 1–5 short
   tags for WHAT the work is about (`["billing-rounding", "invoice-pdf"]`) — two sessions on one topic is
   the collision that matters, whatever files they touch; a claim without topics is untitled work. The call
   publishes your claim AND returns `overlaps[]` — by topic, files, meaning or shared checkout (`kind` says
-  which). Non-empty ⇒ coordinate before you edit. If it says `semantic.degraded`, meaning-match is off and
+  which). Non-empty ⇒ tell the user before you edit. If it says `semantic.degraded`, meaning-match is off and
   topics are what keeps you honest.
 - Re-call `work_set` periodically to keep the lease alive (it auto-expires, so it never blocks an area), and
-  `work_clear()` when done. `work_active()` lists the live claims and `topic_contention` (every topic two or
+  `work_clear()` once your change is committed and deployed, not before; re-`work_set` after a long pause.
+  `work_active()` lists the live claims and `topic_contention` (every topic two or
   more sessions hold, with who).
 - Nothing claims for you on this CLI — only Claude Code auto-claims the files it edits. State intent yourself.
 

@@ -154,8 +154,8 @@ function logWorkerFailure(event, path, res) {
 function staleNote(peer) {
   if (!peer.stale)
     return "";
-  const ago = typeof peer.age_s === "number" ? `, last refreshed ${Math.round(peer.age_s / 60)}m ago` : "";
-  return `stale${ago}; its session has probably ended`;
+  const ago = typeof peer.age_s === "number" ? `${Math.round(peer.age_s / 60)}m` : "a while";
+  return `stale: no edit for ${ago}, may be reading or ended`;
 }
 function resolveProjectId(cwd) {
   if (process.env.CAPTAIN_MEMO_PROJECT_ID && !workerEnvLoadedKeys().has("CAPTAIN_MEMO_PROJECT_ID"))
@@ -1425,14 +1425,55 @@ if (isMainModule(import.meta)) {
 
 // src/hooks/session-start.ts
 init_shared();
-init_paths();
 import { mkdirSync as mkdirSync6, readFileSync as readFileSync8, statSync as statSync4, writeFileSync as writeFileSync6 } from "fs";
 import { join as join15 } from "path";
 import { homedir as homedir9 } from "os";
+
+// src/hooks/local-articles.ts
+var LOCAL_ARTICLES = [
+  "## Captain Memo articles: you are one AI among several sessions on this machine",
+  "",
+  "FOUNDATION: THE WORK BOARD. Every session, every project, before anything else.",
+  "- LOOK FIRST: `work_active()` before your first edit, to see what other sessions hold.",
+  '- CLAIM BEFORE TOUCHING ANYTHING: `work_set("<what>", { topics: [1-5 tags], files: [paths] })`. List',
+  "  EVERY file you will write, append to or deploy, as ABSOLUTE paths.",
+  "- RE-CHECK `work_active` before writing a shared file, before commit/checkout/reset/stash/add, and before",
+  `  any deploy (scp, rsync). Never ship a copy built earlier, or "HEAD + my hunk" around another session's`,
+  "  work. Deploy only if the remote md5 equals what you last read.",
+  "- RESPECT A CLAIM: never edit or deploy over another session's claim. Stop and tell the user which",
+  "  session holds it, and let them decide. Stale means no recent edit, not ended: it may only be reading.",
+  "- RELEASE with `work_clear` only once committed AND deployed; re-`work_set` after a long pause.",
+  "- ONE TREE PER SESSION: your own `git worktree add ../<n>`. Shared tree? `git add <paths>`, never -A.",
+  "- AUTO-CLAIM (Claude Code only) records the files you touch but INFERS the why, and can miss.",
+  "  State intent yourself with `work_set`. On every other AI nothing claims for you.",
+  "Why: on 2026-09-30 two sessions in one checkout skipped these steps and each deployed over the other.",
+  "",
+  "1. SEARCH BEFORE YOU ACT. `search_all` first, grep second. `remember` what is non-obvious, with the WHY.",
+  "2. NEVER GUESS. Verify against memory, the repo's docs, the code path INCLUDING its call sites, and the",
+  '   live data. If you have not, say "I have not verified X".',
+  "3. COMMITTED IS NOT DEPLOYED. Before reporting done, check the RUNNING process started AFTER your edit.",
+  "   A service that predates your change is serving the old code.",
+  "4. ASK when intent is ambiguous; verification tells you how something works, never what is wanted.",
+  "   If mid-task discovery widens the scope, stop and report it before acting.",
+  '5. `idea:` / `todo:` FROM THE USER IS HOMEWORK, NOT A TASK SWITCH: say "noted" (`todo_add` if no hook did).',
+  "   `todo_list()` = what waits; `todo_claim(id)` before starting one, `todo_done(id, note)` after.",
+  "   DEFERRED SCOPE IS HOMEWORK: agreed to leave a piece for later? `todo_add` it in that turn, unasked,",
+  '   and say "filed as homework #N".',
+  "6. RUN WORK NEXT TO ITS DATA: tests and data scripts run on (or beside) the DB host, never over a WAN",
+  "   (~190 vs ~0.2 ms a query). Iterate on the tests a change touches; one full run at the end.",
+  "7. THE USER'S TIME IS THE COST. Independent work runs in parallel. Review a small change yourself, no",
+  "   build -> review -> fix chain. Over ~15 min? Say so first.",
+  "",
+  "Work-board and homework tools in full: the captain-memo skill (`skills/captain-memo/SKILL.md`)."
+].join(`
+`);
+
+// src/hooks/session-start.ts
+init_paths();
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.48.0",
+  version: "0.49.0",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -1955,9 +1996,11 @@ async function main2() {
 ${banner}` : banner;
   const hw = stats.ok && stats.body ? await workerFetch("/homework/list?status=open", { method: "GET", timeoutMs: 1500 }) : null;
   const homework = hw?.ok && hw.body ? hw.body.items : [];
+  const articles = { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: LOCAL_ARTICLES } };
   if (stats.ok && stats.body) {
     writeStdout(JSON.stringify({
       continue: true,
+      ...articles,
       systemMessage: withNotice(formatBanner(stats.body, homework))
     }));
   } else if (inTransition) {
@@ -1965,6 +2008,7 @@ ${banner}` : banner;
     logHookError("SessionStart", new Error(`worker ${inTransition.phase} (breadcrumb ${Math.round((Date.now() - inTransition.ts) / 1000)}s old) \u2014 still unreachable after the transition wait; self-heal skipped`));
     writeStdout(JSON.stringify({
       continue: true,
+      ...articles,
       systemMessage: withNotice(formatTransitionBanner(inTransition, willAnnounce))
     }));
   } else {
@@ -1972,6 +2016,7 @@ ${banner}` : banner;
     markSessionDegraded(payload.session_id ?? "");
     writeStdout(JSON.stringify({
       continue: true,
+      ...articles,
       systemMessage: withNotice(formatDegradedBanner(stats.timedOut ? "worker timed out" : "worker not reachable"))
     }));
   }
@@ -2291,10 +2336,10 @@ function formatOverlapWarning(overlaps, myRepoRoot = null) {
     if (o.kind === "repo")
       return `${who} works in the same repository (${yours.join(", ")})`;
     const theirs = globsOverlap(o.files ?? [], yours);
-    const note = whole(theirs, o.repo_root) ? " (a whole-repo claim: it ran a shell edit whose file could not be named, so it may not touch your files at all)" : whole(yours, myRepoRoot) ? " (your side is a whole-repo claim from a shell edit whose file could not be named)" : "";
+    const note = whole(theirs, o.repo_root) ? " (a whole-repo claim from a shell edit whose file could not be named: it may hold your file, so tell the user before writing)" : whole(yours, myRepoRoot) ? " (your side is a whole-repo claim from a shell edit; the file named here is theirs, so tell the user before you write it)" : "";
     return `${who} holds ${(theirs.length ? theirs : o.files ?? []).join(", ")}, which overlaps your ${yours.join(", ")}${note}`;
   });
-  const next = overlaps.every((o) => o.stale) ? "Every overlapping claim is stale, so treat it as information, not a blocker." : "Check the captain-memo work board (work_active) and coordinate, or pick a different area, before continuing.";
+  const next = overlaps.every((o) => o.stale) ? "Every overlapping claim is stale (no recent edit, not necessarily ended): tell the user which session holds it before writing the same files." : "Stop and tell the user which session holds it (work_active shows the board); never edit or deploy over another session's claim.";
   return `WORK-BOARD OVERLAP: ${lines.join("; ")}. ${next}`;
 }
 async function main3() {

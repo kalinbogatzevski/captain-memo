@@ -421,3 +421,19 @@ test('inheritDeclaredIntent: topics and a declared what carry onto an auto-claim
   expect(inheritDeclaredIntent(kv2, auto2, 2_000)).toBe(false);
   expect(auto2.what).toBe('editing 3 file(s)');
 });
+
+// 2026-09-30: the hook sends no ttl_s, so every edit cut a declared 7200 s lease to the 1800 s default.
+test('inheritDeclaredIntent: an auto-claim keeps the declared lease length; an explicit ttl_s still wins', () => {
+  const kv = makeKv();
+  setWorkNote(kv, { session_id: 'S', what: 'hr countries', ttl_s: 7200, declared: true, declared_until: 1_000 + 7_200_000 }, 1_000);
+  const auto: { session_id: string; what: string; files: string[]; enrich_from_observations: boolean; ttl_s?: number } = { session_id: 'S', what: 'editing 1 file(s)', files: ['/r/a.php'], enrich_from_observations: true };
+  expect(inheritDeclaredIntent(kv, auto, 2_000)).toBe(true);
+  expect(setWorkNote(kv, auto, 2_000).ttl_s).toBe(7199);   // what is left of the declared 7200 s, not the 1800 s default
+  // Near the end of the declaration the carried lease shrinks to what is left (never below the 1800 s default).
+  const late: typeof auto = { session_id: 'S', what: 'editing', files: ['/r/a.php'], enrich_from_observations: true };
+  inheritDeclaredIntent(kv, late, 1_000 + 7_200_000 - 60_000);
+  expect(late.ttl_s).toBe(1800);
+  const explicit = { session_id: 'S', what: 'editing', files: ['/r/a.php'], enrich_from_observations: true, ttl_s: 600 };
+  inheritDeclaredIntent(kv, explicit, 3_000);
+  expect(explicit.ttl_s).toBe(600);
+});

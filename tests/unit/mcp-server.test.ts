@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test';
-import { dispatchTool, resolveWorkBoardSessionId } from '../../src/mcp-server.ts';
+import { dispatchTool, resolveWorkBoardSessionId, absoluteClaimFiles } from '../../src/mcp-server.ts';
 
 // THE SELF-OVERLAP BUG. The PreToolUse auto-claim publishes under CLAUDE_CODE_SESSION_ID; minting an
 // unrelated `mcp-…` id put one session on the board twice, and work-notes.ts excludes self by EXACT
@@ -79,4 +79,22 @@ test('dispatchTool — a worker error (e.g. 500) surfaces as an MCP error, not a
     { workerBase: `http://127.0.0.1:${badPort}`, sessionId: 's1', cwd: () => '/tmp' },
   );
   expect(result.isError).toBe(true);
+});
+
+// 2026-09-30: a relative work_set path never matched the hook's absolute claims, so two declared claims on the same
+// file were invisible to each other. Relative paths resolve against the session's repository root.
+test('work_set: relative files resolve against the repo root; absolute ones, and a cwd of /, pass through', () => {
+  const root = require('node:child_process').execSync('git rev-parse --show-toplevel', { cwd: import.meta.dir, encoding: 'utf-8' }).trim();
+  expect(absoluteClaimFiles(['src/a.ts', 'docs/', '/abs/x.php', '**', '.'], `${root}/tests`)).toEqual([`${root}/src/a.ts`, `${root}/docs/`, '/abs/x.php', `${root}/**`, `${root}/**`]);
+  expect(absoluteClaimFiles(['src/a.ts'], '/')).toEqual(['src/a.ts']);
+});
+
+test('work_set dispatch sends absolute files to the worker', async () => {
+  let body: { files?: string[] } = {};
+  const srv = Bun.serve({ port: 0, async fetch(req) { body = await req.json() as typeof body; return Response.json({ ok: true }); } });
+  const root = require('node:child_process').execSync('git rev-parse --show-toplevel', { cwd: import.meta.dir, encoding: 'utf-8' }).trim();
+  try {
+    await dispatchTool('work_set', { what: 'x', files: ['src/mcp-server.ts'] }, { workerBase: `http://localhost:${srv.port}`, sessionId: 's', cwd: () => root });
+    expect(body.files).toEqual([`${root}/src/mcp-server.ts`]);
+  } finally { srv.stop(); }
 });

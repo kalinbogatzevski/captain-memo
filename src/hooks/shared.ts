@@ -159,11 +159,12 @@ export function logWorkerFailure(event: string, path: string, res: FetchResult<u
 }
 
 /** How a work-board advisory words a peer claim the worker marked stale (no heartbeat past the ceiling), or ''
- *  for a live one. A stale claim's session has almost certainly ended, so it must not read like live work. */
+ *  for a live one. Claims refresh on edits only, so stale means no recent edit, not ended: a session that is reading
+ *  or testing refreshes nothing (2026-09-30: a live one read as "probably ended" and its work was overwritten). */
 export function staleNote(peer: { stale?: boolean; age_s?: number }): string {
   if (!peer.stale) return '';
-  const ago = typeof peer.age_s === 'number' ? `, last refreshed ${Math.round(peer.age_s / 60)}m ago` : '';
-  return `stale${ago}; its session has probably ended`;
+  const ago = typeof peer.age_s === 'number' ? `${Math.round(peer.age_s / 60)}m` : 'a while';
+  return `stale: no edit for ${ago}, may be reading or ended`;
 }
 
 /** Coerce hook-time CWD → project_id for non-installed flows. Honors $CAPTAIN_MEMO_PROJECT_ID, but only when
