@@ -7,6 +7,14 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.46.1] — 2026-09-30
+
+### Changed
+
+- **Kimi capture reads only the new part of a session** (a one-turn growth of a 64 MB transcript: 4.3 s to 1 ms),
+  with a full read whenever Kimi rewrites the top of its file. **Antigravity capture stops reading** once it has
+  everything it can record (2.9 s to 4 ms on a large session, identical results).
+
 ## [0.46.0] — 2026-09-30
 
 ### Fixed

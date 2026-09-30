@@ -68,6 +68,38 @@ test('agy discover: marker is STABLE across repeated reads (no dup re-ingestion 
   expect(m3).toBe(m1);
 });
 
+test('agy extract: stopping at the event cap yields exactly what reading every step did', () => {
+  // The pre-cap algorithm, verbatim: every step's printable text, joined, consecutive duplicate lines dropped,
+  // then the first MAX_EVENTS windows of SUMMARY_MAX chars.
+  const reference = (blobs: Uint8Array[]): string[] => {
+    const out: string[] = [];
+    for (const line of blobs.map((b) => extractPrintable(b)).join('\n').split('\n')) {
+      const t = line.trim();
+      if (t && t !== out[out.length - 1]) out.push(t);
+    }
+    const text = out.join('\n');
+    const chunks: string[] = [];
+    for (let i = 0; i < text.length && chunks.length < 8; i += 2000) chunks.push(text.slice(i, i + 2000));
+    return chunks;
+  };
+  for (const steps of [1, 3, 7, 8, 9, 40, 400]) {
+    const dir = mkdtempSync(join(tmpdir(), 'cm-agy-cap-'));
+    const path = join(dir, 's.db');
+    const db = new Database(path);
+    db.exec('CREATE TABLE steps (idx INTEGER, step_payload BLOB)');
+    const blobs: Uint8Array[] = [];
+    for (let i = 0; i < steps; i++) {
+      // the prompt repeated across steps (deduped across the row boundary) and ~2 KB of new text per step
+      const body = `  the same prompt  \n${`step ${i} output ${'x'.repeat(i % 50)}\n`.repeat(40)}`;
+      blobs.push(Uint8Array.from([0x08, 0x0e, ...Buffer.from(body), 0x00]));
+    }
+    db.transaction(() => { blobs.forEach((b, i) => db.query('INSERT INTO steps VALUES (?, ?)').run(i, b)); })();
+    db.close();
+    const events = createAgySource({ projectId: 'p', dir }).extract({ sessionId: 's', path, marker: 'm', mtimeEpoch: 1 });
+    expect(events.map((e) => e.tool_result_summary)).toEqual(reference(blobs));
+  }
+});
+
 test('agy enabled(): default on, off via env=0', () => {
   expect(createAgySource({ projectId: 'p', env: {} }).enabled()).toBe(true);
   expect(createAgySource({ projectId: 'p', env: { CAPTAIN_MEMO_CAPTURE_AGY: '0' } }).enabled()).toBe(false);

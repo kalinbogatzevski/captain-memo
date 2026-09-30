@@ -33,34 +33,48 @@ export interface TurnMeta {
   fallbackTsEpoch: number;
 }
 
-interface Turn { promptNumber: number; userText: string; parts: string[]; files: Set<string>; tsEpoch: number }
+interface Turn { promptNumber: number; userText: string; parts: string[]; files: Set<string>; tsEpoch: number; start: number }
 
 /** Aggregate a flat role-tagged transcript into one event per user turn. */
 export function entriesToTurnEvents(entries: TranscriptEntry[], meta: TurnMeta): RawObservationEvent[] {
+  return entriesToTurns(entries, meta).events;
+}
+
+/** entriesToTurnEvents plus where its LAST turn began, for an incremental resume. `promptBase` continues the
+ *  numbering of turns before entries[0]. `lastStart` is the index in `entries` of the entry that opened the last
+ *  turn (0 when it opened implicitly before any user entry; null when there is no turn), `eventsBeforeLast` the
+ *  number of events the turns before it produced, `lastPrompt` its prompt number. Resuming from `lastStart` with
+ *  promptBase = lastPrompt - 1 re-creates that turn exactly, but only for entries WITHOUT tsEpoch: a turn's
+ *  timestamp depends on earlier entries' tsEpoch, which this does not carry across. */
+export function entriesToTurns(entries: TranscriptEntry[], meta: TurnMeta, promptBase = 0): {
+  events: RawObservationEvent[]; lastStart: number | null; eventsBeforeLast: number; lastPrompt: number;
+} {
   const turns: Turn[] = [];
   let cur: Turn | null = null;
-  let promptNumber = 0;
+  let promptNumber = promptBase;
   let lastTs = meta.fallbackTsEpoch;
 
-  const start = (userText: string, ts: number): Turn => {
-    cur = { promptNumber: ++promptNumber, userText, parts: [], files: new Set(), tsEpoch: ts };
+  const start = (userText: string, ts: number, at: number): Turn => {
+    cur = { promptNumber: ++promptNumber, userText, parts: [], files: new Set(), tsEpoch: ts, start: at };
     turns.push(cur);
     return cur;
   };
-  const ensure = (): Turn => cur ?? start('', lastTs);
+  const ensure = (): Turn => cur ?? start('', lastTs, 0);
 
-  for (const e of entries) {
+  for (const [i, e] of entries.entries()) {
     if (e.tsEpoch) lastTs = e.tsEpoch;
     if (e.role === 'system' || e.role === 'info') continue;
     let turn: Turn;
-    if (e.role === 'user') turn = start(e.text, lastTs);
+    if (e.role === 'user') turn = start(e.text, lastTs, i);
     else if (e.role === 'assistant') { turn = ensure(); if (e.text.trim()) turn.parts.push(`assistant: ${e.text}`); }
     else { turn = ensure(); if (e.text.trim()) turn.parts.push(e.text); } // tool
     if (e.files) for (const f of e.files) turn.files.add(f);
   }
 
-  return turns
-    .filter((t) => t.userText.trim() || t.parts.length > 0)
+  const keep = (t: Turn) => !!t.userText.trim() || t.parts.length > 0;
+  const last = turns[turns.length - 1];
+  const events = turns
+    .filter(keep)
     .map((t) => ({
       session_id: meta.sessionId,
       project_id: meta.projectId,
@@ -75,4 +89,10 @@ export function entriesToTurnEvents(entries: TranscriptEntry[], meta: TurnMeta):
       origin_agent: meta.originAgent,
       source: meta.sourceTag,
     }));
+  return {
+    events,
+    lastStart: last ? last.start : null,
+    eventsBeforeLast: turns.slice(0, -1).filter(keep).length,
+    lastPrompt: last ? last.promptNumber : promptBase,
+  };
 }
