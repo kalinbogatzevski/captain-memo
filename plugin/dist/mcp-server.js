@@ -12857,6 +12857,10 @@ function workerEnvPaths() {
     paths.push("/etc/captain-memo/worker.env");
   return paths;
 }
+var loadedKeys = new Set;
+function workerEnvLoadedKeys() {
+  return loadedKeys;
+}
 function loadWorkerEnv() {
   for (const p of workerEnvPaths()) {
     if (!existsSync(p))
@@ -12882,13 +12886,14 @@ function loadWorkerEnv() {
         val = val.slice(1, -1);
       }
       process.env[key] = val;
+      loadedKeys.add(key);
     }
   }
 }
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.47.0",
+  version: "0.47.1",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -12970,7 +12975,7 @@ var HOOK_LOG_FILE = join2(HOOK_LOG_DIR, "hook.log");
 var HOOK_LOG_ROTATE_BYTES = 10 * 1024 * 1024;
 var WORKER_BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
 function resolveProjectId(cwd) {
-  if (process.env.CAPTAIN_MEMO_PROJECT_ID)
+  if (process.env.CAPTAIN_MEMO_PROJECT_ID && !workerEnvLoadedKeys().has("CAPTAIN_MEMO_PROJECT_ID"))
     return process.env.CAPTAIN_MEMO_PROJECT_ID;
   if (!cwd)
     return "default";

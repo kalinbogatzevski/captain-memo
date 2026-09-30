@@ -45,6 +45,16 @@ var init_paths = __esm(() => {
   DEFAULT_REMEMBER_DIR = join(homedir(), ".claude", "memory");
 });
 
+// src/shared/worker-env.ts
+function workerEnvLoadedKeys() {
+  return loadedKeys;
+}
+var loadedKeys;
+var init_worker_env = __esm(() => {
+  init_paths();
+  loadedKeys = new Set;
+});
+
 // src/hooks/shared.ts
 import { appendFileSync, mkdirSync, statSync, renameSync, existsSync } from "fs";
 import { homedir as homedir2 } from "os";
@@ -148,7 +158,7 @@ function staleNote(peer) {
   return `stale${ago}; its session has probably ended`;
 }
 function resolveProjectId(cwd) {
-  if (process.env.CAPTAIN_MEMO_PROJECT_ID)
+  if (process.env.CAPTAIN_MEMO_PROJECT_ID && !workerEnvLoadedKeys().has("CAPTAIN_MEMO_PROJECT_ID"))
     return process.env.CAPTAIN_MEMO_PROJECT_ID;
   if (!cwd)
     return "default";
@@ -173,6 +183,7 @@ function summarize(value, max = 1500) {
 var HOOK_LOG_DIR, HOOK_LOG_FILE, HOOK_LOG_ROTATE_BYTES, WORKER_BASE;
 var init_shared = __esm(() => {
   init_paths();
+  init_worker_env();
   HOOK_LOG_DIR = join2(homedir2(), ".captain-memo", "logs");
   HOOK_LOG_FILE = join2(HOOK_LOG_DIR, "hook.log");
   HOOK_LOG_ROTATE_BYTES = 10 * 1024 * 1024;
@@ -936,11 +947,6 @@ var init_sqlite_extensions = __esm(() => {
 ` + '  (Or install with the embedder set to "skip" for keyword-only retrieval, which needs no extension.)';
 });
 
-// src/shared/worker-env.ts
-var init_worker_env = __esm(() => {
-  init_paths();
-});
-
 // src/shared/summarizer-login.ts
 var init_summarizer_login = () => {};
 
@@ -1426,7 +1432,7 @@ import { homedir as homedir9 } from "os";
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.47.0",
+  version: "0.47.1",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,

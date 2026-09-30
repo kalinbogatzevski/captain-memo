@@ -7,6 +7,18 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.47.1] — 2026-09-30
+
+### Fixed
+
+- **Homework added from a session is filed under that session's project again, not "default".** The MCP server
+  loads the worker's settings file into its own environment, and that file sets `CAPTAIN_MEMO_PROJECT_ID=default`
+  (the worker's corpus id, written by every install). Project detection honored that value before looking at the
+  session's folder, so every `todo_add` without an explicit project was filed as "default", which hides it from
+  sessions that only work their own project's homework. A `CAPTAIN_MEMO_PROJECT_ID` set in the session's own
+  environment still wins.
+
+
 ## [0.47.0] — 2026-09-30
 
 ### Fixed

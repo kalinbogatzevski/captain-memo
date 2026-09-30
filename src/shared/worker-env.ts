@@ -105,6 +105,12 @@ export function setWorkerEnvVar(key: string, value: string, path: string = worke
  *
  * Idempotent.
  */
+const loadedKeys = new Set<string>();
+
+/** The keys loadWorkerEnv seeded into process.env: resolveProjectId must not take the worker's own
+ *  CAPTAIN_MEMO_PROJECT_ID for a session's project. */
+export function workerEnvLoadedKeys(): ReadonlySet<string> { return loadedKeys; }
+
 export function loadWorkerEnv(): void {
   for (const p of workerEnvPaths()) {
     if (!existsSync(p)) continue;
@@ -129,6 +135,7 @@ export function loadWorkerEnv(): void {
         val = val.slice(1, -1);
       }
       process.env[key] = val;
+      loadedKeys.add(key);
     }
   }
 }

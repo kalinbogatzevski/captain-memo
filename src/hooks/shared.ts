@@ -14,6 +14,7 @@ import { homedir } from 'os';
 import { join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { DEFAULT_WORKER_PORT } from '../shared/paths.ts';
+import { workerEnvLoadedKeys } from '../shared/worker-env.ts';
 
 const HOOK_LOG_DIR = join(homedir(), '.captain-memo', 'logs');
 const HOOK_LOG_FILE = join(HOOK_LOG_DIR, 'hook.log');
@@ -165,9 +166,12 @@ export function staleNote(peer: { stale?: boolean; age_s?: number }): string {
   return `stale${ago}; its session has probably ended`;
 }
 
-/** Coerce hook-time CWD → project_id for non-installed flows. Honors $CAPTAIN_MEMO_PROJECT_ID. */
+/** Coerce hook-time CWD → project_id for non-installed flows. Honors $CAPTAIN_MEMO_PROJECT_ID, but only when
+ *  the session's own environment set it: worker.env carries CAPTAIN_MEMO_PROJECT_ID=default (the worker's corpus
+ *  id, written by every install), and the MCP server seeds its env from that file, so honoring it there filed
+ *  every todo_add from every project as "default". */
 export function resolveProjectId(cwd: string | undefined): string {
-  if (process.env.CAPTAIN_MEMO_PROJECT_ID) return process.env.CAPTAIN_MEMO_PROJECT_ID;
+  if (process.env.CAPTAIN_MEMO_PROJECT_ID && !workerEnvLoadedKeys().has('CAPTAIN_MEMO_PROJECT_ID')) return process.env.CAPTAIN_MEMO_PROJECT_ID;
   if (!cwd) return 'default';
   // Split on BOTH separators so a Windows cwd ("C:\\Users\\me\\project") keys to
   // the folder name, not the whole backslash path. POSIX paths are unaffected.
