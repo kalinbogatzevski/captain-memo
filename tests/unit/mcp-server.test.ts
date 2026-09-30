@@ -98,3 +98,35 @@ test('work_set dispatch sends absolute files to the worker', async () => {
     expect(body.files).toEqual([`${root}/src/mcp-server.ts`]);
   } finally { srv.stop(); }
 });
+
+// Guard 2 (2026-09-30): only pid-carrying (Claude Code) claims block. A work_set under Claude stamps the claude process
+// (this server's parent) so the heartbeat keeps its claim guarded; the model cannot pick the pid. Elsewhere, none.
+test('work_set stamps the parent pid under Claude Code only, over any pid the model passes', async () => {
+  let body: { pid?: number } = {};
+  const srv = Bun.serve({ port: 0, async fetch(req) { body = await req.json() as typeof body; return Response.json({ ok: true }); } });
+  const prev = process.env.CLAUDE_CODE_SESSION_ID;
+  try {
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess';
+    await dispatchTool('work_set', { what: 'x', pid: 1 }, { workerBase: `http://localhost:${srv.port}`, sessionId: 's', cwd: () => '/' });
+    expect(body.pid).toBe(process.ppid);
+    delete process.env.CLAUDE_CODE_SESSION_ID;
+    await dispatchTool('work_set', { what: 'x', pid: 1 }, { workerBase: `http://localhost:${srv.port}`, sessionId: 's', cwd: () => '/' });
+    expect(body.pid).toBeUndefined();
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_CODE_SESSION_ID; else process.env.CLAUDE_CODE_SESSION_ID = prev;
+    srv.stop();
+  }
+});
+
+// work_set and work_clear act only on the caller's own session: `by` is always this server's session, whatever the model sends.
+test('work_set and work_clear send the caller as `by`, over any `by` the model passes', async () => {
+  const seen: Record<string, unknown> = {};
+  const srv = Bun.serve({ port: 0, async fetch(req) { seen[new URL(req.url).pathname] = await req.json(); return Response.json({ ok: true }); } });
+  try {
+    const deps = { workerBase: `http://localhost:${srv.port}`, sessionId: 's', cwd: () => '/' };
+    await dispatchTool('work_set', { what: 'x', session_id: 'peer', by: 'peer' }, deps);
+    expect(seen['/worknote/set']).toMatchObject({ session_id: 'peer', by: 's' });
+    await dispatchTool('work_clear', { session_id: 'peer' }, deps);
+    expect(seen['/worknote/clear']).toEqual({ session_id: 'peer', by: 's' });
+  } finally { srv.stop(); }
+});

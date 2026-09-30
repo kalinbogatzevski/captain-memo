@@ -11,9 +11,10 @@
 
 import { appendFileSync, mkdirSync, statSync, renameSync, existsSync } from 'fs';
 import { homedir } from 'os';
-import { join, resolve } from 'path';
+import { join, resolve, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
 import { DEFAULT_WORKER_PORT } from '../shared/paths.ts';
+import { detectRepoRootSync } from '../worker/branch.ts';
 import { workerEnvLoadedKeys } from '../shared/worker-env.ts';
 
 const HOOK_LOG_DIR = join(homedir(), '.captain-memo', 'logs');
@@ -199,4 +200,15 @@ export function summarize(value: unknown, max = 1500): string {
   } catch {
     return '[unserializable]';
   }
+}
+
+/** work_set `files` as the board compares them: absolute. The hook claims absolute paths and the overlap check is
+ *  plain string logic, so a relative "hr/rpc.php" matched nothing, ever (2026-09-30: two sessions' declared claims
+ *  on the same file were invisible to each other). Relative = relative to this session's repository root, else its
+ *  cwd. A process whose cwd is '/' has no session directory, so its paths pass through unchanged. */
+export function absoluteClaimFiles(files: unknown[], cwd: string): unknown[] {
+  if (!cwd || cwd === '/' || files.every((f) => typeof f !== 'string' || isAbsolute(f))) return files;
+  const base = detectRepoRootSync(cwd) ?? cwd;
+  // resolve() drops a trailing '/', which the overlap check reads as "this directory and everything under it".
+  return files.map((f) => (typeof f === 'string' && !isAbsolute(f) ? resolve(base, f.trim() === '' || f.trim() === '.' ? '**' : f) + (/[\\/]$/.test(f) ? '/' : '') : f));
 }

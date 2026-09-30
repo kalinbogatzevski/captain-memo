@@ -91,9 +91,9 @@ test('overlapsAgainst flags an overlapping OTHER session and excludes my own', (
   expect(hits[0]!.overlapping).toEqual(['src/auth/**']);
 });
 
-test('overlapsAgainst carries the peer\'s repo_root, so the hook can tell a whole-repo claim from a real one', () => {
+test('overlapsAgainst carries the peer\'s repo_root (a whole-repo `<root>/**` itself never overlaps, see wholeRepo)', () => {
   const kv = makeKv();
-  setWorkNote(kv, { session_id: 'other', files: ['/repo/**'], repo_root: '/repo' }, NOW);
+  setWorkNote(kv, { session_id: 'other', files: ['/repo/**', '/repo/a.ts'], repo_root: '/repo' }, NOW);
   setWorkNote(kv, { session_id: 'plain', files: ['src/auth/**'] }, NOW);
   const hits = overlapsAgainst(['/repo/a.ts', 'src/auth/x.ts'], listLocalActive(kv, NOW), 'mine');
   expect(hits.find((h) => h.session_id === 'other')!.repo_root).toBe('/repo');
@@ -436,4 +436,31 @@ test('inheritDeclaredIntent: an auto-claim keeps the declared lease length; an e
   const explicit = { session_id: 'S', what: 'editing', files: ['/r/a.php'], enrich_from_observations: true, ttl_s: 600 };
   inheritDeclaredIntent(kv, explicit, 3_000);
   expect(explicit.ttl_s).toBe(600);
+});
+
+// Guard 1 (2026-09-30): a whole-repo glob names no file, and its warnings on nearly every edit taught two sessions to
+// ignore the board. It never raises a file overlap, on either side; a declared directory still does.
+import { wholeRepo, guardContested } from '../../src/worker/work-notes.ts';
+test('overlapsAgainst drops `**` and `<root>/**` on both sides; `<root>/hr/**` still overlaps', () => {
+  const peer = (session_id: string, files: string[], repo_root?: string): WorkNote => ({ agent: 'claude', session_id, what: 'x', files, ts: 1, ttl_s: 60, ...(repo_root ? { repo_root } : {}) });
+  expect(wholeRepo('**')).toBe(true);
+  expect(wholeRepo('/r/**', '/r')).toBe(true);
+  expect(wholeRepo('/r/hr/**', '/r')).toBe(false);
+  expect(overlapsAgainst(['/r/hr/a.php'], [peer('p1', ['/r/**'], '/r'), peer('p2', ['**'])], 'me')).toEqual([]);
+  expect(overlapsAgainst(['/r/**'], [peer('p3', ['/r/hr/a.php'])], 'me', '/r')).toEqual([]);
+  expect(overlapsAgainst(['/r/hr/a.php'], [peer('p4', ['/r/hr/**'], '/r')], 'me').map((h) => h.session_id)).toEqual(['p4']);
+});
+
+test('guardContested is cheap when nothing matches: pids and the override are never read', () => {
+  const touch = () => { throw new Error('should not be called'); };
+  const r = guardContested(['/r/a.php'], [{ agent: 'claude', session_id: 'p', what: 'x', files: ['/r/b.php'], ts: 1, ttl_s: 60, pid: 1 }], { session_id: 'me', held: [], pid: 2, override: touch }, touch);
+  expect(r.contested).toEqual([]);
+});
+
+test('guardContested enforces only between two Claude Code claims (both carry a pid)', () => {
+  const holder: WorkNote = { agent: 'claude', session_id: 'p', what: 'x', files: ['/r/a.php'], ts: 1, ttl_s: 60, pid: 1 };
+  const alive = () => true;
+  expect(guardContested(['/r/a.php'], [holder], { session_id: 'me', held: [], pid: 2, override: () => [] }, alive).contested).toEqual(['/r/a.php']);
+  expect(guardContested(['/r/a.php'], [holder], { session_id: 'me', held: [], override: () => [] }, alive).contested).toEqual([]);   // caller without pid
+  expect(guardContested(['/r/a.php'], [{ agent: 'claude', session_id: 'p', what: 'x', files: ['/r/a.php'], ts: 1, ttl_s: 60 }], { session_id: 'me', held: [], pid: 2, override: () => [] }, alive).contested).toEqual([]);   // holder without pid
 });

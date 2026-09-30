@@ -1,6 +1,6 @@
 {
   "name": "captain-memo",
-  "version": "0.50.0",
+  "version": "0.51.0",
   "description": "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 hybrid search, six summarizer providers, self-hosted embedder. Replaces claude-mem.",
   "author": {
     "name": "Kalin Bogatzevski"

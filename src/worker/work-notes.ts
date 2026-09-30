@@ -37,6 +37,9 @@ export interface WorkNote {
                         // files resolved into. Absent for plain file-claims (relative globs, scratchpad paths).
   branch?: string;      // the repo's current branch at claim time, when repo_root is set.
   is_dirty?: boolean;   // whether the working tree had uncommitted changes at claim time, when repo_root is set.
+  pid?: number;         // the Claude Code process id (CLAUDE_PID), sent by its PreToolUse hook. Only claims that carry one
+                        // take part in the edit guard (guardContested): a claim whose process has exited is released, and
+                        // one from the SAME process (after /clear or a resume, which change the session id) is the caller's.
   // ── COMPUTED ON READ, NEVER STORED ──────────────────────────────────────────────────────────────
   // A claim is a HEARTBEAT: a live session re-`set`s it (the PreToolUse hook does so on every file-touching
   // tool call). `ts` is therefore "last sign of life", and a claim whose ts has not moved in a long while is
@@ -52,6 +55,7 @@ export interface OverlapHit {
   kind?: 'files' | 'semantic' | 'repo' | 'topics';   // how the collision was detected (absent ⇒ 'files', for back-compat)
   similarity?: number;           // cosine similarity in [0,1], semantic hits only
   stale?: boolean; age_s?: number;   // the peer's heartbeat view, copied from a decorated note (see heartbeatOf)
+  override?: { files: string[]; until: number };   // the peer's USER typed `override:` for these files (setWorkOverride)
 }
 
 /** A live claim paired with the embedding of its meaning text (its `what`). The vector is computed + cached in
@@ -132,6 +136,7 @@ export interface SetWorkNoteInput {
   // Shared-repo stamp (see resolveRepoClaim), resolved by the /worknote/set route BEFORE calling setWorkNote —
   // setWorkNote stays pure (no git I/O) and just copies these through onto the note.
   repo_root?: string; branch?: string; is_dirty?: boolean;
+  pid?: number;   // persisted when a positive integer (see WorkNote.pid)
 }
 
 export const MAX_TOPICS = 5;
@@ -170,6 +175,7 @@ export function setWorkNote(kv: WorkNoteKv, input: SetWorkNoteInput, now: number
   if (typeof input.repo_root === 'string' && input.repo_root) note.repo_root = input.repo_root.slice(0, 512);
   if (typeof input.branch === 'string' && input.branch) note.branch = input.branch.slice(0, 256);
   if (typeof input.is_dirty === 'boolean') note.is_dirty = input.is_dirty;
+  if (typeof input.pid === 'number' && Number.isInteger(input.pid) && input.pid > 0) note.pid = input.pid;
   // Keep the stored value VALID JSON within the byte ceiling: a blind slice() would truncate mid-string and the
   // note would be silently lost (JSON.parse fails → reaped on read). Instead shed files (the only unbounded field
   // — up to MAX_FILES×256) until it fits; the minimal note (no files) is always well under the ceiling.
@@ -223,17 +229,107 @@ export function clearWorkNote(kv: WorkNoteKv, sessionId: string): boolean {
   return existed;
 }
 
-/** Active claims (excluding `excludeSession`) whose file globs intersect `mineFiles`. */
-export function overlapsAgainst(mineFiles: string[], others: WorkNote[], excludeSession: string): OverlapHit[] {
+/** A claim on the WHOLE repository: `**`, `*`, empty, or exactly `<repo_root>/**`. That is what a shell edit whose file
+ *  could not be named used to publish, and on 2026-09-30 its warnings on nearly every edit taught two sessions to ignore
+ *  the board; the one real warning went unread. Such a glob says "somewhere in here", which is no file at all, so it never
+ *  raises a file overlap (from any captain-memo version). A declared directory (`<root>/hr/**`) is a real claim and still
+ *  does. The claim itself stays on the board and still counts for repo contention. */
+export function wholeRepo(f: string, root?: string | null): boolean {
+  return f === '**' || f === '*' || f.trim() === '' || (!!root && f === `${root}/**`);
+}
+
+/** Active claims (excluding `excludeSession`) whose file globs intersect `mineFiles`. Whole-repo globs are dropped on
+ *  both sides first (see wholeRepo). */
+export function overlapsAgainst(mineFiles: string[], others: WorkNote[], excludeSession: string, myRoot?: string): OverlapHit[] {
   const hits: OverlapHit[] = [];
+  const mine = (mineFiles ?? []).filter((f) => !wholeRepo(f, myRoot));
   for (const o of others) {
     if (o.session_id === excludeSession) continue;
-    const overlapping = globsOverlap(mineFiles ?? [], o.files ?? []);
+    const overlapping = globsOverlap(mine, (o.files ?? []).filter((f) => !wholeRepo(f, o.repo_root)));
     if (overlapping.length > 0) {
       hits.push({ agent: o.agent, session_id: o.session_id, ...(o.captain ? { captain: o.captain } : {}), ...(o.repo_root ? { repo_root: o.repo_root } : {}), what: o.what, files: o.files, overlapping, kind: 'files', ...heartbeatOf(o) });
     }
   }
   return hits;
+}
+
+// ── THE EDIT GUARD (guard 2, 2026-09-30) ────────────────────────────────────────────────────────────────────────
+// Two sessions in one checkout each deployed over the other while the board only warned. A LIVE claim now blocks
+// another session's write to the same file; a stale one (no edit for STALE_AFTER_MS) only warns.
+// ponytail: Claude Code only. Both sides must carry a `pid` (Claude's PreToolUse hook sends CLAUDE_PID). Codex and
+// Gemini hooks run under a different session id from their MCP server's, and nothing here pairs the two, so enforcing
+// on them would block a session with its own work_set claim. They get claims and warnings, never a deny.
+
+export interface GuardHolder { session_id: string; agent: string; what: string; age_s: number; files: string[] }
+export interface GuardCaller {
+  session_id: string;
+  held: string[];                 // files the caller ALREADY held before this call (its LIVE stored note, not the request)
+  root?: string;                  // the caller's repo_root, so its own `<root>/**` counts as holding nothing
+  pid?: number;
+  override: () => string[];       // lazy: the caller's live override globs (setWorkOverride)
+}
+
+/** Which of `touched` (this call's new files) a LIVE claim of ANOTHER session holds. `contested` is what the caller must
+ *  not write; `overridden` is what it may write only because the user typed `override: <file>`. Exempt: a caller or a
+ *  holder without a pid (not Claude Code), the same process, a holder whose process has exited, a file the caller already
+ *  held (both then hold it, so neither is blocked and both keep the advisory), whole-repo globs, stale claims. `others`
+ *  must be decorateStaleness()d. Cheap when nothing matches: pids and the override are only consulted on a raw hit. */
+export function guardContested(touched: string[], others: WorkNote[], caller: GuardCaller, pidAlive: (pid: number) => boolean):
+  { contested: string[]; overridden: string[]; holders: GuardHolder[]; overriddenHolders: GuardHolder[] } {
+  const none = { contested: [], overridden: [], holders: [], overriddenHolders: [] };
+  if (typeof caller.pid !== 'number') return none;
+  const peers = others.filter((o) => !o.captain && !o.stale && o.session_id !== caller.session_id && typeof o.pid === 'number');
+  const raw = peers.map((o) => ({ o, hit: globsOverlap(touched, (o.files ?? []).filter((f) => !wholeRepo(f, o.repo_root))) })).filter((r) => r.hit.length > 0);
+  if (raw.length === 0) return none;
+  const held = caller.held.filter((f) => !wholeRepo(f, caller.root));
+  const live = raw.filter(({ o }) => o.pid !== caller.pid && pidAlive(o.pid!));
+  if (live.length === 0) return none;
+  const override = caller.override();
+  const contested = new Set<string>(), overridden = new Set<string>();
+  const holders: GuardHolder[] = [], overriddenHolders: GuardHolder[] = [];
+  for (const { o, hit } of live) {
+    const mineHit = hit.filter((f) => globsOverlap([f], held).length === 0);
+    if (mineHit.length === 0) continue;
+    const ov = mineHit.filter((f) => globsOverlap([f], override).length > 0);
+    const block = mineHit.filter((f) => !ov.includes(f));
+    const h: GuardHolder = { session_id: o.session_id, agent: o.agent, what: o.what, age_s: typeof o.age_s === 'number' ? o.age_s : 0, files: o.files ?? [] };
+    if (block.length) { block.forEach((f) => contested.add(f)); holders.push(h); }
+    if (ov.length) { ov.forEach((f) => overridden.add(f)); overriddenHolders.push(h); }
+  }
+  return { contested: [...contested], overridden: [...overridden], holders, overriddenHolders };
+}
+
+/** Is a local process still running? Only ESRCH means gone: EPERM is a live process we may not signal. */
+export function pidAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code !== 'ESRCH'; }
+}
+
+const OVERRIDE_PREFIX = 'wnoverride:';
+export const OVERRIDE_MS = 30 * 60_000;
+export interface WorkOverride { files: string[]; ts: number; until: number }
+
+/** Record that the USER of `sessionId` typed `override: <files>`: for OVERRIDE_MS the edit guard lets this session write
+ *  those files over another session's live claim. Returns the stored override and the live claims of OTHER sessions it
+ *  overrides. There is no inbox here: a holder learns of it from the board (work_active, and its next overlap line). */
+export function setWorkOverride(kv: WorkNoteKv, sessionId: string, files: string[], now: number): { override: WorkOverride; holders: WorkNote[] } {
+  const override: WorkOverride = { files: files.slice(0, MAX_FILES).map((f) => String(f).slice(0, 256)), ts: now, until: now + OVERRIDE_MS };
+  kv.setKv(OVERRIDE_PREFIX + String(sessionId).slice(0, 64), JSON.stringify(override));
+  const holders = decorateStaleness(listLocalActive(kv, now), now)
+    .filter((n) => n.session_id !== sessionId && !n.stale && globsOverlap(override.files, (n.files ?? []).filter((f) => !wholeRepo(f, n.repo_root))).length > 0);
+  return { override, holders };
+}
+
+/** This session's override while it lasts, else null. */
+export function getWorkOverride(kv: WorkNoteKv, sessionId: string, now: number): WorkOverride | null {
+  try {
+    const o = JSON.parse(kv.getKv(OVERRIDE_PREFIX + String(sessionId).slice(0, 64)) ?? 'null') as WorkOverride | null;
+    return o && Array.isArray(o.files) && typeof o.until === 'number' && now < o.until ? o : null;
+  } catch { return null; }
+}
+
+/** The stored note for a session (live or not), or null. */
+export function getWorkNote(kv: WorkNoteKv, sessionId: string): WorkNote | null {
+  try { return JSON.parse(kv.getKv(keyFor(String(sessionId).slice(0, 64))) ?? 'null') as WorkNote | null; } catch { return null; }
 }
 
 /** Live claims (not mine) that share at least one TOPIC tag with `mineTopics`: kind 'topics', `overlapping` = the

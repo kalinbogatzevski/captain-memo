@@ -7,6 +7,46 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.51.0] — 2026-10-01
+
+### Changed
+
+- **A live work claim now blocks, instead of only warning.** When another Claude Code session on this machine has
+  edited a file in the last 10 minutes, an edit to that file from a second Claude Code session is refused, and the
+  refusal names the session that holds it and tells the model to stop and ask you. This covers the edit tools,
+  file-writing shell commands and uploads. A claim that has gone quiet for 10 minutes still only warns, and if two
+  sessions already both hold a file, neither is blocked. `work_set` cannot claim a file a live session holds, and
+  scratch files in `/tmp` or a scratchpad are never claimed. Codex and Gemini sessions are warned, not blocked. On
+  2026-09-30 two sessions in one checkout each overwrote the other's work while the board only warned.
+- **Only you can lift a block**, by typing `override: <file>` as your message. The override lasts 30 minutes and
+  shows on the work board (`work_active`) and in the overlap warning of the session that held the file. Set
+  `CAPTAIN_MEMO_WORKBOARD_ENFORCE=0` in the host's settings env to go back to warnings only.
+- **Uploads check the server copy first.** Before an `scp`, `rsync` or `ssh host 'cat > file' < local` upload, the
+  hook reads the md5 of the file on the server. If it is not your file, not a committed version (HEAD, the last 9
+  commits or the default branch), and not a copy you fetched or uploaded in this session, the upload is refused: someone deployed
+  uncommitted work there. The message says how to fetch the live copy and apply your change onto it. If the server
+  cannot be reached, the upload goes through with a note that it was not checked. Paths held in same-line shell
+  variables (`S=…; for box in …; do scp $S/f root@$box:$R/f`) are resolved, and an upload to a temporary name
+  that is then moved into place is checked against the file it replaces; an upload whose path the hook cannot
+  resolve gets a note that it was not checked. A server md5 you only printed does not count as a fetched copy. This adds about half a second to
+  an upload command and nothing to other commands.
+- **Shell edits whose file cannot be named no longer claim the whole repository.** They record only that the
+  session is working in the repository. Whole-repository claims already on the board, from any version, no longer
+  raise overlap warnings; they were most of the noise that made the warnings easy to ignore. More shell edits are
+  named now: `perl -i`, inline python, node and php scripts that write to a literal path, and commands after a `cd`
+  resolve against the new directory; heredoc bodies and code tokens are no longer claimed as files.
+- **Codex and Gemini sessions now claim the files they edit.** Run `captain-memo connect` again to install the new
+  hook; Codex asks once to trust it ("Trust all and continue").
+- **`work_set` and `work_clear` act only on your own session.** Passing another Claude Code session's id is
+  refused with `not_your_session`, whether that claim is live or stale. Your own id, and your own id from before a
+  `/clear`, still work. A Codex or Gemini claim can still be cleared by any id, because this version cannot tell
+  a Codex session's two ids apart, and those claims only warn.
+
+### Fixed
+
+- **Codex `apply_patch` edits recorded no modified files.** Codex sends the patch in a different field, so every
+  Codex patch was stored as touching nothing.
+
 ## [0.50.0] — 2026-09-30
 
 ### Added

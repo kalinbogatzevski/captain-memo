@@ -1,13 +1,8 @@
 // The work-board overlap warning printed the CALLER's own paths (the worker's `overlapping`) under the peer's session
 // id and called every peer "another captain", so two sessions each looked like they were editing the other's files.
-// formatOverlapWarning names the PEER's own matching paths and labels whole-repo claims.
+// formatOverlapWarning names the PEER's own matching paths. Whole-repo claims never reach it (the worker drops them).
 import { test, expect } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
-import { join } from 'path';
-import { tmpdir } from 'os';
-import { execSync } from 'child_process';
-import { formatOverlapWarning } from '../../src/hooks/pre-tool-use.ts';
-import { detectRepoRootSync } from '../../src/worker/branch.ts';
+import { formatOverlapWarning, formatDeny } from '../../src/hooks/pre-tool-use.ts';
 
 test('no overlaps, no warning', () => {
   expect(formatOverlapWarning([])).toBeNull();
@@ -22,22 +17,6 @@ test('a file hit names the PEER\'s matching paths, and the caller\'s side separa
   expect(w).toContain('holds /repo/notes/list.html, which overlaps your /repo/notes/list.html');
   expect(w).not.toContain('another captain');
   expect(w).not.toContain('loader.php');   // only what actually overlaps
-});
-
-test('a peer whose only claim is whole-repo is labelled, and my files are not printed as its', () => {
-  const w = formatOverlapWarning([{
-    session_id: '0b5a87fc', agent: 'claude', kind: 'files', repo_root: '/repo',
-    files: ['/repo/**'], overlapping: ['/repo/admin/rpc.php', '/repo/notes/functions.php'],
-  }])!;
-  expect(w).toContain('holds /repo/**, which overlaps your /repo/admin/rpc.php, /repo/notes/functions.php');
-  expect(w).toContain('a whole-repo claim from a shell edit whose file could not be named: it may hold your file, so tell the user before writing');
-  expect(w).not.toContain('may not touch your files');   // 2026-09-30: that phrase is why real warnings were dismissed
-});
-
-test('my own whole-repo claim is labelled as mine', () => {
-  const w = formatOverlapWarning([{ session_id: 'p', agent: 'codex', kind: 'files', files: ['/repo/a.ts'], overlapping: ['/repo/**'] }], '/repo')!;
-  expect(w).toContain('holds /repo/a.ts, which overlaps your /repo/**');
-  expect(w).toContain('your side is a whole-repo claim');
 });
 
 test('a topic hit, a repo hit and a semantic hit each read as what they are', () => {
@@ -69,36 +48,20 @@ test('a stale peer is worded as no recent edit, and a stale-only overlap still s
   expect(mixed).not.toContain('fleet_send');   // OSS has no peer channel: the user decides
 });
 
-test('a DECLARED directory claim is not called whole-repo, and named files beside a coarse claim drop the caveat', () => {
-  const declared = formatOverlapWarning([{ session_id: 'p', agent: 'claude', kind: 'files', repo_root: '/repo', files: ['/repo/billing/**'], overlapping: ['/repo/billing/x.ts'] }], '/repo')!;
-  expect(declared).toContain('holds /repo/billing/**');
-  expect(declared).not.toContain('whole-repo');
-  const mixed = formatOverlapWarning([{ session_id: 'p', agent: 'claude', kind: 'files', repo_root: '/repo', files: ['/repo/**', '/repo/a.ts'], overlapping: ['/repo/a.ts'] }], '/repo')!;
-  expect(mixed).not.toContain('whole-repo');
+// Guard 2 (2026-09-30): a live claim blocks. The deny names the holder and says the user decides; the only lift is the
+// user typing `override: <file>`, which the holder then sees on its own overlap line.
+test('the deny text names the file and holder, says tell the user, and gives the override', () => {
+  const d = formatDeny(['/repo/hr/functions.php'], [{ session_id: '0b005e40', agent: 'claude', age_s: 180, what: 'HR fingerprints' }]);
+  expect(d).toStartWith('WORK-BOARD: BLOCKED. /repo/hr/functions.php is held by another session on this captain (0b005e40, claude, last edit 3 min ago: "HR fingerprints")');
+  expect(d).toContain('Stop and tell the user which session holds it');
+  expect(d).toContain('`override: /repo/hr/functions.php`');
+  expect(d).toContain('Do not route around this');
+  expect(d).not.toContain('fleet_send');
+  expect(d).not.toMatch(/\u2014/);
 });
 
-test('the hook passes the caller\'s repo root, so its own whole-repo side is labelled', async () => {
-  const repoDir = mkdtempSync(join(tmpdir(), 'cm-overlap-hook-'));
-  execSync('git init -q', { cwd: repoDir });
-  const root = detectRepoRootSync(repoDir)!;
-  const srv = Bun.serve({ port: 0, fetch(req) {
-    const path = new URL(req.url).pathname;
-    if (path === '/worknote/active') return Response.json({ claims: [] });
-    if (path === '/worknote/set') return Response.json({ session_id: 'me', ttl_s: 1800, overlaps: [{ session_id: 'peer', agent: 'claude', kind: 'files', files: [`${root}/x.ts`], overlapping: [`${root}/**`] }] });
-    return new Response('not found', { status: 404 });
-  } });
-  try {
-    const proc = Bun.spawn(['bun', join(import.meta.dir, '../../src/hooks/pre-tool-use.ts')], {
-      stdin: 'pipe', stdout: 'pipe', stderr: 'ignore',
-      env: { ...process.env, CAPTAIN_MEMO_WORKER_PORT: String(srv.port) },
-    });
-    proc.stdin.write(JSON.stringify({ session_id: 'me', cwd: repoDir, tool_name: 'Edit', tool_input: { file_path: `${root}/x.ts` } }));
-    proc.stdin.end();
-    const out = await new Response(proc.stdout).text();
-    await proc.exited;
-    expect(out).toContain('your side is a whole-repo claim');
-  } finally {
-    srv.stop(true);
-    rmSync(repoDir, { recursive: true, force: true });
-  }
+test('a peer whose user overrode the claim says so on the holder\'s overlap line', () => {
+  const w = formatOverlapWarning([{ session_id: 'B', agent: 'claude', kind: 'files', files: ['/r/a.php'], overlapping: ['/r/a.php'], override: { files: ['/r/a.php'], until: Date.now() + 60_000 } }])!;
+  expect(w).toContain('its user typed `override:` for /r/a.php until');
+  expect(w).toContain('re-read them before your next write');
 });

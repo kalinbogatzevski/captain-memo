@@ -45,6 +45,42 @@ var init_paths = __esm(() => {
   DEFAULT_REMEMBER_DIR = join(homedir(), ".claude", "memory");
 });
 
+// src/worker/branch.ts
+import { spawnSync } from "child_process";
+import { existsSync } from "fs";
+function detectBranchSync(cwd) {
+  if (!existsSync(cwd))
+    return null;
+  try {
+    const result = spawnSync("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf-8", timeout: 2000 });
+    if (result.status !== 0)
+      return null;
+    const out = result.stdout.trim();
+    return out.length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+function detectRepoRootSync(cwd) {
+  if (!existsSync(cwd))
+    return null;
+  try {
+    const result = spawnSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf-8", timeout: 2000 });
+    if (result.status !== 0)
+      return null;
+    const out = result.stdout.trim();
+    return out.length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+var branchCache, repoRootCache, dirtyCache;
+var init_branch = __esm(() => {
+  branchCache = new Map;
+  repoRootCache = new Map;
+  dirtyCache = new Map;
+});
+
 // src/shared/worker-env.ts
 function workerEnvLoadedKeys() {
   return loadedKeys;
@@ -56,9 +92,9 @@ var init_worker_env = __esm(() => {
 });
 
 // src/hooks/shared.ts
-import { appendFileSync, mkdirSync, statSync, renameSync, existsSync } from "fs";
+import { appendFileSync, mkdirSync, statSync, renameSync, existsSync as existsSync2 } from "fs";
 import { homedir as homedir2 } from "os";
-import { join as join2, resolve } from "path";
+import { join as join2, resolve, isAbsolute } from "path";
 import { fileURLToPath } from "url";
 function isMainModule(meta) {
   const entry = process.argv[1];
@@ -78,7 +114,7 @@ function isMainModule(meta) {
 }
 function rotateIfNeeded() {
   try {
-    if (!existsSync(HOOK_LOG_FILE))
+    if (!existsSync2(HOOK_LOG_FILE))
       return;
     const sz = statSync(HOOK_LOG_FILE).size;
     if (sz < HOOK_LOG_ROTATE_BYTES)
@@ -180,9 +216,16 @@ function summarize(value, max = 1500) {
     return "[unserializable]";
   }
 }
+function absoluteClaimFiles(files, cwd) {
+  if (!cwd || cwd === "/" || files.every((f) => typeof f !== "string" || isAbsolute(f)))
+    return files;
+  const base = detectRepoRootSync(cwd) ?? cwd;
+  return files.map((f) => typeof f === "string" && !isAbsolute(f) ? resolve(base, f.trim() === "" || f.trim() === "." ? "**" : f) + (/[\\/]$/.test(f) ? "/" : "") : f);
+}
 var HOOK_LOG_DIR, HOOK_LOG_FILE, HOOK_LOG_ROTATE_BYTES, WORKER_BASE;
 var init_shared = __esm(() => {
   init_paths();
+  init_branch();
   init_worker_env();
   HOOK_LOG_DIR = join2(homedir2(), ".captain-memo", "logs");
   HOOK_LOG_FILE = join2(HOOK_LOG_DIR, "hook.log");
@@ -252,10 +295,10 @@ async function probeHealthyWithRetries(probeOnce, attempts = 3, gapMs = 2000, sl
 }
 
 // src/services/service-manager/systemd.ts
-import { existsSync as existsSync2, mkdirSync as mkdirSync3, readFileSync as readFileSync3, rmSync, writeFileSync as writeFileSync2 } from "fs";
+import { existsSync as existsSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync3, rmSync, writeFileSync as writeFileSync2 } from "fs";
 import { homedir as homedir3 } from "os";
 import { join as join5, resolve as resolve2 } from "path";
-import { spawnSync } from "child_process";
+import { spawnSync as spawnSync2 } from "child_process";
 function unitName(name) {
   return name.endsWith(".service") ? name : `${name}.service`;
 }
@@ -267,24 +310,24 @@ function templateFor(name) {
   return join5(REPO_ROOT, "services/worker/systemd/captain-memo-worker.user.service");
 }
 function systemctl(args) {
-  const userR = spawnSync("systemctl", ["--user", ...args], { encoding: "utf-8", timeout: 1e4 });
+  const userR = spawnSync2("systemctl", ["--user", ...args], { encoding: "utf-8", timeout: 1e4 });
   if (userR.status === 0)
     return userR;
   const stderr = userR.stderr ?? "";
   const noUserManager = userR.error != null || /Failed to connect to (the )?bus/i.test(stderr) || /No medium found/i.test(stderr);
   if (!noUserManager)
     return userR;
-  return spawnSync("systemctl", [...args], { encoding: "utf-8", timeout: 1e4 });
+  return spawnSync2("systemctl", [...args], { encoding: "utf-8", timeout: 1e4 });
 }
 
 class SystemdServiceManager {
   async install(spec) {
     const tpl = templateFor(spec.name);
-    if (!existsSync2(tpl))
+    if (!existsSync3(tpl))
       throw new Error(`missing systemd unit template: ${tpl}`);
     const bun = spec.exec[0] ?? "bun";
     const unit = readFileSync3(tpl, "utf-8").replaceAll("__INSTALL_DIR__", spec.workingDir).replaceAll("__ENV_FILE__", spec.envFile ?? "").replaceAll("__BUN__", bun);
-    if (!existsSync2(USER_SYSTEMD_DIR))
+    if (!existsSync3(USER_SYSTEMD_DIR))
       mkdirSync3(USER_SYSTEMD_DIR, { recursive: true });
     writeFileSync2(join5(USER_SYSTEMD_DIR, unitName(spec.name)), unit, { mode: 420 });
     systemctl(["daemon-reload"]);
@@ -296,7 +339,7 @@ class SystemdServiceManager {
     systemctl(["stop", unitName(name)]);
     systemctl(["disable", unitName(name)]);
     const unitPath = join5(USER_SYSTEMD_DIR, unitName(name));
-    if (existsSync2(unitPath))
+    if (existsSync3(unitPath))
       rmSync(unitPath, { force: true });
     systemctl(["daemon-reload"]);
   }
@@ -362,10 +405,10 @@ var init_systemd = __esm(() => {
 });
 
 // src/services/service-manager/launchd.ts
-import { existsSync as existsSync3, mkdirSync as mkdirSync4, readFileSync as readFileSync4, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "fs";
+import { existsSync as existsSync4, mkdirSync as mkdirSync4, readFileSync as readFileSync4, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "fs";
 import { homedir as homedir4, userInfo } from "os";
 import { join as join6, resolve as resolve3 } from "path";
-import { spawnSync as spawnSync2 } from "child_process";
+import { spawnSync as spawnSync3 } from "child_process";
 function bareName(name) {
   return name.replace(/\.service$/, "");
 }
@@ -398,7 +441,7 @@ function renderPlist(spec, template) {
   return template.replaceAll("__LABEL__", xmlEscape(labelFor(spec.name))).replaceAll("__PROGRAM_ARGS__", programArgsXml(spec.exec)).replaceAll("__INSTALL_DIR__", xmlEscape(spec.workingDir)).replaceAll("__LOG_DIR__", xmlEscape(logDir)).replaceAll("__NAME__", xmlEscape(bareName(spec.name))).replaceAll("__RUN_AT_LOAD__", spec.autostart ? "<true/>" : "<false/>").replaceAll("__KEEP_ALIVE__", spec.restartOnFailure ? "<true/>" : "<false/>");
 }
 function launchctl(args) {
-  const r = spawnSync2("launchctl", args, { encoding: "utf-8", timeout: LAUNCHCTL_TIMEOUT_MS });
+  const r = spawnSync3("launchctl", args, { encoding: "utf-8", timeout: LAUNCHCTL_TIMEOUT_MS });
   return {
     status: r.status,
     stdout: r.stdout ?? "",
@@ -427,13 +470,13 @@ async function settled(check, ms = 20000) {
 class LaunchdServiceManager {
   async install(spec) {
     const tpl = templateFor2(spec.name);
-    if (!existsSync3(tpl))
+    if (!existsSync4(tpl))
       throw new Error(`missing launchd plist template: ${tpl}`);
     const plist = renderPlist(spec, readFileSync4(tpl, "utf-8"));
-    if (!existsSync3(LAUNCH_AGENTS_DIR))
+    if (!existsSync4(LAUNCH_AGENTS_DIR))
       mkdirSync4(LAUNCH_AGENTS_DIR, { recursive: true });
     const logDir = spec.logDir || DEFAULT_LOG_DIR;
-    if (!existsSync3(logDir))
+    if (!existsSync4(logDir))
       mkdirSync4(logDir, { recursive: true });
     const path = plistPath(spec.name);
     writeFileSync3(path, plist, { mode: 420 });
@@ -453,13 +496,13 @@ class LaunchdServiceManager {
   async remove(name) {
     launchctl(["bootout", domainTarget(name)]);
     const path = plistPath(name);
-    if (existsSync3(path))
+    if (existsSync4(path))
       rmSync2(path, { force: true });
   }
   async start(name) {
     if (!await this.isLoaded(name)) {
       const path = plistPath(name);
-      if (!existsSync3(path))
+      if (!existsSync4(path))
         throw new Error(`launchd plist not found: ${path} (run install first)`);
       must(launchctl(["bootstrap", domainTarget(), path]), `bootstrap ${path}`);
     }
@@ -496,7 +539,7 @@ class LaunchdServiceManager {
   async status(name) {
     const r = launchctl(["print", domainTarget(name)]);
     if (r.status !== 0) {
-      return existsSync3(plistPath(name)) ? "stopped" : "not-installed";
+      return existsSync4(plistPath(name)) ? "stopped" : "not-installed";
     }
     if (/\bstate\s*=\s*running\b/.test(r.stdout))
       return "running";
@@ -868,7 +911,7 @@ var MARKER_FILENAME = ".install-version";
 var init_self_update = () => {};
 
 // src/shared/plugin-cache.ts
-import { existsSync as existsSync4, readFileSync as readFileSync6, readdirSync as readdirSync2, statSync as statSync3 } from "fs";
+import { existsSync as existsSync5, readFileSync as readFileSync6, readdirSync as readdirSync2, statSync as statSync3 } from "fs";
 import { homedir as homedir5 } from "os";
 import { join as join9 } from "path";
 function normalizePath(p) {
@@ -1045,7 +1088,7 @@ var init_install = __esm(() => {
 });
 
 // src/cli/plugin-cache-refresh.ts
-import { spawnSync as spawnSync3 } from "child_process";
+import { spawnSync as spawnSync4 } from "child_process";
 import { readFileSync as readFileSync7 } from "fs";
 import { homedir as homedir8 } from "os";
 import { join as join13 } from "path";
@@ -1081,7 +1124,7 @@ function refreshPluginCacheIfStale(runningVersion, repoRoot = REPO_ROOT6, deps =
   if (!pointsAt(repoRoot))
     return { refreshed: false, skipped: "not a directory marketplace on this checkout" };
   const run = deps.run ?? ((args) => {
-    const r = spawnSync3("claude", args, { stdio: "pipe", timeout: 120000 });
+    const r = spawnSync4("claude", args, { stdio: "pipe", timeout: 120000 });
     return r.status ?? 1;
   });
   const steps = pluginRegistrationSteps(repoRoot);
@@ -1100,16 +1143,16 @@ var init_plugin_cache_refresh = __esm(() => {
 });
 
 // src/cli/skill-refresh.ts
-import { existsSync as existsSync5, copyFileSync } from "fs";
+import { existsSync as existsSync6, copyFileSync } from "fs";
 import { join as join14 } from "path";
 function resolveMemoSkillSource(base = import.meta.dir) {
   return [
     join14(base, "..", "..", "skills", "captain-memo", "SKILL.md"),
     join14(base, "..", "portable", "captain-memo", "SKILL.md")
-  ].find((p) => existsSync5(p)) ?? null;
+  ].find((p) => existsSync6(p)) ?? null;
 }
 function refreshMemoSkills(source, home, deps = {}) {
-  const exists = deps.exists ?? existsSync5;
+  const exists = deps.exists ?? existsSync6;
   const copy = deps.copy ?? copyFileSync;
   if (!exists(source))
     return [];
@@ -1137,42 +1180,6 @@ var init_skill_refresh = __esm(() => {
     ".config/Code/User/prompts/captain-memo.instructions.md",
     ".config/JetBrains/captain-memo.md"
   ];
-});
-
-// src/worker/branch.ts
-import { spawnSync as spawnSync4 } from "child_process";
-import { existsSync as existsSync6 } from "fs";
-function detectBranchSync(cwd) {
-  if (!existsSync6(cwd))
-    return null;
-  try {
-    const result = spawnSync4("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf-8", timeout: 2000 });
-    if (result.status !== 0)
-      return null;
-    const out = result.stdout.trim();
-    return out.length > 0 ? out : null;
-  } catch {
-    return null;
-  }
-}
-function detectRepoRootSync(cwd) {
-  if (!existsSync6(cwd))
-    return null;
-  try {
-    const result = spawnSync4("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf-8", timeout: 2000 });
-    if (result.status !== 0)
-      return null;
-    const out = result.stdout.trim();
-    return out.length > 0 ? out : null;
-  } catch {
-    return null;
-  }
-}
-var branchCache, repoRootCache, dirtyCache;
-var init_branch = __esm(() => {
-  branchCache = new Map;
-  repoRootCache = new Map;
-  dirtyCache = new Map;
 });
 
 // src/hooks/pre-git.ts
@@ -1210,7 +1217,7 @@ async function runPreGit(payload) {
   const root = detectRepoRootSync(payload.cwd);
   if (!root || root.includes("/claude-1000/"))
     return null;
-  const res = await workerFetch(`/worknote/repo-active?repo_root=${encodeURIComponent(root)}`, { method: "GET", timeoutMs: HOOK_TIMEOUT_MS });
+  const res = await workerFetch(`/worknote/repo-active?repo_root=${encodeURIComponent(root)}`, { method: "GET", timeoutMs: HOOK_TIMEOUT_MS2 });
   if (!res.ok || !res.body?.holders)
     return null;
   const peers = res.body.holders.filter((h) => h.session_id !== payload.session_id);
@@ -1219,12 +1226,12 @@ async function runPreGit(payload) {
   const who = peers.map((h) => `${(h.session_id ?? "").slice(0, 12)} (${h.agent ?? "?"})${h.branch ? ` on ${h.branch}` : ""}${h.is_dirty ? ", dirty" : ""}${h.stale ? `, ${staleNote(h)}` : ""}`).join(" ; ");
   return `WORK-BOARD SHARED CHECKOUT: peer session(s) are using ${root} \u2014 ${who}. Running \`git ${op}\` here changes that shared working tree for them. Isolate instead: \`git worktree add ../<name> <branch>\` and work there. (advisory)`;
 }
-var MUTATING, HOOK_TIMEOUT_MS;
+var MUTATING, HOOK_TIMEOUT_MS2;
 var init_pre_git = __esm(() => {
   init_shared();
   init_branch();
   MUTATING = /^(checkout|switch|commit|reset|stash|rebase|merge|cherry-pick|clean|restore)$/;
-  HOOK_TIMEOUT_MS = Number(process.env.CAPTAIN_MEMO_PRE_TOOL_USE_TIMEOUT_MS ?? 1500);
+  HOOK_TIMEOUT_MS2 = Number(process.env.CAPTAIN_MEMO_PRE_TOOL_USE_TIMEOUT_MS ?? 1500);
 });
 
 // src/hooks/dispatcher.ts
@@ -1333,6 +1340,16 @@ function homeworkWaitMs(hostTimeoutMs, elapsedMs) {
     return 6000;
   return Math.max(0, Math.min(6000, hostTimeoutMs - elapsedMs - HOST_EXIT_MARGIN_MS));
 }
+function parseOverridePrompt(prompt2, cwd) {
+  const m = /^\s*override\s*:\s*(\S[\s\S]*)$/i.exec(String(prompt2 ?? "").split(/\r?\n/)[0] ?? "");
+  if (!m)
+    return null;
+  const raw = m[1].split(/[\s,]+/).map((f) => f.replace(/^[`'"]+|[`'".]+$/g, "")).filter(Boolean);
+  const remote = (f) => /^(?:[^@\s:/]+@)?[^@\s:/]{2,}:/.test(f);
+  const local = absoluteClaimFiles(raw.filter((f) => !remote(f)), cwd ?? "").filter((f) => typeof f === "string");
+  const files = [...local, ...raw.filter(remote)];
+  return files.length ? files : null;
+}
 async function main(options = {}) {
   let payload = {};
   try {
@@ -1348,6 +1365,23 @@ async function main(options = {}) {
     const filed = await workerFetch("/homework/add", { method: "POST", body: { text: homework, by: payload.session_id ?? "hook", project: resolveProjectId(payload.cwd) }, timeoutMs: homeworkWaitMs(options.hostTimeoutMs, performance.now()) });
     const line = filed.ok && filed.body ? homeworkFiledLine(filed.body.item) + ` (${filed.body.open} open)` : '\uD83D\uDCDD The worker did not confirm filing this as homework in time \u2014 it may still have landed: todo_list() shows; if it is not there, say "noted" and todo_add it yourself.';
     logWorkerFailure("UserPromptSubmit", "/homework/add", filed);
+    if (options.structuredContextJson)
+      writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: options.contextEventName ?? "UserPromptSubmit", additionalContext: line } }));
+    else {
+      writeStdout(line);
+      writeStdout(`
+
+`);
+    }
+    if (options.emitOriginalPrompt !== false)
+      writeStdout(prompt2);
+    return;
+  }
+  const overrideFiles = payload.session_id ? parseOverridePrompt(prompt2, payload.cwd) : null;
+  if (overrideFiles) {
+    const r = await workerFetch("/worknote/override", { method: "POST", body: { session_id: payload.session_id, files: overrideFiles }, timeoutMs: 2000 });
+    logWorkerFailure("UserPromptSubmit", "/worknote/override", r);
+    const line = r.ok && r.body ? `Override recorded for ${r.body.files.join(", ")} (30 min); ${r.body.holders.length ? `holder(s) ${r.body.holders.join(", ")} will see it on the work board` : "no live holder"}.` : "The worker did not confirm the override, so the work-board block still stands. Tell the user; they can retry.";
     if (options.structuredContextJson)
       writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: options.contextEventName ?? "UserPromptSubmit", additionalContext: line } }));
     else {
@@ -1441,11 +1475,12 @@ var LOCAL_ARTICLES = [
   `  any deploy (scp, rsync). Never ship a copy built earlier, or "HEAD + my hunk" around another session's`,
   "  work. Deploy only if the remote md5 equals what you last read.",
   "- RESPECT A CLAIM: never edit or deploy over another session's claim. Stop and tell the user which",
-  "  session holds it, and let them decide. Stale means no recent edit, not ended: it may only be reading.",
+  "  session holds it, and let them decide. A LIVE Claude Code claim BLOCKS your edit and upload; only the",
+  "  user lifts it (`override: <file>`). Stale means no recent edit, not ended: it may only be reading.",
   "- RELEASE with `work_clear` only once committed AND deployed; re-`work_set` after a long pause.",
   "- ONE TREE PER SESSION: your own `git worktree add ../<n>`. Shared tree? `git add <paths>`, never -A.",
-  "- AUTO-CLAIM (Claude Code only) records the files you touch but INFERS the why, and can miss.",
-  "  State intent yourself with `work_set`. On every other AI nothing claims for you.",
+  "- AUTO-CLAIM (Claude Code, Codex, Gemini) records the files you touch but INFERS the why, and",
+  "  can miss. State intent yourself with `work_set`. Elsewhere nothing claims for you.",
   "Why: on 2026-09-30 two sessions in one checkout skipped these steps and each deployed over the other.",
   "",
   "1. SEARCH BEFORE YOU ACT. `search_all` first, grep second. `remember` what is non-obvious, with the WHY.",
@@ -1473,7 +1508,7 @@ init_paths();
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.50.0",
+  version: "0.51.0",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -2057,7 +2092,7 @@ function isCoarseClaim(paths, cwd) {
   return paths.length === 1 && paths[0] === coarseClaimFor(cwd);
 }
 var NOT_A_FILE = /^(\/dev\/(null|stdout|stderr|tty)|nul:?|con)$/i;
-var REDIRECT = /(?:^|[\s;|&])(\d?)(>>?)(?!=)\s*("[^"]*"|'[^']*'|[^\s;|&<>]+)/g;
+var REDIRECT = /(?:^|[\s;|&])(\d?)(>>?)(?!=)\s*("[^"]*"|'[^']*'|[^\s;|&<>()]+)/g;
 var PS_VALUE_FLAGS = new Set(["-value", "-itemtype", "-encoding", "-force", "-pattern", "-filter"]);
 var PS_PATH_FLAGS = new Set(["-path", "-filepath", "-literalpath", "-destination"]);
 var PS_WRITE_CMDLETS = new Set([
@@ -2136,15 +2171,17 @@ function positionals(rest, valueFlags = new Set) {
   }
   return out;
 }
-function sedTargets(rest) {
-  const inPlace = rest.some((t) => /^-i/.test(t) || t === "--in-place" || t.startsWith("--in-place="));
-  if (!inPlace)
-    return [];
-  const scriptFlags = new Set(["-e", "-f", "--expression", "--file"]);
+function inPlaceTargets(rest, isInPlace, scriptFlags) {
+  if (!rest.some(isInPlace))
+    return null;
   const sawScriptFlag = rest.some((t) => scriptFlags.has(t));
   const pos = positionals(rest, scriptFlags);
   return sawScriptFlag ? pos : pos.slice(1);
 }
+var SED_IN_PLACE = (t) => /^-i/.test(t) || t === "--in-place" || t.startsWith("--in-place=");
+var SED_SCRIPT_FLAGS = new Set(["-e", "-f", "--expression", "--file"]);
+var PERL_IN_PLACE = (t) => /^-[acnpsltTuUvwWX0-9]*i/.test(t);
+var PERL_SCRIPT_FLAGS = new Set(["-e", "-E"]);
 function psTargets(name, rest) {
   const out = [];
   const pos = [];
@@ -2175,10 +2212,10 @@ function segmentTargets(seg, shell) {
     return { targets: psTargets(name, rest), mutates: true };
   }
   switch (name) {
-    case "sed": {
-      const t = sedTargets(rest);
-      const inPlace = rest.some((x) => /^-i/.test(x) || x.startsWith("--in-place"));
-      return { targets: t, mutates: inPlace };
+    case "sed":
+    case "perl": {
+      const t = name === "sed" ? inPlaceTargets(rest, SED_IN_PLACE, SED_SCRIPT_FLAGS) : inPlaceTargets(rest, PERL_IN_PLACE, PERL_SCRIPT_FLAGS);
+      return { targets: t ?? [], mutates: t !== null };
     }
     case "tee":
       return { targets: positionals(rest), mutates: true };
@@ -2205,36 +2242,110 @@ function segmentTargets(seg, shell) {
 function unresolvable(t) {
   return t === "" || t === "-" || t.includes("$") || t.includes("`") || t.includes("%");
 }
+function notAPath(t) {
+  if (/[{}()<>|;"'`\[\]&]/.test(t))
+    return true;
+  if (/[,:]$/.test(t))
+    return true;
+  if (/:/.test(t.replace(/^[A-Za-z]:(?=[\\/]|$)/, "")))
+    return true;
+  return false;
+}
+function stripHeredocs(command) {
+  return command.replace(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1([^\n]*)\n[\s\S]*?\n[ \t]*\2[ \t]*(?=\n|$)/g, (_m, _q, _tag, rest) => `<<${_tag}${rest}`);
+}
+function maskQuotedCode(seg) {
+  return seg.replace(/"[^"]*"|'[^']*'/g, (m, offset) => /(>>?)\s*$/.test(seg.slice(0, offset)) ? m : " ".repeat(m.length));
+}
+function chdirTarget(seg) {
+  const toks = tokenize(seg);
+  const { name, rest } = cmdName(toks);
+  if (!["cd", "pushd", "set-location", "sl", "chdir"].includes(name))
+    return null;
+  const pos = positionals(rest, new Set(["-path", "-literalpath"]));
+  const t = pos[0] ?? (name === "cd" || name === "pushd" ? "~" : "");
+  return unresolvable(t) || notAPath(t) ? "" : t;
+}
+function splitSegments(command, cwd, shell = "posix") {
+  const norm = (t) => shell === "powershell" ? t.replace(/\\/g, "/") : t;
+  const stripped = stripHeredocs(command);
+  const maskedAll = maskQuotedCode(stripped);
+  const raw = [];
+  let start = 0;
+  for (const b of maskedAll.matchAll(/&&|\|\||;|\||\n/g)) {
+    raw.push({ seg: stripped.slice(start, b.index), masked: maskedAll.slice(start, b.index) });
+    start = b.index + b[0].length;
+  }
+  raw.push({ seg: stripped.slice(start), masked: maskedAll.slice(start) });
+  const out = [];
+  let dir = cwd;
+  for (const r of raw) {
+    const cd = chdirTarget(r.seg);
+    if (cd !== null) {
+      dir = cd === "" || dir === null ? null : resolve7(dir, norm(cd));
+      continue;
+    }
+    out.push({ ...r, dir });
+  }
+  return out;
+}
+function scriptWrites(command, cwd) {
+  if (!cwd || !/\b(python[0-9.]*|node|bun|php|ruby)\b/.test(command) || /\bssh\s/.test(command))
+    return [];
+  const Q = String.raw`(['"\`])([^'"\`\n]+)\1`;
+  const patterns = [
+    new RegExp(String.raw`\bopen\(\s*${Q}\s*,\s*(['"])[^'"]*[wax+][^'"]*\3`, "g"),
+    new RegExp(String.raw`\bPath\(\s*${Q}\s*\)\.write_(?:text|bytes)\b`, "g"),
+    new RegExp(String.raw`(?:\bwriteFileSync|\bwriteFile|\bappendFileSync|\bBun\.write)\(\s*${Q}`, "g"),
+    new RegExp(String.raw`\bfile_put_contents\(\s*${Q}`, "g")
+  ];
+  const out = [];
+  for (const re of patterns) {
+    for (const m of command.matchAll(re)) {
+      const t = m[2] ?? "";
+      if (NOT_A_FILE.test(t) || unresolvable(t) || t.includes("{") || notAPath(t))
+        continue;
+      const abs = resolve7(cwd, t);
+      if (!out.includes(abs))
+        out.push(abs);
+    }
+  }
+  return out;
+}
 function parseWrittenPaths(command, cwd, shell = "posix") {
   try {
     if (typeof command !== "string" || command.trim() === "" || !cwd)
       return [];
     const raw = [];
     let unresolved = false;
-    for (const seg of command.split(/&&|\|\||;|\||\n/)) {
+    const norm = (t) => shell === "powershell" ? t.replace(/\\/g, "/") : t;
+    for (const { seg, masked, dir } of splitSegments(command, cwd, shell)) {
       const { targets, mutates } = segmentTargets(seg, shell);
       if (mutates && targets.length === 0)
         unresolved = true;
-      raw.push(...targets);
-    }
-    REDIRECT.lastIndex = 0;
-    let m;
-    while ((m = REDIRECT.exec(command)) !== null) {
-      const tok = m[3] ?? "";
-      if ((tok.match(/["']/g) ?? []).length % 2 === 1)
-        continue;
-      raw.push(tok.replace(/^["']|["']$/g, ""));
+      for (const t of targets)
+        raw.push({ t, dir: dir ?? "" });
+      REDIRECT.lastIndex = 0;
+      let m;
+      while ((m = REDIRECT.exec(masked)) !== null) {
+        const tok = m[3] ?? "";
+        if ((tok.match(/["']/g) ?? []).length % 2 === 1)
+          continue;
+        raw.push({ t: tok.replace(/^["']|["']$/g, ""), dir: dir ?? "" });
+      }
     }
     const out = [];
     const seen = new Set;
-    for (const t of raw) {
+    for (const { t, dir: d } of raw) {
       if (NOT_A_FILE.test(t))
         continue;
-      if (unresolvable(t)) {
+      if (notAPath(t))
+        continue;
+      if (unresolvable(t) || d === "") {
         unresolved = true;
         continue;
       }
-      const abs = resolve7(cwd, shell === "powershell" ? t.replace(/\\/g, "/") : t);
+      const abs = resolve7(d, norm(t));
       if (seen.has(abs))
         continue;
       seen.add(abs);
@@ -2242,11 +2353,556 @@ function parseWrittenPaths(command, cwd, shell = "posix") {
       if (out.length >= MAX_SHELL_FILES)
         break;
     }
+    for (const abs of scriptWrites(command, cwd)) {
+      if (out.length >= MAX_SHELL_FILES)
+        break;
+      if (!seen.has(abs)) {
+        seen.add(abs);
+        out.push(abs);
+      }
+    }
     if (out.length === 0 && unresolved)
       return [coarseClaimFor(cwd)];
     return out;
   } catch {
     return [];
+  }
+}
+
+// src/hooks/deploy-guard.ts
+import { resolve as resolve8, basename, dirname as dirname3, join as join16, relative } from "path";
+import { createHash } from "crypto";
+import { homedir as homedir10 } from "os";
+import { existsSync as existsSync7, statSync as statSync5, readFileSync as readFileSync9, writeFileSync as writeFileSync7, mkdirSync as mkdirSync7 } from "fs";
+import { spawnSync as spawnSync5 } from "child_process";
+init_paths();
+init_branch();
+function remoteSpec(t) {
+  const m = /^((?:[^@\s:/]+@)?[^@\s:/]+):(.*)$/.exec(t);
+  if (!m || /^[A-Za-z]$/.test(m[1]))
+    return null;
+  return { userhost: m[1], path: m[2] };
+}
+var SCP_VALUE_FLAGS = new Set(["-P", "-i", "-o", "-F", "-J", "-c", "-l", "-S"]);
+var RSYNC_VALUE_FLAGS = new Set([
+  "-e",
+  "--rsh",
+  "--exclude",
+  "--include",
+  "--filter",
+  "-f",
+  "--chmod",
+  "--chown",
+  "--port",
+  "--rsync-path",
+  "--log-file",
+  "--password-file",
+  "--files-from",
+  "--exclude-from",
+  "--include-from",
+  "-T",
+  "--temp-dir",
+  "--partial-dir",
+  "--backup-dir",
+  "--suffix",
+  "--timeout",
+  "--bwlimit",
+  "-B",
+  "--block-size",
+  "--compare-dest",
+  "--link-dest",
+  "--copy-dest"
+]);
+var SSH_VALUE_FLAGS = new Set(["-p", "-i", "-o", "-J", "-F", "-l", "-L", "-R", "-D", "-b", "-c", "-E", "-e", "-m", "-O", "-Q", "-S", "-W", "-w", "-B"]);
+var SSH_PASS = new Set(["-p", "-i", "-o", "-J", "-F", "-l"]);
+var tilde = (p) => p === "~" || p.startsWith("~/") ? homedir10() + p.slice(1) : p;
+function sshPassArgs(toks) {
+  const out = [];
+  for (let i = 0;i < toks.length; i++) {
+    if (SSH_PASS.has(toks[i]) && toks[i + 1] !== undefined) {
+      out.push(toks[i], tilde(toks[i + 1]));
+      i++;
+    }
+  }
+  return out;
+}
+var defaultIsDir = (p) => {
+  try {
+    return statSync5(p).isDirectory();
+  } catch {
+    return false;
+  }
+};
+var VAR_REF = /\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)/g;
+function bindingsFor(seg, vars) {
+  const names = [...seg.matchAll(VAR_REF)].map((m) => m[1] ?? m[2]);
+  const loop = names.find((n) => (vars.get(n)?.length ?? 0) > 1);
+  const base = new Map;
+  for (const n of names) {
+    const v = vars.get(n);
+    if (v?.length === 1)
+      base.set(n, v[0]);
+  }
+  return loop ? vars.get(loop).map((v) => new Map([...base, [loop, v]])) : [base];
+}
+var substitute = (t, b) => t.replace(VAR_REF, (m, a, c) => b.get(a ?? c) ?? m);
+function parseTransfers(command, cwd, isDir = defaultIsDir) {
+  const uploads = [], downloads = [];
+  let unchecked = 0;
+  const vars = new Map;
+  const assign = (n, v) => {
+    if (v.some((x) => x.includes("$") || x.includes("`")))
+      vars.delete(n);
+    else
+      vars.set(n, v);
+  };
+  try {
+    if (typeof command !== "string" || !cwd || !/\b(scp|rsync|ssh)\b/.test(command))
+      return { uploads, downloads };
+    for (const { seg, masked, dir } of splitSegments(command, cwd)) {
+      const toks0 = tokenize(seg).map((t) => t.replace(/["']/g, ""));
+      if (/^[A-Za-z_][\w-]*\(\)$/.test(toks0[0] ?? "") && toks0[1] === "{")
+        toks0.splice(0, 2);
+      else if (toks0[0] === "{")
+        toks0.shift();
+      const head = cmdName(toks0);
+      if (head.name === "" || head.name === "export" || head.name === "local") {
+        for (const t of toks0) {
+          const a = /^([A-Za-z_]\w*)=(.*)$/s.exec(t);
+          if (!a)
+            continue;
+          const bs = bindingsFor(a[2], vars);
+          if (bs.length > 1)
+            vars.delete(a[1]);
+          else
+            assign(a[1], [substitute(a[2], bs[0])]);
+        }
+        continue;
+      }
+      if (head.name === "for" && head.rest[1] === "in") {
+        assign(head.rest[0], head.rest.slice(2).flatMap((w) => bindingsFor(w, vars).flatMap((b) => substitute(w, b).split(/\s+/).filter(Boolean))));
+        continue;
+      }
+      if (dir === null || !["scp", "rsync", "ssh"].includes(head.name))
+        continue;
+      for (const b of bindingsFor(seg, vars)) {
+        const sub = (t) => substitute(t, b);
+        const { name, rest } = cmdName(toks0.map(sub));
+        if (name === "scp" || name === "rsync") {
+          const valueFlags = name === "scp" ? SCP_VALUE_FLAGS : RSYNC_VALUE_FLAGS;
+          const pos = [];
+          let recursive = false;
+          let sshArgs = [];
+          for (let i = 0;i < rest.length; i++) {
+            const t = rest[i];
+            if (t.startsWith("--") && t.includes("=")) {
+              if (name === "rsync" && t.startsWith("--rsh="))
+                sshArgs = sshPassArgs(tokenize(t.slice(6)).slice(1));
+              continue;
+            }
+            if (t.startsWith("-") && t.length > 1) {
+              if (name === "scp" && /^-[a-zA-Z0-9]*r/.test(t) && !valueFlags.has(t))
+                recursive = true;
+              if (name === "rsync" && (/^-[a-zA-Z]*[ar]/.test(t) && !t.startsWith("--") || t === "--recursive" || t === "--archive"))
+                recursive = true;
+              if (valueFlags.has(t)) {
+                const v = rest[i + 1] ?? "";
+                if (name === "scp" && t === "-P")
+                  sshArgs.push("-p", v);
+                else if (name === "scp" && (t === "-i" || t === "-o" || t === "-J"))
+                  sshArgs.push(t, tilde(v));
+                else if (name === "rsync" && (t === "-e" || t === "--rsh"))
+                  sshArgs = sshPassArgs(tokenize(v).slice(1));
+                i++;
+              }
+              continue;
+            }
+            pos.push(t);
+          }
+          if (pos.length < 2)
+            continue;
+          const destTok = pos[pos.length - 1];
+          const sources = pos.slice(0, -1);
+          const dest = remoteSpec(destTok);
+          if (dest) {
+            for (const src of sources) {
+              if (remoteSpec(src))
+                continue;
+              if (/[$*?{]/.test(src) || destTok.includes("$")) {
+                unchecked++;
+                continue;
+              }
+              const local = resolve8(dir, tilde(src));
+              const isDirSrc = recursive && (isDir(local) || src.endsWith("/"));
+              const intoDir = destTok.endsWith("/") || sources.length > 1 || dest.path === "" || name === "rsync" && isDirSrc && !src.endsWith("/");
+              let path = intoDir ? dest.path === "" ? basename(local) : `${dest.path.replace(/\/+$/, "")}/${basename(local)}` : dest.path;
+              if (name === "rsync" && isDirSrc && src.endsWith("/"))
+                path = dest.path.replace(/\/+$/, "");
+              uploads.push({ local, userhost: dest.userhost, path, sshArgs: [...sshArgs], ...isDirSrc ? { dir: true } : {} });
+            }
+          } else if (!destTok.includes("$")) {
+            for (const src of sources) {
+              const r = remoteSpec(src);
+              if (!r || !r.path || r.path.includes("*") || src.includes("$"))
+                continue;
+              const destAbs = resolve8(dir, tilde(destTok));
+              const local = destTok.endsWith("/") || destTok === "." || isDir(destAbs) ? join16(destAbs, basename(r.path)) : destAbs;
+              downloads.push({ local, userhost: r.userhost, path: r.path, sshArgs: [...sshArgs] });
+            }
+          }
+          continue;
+        }
+        if (name === "ssh") {
+          const pos = [];
+          const opts = [];
+          let i = 0;
+          for (;i < rest.length; i++) {
+            const t = rest[i];
+            if (t.startsWith("-") && pos.length === 0) {
+              if (SSH_VALUE_FLAGS.has(t)) {
+                opts.push(t, rest[i + 1] ?? "");
+                i++;
+              }
+              continue;
+            }
+            pos.push(t);
+          }
+          if (pos.length < 2)
+            continue;
+          const userhost = pos[0];
+          const stop = pos.findIndex((t, k) => k > 0 && /^[<>]|^\d>/.test(t));
+          const remoteCmd = pos.slice(1, stop < 0 ? undefined : stop).join(" ");
+          const sshArgs = sshPassArgs(opts);
+          const inRedirect = /(?:^|[^<])<(?!<)\s*/.exec(masked);
+          const up = /\bcat\s*>\s*([^\s;|&'"]+)|\btee\s+([^\s;|&'"]+)/.exec(remoteCmd);
+          if (up && inRedirect) {
+            const src = sub(tokenize(seg.slice(inRedirect.index + inRedirect[0].length))[0] ?? "");
+            const path = up[1] ?? up[2];
+            if (src.includes("$") || path.includes("$") || userhost.includes("$"))
+              unchecked++;
+            else if (src)
+              uploads.push({ local: resolve8(dir, tilde(src)), userhost, path, sshArgs });
+            continue;
+          }
+          const down = /^\s*cat\s+([^\s;|&<>'"]+)\s*$/.exec(remoteCmd);
+          const outRedirect = /(?:^|[^0-9>&])>(?!>)\s*/.exec(masked);
+          if (down && outRedirect) {
+            const tok = sub(tokenize(seg.slice(outRedirect.index + outRedirect[0].length))[0] ?? "");
+            if (tok && !tok.includes("$"))
+              downloads.push({ local: resolve8(dir, tilde(tok)), userhost, path: down[1], sshArgs });
+          }
+        }
+      }
+    }
+  } catch {}
+  if (/\bmv\b/.test(command))
+    for (const u of uploads)
+      u.path = u.path.replace(/\.(deploytmp|tmp|new)$/, "");
+  return { uploads, downloads, ...unchecked ? { unchecked } : {} };
+}
+var remoteKey = (t) => `${t.userhost}:${t.path}`;
+var DEPLOY_DENY_ON_UNKNOWN_SERVER_COPY = true;
+function decideDeploy(server, known) {
+  if (server.kind === "absent")
+    return { allow: true, note: "is new" };
+  if (server.kind === "error")
+    return { allow: true, note: `could not be checked (${server.reason}): fetch and diff before uploading` };
+  const how = known.get(server.md5);
+  if (how)
+    return { allow: true, note: `matched ${how}` };
+  return DEPLOY_DENY_ON_UNKNOWN_SERVER_COPY ? { allow: false, md5: server.md5 } : { allow: true, note: "matches nothing you know (not HEAD, not your file, not a copy you fetched): fetch and diff before uploading" };
+}
+function denyDeployText(t, md5, holder) {
+  const k = remoteKey(t);
+  const board = holder ? `; the board last saw ${holder.local} held by ${holder.session_id} (${holder.agent ?? "?"}, ${Math.round((holder.age_s ?? 0) / 60)} min ago)` : "";
+  return `DEPLOY BLOCKED: ${k} on the server (md5 ${md5.slice(0, 8)}) is not your file, not a committed version (HEAD, the last 9 commits or the default branch), and not a copy you fetched or uploaded in this session. Someone deployed uncommitted work there${board}. Uploading now erases it. Instead: 1) scp ${t.sshArgs.includes("-p") ? `-P ${t.sshArgs[t.sshArgs.indexOf("-p") + 1]} ` : ""}${k} <your scratchpad>/${basename(t.path)}.live  2) apply your change onto that LIVE copy  3) upload the merged file (the guard allows an upload whose server copy matches what you fetched). Do not bypass this with another command. If the user explicitly wants to overwrite, they type \`override: ${k}\`.`;
+}
+function deployNudge(t, note) {
+  return `DEPLOY: server copy of ${t.path} ${note}. Build a deploy from the LIVE copy plus your change, never from HEAD plus your change.`;
+}
+function parseMd5sumLines(out) {
+  const m = new Map;
+  for (const line of String(out ?? "").split(/\r?\n/)) {
+    const x = /^\\?([0-9a-f]{32})\s+\*?(.+)$/.exec(line.trim());
+    if (x)
+      m.set(x[2], x[1]);
+  }
+  return m;
+}
+var md5Of = (buf) => createHash("md5").update(buf).digest("hex");
+var MAX_HASH_BYTES = 5 * 1024 * 1024;
+function localMd5(p) {
+  try {
+    const st = statSync5(p);
+    if (!st.isFile() || st.size > MAX_HASH_BYTES)
+      return null;
+    return md5Of(readFileSync9(p));
+  } catch {
+    return null;
+  }
+}
+var SSH_KILL_MS = 3000;
+function remoteMd5s(userhost, sshArgs, paths, killMs = SSH_KILL_MS) {
+  const out = new Map;
+  const q = (p) => `'${p.replace(/'/g, `'\\''`)}'`;
+  try {
+    const r = spawnSync5("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=2", ...sshArgs, userhost, `md5sum -- ${paths.map(q).join(" ")}`], { encoding: "utf-8", timeout: killMs });
+    if (r.error || r.status === null || r.status === 255) {
+      const reason = r.error ? r.error.code === "ETIMEDOUT" ? "ssh timed out" : r.error.message : `ssh failed: ${(r.stderr ?? "").trim().split(`
+`).pop() ?? ""}`.slice(0, 120);
+      for (const p of paths)
+        out.set(p, { kind: "error", reason });
+      return out;
+    }
+    const lines = parseMd5sumLines(r.stdout ?? "");
+    for (const p of paths) {
+      const m = lines.get(p);
+      out.set(p, m ? { kind: "md5", md5: m } : { kind: "absent" });
+    }
+  } catch (e) {
+    for (const p of paths)
+      out.set(p, { kind: "error", reason: e.message.slice(0, 120) });
+  }
+  return out;
+}
+function committedMd5s(file, remotePath, cwd) {
+  const out = new Map;
+  try {
+    let root = detectRepoRootSync(dirname3(file));
+    let rel = root ? relative(root, file).split("\\").join("/") : "..";
+    if (rel.startsWith("..") && remotePath && cwd) {
+      root = detectRepoRootSync(cwd);
+      const parts = remotePath.split("/").filter(Boolean);
+      const i = root ? parts.findIndex((_, k) => existsSync7(join16(root, ...parts.slice(k)))) : -1;
+      rel = i >= 0 ? parts.slice(i).join("/") : "..";
+    }
+    if (!root || rel.startsWith(".."))
+      return out;
+    const refs = [
+      ["HEAD", "HEAD"],
+      ["master", "the default branch"],
+      ["main", "the default branch"],
+      ["origin/HEAD", "the default branch"],
+      ["origin/master", "the default branch"],
+      ["origin/main", "the default branch"],
+      ...Array.from({ length: 9 }, (_, k) => [`HEAD~${k + 1}`, "a recent commit"])
+    ];
+    const r = spawnSync5("git", ["-C", root, "cat-file", "--batch"], { input: refs.map(([ref]) => `${ref}:${rel}`).join(`
+`) + `
+`, timeout: 2000, maxBuffer: 64 * 1024 * 1024 });
+    const buf = r.stdout;
+    if (!buf || r.status !== 0)
+      return out;
+    let off = 0;
+    for (const [, how] of refs) {
+      const nl = buf.indexOf(10, off);
+      if (nl < 0)
+        break;
+      const header = buf.subarray(off, nl).toString();
+      off = nl + 1;
+      const m = /^[0-9a-f]+ blob (\d+)$/.exec(header);
+      if (!m)
+        continue;
+      const size = Number(m[1]);
+      const md5 = md5Of(buf.subarray(off, off + size));
+      off += size + 1;
+      if (!out.has(md5))
+        out.set(md5, how);
+    }
+  } catch {}
+  return out;
+}
+var baseFile = (sid) => join16(process.env.CAPTAIN_MEMO_DATA_DIR ?? DATA_DIR, "deploy-base", `${sid.replace(/[^A-Za-z0-9_.-]/g, "_")}.json`);
+function readBaselines(sid) {
+  try {
+    return JSON.parse(readFileSync9(baseFile(sid), "utf-8"));
+  } catch {
+    return {};
+  }
+}
+function recordBaseline(sid, key, md5, how) {
+  try {
+    const b = readBaselines(sid);
+    b[key] = [...(b[key] ?? []).filter((e) => e.md5 !== md5), { md5, how }].slice(-5);
+    const f = baseFile(sid);
+    if (!existsSync7(dirname3(f)))
+      mkdirSync7(dirname3(f), { recursive: true });
+    writeFileSync7(f, JSON.stringify(b));
+  } catch {}
+}
+var MAX_CHECKED = 5;
+function checkUploads(sid, uploads, opts = {}) {
+  const files = uploads.filter((u) => !u.dir && !opts.skip?.(remoteKey(u))).slice(0, MAX_CHECKED);
+  if (files.length === 0)
+    return { nudges: [] };
+  const base = readBaselines(sid);
+  const byHost = new Map;
+  for (const u of files) {
+    const k = `${u.userhost}\x00${u.sshArgs.join("\x00")}`;
+    byHost.set(k, [...byHost.get(k) ?? [], u]);
+  }
+  const nudges = [];
+  for (const group of byHost.values()) {
+    const server = remoteMd5s(group[0].userhost, group[0].sshArgs, group.map((u) => u.path), opts.killMs);
+    for (const u of group) {
+      const mine = localMd5(u.local);
+      const known = committedMd5s(u.local, u.path, opts.cwd);
+      if (mine)
+        known.set(mine, "your file");
+      for (const e of base[remoteKey(u)] ?? [])
+        known.set(e.md5, e.how === "upload" ? "your last upload" : "your fetched copy");
+      const v = decideDeploy(server.get(u.path) ?? { kind: "error", reason: "no answer" }, known);
+      if (!v.allow)
+        return { deny: denyDeployText(u, v.md5, opts.holderOf?.(u.local)), nudges: [] };
+      nudges.push(deployNudge(u, v.note));
+    }
+  }
+  for (const u of files) {
+    const m = localMd5(u.local);
+    if (m)
+      recordBaseline(sid, remoteKey(u), m, "upload");
+  }
+  return { nudges };
+}
+function recordFetchBaselines(sid, command, cwd) {
+  try {
+    if (!sid || typeof command !== "string" || !/\b(scp|rsync|ssh)\b/.test(command))
+      return;
+    for (const d of parseTransfers(command, cwd).downloads) {
+      const m = localMd5(d.local);
+      if (m)
+        recordBaseline(sid, remoteKey(d), m, "fetch");
+    }
+  } catch {}
+}
+
+// src/hooks/post-tool-use.ts
+init_shared();
+init_branch();
+
+// src/shared/origin-agent.ts
+var ORIGIN_AGENTS = [
+  "claude-code",
+  "codex",
+  "cursor",
+  "gemini",
+  "agy",
+  "opencode",
+  "kimi",
+  "vibe",
+  "vscode",
+  "jetbrains",
+  "unknown"
+];
+var UNKNOWN_ORIGIN_AGENT = "unknown";
+function asOriginAgent(v) {
+  return typeof v === "string" && ORIGIN_AGENTS.includes(v) ? v : null;
+}
+function detectOriginAgent(env = process.env) {
+  const e = env ?? {};
+  const explicit = asOriginAgent((e.AI_AGENT ?? "").trim().toLowerCase());
+  if (explicit)
+    return explicit;
+  if ((e.CLAUDECODE ?? "").length > 0)
+    return "claude-code";
+  if ((e.CLAUDE_CODE_ENTRYPOINT ?? "").length > 0)
+    return "claude-code";
+  return UNKNOWN_ORIGIN_AGENT;
+}
+
+// src/hooks/post-tool-use.ts
+var HOOK_TIMEOUT_MS = Number(process.env.CAPTAIN_MEMO_POST_TOOL_USE_TIMEOUT_MS ?? 1000);
+var WRITING_TOOLS = new Set([
+  "edit",
+  "write",
+  "multiedit",
+  "notebookedit",
+  "apply_patch",
+  "write_file",
+  "writefile",
+  "replace",
+  "replace_file",
+  "strreplacefile"
+]);
+function promptNumberFromTurnId(turnId) {
+  if (!turnId)
+    return 0;
+  let hash = 2166136261;
+  for (let i = 0;i < turnId.length; i++) {
+    hash ^= turnId.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+function patchFiles(input) {
+  const value = typeof input === "string" ? input : input && typeof input === "object" ? String(input.patch ?? input.input ?? input.command ?? "") : "";
+  const files = [];
+  for (const line of value.split(/\r?\n/)) {
+    const match = /^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/.exec(line);
+    if (match?.[1])
+      files.push(match[1].trim());
+  }
+  return files;
+}
+function extractFiles(toolName, input, _response) {
+  const read = [];
+  const modified = [];
+  const ip = input ?? {};
+  if (typeof ip.file_path === "string") {
+    if (WRITING_TOOLS.has(toolName.toLowerCase()))
+      modified.push(ip.file_path);
+    else
+      read.push(ip.file_path);
+  }
+  if (typeof ip.notebook_path === "string")
+    modified.push(ip.notebook_path);
+  if (toolName.toLowerCase() === "apply_patch")
+    modified.push(...patchFiles(input));
+  return { read, modified };
+}
+async function main3(options = {}) {
+  let payload = {};
+  try {
+    payload = await readStdinJson();
+  } catch (err) {
+    logHookError("PostToolUse", err);
+    return;
+  }
+  if (!payload.tool_name)
+    return;
+  const toolResponse = payload.tool_response ?? payload.tool_output;
+  const { read, modified } = extractFiles(payload.tool_name, payload.tool_input, toolResponse);
+  const event = {
+    session_id: payload.session_id ?? "unknown",
+    project_id: resolveProjectId(payload.cwd),
+    prompt_number: payload.prompt_number ?? promptNumberFromTurnId(payload.turn_id),
+    tool_name: payload.tool_name,
+    tool_input_summary: summarize(payload.tool_input, 1500),
+    tool_result_summary: summarize(toolResponse, 1500),
+    files_read: read,
+    files_modified: modified,
+    ts_epoch: Math.floor(Date.now() / 1000),
+    branch: detectBranchSync(payload.cwd ?? process.cwd()),
+    origin_agent: options.originAgent ?? detectOriginAgent(),
+    ...options.source ? { source: options.source } : {}
+  };
+  const cmd = payload.tool_input?.command;
+  if (payload.session_id && typeof cmd === "string" && /^(bash|run_shell_command|shell|exec_command)$/i.test(payload.tool_name)) {
+    recordFetchBaselines(payload.session_id, cmd, payload.cwd ?? "");
+  }
+  const res = await workerFetch("/observation/enqueue", {
+    method: "POST",
+    body: event,
+    timeoutMs: HOOK_TIMEOUT_MS
+  });
+  logWorkerFailure("PostToolUse", "/observation/enqueue", res);
+}
+if (isMainModule(import.meta)) {
+  try {
+    await main3();
+  } catch (err) {
+    logHookError("PostToolUse", err);
+    process.exit(0);
   }
 }
 
@@ -2301,35 +2957,87 @@ function globsOverlap(aGlobs, bGlobs) {
 }
 
 // src/hooks/pre-tool-use.ts
-var HOOK_TIMEOUT_MS2 = Number(process.env.CAPTAIN_MEMO_PRE_TOOL_USE_TIMEOUT_MS ?? 1500);
+import { resolve as resolve9, dirname as dirname4 } from "path";
+var HOOK_TIMEOUT_MS3 = Number(process.env.CAPTAIN_MEMO_PRE_TOOL_USE_TIMEOUT_MS ?? 1500);
 var MAX_FILES = 25;
-var SHELL_TOOLS = { Bash: "posix", PowerShell: "powershell" };
-async function publishClaim(sid, cwd, touched) {
+var HOST_EXIT_MARGIN_MS2 = 750;
+var SHELL_TOOLS = { Bash: "posix", PowerShell: "powershell", run_shell_command: "posix" };
+var enforcing = () => process.env.CAPTAIN_MEMO_WORKBOARD_ENFORCE !== "0";
+var scratchPath = (p) => (/^\/(?:var\/)?tmp\//.test(p) || /\/claude-\d+\//.test(p)) && !detectRepoRootSync(dirname4(p));
+async function publishClaim(sid, cwd, touched, o) {
   const project = resolveProjectId(cwd);
+  const advisories = [];
   let files = [...touched];
-  const cur = await workerFetch(`/worknote/active?session_id=${encodeURIComponent(sid)}`, { method: "GET", timeoutMs: HOOK_TIMEOUT_MS2 });
-  if (cur.ok && cur.body?.claims) {
-    const mine = cur.body.claims.find((c) => c.session_id === sid);
-    if (mine?.files?.length)
-      files = [...new Set([...mine.files, ...touched])];
-  }
+  const cur = await workerFetch(`/worknote/active?session_id=${encodeURIComponent(sid)}`, { method: "GET", timeoutMs: HOOK_TIMEOUT_MS3 });
+  const claims = cur.ok ? cur.body?.claims ?? [] : [];
+  const mine = claims.find((c) => c.session_id === sid);
+  if (mine?.files?.length)
+    files = [...new Set([...mine.files, ...touched])];
   if (files.length > MAX_FILES)
     files = files.slice(-MAX_FILES);
+  const uploads = o.uploads ?? [];
+  if (uploads.length > 0) {
+    const ov = cur.body?.my_override?.files ?? [];
+    let killMs = SSH_KILL_MS;
+    if (o.hostTimeoutMs !== undefined)
+      killMs = Math.min(SSH_KILL_MS, Math.floor(o.hostTimeoutMs - performance.now() - HOOK_TIMEOUT_MS3 - HOST_EXIT_MARGIN_MS2));
+    if (killMs < 500) {
+      advisories.push(...uploads.map((u) => `DEPLOY: server copy of ${u.path} could not be checked (no time left in this CLI's hook budget): fetch and diff before uploading. Build a deploy from the LIVE copy plus your change, never from HEAD plus your change.`));
+    } else {
+      const res = checkUploads(sid, uploads, {
+        skip: (key) => globsOverlap([key], ov).length > 0,
+        holderOf: (local) => {
+          const h = claims.find((c) => c.session_id !== sid && globsOverlap([local], c.files ?? []).length > 0);
+          return h ? { local, session_id: h.session_id, ...h.agent ? { agent: h.agent } : {}, ...typeof h.age_s === "number" ? { age_s: h.age_s } : {} } : undefined;
+        },
+        killMs,
+        ...cwd ? { cwd } : {}
+      });
+      if (res.deny) {
+        if (enforcing())
+          return { deny: res.deny, advisories: [] };
+        advisories.push(res.deny);
+      }
+      advisories.push(...res.nudges);
+    }
+  }
+  const pid = o.agent === "claude" ? Number(process.env.CLAUDE_PID) : NaN;
   const set = await workerFetch("/worknote/set", {
     method: "POST",
-    body: { session_id: sid, agent: "claude", what: `editing ${files.length} file(s) in ${project}`, files, enrich_from_observations: true },
-    timeoutMs: HOOK_TIMEOUT_MS2
+    body: {
+      session_id: sid,
+      agent: o.agent,
+      what: `editing ${files.length} file(s) in ${project}`,
+      files,
+      enrich_from_observations: true,
+      enforce: enforcing(),
+      touched,
+      ...Number.isInteger(pid) && pid > 0 ? { pid } : {},
+      ...o.repo_root ? { repo_root: o.repo_root } : {}
+    },
+    timeoutMs: HOOK_TIMEOUT_MS3
   });
   logWorkerFailure("PreToolUse", "/worknote/set", set);
   if (!set.ok || !set.body)
-    return null;
-  const overlaps = set.body.overlaps ?? [];
-  return overlaps.length === 0 ? null : formatOverlapWarning(overlaps, cwd ? detectRepoRootSync(cwd) : null);
+    return { advisories };
+  if (set.body.deny?.files?.length)
+    return { deny: formatDeny(set.body.deny.files, set.body.deny.holders ?? []), advisories: [] };
+  if (set.body.override?.files?.length) {
+    advisories.push(`WORK-BOARD OVERRIDE (by the user) in force: writing ${set.body.override.files.join(", ")} held by ${(set.body.override.holders ?? []).map((h) => h.session_id).join(", ")}; the holder sees the override on the work board.`);
+  }
+  const warn = formatOverlapWarning(set.body.overlaps ?? []);
+  if (warn)
+    advisories.push(warn);
+  return { advisories };
 }
-function formatOverlapWarning(overlaps, myRepoRoot = null) {
+function formatDeny(files, holders) {
+  const f = files.join(", ");
+  const who = holders.map((h) => `${h.session_id}, ${h.agent ?? "?"}, last edit ${Math.round((h.age_s ?? 0) / 60)} min ago: "${(h.what ?? "").slice(0, 80)}"`).join("; ");
+  return `WORK-BOARD: BLOCKED. ${f} ${files.length > 1 ? "are" : "is"} held by another session on this captain (${who}). Two sessions writing one file is how work gets lost. Do not route around this with another tool or a shell command. Stop and tell the user which session holds it (work_active shows the board); they decide. If they want to overwrite it, they type \`override: ${files[0]}\` as their message.`;
+}
+function formatOverlapWarning(overlaps) {
   if (overlaps.length === 0)
     return null;
-  const whole = (globs, root) => !!root && globs.length > 0 && globs.every((g) => g === `${root}/**`);
   const lines = overlaps.map((o) => {
     const stale = staleNote(o);
     const who = `another session on this captain (${(o.session_id ?? "").slice(0, 12)}, ${o.agent ?? "?"}${stale ? `; ${stale}` : ""})`;
@@ -2342,13 +3050,13 @@ function formatOverlapWarning(overlaps, myRepoRoot = null) {
     if (o.kind === "repo")
       return `${who} works in the same repository (${yours.join(", ")})`;
     const theirs = globsOverlap(o.files ?? [], yours);
-    const note = whole(theirs, o.repo_root) ? " (a whole-repo claim from a shell edit whose file could not be named: it may hold your file, so tell the user before writing)" : whole(yours, myRepoRoot) ? " (your side is a whole-repo claim from a shell edit; the file named here is theirs, so tell the user before you write it)" : "";
+    const note = o.override ? ` (its user typed \`override:\` for ${o.override.files.join(", ")} until ${new Date(o.override.until).toTimeString().slice(0, 5)}: it may write them now, so re-read them before your next write)` : "";
     return `${who} holds ${(theirs.length ? theirs : o.files ?? []).join(", ")}, which overlaps your ${yours.join(", ")}${note}`;
   });
   const next = overlaps.every((o) => o.stale) ? "Every overlapping claim is stale (no recent edit, not necessarily ended): tell the user which session holds it before writing the same files." : "Stop and tell the user which session holds it (work_active shows the board); never edit or deploy over another session's claim.";
   return `WORK-BOARD OVERLAP: ${lines.join("; ")}. ${next}`;
 }
-async function main3() {
+async function main4(opts = {}) {
   let payload = {};
   try {
     payload = await readStdinJson();
@@ -2357,8 +3065,22 @@ async function main3() {
     return;
   }
   const sid = payload.session_id;
-  const shell = SHELL_TOOLS[payload.tool_name ?? ""];
+  const cwd = payload.cwd;
+  const tool = payload.tool_name ?? "";
+  const shell = SHELL_TOOLS[tool];
+  const agent = opts.agent ?? "claude";
   const advisories = [];
+  let deny;
+  const abs = (p) => cwd ? resolve9(cwd, p) : p;
+  const claim = async (touched, extra = {}) => {
+    try {
+      const r = await publishClaim(sid, cwd, touched.filter((p) => !scratchPath(p)), { agent, ...extra, ...opts.hostTimeoutMs !== undefined ? { hostTimeoutMs: opts.hostTimeoutMs } : {} });
+      deny = r.deny;
+      advisories.push(...r.advisories);
+    } catch (err) {
+      logHookError("PreToolUse", err);
+    }
+  };
   if (shell) {
     try {
       const gitWarn = await (await Promise.resolve().then(() => (init_pre_git(), exports_pre_git))).runPreGit(payload);
@@ -2368,170 +3090,52 @@ async function main3() {
       logHookError("PreToolUse", err);
     }
     const cmd = typeof payload.tool_input?.command === "string" ? payload.tool_input.command : "";
-    let written = parseWrittenPaths(cmd, payload.cwd ?? "", shell);
-    if (payload.cwd && isCoarseClaim(written, payload.cwd)) {
-      const root = detectRepoRootSync(payload.cwd);
-      written = root && !root.includes("/claude-1000/") ? [`${root}/**`] : [];
+    let written = parseWrittenPaths(cmd, cwd ?? "", shell);
+    const transfers = shell === "posix" ? parseTransfers(cmd, cwd ?? "") : { uploads: [] };
+    const uploads = transfers.uploads.filter((u) => !/^\/(?:var\/)?tmp\//.test(u.path));
+    if (transfers.unchecked)
+      advisories.push(`DEPLOY: ${transfers.unchecked} upload(s) in this command name their file, host or path through a shell expansion the guard cannot resolve ($(...), $1, a glob), so the server copy was not checked: fetch the live copy and diff before uploading. Build a deploy from the LIVE copy plus your change, never from HEAD plus your change.`);
+    let repoRoot;
+    if (cwd && isCoarseClaim(written, cwd)) {
+      const root = detectRepoRootSync(cwd);
+      written = [];
+      if (root && !root.includes("/claude-1000/"))
+        repoRoot = root;
     }
-    if (sid && written.length > 0) {
-      try {
-        const warn = await publishClaim(sid, payload.cwd, written);
-        if (warn)
-          advisories.push(warn);
-      } catch (err) {
-        logHookError("PreToolUse", err);
-      }
+    const upTouched = uploads.flatMap((u) => u.dir ? [`${u.local}/**`, `${remoteKey(u)}/**`] : [u.local, remoteKey(u)]);
+    const touched = [...new Set([...written, ...upTouched])];
+    if (sid && (touched.length > 0 || repoRoot)) {
+      await claim(touched, { ...repoRoot ? { repo_root: repoRoot } : {}, ...uploads.length ? { uploads } : {} });
     }
   } else {
     const ip = payload.tool_input ?? {};
-    const fp = typeof ip.file_path === "string" ? ip.file_path : typeof ip.notebook_path === "string" ? ip.notebook_path : undefined;
-    if (!sid || !fp)
-      return;
-    try {
-      const warn = await publishClaim(sid, payload.cwd, [fp]);
-      if (warn)
-        advisories.push(warn);
-    } catch (err) {
-      logHookError("PreToolUse", err);
+    let touched = [];
+    if (tool === "apply_patch")
+      touched = patchFiles(ip).map(abs);
+    else {
+      const fp = typeof ip.file_path === "string" ? ip.file_path : typeof ip.notebook_path === "string" ? ip.notebook_path : undefined;
+      if (fp)
+        touched = [abs(fp)];
     }
+    if (!sid || touched.length === 0)
+      return;
+    await claim(touched);
+  }
+  if (deny) {
+    writeStdout(JSON.stringify(opts.format === "gemini" ? { decision: "deny", reason: deny } : { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: deny } }));
+    return;
   }
   if (advisories.length === 0)
     return;
-  writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: advisories.join(`
+  writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: opts.format === "gemini" ? "BeforeTool" : "PreToolUse", additionalContext: advisories.join(`
 
 `) } }));
 }
 if (isMainModule(import.meta)) {
   try {
-    await main3();
-  } catch (err) {
-    logHookError("PreToolUse", err);
-    process.exit(0);
-  }
-}
-
-// src/hooks/post-tool-use.ts
-init_shared();
-init_branch();
-
-// src/shared/origin-agent.ts
-var ORIGIN_AGENTS = [
-  "claude-code",
-  "codex",
-  "cursor",
-  "gemini",
-  "agy",
-  "opencode",
-  "kimi",
-  "vibe",
-  "vscode",
-  "jetbrains",
-  "unknown"
-];
-var UNKNOWN_ORIGIN_AGENT = "unknown";
-function asOriginAgent(v) {
-  return typeof v === "string" && ORIGIN_AGENTS.includes(v) ? v : null;
-}
-function detectOriginAgent(env = process.env) {
-  const e = env ?? {};
-  const explicit = asOriginAgent((e.AI_AGENT ?? "").trim().toLowerCase());
-  if (explicit)
-    return explicit;
-  if ((e.CLAUDECODE ?? "").length > 0)
-    return "claude-code";
-  if ((e.CLAUDE_CODE_ENTRYPOINT ?? "").length > 0)
-    return "claude-code";
-  return UNKNOWN_ORIGIN_AGENT;
-}
-
-// src/hooks/post-tool-use.ts
-var HOOK_TIMEOUT_MS3 = Number(process.env.CAPTAIN_MEMO_POST_TOOL_USE_TIMEOUT_MS ?? 1000);
-var WRITING_TOOLS = new Set([
-  "edit",
-  "write",
-  "multiedit",
-  "notebookedit",
-  "apply_patch",
-  "write_file",
-  "writefile",
-  "replace",
-  "replace_file",
-  "strreplacefile"
-]);
-function promptNumberFromTurnId(turnId) {
-  if (!turnId)
-    return 0;
-  let hash = 2166136261;
-  for (let i = 0;i < turnId.length; i++) {
-    hash ^= turnId.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-function patchFiles(input) {
-  const value = typeof input === "string" ? input : input && typeof input === "object" ? String(input.patch ?? input.input ?? "") : "";
-  const files = [];
-  for (const line of value.split(/\r?\n/)) {
-    const match = /^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/.exec(line);
-    if (match?.[1])
-      files.push(match[1].trim());
-  }
-  return files;
-}
-function extractFiles(toolName, input, _response) {
-  const read = [];
-  const modified = [];
-  const ip = input ?? {};
-  if (typeof ip.file_path === "string") {
-    if (WRITING_TOOLS.has(toolName.toLowerCase()))
-      modified.push(ip.file_path);
-    else
-      read.push(ip.file_path);
-  }
-  if (typeof ip.notebook_path === "string")
-    modified.push(ip.notebook_path);
-  if (toolName.toLowerCase() === "apply_patch")
-    modified.push(...patchFiles(input));
-  return { read, modified };
-}
-async function main4(options = {}) {
-  let payload = {};
-  try {
-    payload = await readStdinJson();
-  } catch (err) {
-    logHookError("PostToolUse", err);
-    return;
-  }
-  if (!payload.tool_name)
-    return;
-  const toolResponse = payload.tool_response ?? payload.tool_output;
-  const { read, modified } = extractFiles(payload.tool_name, payload.tool_input, toolResponse);
-  const event = {
-    session_id: payload.session_id ?? "unknown",
-    project_id: resolveProjectId(payload.cwd),
-    prompt_number: payload.prompt_number ?? promptNumberFromTurnId(payload.turn_id),
-    tool_name: payload.tool_name,
-    tool_input_summary: summarize(payload.tool_input, 1500),
-    tool_result_summary: summarize(toolResponse, 1500),
-    files_read: read,
-    files_modified: modified,
-    ts_epoch: Math.floor(Date.now() / 1000),
-    branch: detectBranchSync(payload.cwd ?? process.cwd()),
-    origin_agent: options.originAgent ?? detectOriginAgent(),
-    ...options.source ? { source: options.source } : {}
-  };
-  const res = await workerFetch("/observation/enqueue", {
-    method: "POST",
-    body: event,
-    timeoutMs: HOOK_TIMEOUT_MS3
-  });
-  logWorkerFailure("PostToolUse", "/observation/enqueue", res);
-}
-if (isMainModule(import.meta)) {
-  try {
     await main4();
   } catch (err) {
-    logHookError("PostToolUse", err);
+    logHookError("PreToolUse", err);
     process.exit(0);
   }
 }
@@ -2625,20 +3229,22 @@ if (isMainModule(import.meta)) {
 var EVENTS = {
   UserPromptSubmit: main,
   SessionStart: main2,
-  PreToolUse: main3,
-  PostToolUse: main4,
+  PreToolUse: main4,
+  PostToolUse: main3,
   Stop: main5,
   PreCompact: main6,
   CodexUserPromptSubmit: () => main({ emitOriginalPrompt: false, structuredContextJson: true, hostTimeoutMs: NATIVE_PROMPT_HOOK_TIMEOUT_S * 1000 }),
-  CodexPostToolUse: () => main4({ originAgent: "codex", source: "hook:codex" }),
+  CodexPostToolUse: () => main3({ originAgent: "codex", source: "hook:codex" }),
+  CodexPreToolUse: () => main4({ agent: "codex", format: "claude", hostTimeoutMs: 5000 }),
+  GeminiBeforeTool: () => main4({ agent: "gemini", format: "gemini", hostTimeoutMs: 5000 }),
   CodexStop: () => main5({ emitJson: true }),
   CodexSessionStart: nativeMain,
   GeminiBeforeAgent: () => main({ emitOriginalPrompt: false, structuredContextJson: true, contextEventName: "BeforeAgent", hostTimeoutMs: NATIVE_PROMPT_HOOK_TIMEOUT_S * 1000 }),
-  GeminiAfterTool: () => main4({ originAgent: "gemini", source: "hook:gemini" }),
+  GeminiAfterTool: () => main3({ originAgent: "gemini", source: "hook:gemini" }),
   GeminiAfterAgent: () => main5({ emitJson: true }),
   GeminiSessionStart: nativeMain,
   KimiUserPromptSubmit: () => main({ emitOriginalPrompt: false, hostTimeoutMs: NATIVE_PROMPT_HOOK_TIMEOUT_S * 1000 }),
-  KimiPostToolUse: () => main4({ originAgent: "kimi", source: "hook:kimi" }),
+  KimiPostToolUse: () => main3({ originAgent: "kimi", source: "hook:kimi" }),
   KimiStop: () => main5()
 };
 async function main7() {

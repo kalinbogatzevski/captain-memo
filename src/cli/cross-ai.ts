@@ -708,6 +708,8 @@ export function mergeCodexHooks(existingJson: string | null, hookCommand: string
     // Keep observation delivery synchronous: marking a session native suppresses
     // its rollout fallback, so Codex must know enqueue completed before moving on.
     PostToolUse: { type: 'command', command: command('CodexPostToolUse'), timeout: 5 },
+    // The work-board claim and the edit/deploy guards. No matcher: the hook returns at once for tools that write nothing.
+    PreToolUse: { type: 'command', command: command('CodexPreToolUse'), timeout: 5 },
     Stop: { type: 'command', command: command('CodexStop'), timeout: 30 },
     // The articles once per session (and again after /compact); same 2.5k default truncation as above.
     SessionStart: {
@@ -814,6 +816,7 @@ export function mergeGeminiHooks(existingJson: string | null, hookCommand: strin
   };
   add('BeforeAgent', 'GeminiBeforeAgent', NATIVE_PROMPT_HOOK_TIMEOUT_S * 1000);
   add('AfterTool', 'GeminiAfterTool', 5_000, '*');
+  add('BeforeTool', 'GeminiBeforeTool', 5_000, 'write_file|replace|run_shell_command');   // work-board claim + edit/deploy guards
   add('AfterAgent', 'GeminiAfterAgent', 30_000);
   add('SessionStart', 'GeminiSessionStart', NATIVE_PROMPT_HOOK_TIMEOUT_S * 1000);   // no matcher: startup, resume and clear
   root.hooks = hooks;
@@ -874,6 +877,9 @@ const codexAdapter: ToolAdapter = {
           // Codex keeps a trusted_hash per hook and holds a new one back until the user accepts it in the TUI.
           if (!before?.includes('CodexSessionStart')) {
             const note = 'Codex will ask once to trust the new SessionStart hook ("Trust all and continue")';
+            detail = detail ? `${detail}; ${note}` : note;
+          } else if (!before.includes('CodexPreToolUse')) {
+            const note = 'Codex will ask once to trust the new PreToolUse hook, the work-board guard ("Trust all and continue"); until then codex exec skips it';
             detail = detail ? `${detail}; ${note}` : note;
           }
         }

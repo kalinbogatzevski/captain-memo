@@ -1,4 +1,4 @@
-import { readStdinJson, writeStdout, workerFetch, logHookError, logWorkerFailure, resolveProjectId, isMainModule } from './shared.ts';
+import { readStdinJson, writeStdout, workerFetch, logHookError, logWorkerFailure, resolveProjectId, isMainModule, absoluteClaimFiles } from './shared.ts';
 import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS, DEFAULT_WORKER_PORT } from '../shared/paths.ts';
 import type { EnvelopePayload } from '../shared/types.ts';
 import { parseHomeworkPrompt, homeworkFiledLine, type HomeworkItem } from '../worker/homework.ts';
@@ -37,6 +37,20 @@ export function homeworkWaitMs(hostTimeoutMs: number | undefined, elapsedMs: num
   return Math.max(0, Math.min(6_000, hostTimeoutMs - elapsedMs - HOST_EXIT_MARGIN_MS));
 }
 
+/** `override: <file> [, <file>...]` as the FIRST line the USER typed: lift the edit/deploy guard on those files for this
+ *  session for 30 min. Only a typed prompt counts (a work_set flag or an env var could be set by the model). Relative
+ *  paths resolve like work_set's (repo root, else cwd); a remote target `user@host:path` is kept as written. Null when
+ *  the prompt is not an override. */
+export function parseOverridePrompt(prompt: string, cwd: string | undefined): string[] | null {
+  const m = /^\s*override\s*:\s*(\S[\s\S]*)$/i.exec(String(prompt ?? '').split(/\r?\n/)[0] ?? '');
+  if (!m) return null;
+  const raw = m[1]!.split(/[\s,]+/).map((f) => f.replace(/^[`'"]+|[`'".]+$/g, '')).filter(Boolean);
+  const remote = (f: string): boolean => /^(?:[^@\s:/]+@)?[^@\s:/]{2,}:/.test(f);
+  const local = absoluteClaimFiles(raw.filter((f) => !remote(f)), cwd ?? '').filter((f): f is string => typeof f === 'string');
+  const files = [...local, ...raw.filter(remote)];
+  return files.length ? files : null;
+}
+
 export async function main(options: UserPromptSubmitOptions = {}): Promise<void> {
   let payload: UserPromptSubmitPayload = {};
   try {
@@ -61,6 +75,21 @@ export async function main(options: UserPromptSubmitOptions = {}): Promise<void>
     const line = filed.ok && filed.body ? homeworkFiledLine(filed.body.item) + ` (${filed.body.open} open)`
       : '📝 The worker did not confirm filing this as homework in time — it may still have landed: todo_list() shows; if it is not there, say "noted" and todo_add it yourself.';
     logWorkerFailure('UserPromptSubmit', '/homework/add', filed);
+    if (options.structuredContextJson) writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: options.contextEventName ?? 'UserPromptSubmit', additionalContext: line } }));
+    else { writeStdout(line); writeStdout('\n\n'); }
+    if (options.emitOriginalPrompt !== false) writeStdout(prompt);
+    return;
+  }
+
+  // OVERRIDE (guard 2, 2026-09-30): the user lifts the work-board block on a file. Recorded on the board (the holder sees
+  // it there), and the model is told in one line. Recall is skipped, as for homework.
+  const overrideFiles = payload.session_id ? parseOverridePrompt(prompt, payload.cwd) : null;
+  if (overrideFiles) {
+    const r = await workerFetch<{ files: string[]; holders: string[] }>('/worknote/override', { method: 'POST', body: { session_id: payload.session_id, files: overrideFiles }, timeoutMs: 2_000 });
+    logWorkerFailure('UserPromptSubmit', '/worknote/override', r);
+    const line = r.ok && r.body
+      ? `Override recorded for ${r.body.files.join(', ')} (30 min); ${r.body.holders.length ? `holder(s) ${r.body.holders.join(', ')} will see it on the work board` : 'no live holder'}.`
+      : 'The worker did not confirm the override, so the work-board block still stands. Tell the user; they can retry.';
     if (options.structuredContextJson) writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: options.contextEventName ?? 'UserPromptSubmit', additionalContext: line } }));
     else { writeStdout(line); writeStdout('\n\n'); }
     if (options.emitOriginalPrompt !== false) writeStdout(prompt);

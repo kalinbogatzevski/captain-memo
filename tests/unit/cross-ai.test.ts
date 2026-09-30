@@ -191,7 +191,12 @@ test('mergeCodexHooks — preserves foreign hooks and replaces managed entries i
   expect(twice).toBe(once);
   expect(parsed.custom).toEqual({ keep: true });
   expect(JSON.stringify(parsed)).toContain('foreign-tool');
-  expect(JSON.stringify(parsed).match(new RegExp(CAPTAIN_MEMO_CODEX_HOOK_MARKER, 'g'))).toHaveLength(4);
+  expect(JSON.stringify(parsed).match(new RegExp(CAPTAIN_MEMO_CODEX_HOOK_MARKER, 'g'))).toHaveLength(5);
+  // PreToolUse (2026-09-30): the work-board claim and guards, no matcher, inside Codex's 5 s budget
+  expect(parsed.hooks.PreToolUse).toHaveLength(1);
+  expect(parsed.hooks.PreToolUse[0].matcher).toBeUndefined();
+  expect(parsed.hooks.PreToolUse[0].hooks[0]).toMatchObject({ type: 'command', timeout: 5 });
+  expect(parsed.hooks.PreToolUse[0].hooks[0].command).toContain(`CodexPreToolUse ${CAPTAIN_MEMO_CODEX_HOOK_MARKER}`);
   // SessionStart: the articles once per session, with the same explicit context budget as UserPromptSubmit
   expect(parsed.hooks.SessionStart).toHaveLength(1);
   expect(parsed.hooks.SessionStart[0].hooks[0]).toMatchObject({ type: 'command', timeout: 5, additionalContextLimit: 5_000 });
@@ -254,7 +259,11 @@ test('Gemini hooks — capability probe and merge preserve foreign settings', ()
   expect(parsed.hooks.enabled).toBe(true);
   expect(parsed.hooksConfig.enabled).toBe(true);
   expect(JSON.stringify(parsed)).toContain('foreign-hook');
-  expect(JSON.stringify(parsed).match(new RegExp(CAPTAIN_MEMO_GEMINI_HOOK_MARKER, 'g'))).toHaveLength(4);
+  expect(JSON.stringify(parsed).match(new RegExp(CAPTAIN_MEMO_GEMINI_HOOK_MARKER, 'g'))).toHaveLength(5);
+  expect(parsed.hooks.BeforeTool).toHaveLength(1);
+  expect(parsed.hooks.BeforeTool[0].matcher).toBe('write_file|replace|run_shell_command');
+  expect(parsed.hooks.BeforeTool[0].hooks[0]).toMatchObject({ timeout: 5_000 });
+  expect(parsed.hooks.BeforeTool[0].hooks[0].command).toContain(`GeminiBeforeTool ${CAPTAIN_MEMO_GEMINI_HOOK_MARKER}`);
   expect(parsed.hooks.SessionStart).toHaveLength(1);                   // once, even after the reconnect above
   expect(parsed.hooks.SessionStart[0].matcher).toBeUndefined();         // startup, resume and clear
   expect(parsed.hooks.SessionStart[0].hooks[0]).toMatchObject({ name: 'captain-memo-sessionstart', timeout: 5_000 });

@@ -116,6 +116,15 @@ test('shell keywords and wrappers do not hide the real command', () => {
   expect(parse('find . -name "*.ts" | xargs sed -i s/a/b/')).toEqual([coarseClaimFor(CWD)]);
 });
 
+// FOUND LIVE (again, on my own claim): `$(… 2>/dev/null)` claimed a file called `/dev/null)` —
+// the closing paren of a command substitution was swallowed into the redirect target, so the
+// not-a-file check no longer recognised it. Parens terminate the target.
+test('a command substitution does not swallow its closing paren into the target', () => {
+  expect(parse('x=$(grep -c foo bar 2>/dev/null)')).toEqual([]);
+  expect(parse('echo $(date) > out.txt')).toEqual(at('out.txt'));
+  expect(parse('(echo hi > inner.txt)')).toEqual(at('inner.txt'));
+});
+
 test('globs are claimed as-is — the board understands them', () => {
   expect(parse(`sed -i 's/a/b/' src/*.ts`)).toEqual(at('src/*.ts'));
 });
@@ -155,4 +164,76 @@ test('malformed / hostile input is a silent no-op, never a throw', () => {
 
 test('no cwd → no claim (an unresolvable relative path is worse than none)', () => {
   expect(parseWrittenPaths('echo x > out.txt', '', 'posix')).toEqual([]);
+});
+
+// ─── 2026-09-17 work board garbage: heredoc bodies, quoted code, code tokens, the wrong cwd ────────────
+// Observed claims: "/home/kalin/.config/captain-memo/{", ".../bun:test", ".../SummarizerTransport,",
+// ".../.\/summarizer.ts" (tokens of TypeScript import lines inside a python heredoc), "C:\src\x\'", "…\<",
+// "…\2>&1)", and scratchpad files resolved under C:\src\ because the command had `cd`'d elsewhere.
+test('a heredoc body is not scanned for redirects or targets — only the heredoc\'s own target is claimed', () => {
+  const cmd = [
+    "cat > src/a.ts <<'EOF'",
+    "import { test } from 'bun:test';",
+    "const f = (x) => { return x > 2 ? a : b };",
+    "export type T = Record<string, SummarizerTransport>;",
+    "echo hi > /tmp/inside-heredoc.txt",
+    "EOF",
+    "python3 - <<'PY'",
+    "s=s.replace(\"import { a, type SummarizerTransport, b } from './summarizer.ts';\", 'x')",
+    "open('/tmp/py.txt','w').write('{')",
+    "PY",
+  ].join('\n');
+  // The interpreter scan (scriptWrites) DOES read the python body: its literal open(..., 'w') is a real write.
+  expect(parse(cmd)).toEqual([...at('src/a.ts'), resolve('/tmp/py.txt')]);
+});
+
+test('quoted code (python -c, node -e, bash -c) is not scanned for redirects', () => {
+  // the `>` inside is not a redirect; the literal open(..., "w") is a write the interpreter scan names
+  expect(parse(`python3 -c 'import sys; print(sys.argv > 1); open("/tmp/x","w")' && echo ok`)).toEqual([resolve('/tmp/x')]);
+  expect(parse(`node -e "const f = () => { x > y }" > real-out.txt`)).toEqual(at('real-out.txt'));
+});
+
+test('tokens that cannot be paths are dropped: braces, quotes, module specifiers, trailing commas, fd dups', () => {
+  expect(parse(`echo x > {`)).toEqual([]);
+  expect(parse(`echo x > 'bun:test'`)).toEqual([]);
+  expect(parse(`tee SummarizerTransport, foo.txt`)).toEqual(at('foo.txt'));
+  expect(parse(`echo x > <`)).toEqual([]);
+  expect(parse(`(bun test 2>&1)`)).toEqual([]);
+  expect(parse(`Set-Content -Path "'" -Value 1`, 'powershell')).toEqual([]);
+  expect(parse(`Out-File 2>&1) -Value 1`, 'powershell')).toEqual([]);
+});
+
+test('relative paths resolve against the directory the command cd\'d into, not the session cwd', () => {
+  expect(parse(`cd /tmp/scratch && echo x > out.txt && sed -i 's/a/b/' notes.md`)).toEqual(['/tmp/scratch/out.txt', '/tmp/scratch/notes.md'].map((p) => resolve(p)));
+  expect(parse(`cd sub; echo x > out.txt`)).toEqual(at('sub/out.txt'));
+  expect(parse(`Set-Location sub2; Set-Content -Path out.txt -Value 1`, 'powershell')).toEqual(at('sub2/out.txt'));
+  expect(parse(`cd "$SCRATCH" && echo x > out.txt`)).toEqual([coarseClaimFor(CWD)]);   // a cd we cannot resolve: the write is real, its place unknown
+});
+
+// ─── guard 1 (2026-09-30): name more writes, so fewer edits fall back to the whole-repo claim ─────────────
+test('perl -i, -pi -e and -i.bak claim the edited file; perl without -i claims nothing', () => {
+  expect(parse(`perl -i -pe 's/a/b/' src/a.php`)).toEqual(at('src/a.php'));
+  expect(parse(`perl -pi -e 's/a/b/' src/a.php src/b.php`)).toEqual(at('src/a.php', 'src/b.php'));
+  expect(parse(`perl -i.bak -pe 's/a/b/' src/a.php`)).toEqual(at('src/a.php'));
+  expect(parse(`perl -ne 'print if /x/' src/a.php`)).toEqual([]);
+  // -Ilib / -Mdiagnostics carry an i but are not in-place: a read-only perl must not claim (and now be blocked on) a file
+  expect(parse(`perl -Ilib -e 'print 1' src/a.php`)).toEqual([]);
+  expect(parse(`perl -Mdiagnostics -ne 'print' src/a.php`)).toEqual([]);
+});
+
+test('inline interpreter writes with a literal path are named: python open/Path, node writeFileSync, php file_put_contents', () => {
+  expect(parse("python3 - <<'PY'\nimport pathlib\nopen('hr/rpc.php','w').write(s)\nPY")).toEqual(at('hr/rpc.php'));
+  expect(parse("python3 - <<'PY'\nfrom pathlib import Path\nPath('hr/functions.php').write_text(s)\nPY")).toEqual(at('hr/functions.php'));
+  expect(parse(`node -e "require('fs').writeFileSync('out/x.json', '{}')"`)).toEqual(at('out/x.json'));
+  expect(parse(`php -r "file_put_contents('cfg/a.ini', 'x');"`)).toEqual(at('cfg/a.ini'));
+  expect(parse(`python3 -c "open('a.txt').read()"`)).toEqual([]);   // read mode is not a write
+});
+
+test('an interpreter write through a variable yields nothing, and a line with ssh is never scanned', () => {
+  expect(parse(`python3 -c "open(p,'w').write(s)"`)).toEqual([]);
+  expect(parse(`ssh root@h "python3 -c \\"open('/etc/x','w')\\""`)).toEqual([]);
+});
+
+test('sed -i on a variable is still the coarse claim', () => {
+  expect(parse(`for f in *.ts; do sed -i 's/a/b/' "$f"; done`)).toEqual([coarseClaimFor(CWD)]);
 });

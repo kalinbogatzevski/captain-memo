@@ -12893,7 +12893,7 @@ function loadWorkerEnv() {
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.50.0",
+  version: "0.51.0",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -12969,19 +12969,7 @@ var VERSION = package_default.version;
 
 // src/hooks/shared.ts
 import { homedir as homedir2 } from "os";
-import { join as join2, resolve } from "path";
-var HOOK_LOG_DIR = join2(homedir2(), ".captain-memo", "logs");
-var HOOK_LOG_FILE = join2(HOOK_LOG_DIR, "hook.log");
-var HOOK_LOG_ROTATE_BYTES = 10 * 1024 * 1024;
-var WORKER_BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
-function resolveProjectId(cwd) {
-  if (process.env.CAPTAIN_MEMO_PROJECT_ID && !workerEnvLoadedKeys().has("CAPTAIN_MEMO_PROJECT_ID"))
-    return process.env.CAPTAIN_MEMO_PROJECT_ID;
-  if (!cwd)
-    return "default";
-  const parts = cwd.split(/[\\/]/).filter(Boolean);
-  return parts[parts.length - 1] ?? "default";
-}
+import { join as join2, resolve, isAbsolute } from "path";
 
 // src/worker/branch.ts
 import { spawnSync } from "child_process";
@@ -13003,14 +12991,27 @@ function detectRepoRootSync(cwd) {
 var repoRootCache = new Map;
 var dirtyCache = new Map;
 
-// src/mcp-server.ts
-import { isAbsolute, resolve as resolve2 } from "path";
+// src/hooks/shared.ts
+var HOOK_LOG_DIR = join2(homedir2(), ".captain-memo", "logs");
+var HOOK_LOG_FILE = join2(HOOK_LOG_DIR, "hook.log");
+var HOOK_LOG_ROTATE_BYTES = 10 * 1024 * 1024;
+var WORKER_BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
+function resolveProjectId(cwd) {
+  if (process.env.CAPTAIN_MEMO_PROJECT_ID && !workerEnvLoadedKeys().has("CAPTAIN_MEMO_PROJECT_ID"))
+    return process.env.CAPTAIN_MEMO_PROJECT_ID;
+  if (!cwd)
+    return "default";
+  const parts = cwd.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? "default";
+}
 function absoluteClaimFiles(files, cwd) {
   if (!cwd || cwd === "/" || files.every((f) => typeof f !== "string" || isAbsolute(f)))
     return files;
   const base = detectRepoRootSync(cwd) ?? cwd;
-  return files.map((f) => typeof f === "string" && !isAbsolute(f) ? resolve2(base, f.trim() === "" || f.trim() === "." ? "**" : f) + (/[\\/]$/.test(f) ? "/" : "") : f);
+  return files.map((f) => typeof f === "string" && !isAbsolute(f) ? resolve(base, f.trim() === "" || f.trim() === "." ? "**" : f) + (/[\\/]$/.test(f) ? "/" : "") : f);
 }
+
+// src/mcp-server.ts
 loadWorkerEnv();
 var WORKER_BASE2 = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
 var _sid = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 10);
@@ -13221,7 +13222,7 @@ var TOOLS = [
   },
   {
     name: "work_set",
-    description: 'Coordination board: publish or refresh a transient claim that YOU are working on something right now, then immediately get back any OTHER active sessions on this machine that overlap yours by TOPIC, by FILES, or by MEANING. Call this before diving into a codebase area, and re-call periodically (it is a heartbeat that keeps the lease alive). Other AI sessions on this machine (Claude, Codex, Gemini, Cursor all share one captain) see your claim at once. ALWAYS pass `topics`: 1\u20135 short tags for WHAT the work is about ("billing-rounding", "installer-windows") \u2014 two sessions on one topic are the collision that matters, whatever files they touch; a claim without topics is untitled work. Pass `agent` so the claim reads "codex on this captain", and `files` as EVERY file you will write or deploy, as absolute paths (a relative path is resolved against the repository root of this session). Claims are advisory leases, not locks \u2014 they auto-expire (default 30 min) so a crashed session never blocks an area. Returns { session_id, topics, overlaps[], semantic }: each overlap says `kind` (topics | files | semantic | repo) and what is shared, and one with `stale: true` (and `age_s`) is a peer with no recent edit, not necessarily ended (it may only be reading or testing): never edit or deploy over it, stop and tell the user which session holds it; `semantic.degraded` true means the meaning-match half is currently off (embedder down) \u2014 then topic and file overlap are all you have, say so if you rely on it.',
+    description: 'Coordination board: publish or refresh a transient claim that YOU are working on something right now, then immediately get back any OTHER active sessions on this machine that overlap yours by TOPIC, by FILES, or by MEANING. Call this before diving into a codebase area, and re-call periodically (it is a heartbeat that keeps the lease alive). Other AI sessions on this machine (Claude, Codex, Gemini, Cursor all share one captain) see your claim at once. ALWAYS pass `topics`: 1\u20135 short tags for WHAT the work is about ("billing-rounding", "installer-windows") \u2014 two sessions on one topic are the collision that matters, whatever files they touch; a claim without topics is untitled work. Pass `agent` so the claim reads "codex on this captain", and `files` as EVERY file you will write or deploy, as absolute paths (a relative path is resolved against the repository root of this session). Claims are leases that auto-expire (default 30 min) so a crashed session never blocks an area. A LIVE Claude Code claim on this machine BLOCKS edits and uploads of the same files by other Claude Code sessions (the hook refuses them; only the user can lift that by typing `override: <file>`); a stale claim only warns. Returns { session_id, topics, overlaps[], semantic }: each overlap says `kind` (topics | files | semantic | repo) and what is shared, and one with `stale: true` (and `age_s`) is a peer with no recent edit, not necessarily ended (it may only be reading or testing): never edit or deploy over it, stop and tell the user which session holds it; `semantic.degraded` true means the meaning-match half is currently off (embedder down) \u2014 then topic and file overlap are all you have, say so if you rely on it.',
     inputSchema: {
       type: "object",
       properties: {
@@ -13267,7 +13268,7 @@ var TOOLS = [
   },
   {
     name: "work_clear",
-    description: "Coordination board: drop your work claim once the task is committed AND deployed, not before (releases the lease immediately instead of waiting for it to expire). Reports what it ACTUALLY did: cleared:true when a claim was removed, cleared:false when this captain held no claim with that session_id, so nothing was cleared.",
+    description: "Coordination board: drop your work claim once the task is committed AND deployed, not before (releases the lease immediately instead of waiting for it to expire). Reports what it ACTUALLY did: cleared:true when a claim was removed, cleared:false when this captain held no claim with that session_id, so nothing was cleared. Only your own session: another session's id is refused (not_your_session).",
     inputSchema: {
       type: "object",
       properties: {
@@ -13381,7 +13382,17 @@ async function dispatchTool(name, args, deps = defaultDispatchDeps()) {
       }
       case "work_set": {
         const a = args ?? {};
-        result = await workerPost(workerBase, "/worknote/set", { ...a, ...Array.isArray(a.files) ? { files: absoluteClaimFiles(a.files, cwd()) } : {}, session_id: a.session_id || sessionId });
+        const pid = { pid: process.env.CLAUDE_CODE_SESSION_ID ? process.ppid : undefined };
+        const files = Array.isArray(a.files) ? absoluteClaimFiles(a.files, cwd()) : undefined;
+        result = await workerPost(workerBase, "/worknote/set", {
+          ...a,
+          ...files ? { files } : {},
+          session_id: a.session_id || sessionId,
+          ...pid,
+          enforce: process.env.CAPTAIN_MEMO_WORKBOARD_ENFORCE !== "0",
+          touched: files ?? [],
+          by: sessionId
+        });
         break;
       }
       case "todo_add": {
@@ -13414,7 +13425,7 @@ async function dispatchTool(name, args, deps = defaultDispatchDeps()) {
       }
       case "work_clear": {
         const a = args ?? {};
-        result = await workerPost(workerBase, "/worknote/clear", { session_id: a.session_id || sessionId });
+        result = await workerPost(workerBase, "/worknote/clear", { session_id: a.session_id || sessionId, by: sessionId });
         break;
       }
       default:

@@ -42,7 +42,7 @@ import { loadDreamInputs, pairKey } from '../dreaming/load.ts';
 import { coRetrievalSimilarity } from '../dreaming/distance.ts';
 import { isIdle, blockingSignals } from './idle.ts';
 import { runQmSupersedeSlice, applySupersedeDemotion } from './supersede.ts';
-import { setWorkNote, inheritDeclaredIntent, leaseSeconds, listLocalActive, clearWorkNote, decorateStaleness, overlapsAgainst, topicOverlapsAgainst, groupTopicContention, repoOverlapsAgainst, groupRepoContention, repoActiveHolders, type SetWorkNoteInput } from './work-notes.ts';
+import { setWorkNote, inheritDeclaredIntent, leaseSeconds, listLocalActive, clearWorkNote, decorateStaleness, overlapsAgainst, topicOverlapsAgainst, groupTopicContention, repoOverlapsAgainst, groupRepoContention, repoActiveHolders, guardContested, wholeRepo, pidAlive, setWorkOverride, getWorkOverride, getWorkNote, isStale, type SetWorkNoteInput, type GuardHolder } from './work-notes.ts';
 import { resolveRepoClaim } from './repo-claim.ts';
 import { warmWorknoteVecs, semanticOverlapPass, hasIntent, SEMANTIC_ENABLED, semanticStatus } from './worknote-semantic.ts';
 import { addHomework, listHomework, claimHomework, doneHomework } from './homework.ts';
@@ -2326,6 +2326,21 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     };
   };
 
+  // work_set / work_clear act only on the CALLER's own session (`by`, sent by the MCP tools): the same id, or the same
+  // Claude process (a /clear or resume changes the id). This build pairs no Codex or Gemini MCP id with its hook id, so
+  // a claim with no pid (a non-Claude claim, which the edit guard never enforces) stays open to any caller: a Codex MCP
+  // can still clear its own hook's claim. Not auth: a raw HTTP caller can still send anything.
+  const callersOwnSession = (by: string, sid: string): boolean => {
+    if (by === sid) return true;
+    const target = getWorkNote(meta, sid);
+    if (target && typeof target.pid !== 'number') return true;
+    const a = getWorkNote(meta, by)?.pid;
+    return typeof a === 'number' && a === target?.pid;
+  };
+  const notYourSession = (sid: string): Response => Response.json({
+    ok: false, error: 'not_your_session',
+    details: `work_set and work_clear act only on your own session, and ${sid} is not yours. Omit session_id to use your own; tell the user which session holds it.`,
+  }, { status: 403 });
   const handler = async (req: Request): Promise<Response> => {
     try {
       const url = new URL(req.url);
@@ -2352,10 +2367,11 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       // the SAME captain (cross-AI — they all share THIS worker) see it immediately. Notes are kv-backed leases,
       // lazily reaped on read, so a crashed session never leaves a ghost claim.
       if (req.method === 'POST' && url.pathname === '/worknote/set') {
-        const body = (await req.json().catch(() => null)) as Partial<SetWorkNoteInput> | null;
+        const body = (await req.json().catch(() => null)) as (Partial<SetWorkNoteInput> & { by?: unknown }) | null;
         if (!body || typeof body.session_id !== 'string' || body.session_id.trim() === '') {
           return Response.json({ error: 'invalid_request', details: 'session_id required' }, { status: 400 });
         }
+        if (typeof body.by === 'string' && body.by && !callersOwnSession(body.by, body.session_id)) return notYourSession(body.session_id);
         const now = Date.now();
         const setBody = body as SetWorkNoteInput;
         // Enrich a hook-driven generic claim ("editing 3 files") with the session's latest observation TITLE (its
@@ -2388,10 +2404,37 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           if (repoClaim.branch) setBody.branch = repoClaim.branch;
           if (typeof repoClaim.is_dirty === 'boolean') setBody.is_dirty = repoClaim.is_dirty;
         }
+        // Guard 2 (the PreToolUse hook sends enforce + this call's `touched` files): a file a LIVE claim of another
+        // session holds is left out of the stored claim and reported as `deny`, so the heartbeat still lands but the
+        // intruder never takes the file. "Already held" comes from the STORED note: the hook sends old files + touched.
+        const local = listLocalActive(meta, now);
+        const guardBody = body as { enforce?: unknown; touched?: unknown };
+        // A whole-repo glob holds nothing (wholeRepo), so it contests nothing either.
+        const touched = Array.isArray(guardBody.touched) ? guardBody.touched.filter((f): f is string => typeof f === 'string' && !wholeRepo(f, setBody.repo_root)).slice(0, 64) : [];
+        const sid = String(body.session_id).slice(0, 64);
+        let guard: ReturnType<typeof guardContested> | null = null;
+        if (guardBody.enforce === true && touched.length > 0) {
+          const prev = getWorkNote(meta, sid);
+          // Only a LIVE own claim counts as holding: a stale one does not outrank a session that claimed the file since.
+          const liveHeld = prev && !isStale(prev, now) && local.some((n) => n.session_id === sid) ? prev.files ?? [] : [];
+          guard = guardContested(touched, decorateStaleness(local, now), {
+            session_id: sid, held: liveHeld, ...(prev?.repo_root ? { root: prev.repo_root } : {}),
+            ...(typeof setBody.pid === 'number' ? { pid: setBody.pid } : {}),
+            override: () => getWorkOverride(meta, sid, now)?.files ?? [],
+          }, pidAlive);
+          // The host refuses the WHOLE tool call, so none of its new files are claimed: an upload refused over its local
+          // file must not keep its remote target either, or it would block the holder's own deploy of that file.
+          const held = new Set(liveHeld);
+          // A work_set (no enrich hint) is a declaration, not a tool call: only the contested files are left out of it.
+          if (guard.contested.length > 0) setBody.files = (setBody.files ?? []).filter((f) => !guard!.contested.includes(f) && (held.has(f) || !enrichReq || !touched.includes(f)));
+        }
         const note = setWorkNote(meta, setBody, now);
         // Decorated like /worknote/active, so an overlap with a dead session's ghost claim says it is stale.
-        const others = decorateStaleness(listLocalActive(meta, now), now);
-        const overlaps = overlapsAgainst(note.files, others, note.session_id);
+        const others = decorateStaleness(local, now);
+        const overlaps = overlapsAgainst(note.files, others, note.session_id, note.repo_root);
+        // A peer whose USER overrode claims (`override: <file>`) says so on the holder's next overlap line: there is no
+        // inbox here, so this and work_active are how the holder learns of it.
+        for (const o of overlaps) { const ov = getWorkOverride(meta, o.session_id, now); if (ov) o.override = { files: ov.files, until: ov.until }; }
         // TOPIC overlap (2026-09-18): the collision an operator cares about is two sessions on the same THING; a
         // shared exact tag is as loud as a shared glob, and a session already flagged by files is not repeated.
         const fileSessionsForTopics = new Set(overlaps.map((o) => o.session_id));
@@ -2407,7 +2450,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         }
         // `semantic` says whether the meaning half of overlap detection is working RIGHT NOW: a degraded pass used
         // to report "no overlap" indistinguishably from a real no-overlap.
-        return Response.json({ session_id: note.session_id, ttl_s: note.ttl_s, topics: note.topics ?? [], overlaps, semantic: semanticStatus() });
+        const holderOut = (h: GuardHolder) => ({ session_id: h.session_id, agent: h.agent, what: h.what, age_s: h.age_s });
+        return Response.json({
+          session_id: note.session_id, ttl_s: note.ttl_s, topics: note.topics ?? [], overlaps, semantic: semanticStatus(),
+          ...(guard?.contested.length ? { deny: { files: guard.contested, holders: guard.holders.map(holderOut) } } : {}),
+          ...(guard?.overridden.length ? { override: { files: guard.overridden, holders: guard.overriddenHolders.map(holderOut) } } : {}),
+        });
       }
       // #129 WHAT'S NEW: the CHANGELOG headlines between two versions, for the one-time upgrade banner the
       // SessionStart hook shows. Read from this checkout's own CHANGELOG.md, once per upgrade; none if it is missing.
@@ -2446,12 +2494,18 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         const mine = url.searchParams.get('session_id') ?? '';
         const mineNote = mine ? claims.find((c) => c.session_id === mine) : undefined;
         const overlaps_with_mine = mineNote
-          ? [...overlapsAgainst(mineNote.files, claims, mine), ...topicOverlapsAgainst(mineNote.topics ?? [], claims, mine), ...repoOverlapsAgainst(mineNote.repo_root, claims, mine)]
+          ? [...overlapsAgainst(mineNote.files, claims, mine, mineNote.repo_root), ...topicOverlapsAgainst(mineNote.topics ?? [], claims, mine), ...repoOverlapsAgainst(mineNote.repo_root, claims, mine)]
           : [];
         const repo_contention = groupRepoContention(claims);
         // TOPIC contention: every topic claimed by two or more live sessions, with who.
         const topic_contention = groupTopicContention(claims);
-        return Response.json({ claims, overlaps_with_mine, repo_contention, topic_contention, semantic: semanticStatus() });
+        // A session's live override rides on its claim, so the board shows who overwrote what and until when.
+        const withOverride = claims.map((c) => {
+          const o = getWorkOverride(meta, c.session_id, now);
+          return o ? { ...c, override: { files: o.files, until: o.until } } : c;
+        });
+        const myOverride = mine ? getWorkOverride(meta, mine, now) : null;
+        return Response.json({ claims: withOverride, overlaps_with_mine, repo_contention, topic_contention, semantic: semanticStatus(), ...(myOverride ? { my_override: { files: myOverride.files, until: myOverride.until } } : {}) });
       }
       if (req.method === 'GET' && url.pathname === '/worknote/repo-active') {
         const now = Date.now();
@@ -2460,11 +2514,27 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         const holders = repoActiveHolders(decorateStaleness(listLocalActive(meta, now), now), repoRoot);
         return Response.json({ holders });
       }
+      // POST /worknote/override { session_id, files } — the UserPromptSubmit hook, when the USER typed `override: <file>`.
+      // For 30 min the edit guard lets that session write those files over another session's live claim. The holders it
+      // overrides see it on the board (work_active, and their next overlap line).
+      if (req.method === 'POST' && url.pathname === '/worknote/override') {
+        const body = (await req.json().catch(() => null)) as { session_id?: unknown; files?: unknown } | null;
+        const files = Array.isArray(body?.files) ? body!.files.filter((f): f is string => typeof f === 'string' && f.trim() !== '') : [];
+        if (!body || typeof body.session_id !== 'string' || !body.session_id || files.length === 0) {
+          return Response.json({ error: 'invalid_request', details: 'session_id and files required' }, { status: 400 });
+        }
+        const { override, holders } = setWorkOverride(meta, body.session_id, files, Date.now());
+        return Response.json({ ok: true, files: override.files, until: override.until, holders: holders.map((h) => h.session_id) });
+      }
       if (req.method === 'POST' && url.pathname === '/worknote/clear') {
-        const body = (await req.json().catch(() => null)) as { session_id?: unknown } | null;
+        const body = (await req.json().catch(() => null)) as { session_id?: unknown; by?: unknown } | null;
         if (!body || typeof body.session_id !== 'string' || body.session_id.trim() === '') {
           return Response.json({ error: 'invalid_request', details: 'session_id required' }, { status: 400 });
         }
+        // work_clear acts only on the caller's own session (callersOwnSession): a session the edit guard blocked could
+        // otherwise clear the holder and write anyway. A missing `by` is a legacy caller (an MCP server started before this
+        // change): refusing it would stop that session clearing its OWN claim, and a raw HTTP caller could bypass this anyway.
+        if (typeof body.by === 'string' && body.by && !callersOwnSession(body.by, body.session_id)) return notYourSession(body.session_id);
         // A clear that did nothing must SAY it did nothing: this returned {ok:true} unconditionally, so a caller
         // clearing a claim this captain does not hold was told it had worked and found it still there on the next read.
         if (clearWorkNote(meta, body.session_id)) return Response.json({ ok: true, cleared: true });

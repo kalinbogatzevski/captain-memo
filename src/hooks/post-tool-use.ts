@@ -3,6 +3,7 @@ import type { RawObservationEvent } from '../shared/types.ts';
 import { detectBranchSync } from '../worker/branch.ts';
 import { detectOriginAgent } from '../shared/origin-agent.ts';
 import type { OriginAgent } from '../shared/origin-agent.ts';
+import { recordFetchBaselines } from './deploy-guard.ts';
 
 interface PostToolUsePayload {
   session_id?: string;
@@ -51,11 +52,13 @@ export function promptNumberFromTurnId(turnId: string | undefined): number {
   return hash >>> 0;
 }
 
-function patchFiles(input: unknown): string[] {
+/** Files an apply_patch touches. Codex sends the patch text in `tool_input.command` (every Codex apply_patch in a
+ *  live queue was recorded with no modified files until 2026-09-30); `.patch` / `.input` are kept for others. */
+export function patchFiles(input: unknown): string[] {
   const value = typeof input === 'string'
     ? input
     : input && typeof input === 'object'
-      ? String((input as Record<string, unknown>).patch ?? (input as Record<string, unknown>).input ?? '')
+      ? String((input as Record<string, unknown>).patch ?? (input as Record<string, unknown>).input ?? (input as Record<string, unknown>).command ?? '')
       : '';
   const files: string[] = [];
   for (const line of value.split(/\r?\n/)) {
@@ -111,6 +114,13 @@ export async function main(options: PostToolUseOptions = {}): Promise<void> {
     origin_agent: options.originAgent ?? detectOriginAgent(),
     ...(options.source ? { source: options.source } : {}),
   };
+
+  // Guard 3's baselines: a server copy this session fetched or md5-summed may later be uploaded over. Shell tools only,
+  // and only when the command names scp/rsync/ssh (checked inside), so other tools pay nothing.
+  const cmd = (payload.tool_input as { command?: unknown } | undefined)?.command;
+  if (payload.session_id && typeof cmd === 'string' && /^(bash|run_shell_command|shell|exec_command)$/i.test(payload.tool_name)) {
+    recordFetchBaselines(payload.session_id, cmd, payload.cwd ?? '');
+  }
 
   const res = await workerFetch('/observation/enqueue', {
     method: 'POST',

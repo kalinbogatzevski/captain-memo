@@ -13,7 +13,8 @@ test('the work-board Foundation opens the articles, before article 1', () => {
   for (const rule of ['`work_active()` before your first edit', 'ABSOLUTE paths', 'before commit/checkout/reset/stash/add',
     'any deploy', 'remote md5', '"HEAD + my hunk"', 'never edit or deploy over', 'tell the user which', 'Stale',
     '`work_clear` only once committed AND deployed', 're-`work_set` after a long pause', 'ONE TREE PER SESSION',
-    '`git add <paths>`, never -A', 'AUTO-CLAIM (Claude Code only)', 'INFERS the why'])
+    '`git add <paths>`, never -A', 'AUTO-CLAIM (Claude Code, Codex, Gemini)', 'INFERS the why', 'A LIVE Claude Code claim BLOCKS your edit',
+    '`override: <file>`'])
     expect(foundation).toContain(rule);
 });
 

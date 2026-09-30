@@ -41,3 +41,10 @@ test('an unknown tool with a file_path degrades to READ, never to a false modifi
 test('no file_path yields nothing at all', () => {
   expect(extractFiles('Bash', { command: 'ls' }, {})).toEqual({ read: [], modified: [] });
 });
+
+// Codex sends apply_patch's text in tool_input.command: every Codex apply_patch in a live queue recorded no modified
+// files (2026-09-30). The edit guard reads the same field.
+test('Codex apply_patch in tool_input.command yields its files as modified', () => {
+  const command = '*** Begin Patch\n*** Update File: src/a.ts\n@@\n-a\n+b\n*** Add File: src/b.ts\n+x\n*** End Patch\n';
+  expect(extractFiles('apply_patch', { command }, null).modified).toEqual(['src/a.ts', 'src/b.ts']);
+});

@@ -32,6 +32,10 @@ const EVENTS: Record<string, () => Promise<void>> = {
   // reusing the same single-file hook bundle.
   CodexUserPromptSubmit: () => userPromptSubmit({ emitOriginalPrompt: false, structuredContextJson: true, hostTimeoutMs: NATIVE_PROMPT_HOOK_TIMEOUT_S * 1000 }),
   CodexPostToolUse: () => postToolUse({ originAgent: 'codex', source: 'hook:codex' }),
+  // The work-board claim and the edit/deploy guards (2026-09-30). Codex reads Claude's hookSpecificOutput deny;
+  // Gemini's BeforeTool wants a top-level {decision, reason}. Both kill the hook at 5 s.
+  CodexPreToolUse: () => preToolUse({ agent: 'codex', format: 'claude', hostTimeoutMs: 5_000 }),
+  GeminiBeforeTool: () => preToolUse({ agent: 'gemini', format: 'gemini', hostTimeoutMs: 5_000 }),
   CodexStop: () => stop({ emitJson: true }),
   // Codex and Gemini fire SessionStart themselves (Codex also on `compact`), so the articles ride on it once per session.
   CodexSessionStart: sessionStartNative,
