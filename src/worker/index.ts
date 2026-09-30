@@ -413,7 +413,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // chunks. The worker keeps serving search just fine — the old per-fact
   // shape is still queryable — but disk + recall improve materially after
   // an upgrade, so surface the one command that fixes it.
-  const legacyChunks = meta.countLegacyObservationChunks();
+  // The count is a json_extract full scan of chunks: 2.4-4.5 s on the 228k-chunk dev store (measured 2026-09-30),
+  // blocking every boot although no current chunker emits the legacy shape, so once zero it stays zero. Remember
+  // the zero; readers skip it (the writer prints the notice).
+  const LEGACY_CLEAR_KEY = 'boot:legacy_obs_chunks_clear';
+  const legacyChunks = opts.readOnly || meta.getKv(LEGACY_CLEAR_KEY) === '1' ? 0 : meta.countLegacyObservationChunks();
+  if (legacyChunks === 0 && !opts.readOnly) meta.setKv(LEGACY_CLEAR_KEY, '1');
   if (legacyChunks > 0) {
     console.error(
       `[worker] notice: ${legacyChunks.toLocaleString('en-US')} observation chunks ` +
@@ -665,8 +670,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         for (const source of expanded) {
           for (const file of source.files) {
             // An unchanged file returns from indexFile before any real await (read, stat, sha, skip), so the pass
-            // over ~1,600 memory files ran as one block at boot (~0.5-0.9 s). A turn every 32 files.
-            if (++visited % 32 === 0) await new Promise<void>(r => setImmediate(r));
+            // over ~1,600 memory files ran as one block at boot (~0.5-0.9 s). A turn every 8 files: at 32 the boot pass
+            // was a train of ~90 ms blocks (measured 2026-09-30, 1,639 files, dev VM); at 8 that train is gone.
+            if (++visited % 8 === 0) await new Promise<void>(r => setImmediate(r));
             try {
               await ingest.indexFile(file, source.channel);
               indexingState.done++;
@@ -1729,9 +1735,13 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // chunks (observation:<their id>:…) onto OUR observation of the same number, crediting their recalls to
         // unrelated rows.
         const dream = await meta.observationIdsByChunk(breathe)
-          .then(docToObs => loadDreamInputs(0, undefined, { docToObs, skipObservations: true }))
+          .then(docToObs => loadDreamInputs(0, undefined, { docToObs, skipObservations: true, yieldToLoop: breathe }))
           .catch(() => { coRetrievalFailed = true; return null; });
+        // Each read below is 70-230 ms on the dev store; run back to back with the co-retrieval parse and the first
+        // seeds they were one 2.1 s block (2026-09-30). A breath between them.
+        await breathe();
         const surfaces = themeStore.surfaceCounts();
+        await breathe();
         // Evidence adjacency, built once per pass from the same map coRetrieval reads. This is the
         // index that lets the clusterer walk the 44,100 pairs that could possibly be cluster edges
         // instead of the 1.46 BILLION comparisons the (project, branch) cross-product implies.
@@ -1750,6 +1760,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           const n = dream.coOccurrence.get(pairKey(a, b)) ?? 0;
           return n === 0 ? 0 : coRetrievalSimilarity(n, surfaces.get(a) ?? 0, surfaces.get(b) ?? 0);
         };
+        await breathe();
+        const protectedIds = themeStore.protectedLiveIds();
         return runThemePass({
         clusters: () => findThemeClusters({
           // Housekeeping runs on the engine thread: breathe, and let ingest preempt. Without
@@ -1774,7 +1786,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           cosineThreshold: qmConfig.themeCosineThreshold,
           minMembers: qmConfig.themeMinMembers,
           maxClusters: qmConfig.themeMaxClusters,
-          isProtected: (id) => themeStore.isProtected(id),
+          isProtected: (id) => protectedIds.has(id),
           coRetrieval,
           coRetrievalNeighbours: (id) => neighbours.get(id) ?? [],
           // Refusals expire after a week: the corpus moves, a cluster gains members, and a

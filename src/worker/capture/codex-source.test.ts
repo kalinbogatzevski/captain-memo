@@ -1,8 +1,11 @@
 import { test, expect } from 'bun:test';
-import { mkdtempSync, writeFileSync } from 'fs';
+import { appendFileSync, mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { createCodexSource } from './codex-source.ts';
+import { CaptureState } from './state.ts';
+import { runCaptureTick } from './driver.ts';
+import type { CaptureSource } from './types.ts';
 
 const UUID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 const ROLLOUT = [
@@ -193,4 +196,124 @@ test('codex extract: an empty file produces no events and NO warning (nothing wa
 
   expect(events).toHaveLength(0);
   expect(warnings).toHaveLength(0);
+});
+
+// ---- incremental extract: extractFrom(ref, resume) must equal the full extract's tail, exactly ----
+
+const NOW = () => 1_900_000_000_000;
+// Mixes every boundary rule: generated context replaced by the real prompt, the legacy mirrored
+// prompt pair, mirrored assistant text, a tool-only turn, lines with no timestamp, multibyte chars.
+const MIXED = [
+  { timestamp: '2026-08-24T10:00:00.000Z', type: 'session_meta', payload: { id: UUID, cwd: '/tmp/proj' } },
+  { timestamp: '2026-08-24T10:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ text: '<environment_context>gen</environment_context>' }] } },
+  { timestamp: '2026-08-24T10:00:02.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ text: 'first ünïcode' }] } },
+  { timestamp: '2026-08-24T10:00:03.000Z', type: 'event_msg', payload: { type: 'user_message', message: 'first ünïcode' } },
+  { timestamp: '2026-08-24T10:00:04.000Z', type: 'response_item', payload: { type: 'function_call', name: 'exec', arguments: 'ls' } },
+  { type: 'event_msg', payload: { type: 'agent_message', message: 'one' } },
+  { timestamp: '2026-08-24T10:00:05.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ text: 'one' }] } },
+  { timestamp: '2026-08-24T10:00:06.000Z', type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'one' } },
+  { timestamp: '2026-08-24T10:00:07.000Z', type: 'event_msg', payload: { type: 'user_message', message: 'second' } },
+  { timestamp: '2026-08-24T10:00:08.000Z', type: 'event_msg', payload: { type: 'patch_apply_end', stdout: 'Updated the following files:\nM /tmp/proj/a.ts' } },
+  { timestamp: '2026-08-24T10:00:09.000Z', type: 'event_msg', payload: { type: 'token_count', total: 1 } },
+  { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ text: 'third' }] } },
+  { timestamp: '2026-08-24T10:00:10.000Z', type: 'event_msg', payload: { type: 'mcp_tool_call_end', invocation: { server: 's', tool: 't', arguments: { q: 1 } } } },
+  { timestamp: '2026-08-24T10:00:11.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ text: 'three' }] } },
+].map((o) => JSON.stringify(o) + '\n').join('');
+
+function incFixture(): { path: string; ref: { sessionId: string; path: string; marker: string; mtimeEpoch: number } } {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-codex-inc-'));
+  const path = join(dir, `rollout-2026-08-24T10-00-00-${UUID}.jsonl`);
+  return { path, ref: { sessionId: UUID, path, marker: 'm', mtimeEpoch: 1 } };
+}
+
+test('codex extractFrom: at EVERY byte split (mid-line and mid-turn included) the resumed tail equals the full extract', () => {
+  const bytes = Buffer.from(MIXED, 'utf8');
+  const { path, ref } = incFixture();
+  const src = createCodexSource({ projectId: 'proj', now: NOW, warn: () => {} });
+  writeFileSync(path, bytes);
+  const full = src.extract(ref);
+  expect(full.map((e) => e.prompt_number)).toEqual([1, 2, 3]);
+  let resumedSplits = 0;
+
+  for (let cut = 0; cut <= bytes.length; cut++) {
+    writeFileSync(path, bytes.subarray(0, cut));
+    const first = src.extractFrom!(ref, null);       // first sight: full parse
+    expect(first.from).toBeNull();
+    expect(first.events).toEqual(src.extract(ref));
+    appendFileSync(path, bytes.subarray(cut));
+    const next = src.extractFrom!(ref, first.resume);
+    if (first.resume) { expect(next.from).not.toBeNull(); resumedSplits++; }
+    expect(next.events).toEqual(full.slice(next.from ?? 0));
+    // chained: resuming again from the new resume point on the unchanged file still matches
+    const again = src.extractFrom!(ref, next.resume);
+    expect(again.events).toEqual(full.slice(again.from ?? 0));
+  }
+  expect(resumedSplits).toBeGreaterThan(bytes.length / 2);
+});
+
+test('codex extractFrom: a file rewritten SHORTER, or so the resume offset is no longer a line start, re-parses in full', () => {
+  const { path, ref } = incFixture();
+  const src = createCodexSource({ projectId: 'proj', now: NOW, warn: () => {} });
+  writeFileSync(path, MIXED);
+  const { resume } = src.extractFrom!(ref, null);
+  expect(resume).not.toBeNull();
+
+  writeFileSync(path, ROLLOUT); // shorter
+  const shrunk = src.extractFrom!(ref, resume);
+  expect(shrunk.from).toBeNull();
+  expect(shrunk.events).toEqual(src.extract(ref));
+
+  writeFileSync(path, 'xyz' + MIXED); // shifted: the byte before the offset is no longer '\n'
+  const shifted = src.extractFrom!(ref, resume);
+  expect(shifted.from).toBeNull();
+  expect(shifted.events).toEqual(src.extract(ref));
+});
+
+test('codex extractFrom: a resume point from another parser version is refused (full parse, so the driver guard runs)', () => {
+  const { path, ref } = incFixture();
+  const src = createCodexSource({ projectId: 'proj', now: NOW });
+  writeFileSync(path, MIXED);
+  const { resume } = src.extractFrom!(ref, null);
+  const r = src.extractFrom!(ref, resume!.replace(/^v\d+:/, 'v0:'));
+  expect(r.from).toBeNull();
+  expect(r.events).toEqual(src.extract(ref));
+});
+
+test('codex extractFrom: a .zst rollout stays a full read with no resume point', () => {
+  const { path } = zstFixture();
+  const src = createCodexSource({ projectId: 'proj', now: NOW });
+  const r = src.extractFrom!({ sessionId: UUID, path, marker: 'm', mtimeEpoch: 1 }, null);
+  expect(r.from).toBeNull();
+  expect(r.resume).toBeNull();
+  expect(r.events).toHaveLength(2);
+});
+
+test('codex through the driver: incremental ticks enqueue exactly what full-extract ticks did', async () => {
+  const bytes = Buffer.from(MIXED, 'utf8');
+  const lineEnds = [...bytes.keys()].filter((i) => bytes[i] === 10).map((i) => i + 1);
+  for (const cuts of [[lineEnds[3]!, lineEnds[6]!], [lineEnds[1]!, lineEnds[4]! + 7 /* mid-line */, lineEnds[9]!], [lineEnds[8]!]]) {
+    const run = async (incremental: boolean) => {
+      const { path, ref } = incFixture();
+      // dir: the fixture's own, so available() does not depend on the host having ~/.codex/sessions.
+      const real = createCodexSource({ projectId: 'proj', now: NOW, warn: () => {}, dir: dirname(path) });
+      const { extractFrom: _dropped, ...fullOnly } = real;
+      const src: CaptureSource = incremental ? { ...real } : fullOnly;
+      const state = new CaptureState(join(mkdtempSync(join(tmpdir(), 'cm-cap-inc-')), 's.db'));
+      state.ensureCutoff('codex', 0);
+      const out: unknown[] = [];
+      let prev = 0;
+      for (const cut of [...cuts, bytes.length]) {
+        appendFileSync(path, bytes.subarray(prev, cut));
+        prev = cut;
+        src.discover = () => [{ ...ref, marker: `m:${cut}` }];
+        await runCaptureTick({ sources: [src], state, enqueue: (e) => out.push(e), now: NOW });
+      }
+      return { out, cursor: state.ingestedCursor('codex', UUID)! };
+    };
+    const full = await run(false);
+    const inc = await run(true);
+    expect(inc.out).toEqual(full.out);
+    expect(inc.cursor.eventsIngested).toBe(full.cursor.eventsIngested);
+    expect(inc.cursor.resume).not.toBeNull();
+  }
 });

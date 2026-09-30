@@ -7,6 +7,26 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.46.0] — 2026-09-30
+
+### Fixed
+
+- **The worker is ready seconds sooner after a restart.** Every start ran a check for chunks in a pre-0.1.8 format,
+  a scan of every chunk that took 2.4 to 8 s on a 228,000-chunk store and has found none for a long time. It now
+  runs until it finds none once, then is skipped. A few seconds after start, the recall statistics digested the
+  whole recall log in one block (4.2 s on an 8 MB log); they now pause every 25 ms, and a second request joins
+  the one in flight instead of reading the log again.
+- **The first tidy-up passes after a restart no longer hold the worker for seconds.** The semantic pass paused
+  only inside large sessions, and most sessions are small, so it ran through them unbroken (up to 4 s); the theme
+  pass checked each candidate's protection with its own query (1.2 s over 30,000 rows). Both now pause every few
+  milliseconds and the protection check is one indexed read. The results are identical.
+- **Codex capture reads only the new part of a session.** A live Codex session grows every minute, and each growth
+  was parsed from the first byte, twice (about 5.5 s on a 64 MB session). Capture now remembers where the last
+  turn started and parses from there. A shortened or rewritten file, a compressed one, or a parser change still
+  gets a full read.
+- **Recall statistics read only what is new.** `/stats` and the recall figures re-read the whole recall log on
+  every refresh; they now keep a running digest and read only the lines added since, as the federation build does.
+
 ## [0.45.4] — 2026-09-30
 
 ### Fixed

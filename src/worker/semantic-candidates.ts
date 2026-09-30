@@ -64,6 +64,9 @@ export interface SemanticGroupDeps {
 
 /** Rows walked between breaths. Same constant as runQmDedupSlice and findThemeClusters. */
 const HEARTBEAT_EVERY = 32;
+/** Cosine comparisons between breaths in the pair walk. 32 survivors of a 601-row session are 19k comparisons, one
+ *  390-420 ms block on the dev VM (2026-09-30), ~21 us each against 1024-dim vectors; 1,024 is ~20 ms there. */
+const PAIRS_PER_BREATH = 1024;
 
 const total = (r: SemanticRow): number => r.from_auto + r.from_search + r.from_drill;
 const toEntry = (r: SemanticRow): DuplicateEntry => ({
@@ -83,6 +86,9 @@ const toEntry = (r: SemanticRow): DuplicateEntry => ({
  */
 export async function findSemanticGroups(deps: SemanticGroupDeps): Promise<DuplicateGroup[]> {
   const isBlocked = deps.blocked ?? mergeBlocked;
+  // The caller's row read (~200 ms for 29.7k rows), the bucketing below (~90 ms) and the first vectors were one
+  // block (dev store, 2026-09-30); a breath after each.
+  await deps.yieldToLoop?.();
   // Keyed by (session, project, branch) — a session is NOT a scope. One real session spanned 27
   // (project, branch) pairs across 1,564 rows, because switching repos mid-session is ordinary.
   // Grouping on session alone emitted cross-scope groups that mergeDuplicateGroup then refused
@@ -95,6 +101,10 @@ export async function findSemanticGroups(deps: SemanticGroupDeps): Promise<Dupli
   }
 
   const out: DuplicateGroup[] = [];
+  // Counted across buckets, not per bucket: 1,679 of the 1,888 sessions on the dev store hold fewer than 32 rows,
+  // so a per-bucket count never reached a breath and ran bucket after bucket unbroken (1.6-4.0 s, 2026-09-30).
+  let resolved = 0, pairs = 0;
+  await deps.yieldToLoop?.();
   for (const bucket of bySession.values()) {
     if (bucket.length < 2 || out.length >= deps.maxGroups) continue;
     // Survivor invariant: highest total leads, ties by lowest id (matches findDuplicateGroups).
@@ -104,7 +114,6 @@ export async function findSemanticGroups(deps: SemanticGroupDeps): Promise<Dupli
     // breathe every HEARTBEAT_EVERY rows — "the session is small" held for the sessions this was
     // written against, not for a 5,000-row window across 699 of them.
     const vecs = new Map<number, Float32Array>();
-    let resolved = 0;
     for (const r of rows) {
       if (resolved > 0 && resolved % HEARTBEAT_EVERY === 0) {
         await deps.yieldToLoop?.();
@@ -116,17 +125,17 @@ export async function findSemanticGroups(deps: SemanticGroupDeps): Promise<Dupli
     }
 
     const claimed = new Set<number>();
-    let walked = 0;
     for (const survivor of rows) {
       if (out.length >= deps.maxGroups) break;
-      if (walked > 0 && walked % HEARTBEAT_EVERY === 0) {
+      if (pairs >= PAIRS_PER_BREATH) {
+        pairs = 0;
         await deps.yieldToLoop?.();
         if (deps.shouldAbort?.()) return out;
       }
-      walked++;
       if (claimed.has(survivor.id)) continue;
       const sv = vecs.get(survivor.id);
       if (!sv) continue;                                    // fail-closed
+      pairs += rows.length;
       const members: SemanticRow[] = [];
       for (const cand of rows) {
         if (cand.id === survivor.id || claimed.has(cand.id)) continue;

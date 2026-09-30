@@ -120,6 +120,7 @@ const total = (r: ThemeRow): number => r.from_auto + r.from_search + r.from_dril
  */
 export async function findThemeClusters(deps: ThemeClusterDeps): Promise<ThemeCluster[]> {
   const isBlocked = deps.blocked ?? mergeBlocked;
+  await deps.yieldToLoop?.();   // the caller's row read (~200 ms on the dev store) and the partitioning below are a block each
   const eligible = deps.rows.filter(r => !deps.isProtected(r.id));
 
   // PARTITION BY (project_id, branch) first — the same scoping mergeDuplicateGroup enforces and
@@ -138,6 +139,7 @@ export async function findThemeClusters(deps: ThemeClusterDeps): Promise<ThemeCl
   const out: ThemeCluster[] = [];
   for (const bucket of partitions.values()) {
     if (out.length >= deps.maxClusters) break;
+    await deps.yieldToLoop?.();
     if (deps.shouldAbort?.()) return out.slice(0, deps.maxClusters);
     out.push(...await clusterOnePartition(bucket, deps, isBlocked, deps.maxClusters - out.length));
   }
@@ -203,12 +205,15 @@ async function clusterOnePartition(
 
   const out: ThemeCluster[] = [];
   const claimed = new Set<number>();
-  let seedsWalked = 0;
+  let seedsWalked = 0, vecsAtBreath = vecs.size;
   for (const seed of sorted) {
     if (out.length >= budget) break;
     // One breath per HEARTBEAT_EVERY seeds. Each seed costs an O(n) inner walk, so the gap
     // between breaths stays bounded by (HEARTBEAT_EVERY x partition size), not by the quadratic.
-    if (seedsWalked > 0 && seedsWalked % HEARTBEAT_EVERY === 0) {
+    // And per HEARTBEAT_EVERY vectors resolved: with the evidence index each seed lazily resolves its neighbours too,
+    // so 32 seeds were up to ~180 resolutions, one 219 ms block on the dev store (2026-09-30).
+    if ((seedsWalked > 0 && seedsWalked % HEARTBEAT_EVERY === 0) || vecs.size - vecsAtBreath >= HEARTBEAT_EVERY) {
+      vecsAtBreath = vecs.size;
       await deps.yieldToLoop?.();
       if (deps.shouldAbort?.()) return out;
     }

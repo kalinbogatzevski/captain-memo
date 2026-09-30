@@ -61,7 +61,7 @@ export async function loadDreamInputs(
   /** The worker's theme pass reads only coOccurrence. It passes the chunk → observation map it already builds
    *  paged (MetaStore.observationIdsByChunk) and skips the observation list: on the reference store these two
    *  reads were 12.8 s and 3.7 s, synchronous, on the writer (2026-09-29). */
-  opts?: { docToObs?: Map<string, number>; skipObservations?: boolean },
+  opts?: { docToObs?: Map<string, number>; skipObservations?: boolean; yieldToLoop?: () => Promise<void> },
 ): Promise<DreamInputs> {
   const dir = dataDir();
   const obsPath = join(dir, 'observations.db');
@@ -75,7 +75,7 @@ export async function loadDreamInputs(
   const observations = opts?.skipObservations ? [] : readObservations(obsPath, sinceEpoch, projectId);
   const docToObs = opts?.docToObs ?? (existsSync(metaPath) ? readDocToObsMap(metaPath) : new Map<string, number>());
   const coOccurrence = existsSync(auditPath)
-    ? await buildCoOccurrence(auditPath, docToObs, sinceEpoch, projectId)
+    ? await buildCoOccurrence(auditPath, docToObs, sinceEpoch, projectId, opts?.yieldToLoop)
     : new Map<string, number>();
 
   return { observations, coOccurrence, pairKey };
@@ -145,12 +145,17 @@ async function buildCoOccurrence(
   docToObs: Map<string, number>,
   sinceEpoch: number,
   projectId: string | undefined,
+  yieldToLoop?: () => Promise<void>,
 ): Promise<Map<string, number>> {
   const text = await readFile(path, 'utf8');
   const sinceMs = sinceEpoch * 1000;
   const result = new Map<string, number>();
 
+  let lines = 0;
   for (const rawLine of text.split('\n')) {
+    // The worker's theme pass runs this on the writer: an 8 MB log (~6 KB a line) parsed unbroken was one block of
+    // its own. A breath every 64 lines keeps each step to a few ms.
+    if (yieldToLoop && ++lines % 64 === 0) await yieldToLoop();
     if (!rawLine.trim()) continue;
     let entry: AuditLine;
     try {

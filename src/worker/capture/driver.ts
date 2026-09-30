@@ -16,8 +16,8 @@ export interface CaptureDriverDeps {
   log?: (msg: string) => void;
   /** Ignore the per-source cutoff (for an explicit history backfill). Default false. */
   ignoreCutoff?: boolean;
-  /** Awaited after each session so a long tick cannot monopolise the engine thread. `extract()`
-   *  has no cursor and re-reads a live session's whole file, which measured 2,486 ms across a
+  /** Awaited after each session so a long tick cannot monopolise the engine thread. A source
+   *  without extractFrom re-reads a live session's whole file, which measured 2,486 ms across a
    *  real install's sessions — long enough that a synchronous tick starved request handling. */
   yieldToLoop?: () => Promise<void>;
 }
@@ -54,8 +54,14 @@ export async function runCaptureTick(
       if (deps.state.hasNativeSession(src.id, ref.sessionId)) continue;
       if (deps.state.wasIngested(src.id, ref.sessionId, ref.marker)) continue; // dedup (marker unchanged)
 
+      const cursor = deps.state.ingestedCursor(src.id, ref.sessionId);
       let evs: RawObservationEvent[];
-      try { evs = src.extract(ref); } catch (e) { log(`[capture:${src.id}] extract failed ${ref.sessionId}: ${(e as Error).message}`); continue; }
+      let from: number | null = null; // full-extract index of evs[0]; null = evs is the whole extract
+      let resume: string | null = null;
+      try {
+        if (src.extractFrom) ({ events: evs, from, resume } = src.extractFrom(ref, cursor?.resume ?? null));
+        else evs = src.extract(ref);
+      } catch (e) { log(`[capture:${src.id}] extract failed ${ref.sessionId}: ${(e as Error).message}`); continue; }
 
       // ONLY THE NEW TAIL. `marker` is mtime:size, so a live session's marker changes on every append,
       // and extract() has no cursor — it returns the whole file each time. Re-enqueuing all of it made a
@@ -67,26 +73,29 @@ export async function runCaptureTick(
       // SHORTER result means the file was rewritten or rotated: re-ingest the whole thing rather than
       // silently skipping its contents — the same rule the digest accumulators use when a file turns up
       // smaller than their cached offset.
-      const cursor = deps.state.ingestedCursor(src.id, ref.sessionId);
       let already = cursor?.eventsIngested ?? 0;
       // A parser upgrade can reveal more turns in a prefix that an older parser
       // recorded as one aggregate event. For append-only sources, reconstruct
       // the event count at the PREVIOUS byte marker before slicing the current
       // extract. Otherwise the upgrade would replay almost the whole session.
-      if (cursor && cursor.marker !== ref.marker && src.eventCountAtMarker) {
+      // Skipped when the source resumed from its own resume point (from !== null): that point carries the
+      // parser version, so eventsIngested is already in this parser's numbering.
+      if (from === null && cursor && cursor.marker !== ref.marker && src.eventCountAtMarker) {
         // A turn between the two whole-file parses, so a large rollout holds the worker for one of them at a time
         // (~3 s each on a 64 MB codex session). Safe before markIngested: nothing has been enqueued yet, so the
-        // worst a shutdown here costs is the re-parse the comment below describes.
-        // ponytail: two blocks instead of one; a byte-offset cursor that parses only the appended tail removes both.
+        // worst a shutdown here costs is the re-parse the comment below describes. Reached once per session
+        // after an upgrade or parser-version bump; after that extractFrom parses only from the last turn on.
         await yieldToLoop();
         const reconstructed = src.eventCountAtMarker(ref, cursor.marker);
         if (reconstructed !== null) already = reconstructed;
       }
-      const fresh = evs.length >= already ? evs.slice(already) : evs;
+      const base = from ?? 0;
+      const total = base + evs.length;
+      const fresh = total >= already ? evs.slice(Math.max(0, already - base)) : evs;
 
       // Record even an empty extract so we don't re-open the same unchanged file every tick.
       for (const ev of fresh) deps.enqueue(ev);
-      deps.state.markIngested(src.id, ref.sessionId, ref.marker, nowEpoch, evs.length);
+      deps.state.markIngested(src.id, ref.sessionId, ref.marker, nowEpoch, total, resume);
       if (fresh.length > 0) {
         ingested++;
         events += fresh.length;

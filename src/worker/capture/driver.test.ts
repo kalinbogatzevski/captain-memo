@@ -167,7 +167,7 @@ test('a parser upgrade reconstructs the old byte-marker count before slicing a r
 
   expect(result.events).toBe(1);
   expect(enqueued.map((e) => e.prompt_number)).toEqual([4]);
-  expect(state.ingestedCursor('codex', 's1')).toEqual({ marker: '2000:400', eventsIngested: 4 });
+  expect(state.ingestedCursor('codex', 's1')).toEqual({ marker: '2000:400', eventsIngested: 4, resume: null });
 });
 
 test('a session REWRITTEN shorter re-ingests from scratch rather than silently skipping', async () => {

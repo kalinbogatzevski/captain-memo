@@ -6,7 +6,7 @@
 // the mtime-keyed cache.
 
 import { test, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync, appendFileSync, utimesSync, statSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, appendFileSync, statSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { getDreamStats, _resetDreamStatsCache } from '../../src/worker/dream-stats.ts';
@@ -86,30 +86,53 @@ test('getDreamStats — corrupt JSON lines are skipped without throwing', async 
   expect(s.co_retrieval.pairs).toBe(2);             // (a,b) and (a,c)
 });
 
-test('getDreamStats — caches against mtime; mutation invalidates cache', async () => {
-  writeFileSync(auditPath, JSON.stringify({
-    ts: 1, hits: [{ doc_id: 'a' }, { doc_id: 'b' }],
-  }) + '\n');
+test('getDreamStats — incremental: an APPEND is reflected immediately (fresh), digesting only the tail', async () => {
+  writeFileSync(auditPath, JSON.stringify({ ts: 1, hits: [{ doc_id: 'a' }, { doc_id: 'b' }] }) + '\n');
   const first = await getDreamStats(auditPath);
   expect(first.co_retrieval.pairs).toBe(1);
+  expect(first.audit_log.entries).toBe(1);
 
-  // Same file unchanged → cache hit (we can't directly observe the cache, but
-  // we can prove correctness by asserting the second call returns the same
-  // object identity for the audit_log field — set/Map values are reused).
-  const cachedHit = await getDreamStats(auditPath);
-  expect(cachedHit).toBe(first);
+  // Append a new line (normal recall). Incremental digest must pick it up IMMEDIATELY
+  // — no TTL staleness — while only processing the appended tail, not re-reading the file.
+  appendFileSync(auditPath, JSON.stringify({ ts: 2, hits: [{ doc_id: 'a' }, { doc_id: 'c' }] }) + '\n');
+  const grown = await getDreamStats(auditPath);
+  expect(grown.co_retrieval.pairs).toBe(2);          // a|b and a|c
+  expect(grown.co_retrieval.docs_covered).toBe(3);   // a, b, c
+  expect(grown.audit_log.entries).toBe(2);
+  expect(grown.audit_log.bytes).toBe(statSync(auditPath).size);
+});
 
-  // Mutate the file AND push mtime forward to guarantee cache invalidation.
+test('getDreamStats — incremental: a partial trailing line (write in flight) is not counted until completed', async () => {
+  writeFileSync(auditPath, JSON.stringify({ ts: 1, hits: [{ doc_id: 'a' }, { doc_id: 'b' }] }) + '\n');
+  await getDreamStats(auditPath);   // seed: entries=1, pairs=1
+
+  // Append a line WITHOUT a trailing newline — mid-write.
+  appendFileSync(auditPath, JSON.stringify({ ts: 2, hits: [{ doc_id: 'a' }, { doc_id: 'c' }] }));
+  const midWrite = await getDreamStats(auditPath);
+  expect(midWrite.audit_log.entries).toBe(1);         // partial line not yet counted
+  expect(midWrite.co_retrieval.pairs).toBe(1);
+
+  // Complete the line (append the newline). Now it counts.
+  appendFileSync(auditPath, '\n');
+  const completed = await getDreamStats(auditPath);
+  expect(completed.audit_log.entries).toBe(2);
+  expect(completed.co_retrieval.pairs).toBe(2);
+});
+
+test('getDreamStats — truncation/rotation (file shrinks) resets the digest and recomputes', async () => {
   writeFileSync(auditPath, [
     JSON.stringify({ ts: 1, hits: [{ doc_id: 'a' }, { doc_id: 'b' }] }),
     JSON.stringify({ ts: 2, hits: [{ doc_id: 'a' }, { doc_id: 'c' }] }),
   ].join('\n') + '\n');
-  const oldMtime = statSync(auditPath).mtimeMs;
-  utimesSync(auditPath, new Date(), new Date(oldMtime + 5000));
+  const before = await getDreamStats(auditPath);
+  expect(before.co_retrieval.pairs).toBe(2);
 
-  const refreshed = await getDreamStats(auditPath);
-  expect(refreshed).not.toBe(first);
-  expect(refreshed.co_retrieval.pairs).toBe(2);
+  // Rotate: the log is replaced with a smaller one (offset now past EOF → reset).
+  writeFileSync(auditPath, JSON.stringify({ ts: 3, hits: [{ doc_id: 'x' }, { doc_id: 'y' }] }) + '\n');
+  const after = await getDreamStats(auditPath);
+  expect(after.audit_log.entries).toBe(1);
+  expect(after.co_retrieval.pairs).toBe(1);
+  expect(after.co_retrieval.docs_covered).toBe(2);   // x, y — old a/b/c gone
 });
 
 test('injected — sums tokens and derives the start date from the data', async () => {
@@ -137,16 +160,12 @@ test('injected — a genuine zero-token injection still counts as one', async ()
   expect(s.injected.tokens).toBe(0);
 });
 
-test('injected — totals stay correct after the log is appended to', async () => {
+test('injected — accumulates across incremental reads without double-counting', async () => {
   const T0 = 1_800_000_000_000;
   writeFileSync(auditPath, JSON.stringify({ ts: T0, injected_tokens: 100, hits: [] }) + '\n');
   const first = await getDreamStats(auditPath);
   expect(first.injected.tokens).toBe(100);
   appendFileSync(auditPath, JSON.stringify({ ts: T0 + 1, injected_tokens: 250, hits: [] }) + '\n');
-  // Force a distinct mtime: this line's digest is mtime-keyed, and both writes can
-  // land inside the same millisecond, which would serve the cached pre-append result.
-  // Same technique the pair-counting cache test above uses.
-  utimesSync(auditPath, new Date(), new Date(statSync(auditPath).mtimeMs + 5000));
   const second = await getDreamStats(auditPath);
   expect(second.injected.tokens).toBe(350);        // 100 counted once, not twice
   expect(second.injected.injections).toBe(2);
@@ -158,4 +177,33 @@ test('injected — zeroed when the audit log does not exist', async () => {
   expect(s.injected.tokens).toBe(0);
   expect(s.injected.injections).toBe(0);
   expect(s.injected.since_epoch_ms).toBeNull();
+});
+
+test('two overlapping digests of one log count it ONCE, not twice', async () => {
+  // The boot pre-warm and the ~10s corpus poll both call this, and /stats/lite has no
+  // single-flight guard, so they genuinely overlap. Read position was captured after the
+  // awaits and advanced with `+=`, so both reads digested the same bytes and each advanced
+  // the offset — measured at exactly 2.00x entries and tokens against the live 24.5 MB audit
+  // log, and the phantom offset then skipped the next chunk permanently.
+  const dir = mkdtempSync(join(tmpdir(), 'cm-dream-race-'));
+  const log = join(dir, 'recall-audit.jsonl');
+  try {
+    const line = (i: number) => JSON.stringify({
+      ts: Date.now(), session_id: `s${i}`, project_id: 'p', query: 'q',
+      hits: [{ doc_id: `observation:${i}:x`, channel: 'observation', score: 1, snippet: 's' }],
+    }) + '\n';
+    writeFileSync(log, Array.from({ length: 10 }, (_, i) => line(i)).join(''));
+
+    _resetDreamStatsCache?.();
+    const [a, b] = await Promise.all([getDreamStats(log), getDreamStats(log)]);
+    // Whichever resolves, neither may report more than the file contains.
+    for (const r of [a, b]) {
+      expect(r.audit_log.entries).toBeLessThanOrEqual(10);
+    }
+    // And the settled state must still be exact — not doubled, not short.
+    const after = await getDreamStats(log);
+    expect(after.audit_log.entries).toBe(10);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

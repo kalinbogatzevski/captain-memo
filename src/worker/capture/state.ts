@@ -40,6 +40,11 @@ export class CaptureState {
     if (!cols.some((c) => c.name === 'events_ingested')) {
       this.db.exec('ALTER TABLE capture_ingested ADD COLUMN events_ingested INTEGER NOT NULL DEFAULT 0');
     }
+    // RESUME POINT (additive): the source's opaque byte-offset cursor, so a grown append-only transcript
+    // is parsed from where the last turn started instead of from byte 0. NULL = parse in full.
+    if (!cols.some((c) => c.name === 'resume_point')) {
+      this.db.exec('ALTER TABLE capture_ingested ADD COLUMN resume_point TEXT');
+    }
   }
 
   /** Backfill guard: record `nowEpoch` as the source's cutoff the first time it's
@@ -75,12 +80,12 @@ export class CaptureState {
     return row?.events_ingested ?? 0;
   }
 
-  /** Persisted marker plus event count for append-only cursor reconstruction. */
-  ingestedCursor(source: string, sessionId: string): { marker: string; eventsIngested: number } | null {
+  /** Persisted marker, event count and resume point for append-only cursors. */
+  ingestedCursor(source: string, sessionId: string): { marker: string; eventsIngested: number; resume: string | null } | null {
     const row = this.db
-      .query('SELECT marker, events_ingested FROM capture_ingested WHERE source = ? AND session_id = ?')
-      .get(source, sessionId) as { marker: string; events_ingested: number } | undefined;
-    return row ? { marker: row.marker, eventsIngested: row.events_ingested } : null;
+      .query('SELECT marker, events_ingested, resume_point FROM capture_ingested WHERE source = ? AND session_id = ?')
+      .get(source, sessionId) as { marker: string; events_ingested: number; resume_point: string | null } | undefined;
+    return row ? { marker: row.marker, eventsIngested: row.events_ingested, resume: row.resume_point } : null;
   }
 
   /** How many sessions of `source` actually PRODUCED something — `events_ingested > 0`.
@@ -102,16 +107,16 @@ export class CaptureState {
     return row?.n ?? 0;
   }
 
-  markIngested(source: string, sessionId: string, marker: string, nowEpoch: number, eventsIngested = 0): void {
+  markIngested(source: string, sessionId: string, marker: string, nowEpoch: number, eventsIngested = 0, resume: string | null = null): void {
     this.db
       .query(
-        `INSERT INTO capture_ingested (source, session_id, marker, ingested_at_epoch, events_ingested)
-         VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO capture_ingested (source, session_id, marker, ingested_at_epoch, events_ingested, resume_point)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(source, session_id)
          DO UPDATE SET marker = excluded.marker, ingested_at_epoch = excluded.ingested_at_epoch,
-                       events_ingested = excluded.events_ingested`,
+                       events_ingested = excluded.events_ingested, resume_point = excluded.resume_point`,
       )
-      .run(source, sessionId, marker, nowEpoch, eventsIngested);
+      .run(source, sessionId, marker, nowEpoch, eventsIngested, resume);
   }
 
   /** Record proof that a vendor-native hook is active for this session. Rollout

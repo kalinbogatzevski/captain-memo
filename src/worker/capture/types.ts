@@ -40,4 +40,16 @@ export interface CaptureSource {
    *  source cannot reconstruct that boundary. This keeps parser upgrades from
    *  replaying an already-processed prefix of a resumed session. */
   eventCountAtMarker?(ref: SessionRef, marker: string): number | null;
+  /** Optional incremental extract for append-only transcripts. `resume` is the value this method
+   *  returned last time for the session (null on first sight). */
+  extractFrom?(ref: SessionRef, resume: string | null): IncrementalExtract;
+}
+
+export interface IncrementalExtract {
+  /** extract(ref).slice(from ?? 0), i.e. exactly the full extract's events from index `from` on. */
+  events: RawObservationEvent[];
+  /** Full-extract index of events[0]; null when the whole file was parsed (events IS the full extract). */
+  from: number | null;
+  /** Opaque resume point to persist and pass back on the next growth; null = parse in full next time. */
+  resume: string | null;
 }

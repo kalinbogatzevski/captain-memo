@@ -172,6 +172,24 @@ test('yields to the loop while walking a large session bucket', async () => {
   expect(yields).toBeGreaterThan(0);
 });
 
+test('breathes across many SMALL sessions, not only inside a large one', async () => {
+  // 100 two-row sessions: a per-bucket count never reached a breath (dev store 2026-09-30: 1,679 of 1,888
+  // sessions under 32 rows, walked back to back as one 1.6-4.0 s block).
+  const rows: SemanticRow[] = [];
+  const vm: Record<number, Float32Array> = {};
+  for (let i = 1; i <= 200; i++) {
+    rows.push(row(i, `distinct observation number ${i}`, `s${Math.ceil(i / 2)}`));
+    vm[i] = at(i % 90);
+  }
+  let yields = 0;
+  await findSemanticGroups({
+    rows, representativeVector: (id) => vm[id] ?? null,
+    cosineThreshold: 0.999, maxGroups: 200,
+    yieldToLoop: async () => { yields++; },
+  });
+  expect(yields).toBeGreaterThanOrEqual(6);   // 200 resolutions / 32, plus the start breaths
+});
+
 test('aborts mid-walk when ingest arrives', async () => {
   const rows: SemanticRow[] = [];
   const vm: Record<number, Float32Array> = {};
