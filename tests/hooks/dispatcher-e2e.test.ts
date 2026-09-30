@@ -24,11 +24,13 @@ const TEST_DATA_DIR = mkdtempSync(join(tmpdir(), 'captain-memo-hooktest-'));
 
 import { readFileSync } from 'fs';
 import { spawn } from 'bun';
+import { LOCAL_ARTICLES } from '../../src/hooks/local-articles.ts';
 
 const HOOK_BIN = join(import.meta.dir, '../../bin/captain-memo-hook.ts');
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let received: Array<{ path: string; body: any }> = [];
+let gets: string[] = [];
 let server: ReturnType<typeof Bun.serve>;
 let port = 0;
 
@@ -44,6 +46,10 @@ beforeAll(() => {
         if (url.pathname === '/observation/flush')   return Response.json({ flushed: 0 });
         if (url.pathname === '/inject/context')      return Response.json({ envelope: '<memory-context></memory-context>' });
       }
+      if (req.method === 'GET') gets.push(url.pathname);
+      if (req.method === 'GET' && url.pathname === '/homework/list') {
+        return Response.json({ items: [{ id: '7', text: 'stub homework item', topics: [], by: 'test', created_at: 0 }] });
+      }
       if (req.method === 'GET' && url.pathname === '/health') {
         return Response.json({ healthy: true });
       }
@@ -55,8 +61,9 @@ beforeAll(() => {
 
 afterAll(() => server.stop());
 
-async function runDispatcher(event: string, input: string) {
+async function runDispatcher(event: string, input: string, extraEnv: Record<string, string> = {}) {
   received = [];
+  gets = [];
   const proc = spawn({
     cmd: ['bun', HOOK_BIN, event],
     stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
@@ -64,7 +71,7 @@ async function runDispatcher(event: string, input: string) {
     // not recovery. Without this, the SessionStart case would find /stats unhandled
     // by the stub (404), attempt a real `systemctl start`, and block on the health
     // poll until the test times out.
-    env: { ...process.env, CAPTAIN_MEMO_DATA_DIR: TEST_DATA_DIR, CAPTAIN_MEMO_WORKER_PORT: String(port), CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1' },
+    env: { ...process.env, CAPTAIN_MEMO_DATA_DIR: TEST_DATA_DIR, CAPTAIN_MEMO_WORKER_PORT: String(port), CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1', ...extraEnv },
   });
   proc.stdin.write(input);
   proc.stdin.end();
@@ -178,4 +185,21 @@ test('dispatcher → unknown event → exit 0 silently', async () => {
   const { exitCode } = await runDispatcher('NotARealEvent', '{}');
   expect(exitCode).toBe(0);
   expect(received).toHaveLength(0);
+});
+
+// Codex and Gemini fire SessionStart themselves (startup/resume/clear, Codex also compact), so the articles ride on
+// it: once per session by construction, no marker. Static text: no worker call, none of Claude's self-heal/update work.
+test('dispatcher → CodexSessionStart / GeminiSessionStart inject the local articles, nothing else', async () => {
+  for (const event of ['CodexSessionStart', 'GeminiSessionStart']) {
+    const r = await runDispatcher(event, JSON.stringify({ session_id: 't', source: 'startup' }));
+    expect(r.exitCode).toBe(0);
+    expect(JSON.parse(r.stdout)).toEqual({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: LOCAL_ARTICLES } });
+    expect(LOCAL_ARTICLES).toContain('1. SEARCH BEFORE YOU ACT');
+    expect(gets).toEqual([]);
+    expect(received).toHaveLength(0);
+  }
+  // fail open: an unreadable payload still gets the articles
+  const bad = await runDispatcher('GeminiSessionStart', 'not json');
+  expect(bad.exitCode).toBe(0);
+  expect(JSON.parse(bad.stdout).hookSpecificOutput.additionalContext).toBe(LOCAL_ARTICLES);
 });

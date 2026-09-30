@@ -709,6 +709,11 @@ export function mergeCodexHooks(existingJson: string | null, hookCommand: string
     // its rollout fallback, so Codex must know enqueue completed before moving on.
     PostToolUse: { type: 'command', command: command('CodexPostToolUse'), timeout: 5 },
     Stop: { type: 'command', command: command('CodexStop'), timeout: 30 },
+    // The articles once per session (and again after /compact); same 2.5k default truncation as above.
+    SessionStart: {
+      type: 'command', command: command('CodexSessionStart'), timeout: NATIVE_PROMPT_HOOK_TIMEOUT_S,
+      additionalContextLimit: 5_000,
+    },
   };
   for (const [event, entry] of Object.entries(managed)) {
     (hooks[event] ??= []).push({ hooks: [entry] });
@@ -810,6 +815,7 @@ export function mergeGeminiHooks(existingJson: string | null, hookCommand: strin
   add('BeforeAgent', 'GeminiBeforeAgent', NATIVE_PROMPT_HOOK_TIMEOUT_S * 1000);
   add('AfterTool', 'GeminiAfterTool', 5_000, '*');
   add('AfterAgent', 'GeminiAfterAgent', 30_000);
+  add('SessionStart', 'GeminiSessionStart', NATIVE_PROMPT_HOOK_TIMEOUT_S * 1000);   // no matcher: startup, resume and clear
   root.hooks = hooks;
   return JSON.stringify(root, null, 2) + '\n';
 }
@@ -865,6 +871,11 @@ const codexAdapter: ToolAdapter = {
         if (after !== before) {
           mkdirSync(dirname(hooksPath), { recursive: true });
           writeFileSync(hooksPath, after);
+          // Codex keeps a trusted_hash per hook and holds a new one back until the user accepts it in the TUI.
+          if (!before?.includes('CodexSessionStart')) {
+            const note = 'Codex will ask once to trust the new SessionStart hook ("Trust all and continue")';
+            detail = detail ? `${detail}; ${note}` : note;
+          }
         }
         capture = 'native-hooks';
       } catch (e) {

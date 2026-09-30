@@ -153,6 +153,13 @@ function formatTransitionBanner(t: WorkerTransition, willAnnounce: boolean, now:
   ].join('\n');
 }
 
+/** Codex / Gemini SessionStart (startup, resume, clear; Codex also compact): the local articles as additionalContext.
+ *  Static text, so no worker call; none of main()'s self-heal, auto-update or skill refresh, which are Claude Code's. */
+export async function nativeMain(): Promise<void> {
+  try { await readStdinJson(); } catch { /* payload unused; a bad one must not cost the articles */ }
+  writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: LOCAL_ARTICLES } }));
+}
+
 export async function main(): Promise<void> {
   // Only session_id is read (to flag a session that was told memory is down, so the Stop hook can
   // say when it comes back). A parse failure is non-fatal but worth a log line so a payload-shape

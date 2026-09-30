@@ -4,8 +4,9 @@
 // A constant shipped in the same bundle as the code, so the rules can never describe code that is not running.
 //
 // Deliberately compact (~2.8 KB, once per session, not per prompt); tests/unit/local-articles.test.ts caps it.
-// Other AIs (Codex, Gemini, Kimi, ...) have no SessionStart hook wired (cross-ai.ts installs only their prompt,
-// tool and stop hooks): they get the work-board rules, not articles 1 to 7, through the portable captain-memo
+// Codex and Gemini get the same text through their own SessionStart hook (nativeMain in session-start.ts, wired by
+// cross-ai.ts; Codex re-sends it after /compact, Gemini does not after a compression). Other AIs (Kimi, ...) have no
+// SessionStart hook wired: they get the work-board rules, not articles 1 to 7, through the portable captain-memo
 // skill (skills/captain-memo/SKILL.md), and only when the model loads it. SessionStart keeps those copies refreshed.
 //
 // Why the work board comes first: on 2026-09-30 two sessions in one checkout never looked at the board, one never

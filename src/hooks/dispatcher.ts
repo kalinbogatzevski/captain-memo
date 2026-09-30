@@ -14,7 +14,7 @@
 import { logHookError } from './shared.ts';
 import { NATIVE_PROMPT_HOOK_TIMEOUT_S } from '../shared/paths.ts';
 import { main as userPromptSubmit } from './user-prompt-submit.ts';
-import { main as sessionStart } from './session-start.ts';
+import { main as sessionStart, nativeMain as sessionStartNative } from './session-start.ts';
 import { main as preToolUse } from './pre-tool-use.ts';
 import { main as postToolUse } from './post-tool-use.ts';
 import { main as stop } from './stop.ts';
@@ -33,9 +33,12 @@ const EVENTS: Record<string, () => Promise<void>> = {
   CodexUserPromptSubmit: () => userPromptSubmit({ emitOriginalPrompt: false, structuredContextJson: true, hostTimeoutMs: NATIVE_PROMPT_HOOK_TIMEOUT_S * 1000 }),
   CodexPostToolUse: () => postToolUse({ originAgent: 'codex', source: 'hook:codex' }),
   CodexStop: () => stop({ emitJson: true }),
+  // Codex and Gemini fire SessionStart themselves (Codex also on `compact`), so the articles ride on it once per session.
+  CodexSessionStart: sessionStartNative,
   GeminiBeforeAgent: () => userPromptSubmit({ emitOriginalPrompt: false, structuredContextJson: true, contextEventName: 'BeforeAgent', hostTimeoutMs: NATIVE_PROMPT_HOOK_TIMEOUT_S * 1000 }),
   GeminiAfterTool: () => postToolUse({ originAgent: 'gemini', source: 'hook:gemini' }),
   GeminiAfterAgent: () => stop({ emitJson: true }),
+  GeminiSessionStart: sessionStartNative,
   // Kimi documents plain successful stdout as added context, but kimi-cli 1.52.0 only reads a
   // UserPromptSubmit result's block decision (soul/kimisoul.py), so this output does not reach
   // the model there yet. Kept human-readable for when it does.

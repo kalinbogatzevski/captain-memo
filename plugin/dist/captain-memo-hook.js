@@ -1473,7 +1473,7 @@ init_paths();
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.49.0",
+  version: "0.50.0",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -1808,6 +1808,12 @@ function formatTransitionBanner(t, willAnnounce, now = Date.now()) {
     ""
   ].join(`
 `);
+}
+async function nativeMain() {
+  try {
+    await readStdinJson();
+  } catch {}
+  writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: LOCAL_ARTICLES } }));
 }
 async function main2() {
   let payload = {};
@@ -2626,9 +2632,11 @@ var EVENTS = {
   CodexUserPromptSubmit: () => main({ emitOriginalPrompt: false, structuredContextJson: true, hostTimeoutMs: NATIVE_PROMPT_HOOK_TIMEOUT_S * 1000 }),
   CodexPostToolUse: () => main4({ originAgent: "codex", source: "hook:codex" }),
   CodexStop: () => main5({ emitJson: true }),
+  CodexSessionStart: nativeMain,
   GeminiBeforeAgent: () => main({ emitOriginalPrompt: false, structuredContextJson: true, contextEventName: "BeforeAgent", hostTimeoutMs: NATIVE_PROMPT_HOOK_TIMEOUT_S * 1000 }),
   GeminiAfterTool: () => main4({ originAgent: "gemini", source: "hook:gemini" }),
   GeminiAfterAgent: () => main5({ emitJson: true }),
+  GeminiSessionStart: nativeMain,
   KimiUserPromptSubmit: () => main({ emitOriginalPrompt: false, hostTimeoutMs: NATIVE_PROMPT_HOOK_TIMEOUT_S * 1000 }),
   KimiPostToolUse: () => main4({ originAgent: "kimi", source: "hook:kimi" }),
   KimiStop: () => main5()

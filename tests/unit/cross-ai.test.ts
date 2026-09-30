@@ -191,7 +191,14 @@ test('mergeCodexHooks — preserves foreign hooks and replaces managed entries i
   expect(twice).toBe(once);
   expect(parsed.custom).toEqual({ keep: true });
   expect(JSON.stringify(parsed)).toContain('foreign-tool');
-  expect(JSON.stringify(parsed).match(new RegExp(CAPTAIN_MEMO_CODEX_HOOK_MARKER, 'g'))).toHaveLength(3);
+  expect(JSON.stringify(parsed).match(new RegExp(CAPTAIN_MEMO_CODEX_HOOK_MARKER, 'g'))).toHaveLength(4);
+  // SessionStart: the articles once per session, with the same explicit context budget as UserPromptSubmit
+  expect(parsed.hooks.SessionStart).toHaveLength(1);
+  expect(parsed.hooks.SessionStart[0].hooks[0]).toMatchObject({ type: 'command', timeout: 5, additionalContextLimit: 5_000 });
+  expect(parsed.hooks.SessionStart[0].hooks[0].command).toContain(`CodexSessionStart ${CAPTAIN_MEMO_CODEX_HOOK_MARKER}`);
+  const withForeign = JSON.parse(mergeCodexHooks(JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'foreign-start' }] }] } }), 'bun', '/h.js'));
+  expect(withForeign.hooks.SessionStart[0].hooks[0].command).toBe('foreign-start');   // foreign first: its trust key is unchanged
+  expect(withForeign.hooks.SessionStart[1].hooks[0].command).toContain('CodexSessionStart');
   expect(parsed.hooks.PostToolUse.at(-1).hooks[0].async).toBeUndefined();
   expect(JSON.stringify(parsed)).not.toContain('old-bundle');
 });
@@ -211,6 +218,12 @@ test('connectCrossAi — Codex installs native hooks only when the effective fea
   const hooks = JSON.parse(readFileSync(hooksPath, 'utf-8'));
   expect(hooks.hooks.UserPromptSubmit[0].hooks[0].command).toContain('CodexUserPromptSubmit');
   expect(hooks.hooks.PostToolUse[0].hooks[0].command).toContain('captain-memo-hook.js');
+  expect(hooks.hooks.SessionStart[0].hooks[0].command).toContain('CodexSessionStart');
+  expect(result?.detail).toContain('trust the new SessionStart hook');   // said once, when the hook is new
+  const [again] = connectCrossAi({
+    only: ['codex'], mcpCommand: ['bun', MCP_PATH], skillSource, home, run,
+  });
+  expect(again?.detail ?? '').not.toContain('trust');
 });
 
 test('connectCrossAi — old or hooks-disabled Codex stays on rollout fallback', () => {
@@ -241,7 +254,11 @@ test('Gemini hooks — capability probe and merge preserve foreign settings', ()
   expect(parsed.hooks.enabled).toBe(true);
   expect(parsed.hooksConfig.enabled).toBe(true);
   expect(JSON.stringify(parsed)).toContain('foreign-hook');
-  expect(JSON.stringify(parsed).match(new RegExp(CAPTAIN_MEMO_GEMINI_HOOK_MARKER, 'g'))).toHaveLength(3);
+  expect(JSON.stringify(parsed).match(new RegExp(CAPTAIN_MEMO_GEMINI_HOOK_MARKER, 'g'))).toHaveLength(4);
+  expect(parsed.hooks.SessionStart).toHaveLength(1);                   // once, even after the reconnect above
+  expect(parsed.hooks.SessionStart[0].matcher).toBeUndefined();         // startup, resume and clear
+  expect(parsed.hooks.SessionStart[0].hooks[0]).toMatchObject({ name: 'captain-memo-sessionstart', timeout: 5_000 });
+  expect(parsed.hooks.SessionStart[0].hooks[0].command).toContain(`GeminiSessionStart ${CAPTAIN_MEMO_GEMINI_HOOK_MARKER}`);
 });
 
 // gemini 0.26 moved the switch to hooksConfig.enabled and made `hooks.enabled` invalid ("Expected array, received

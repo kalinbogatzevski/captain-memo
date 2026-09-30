@@ -7,6 +7,17 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.50.0] — 2026-09-30
+
+### Added
+
+- **Codex and Gemini sessions now start with the same working rules as Claude Code.** Until now only Claude
+  Code sessions got them at start; Codex and Gemini had them only if the model chose to read the skill. Both
+  CLIs have their own session-start hook, and `captain-memo connect` now installs one for each, so every new,
+  resumed or cleared session gets the rules. Codex also sends them again after `/compact`; Gemini does not after
+  it compresses a conversation. Codex asks once to trust the new hook ("Trust all and continue"); until you
+  accept, it does not run. Run `captain-memo connect` again to install it.
+
 ## [0.49.0] — 2026-09-30
 
 ### Added
