@@ -7,6 +7,24 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.47.0] — 2026-09-30
+
+### Fixed
+
+- **Gemini sessions from current gemini-cli reach memory again.** gemini-cli 0.61 writes every new session as a
+  `.jsonl` file, but capture only looked for the older `.json` format, so no Gemini session made by a current
+  version was captured. Capture now reads both, and applies the new format's records exactly as gemini-cli does
+  when it loads a session: an updated message replaces the old one, a rewind removes messages from that point on,
+  and a full replace starts the list over. Tool results no longer split a turn in two, and thought text is left
+  out. A session resumed from an old `.json` is captured once, not twice.
+
+### Changed
+
+- **Gemini capture reads only the new part of a session.** One turn of growth on a 36 MB session went from about
+  1.3 s to 5-12 ms. Anything that changes history before the last read point (a rewind, a full replace, an edit to
+  an earlier turn, a shorter or rewritten file) still gets a full read, so the result is always the same as reading
+  the whole file.
+
 ## [0.46.1] — 2026-09-30
 
 ### Changed
