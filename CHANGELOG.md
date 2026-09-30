@@ -7,6 +7,39 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.48.0] — 2026-09-30
+
+### Fixed
+
+- **A forced reindex no longer leaves the old embeddings behind.** `reindex --force` (and the MCP `reindex` tool
+  with `force`) dropped each file's record before re-indexing it, so every previous embedding of that file stayed
+  in the vector store with nothing pointing at it. On one measured store that was 97% of 26,818 stray embeddings,
+  and they crowded real results out of search (one query had 9 of its top 10 slots taken by them). The MCP tool now
+  also says that `force` re-embeds the whole corpus and is rarely needed.
+- **Two index passes over the same file at once no longer leak embeddings.** A second watcher event or a reindex
+  arriving while a file was still being embedded could replace its chunks without deleting the previous set. Work
+  on one file now runs one pass at a time.
+- **A failed embed is retried instead of being stored as zeros.** When the embedder failed while indexing a memory,
+  skill or capability file, the worker silently stored all-zero embeddings, and because the file had not changed
+  they were never redone. The chunks are now queued for the normal embed retry, and an all-zero or non-finite
+  embedding is never stored. `captain-memo maintenance --apply` queues the existing ones for re-embedding; the
+  dry-run shows the count.
+- **The embed retry no longer writes an embedding for a chunk that was replaced while it was being embedded.**
+- **Re-clustering no longer brings back an embedding that was deleted a moment earlier.** The clustering pass
+  moves a batch of embeddings after a pause; one deleted in that pause was written back with nothing pointing at
+  it, where no cleanup could find it.
+
+### Changed
+
+- **Stray embeddings are cleaned up while the worker runs.** The worker checks once an hour and removes up to 5,000
+  per pass in small paced steps (each holds the database for tens of milliseconds, measured). `captain-memo
+  maintenance --apply` removes them all at once, and is now safe with the worker running: it deletes in the same
+  small steps, no longer rewrites embeddings.db (that freed about 15 MB for about 100 s of locked database), and
+  shrinks queue.db only when the worker is stopped.
+- **Database writers wait briefly for each other instead of failing.** The vector store and the embed retry queue
+  now wait up to 5 s for a lock held by another process, where before any overlap failed at once and could leave
+  chunks without an embedding.
+
 ## [0.47.1] — 2026-09-30
 
 ### Fixed

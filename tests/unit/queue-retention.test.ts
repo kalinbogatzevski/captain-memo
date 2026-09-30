@@ -2,6 +2,7 @@ import { test, expect } from 'bun:test';
 import { mkdtempSync, rmSync, statSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { Database } from 'bun:sqlite';
 import { ObservationQueue } from '../../src/worker/observation-queue.ts';
 import type { RawObservationEvent } from '../../src/shared/types.ts';
 import { BOOT_SLACK_MS } from '../support/worker-boot.ts';
@@ -68,7 +69,7 @@ test('reclaims disk — a DELETE alone leaves the file just as large', () => {
   const before = statSync(path).size;
 
   queue.pruneDone(now - 14 * DAY);
-  queue.reclaim();
+  expect(queue.reclaim()).toBe(true);        // checkpoint completed: nothing else had the file open
   const after = statSync(path).size;
 
   expect(queue.doneCount()).toBe(0);
@@ -78,4 +79,17 @@ test('reclaims disk — a DELETE alone leaves the file just as large', () => {
 // Its own timeout: ~2 s idle but 5.6-8.7 s at load 4-5 (2026-09-27), so a bare `bun test`'s 5 s default failed it on
 // a busy host. Plus BOOT_SLACK_MS: an explicit timeout overrides CI's Windows --timeout 90000, and this test's I/O is
 // what the slow Windows disk stalls.
+}, 30_000 + BOOT_SLACK_MS);
+
+test('reclaim reports a checkpoint another connection blocked, instead of claiming the space came back', () => {
+  const { queue, dir, path } = q();
+  queue.enqueue(ev('s', 1));
+  const reader = new Database(path);
+  reader.exec('BEGIN');
+  reader.query('SELECT COUNT(*) FROM observation_queue').get();   // an open read snapshot pins the WAL
+  expect(queue.reclaim()).toBe(false);
+  reader.exec('COMMIT'); reader.close();
+  expect(queue.reclaim()).toBe(true);
+  queue.close();
+  rmSync(dir, { recursive: true, force: true });
 }, 30_000 + BOOT_SLACK_MS);

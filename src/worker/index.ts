@@ -51,7 +51,8 @@ import { centroid } from '../shared/vector-math.ts';
 import { PendingEmbedQueue } from './pending-embed-queue.ts';
 import { chunkObservation } from './chunkers/observation.ts';
 import { splitForEmbed } from './chunkers/safe-split.ts';
-import { EmbedderInputTooLarge } from './embedder.ts';
+import { EmbedderInputTooLarge, assertUsableEmbeddings } from './embedder.ts';
+import { sweepOrphanVectors, ORPHAN_SWEEP_PAUSE_MS } from './maintenance.ts';
 import { newChunkId } from '../shared/id.ts';
 import { sha256Hex } from '../shared/sha.ts';
 import { ORIGIN_AGENTS, UNKNOWN_ORIGIN_AGENT } from '../shared/origin-agent.ts';
@@ -213,6 +214,8 @@ export interface WorkerOptions {
    *  for a worker that cannot spawn co-sessions in the first place. */
   activeSessionCount?: () => number;
   observationTickMs?: number;
+  /** pending_embed retry tick (default 60 s). Tests shorten it. */
+  pendingEmbedTickMs?: number;
   observationBatchSize?: number;
   hookBudgetTokens?: number;
   /** Engine-thread mode: build stores + handler but do NOT bind an HTTP port.
@@ -541,7 +544,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   async function timedEmbed(texts: string[]): Promise<number[][]> {
     const t0 = performance.now();
     try {
-      return await embedder.embed(texts);
+      return assertUsableEmbeddings(await embedder.embed(texts));
     } finally {
       const ms = performance.now() - t0;
       const tokens = texts.reduce((n, t) => n + countTokens(t), 0);
@@ -549,22 +552,24 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     }
   }
 
+  // Built before the IngestPipeline, which queues failed embeds into it.
+  const pendingEmbed = !opts.readOnly && opts.pendingEmbedDbPath
+    ? new PendingEmbedQueue(opts.pendingEmbedDbPath)
+    : null;
+
   const ingest = new IngestPipeline({
     meta,
     maxInputTokens: effectiveMaxInputTokens,
     onIndexResult: (result) => recordIndexResult(metrics, result),
+    // An embed failure queues the chunks for retry (processPendingEmbed). It used to return zero
+    // vectors, silently: 538 were stored that way and the unchanged sha kept them until the file changed.
+    ...(pendingEmbed && { pendingEmbed }),
     embedder: {
       embed: async (texts) => {
         if (opts.skipEmbed) {
           return texts.map(() => new Array(opts.embeddingDimension).fill(0));
         }
-        try {
-          return await timedEmbed(texts);
-        } catch {
-          // Embed failure → return zero-vectors so chunks still land in the vector table
-          // (keyword search still works; vector half degrades gracefully).
-          return texts.map(() => new Array(opts.embeddingDimension).fill(0));
-        }
+        return await timedEmbed(texts);
       },
     },
     vector,
@@ -725,9 +730,6 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     : null;
   const obsStore = opts.observationsDbPath
     ? new ObservationsStore(opts.observationsDbPath, { readonly: !!opts.readOnly, tideConfig })
-    : null;
-  const pendingEmbed = !opts.readOnly && opts.pendingEmbedDbPath
-    ? new PendingEmbedQueue(opts.pendingEmbedDbPath)
     : null;
 
   // One-time stored_tokens backfill. The column is captured at index time, so
@@ -1197,6 +1199,35 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         (retentionTimer as { unref: () => void }).unref();
       }
     }
+  }
+
+  // ORPHAN VECTOR SWEEP — hourly, same deferred-first-run + unref pattern as retention above. The known
+  // leaks are fixed at the source; this keeps the store clean if a new one appears, and its log line is
+  // how that shows. Own connection, paged find, paced deletes: see sweepOrphanVectors for the numbers.
+  // Skipped for an in-memory meta db: ATTACH would open an empty one and every vector would look orphaned.
+  let orphanSweepTimer: ReturnType<typeof setInterval> | null = null;
+  let orphanFirstSweep: ReturnType<typeof setTimeout> | null = null;
+  let orphanSweepPromise: Promise<unknown> | null = null;
+  let orphanSweepStopping = false;
+  if (!opts.readOnly && opts.metaDbPath !== ':memory:' && opts.vectorDbPath !== ':memory:') {
+    const sweep = () => {
+      if (orphanSweepPromise) return;
+      const pause = async () => {
+        if (orphanSweepStopping) throw new Error('worker stopping');
+        await new Promise(r => setTimeout(r, ORPHAN_SWEEP_PAUSE_MS));
+      };
+      orphanSweepPromise = sweepOrphanVectors(opts.vectorDbPath, opts.metaDbPath, pause)
+        .then(({ found, removed }) => {
+          if (found > 0) console.log(`[vectors] orphan sweep: removed ${removed} of ${found} orphaned embedding(s)`);
+        })
+        .catch(err => { if (!orphanSweepStopping) console.error('[vectors] orphan sweep failed: ' + (err as Error).message); })
+        .finally(() => { orphanSweepPromise = null; });
+    };
+    // Off the boot path: 10 min in, after the initial indexing pass has had its turn.
+    orphanFirstSweep = setTimeout(sweep, 600_000);
+    orphanFirstSweep.unref?.();
+    orphanSweepTimer = setInterval(sweep, 3_600_000);
+    orphanSweepTimer.unref?.();
   }
 
   // Cross-AI capture: on by default. Ingest FINISHED codex/agy sessions on this
@@ -1949,13 +1980,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     if (liveRows.length === 0) return { retried: due.length, embedded: 0 };
 
     try {
-      const embeddings = await embedder.embed(texts);
-      await vector.add(
-        collectionName,
-        liveRows.map((row, i) => ({ id: row.chunk_id, embedding: embeddings[i]! })),
-      );
+      const embeddings = assertUsableEmbeddings(await embedder.embed(texts));
+      // Re-check after the await: a chunk replaced while its embed was in flight must not get a vector
+      // (it would be an orphan the moment it landed).
+      const stillLive = liveRows.map((row, i) => ({ row, embedding: embeddings[i]! }))
+        .filter(({ row }) => meta.getChunkById(row.chunk_id));
+      await vector.add(collectionName, stillLive.map(({ row, embedding }) => ({ id: row.chunk_id, embedding })));
       pendingEmbed.markEmbedded(liveRows.map(r => r.id));
-      return { retried: due.length, embedded: liveRows.length };
+      return { retried: due.length, embedded: stillLive.length };
     } catch (err) {
       // EmbedderInputTooLarge is permanent — the stored chunk text won't
       // change on retry. Pop the offending row from the queue (FTS still
@@ -1989,7 +2021,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   if (!opts.readOnly && pendingEmbed && !opts.skipEmbed) {
     pendingTickTimer = setInterval(() => {
       processPendingEmbed(PENDING_BATCH).catch(err => console.error('[pe-tick]', err));
-    }, PENDING_RETRY_TICK_MS);
+    }, opts.pendingEmbedTickMs ?? PENDING_RETRY_TICK_MS);
   }
 
   type ChannelFilters = {
@@ -3084,10 +3116,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             const files = await expandWatchPaths(source.paths);
             for (const file of files) {
               try {
-                if (parsed.data.force) {
-                  const existing = meta.getDocument(file);
-                  if (existing) meta.deleteDocument(file);
-                }
+                // deleteFile drops the document's vectors, then the document. Dropping only the document
+                // (as this did) orphaned every old vector on each forced pass: 97% of 26,818 orphans.
+                if (parsed.data.force) await ingest.deleteFile(file);
                 const before = meta.getDocument(file);
                 await ingest.indexFile(file, source.channel);
                 const after = meta.getDocument(file);
@@ -3657,6 +3688,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     if (captureTimer) clearInterval(captureTimer);
     if (retentionTimer) clearInterval(retentionTimer);
     if (retentionFirstSweep) clearTimeout(retentionFirstSweep);
+    if (orphanSweepTimer) clearInterval(orphanSweepTimer);
+    if (orphanFirstSweep) clearTimeout(orphanFirstSweep);
+    orphanSweepStopping = true;
     if (tideSweepTimer) clearInterval(tideSweepTimer);
     if (ivfSweepTimer) clearTimeout(ivfSweepTimer);
     if (qmDedupTimer) clearInterval(qmDedupTimer);
@@ -3676,6 +3710,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     // here we only care that it is DONE, and one failing slice must not skip the drain of the others.
     await Promise.allSettled([
       processBatchPromise, tideSweepPromise, ivfSweepPromise, capturePromise, qmDedupPromise, qmSupersedePromise, promotionPromise,
+      orphanSweepPromise,
     ].filter((p): p is Promise<unknown> => p != null));
     await Promise.allSettled(watchers.map((watcher) => watcher.close()));
     if (obsQueue) obsQueue.close();

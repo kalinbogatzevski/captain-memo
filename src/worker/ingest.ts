@@ -11,6 +11,7 @@ import { parseCapabilityManifest, type ParsedCapability } from './capability-reg
 import type { ChannelType, ChunkInput } from '../shared/types.ts';
 import type { MetaStore } from './meta.ts';
 import type { VectorStore } from './vector-store.ts';
+import type { PendingEmbedQueue } from './pending-embed-queue.ts';
 
 export interface IngestPipelineOptions {
   meta: MetaStore;
@@ -33,6 +34,13 @@ export interface IngestPipelineOptions {
    * WorkerMetrics.
    */
   onIndexResult?: (result: 'indexed' | 'skipped') => void;
+  /**
+   * Where chunks go when the embed call fails (or returns an unusable vector): the chunks are still
+   * written to meta (keyword search works) and queued here, and processPendingEmbed stores their real
+   * vectors later. Without it an embed failure throws before anything is changed. Never zero vectors:
+   * 538 of them were written that way, and the unchanged sha kept them until the file was edited.
+   */
+  pendingEmbed?: Pick<PendingEmbedQueue, 'enqueue'>;
 }
 
 export class IngestPipeline {
@@ -43,6 +51,11 @@ export class IngestPipeline {
   private projectId: string;
   private maxInputTokens: number | undefined;
   private onIndexResult: ((result: 'indexed' | 'skipped') => void) | undefined;
+  private pendingEmbed: Pick<PendingEmbedQueue, 'enqueue'> | undefined;
+  /** Tail of the work queued per path. indexFile reads the old chunk set before its embed await and
+   *  swaps it after, so two overlapping calls on one path (a second watcher event, /reindex during a
+   *  watcher pass) each displaced a chunk set nobody deleted. Reproduced: 2 and 4 orphaned vectors. */
+  private pathTails = new Map<string, Promise<void>>();
 
   constructor(opts: IngestPipelineOptions) {
     this.meta = opts.meta;
@@ -52,6 +65,16 @@ export class IngestPipeline {
     this.projectId = opts.projectId;
     this.maxInputTokens = opts.maxInputTokens;
     this.onIndexResult = opts.onIndexResult;
+    this.pendingEmbed = opts.pendingEmbed;
+  }
+
+  /** Run `work` after every earlier call on the same path has settled. */
+  private serial(path: string, work: () => Promise<void>): Promise<void> {
+    const run = (this.pathTails.get(path) ?? Promise.resolve()).then(work);
+    const tail = run.catch(() => {});
+    this.pathTails.set(path, tail);
+    void tail.then(() => { if (this.pathTails.get(path) === tail) this.pathTails.delete(path); });
+    return run;
   }
 
   private chunkerFor(channel: ChannelType, content: string, sourcePath: string, capability?: ParsedCapability | null): ChunkInput[] {
@@ -61,17 +84,25 @@ export class IngestPipeline {
     throw new Error(`No file-based chunker for channel: ${channel}`);
   }
 
-  async indexFile(filePath: string, channel: ChannelType): Promise<void> {
+  indexFile(filePath: string, channel: ChannelType): Promise<void> {
+    return this.serial(filePath, () => this.indexFileNow(filePath, channel));
+  }
+
+  deleteFile(filePath: string): Promise<void> {
+    return this.serial(filePath, () => this.deleteFileNow(filePath));
+  }
+
+  private async indexFileNow(filePath: string, channel: ChannelType): Promise<void> {
     // The virtual skill registry only accepts canonical Agent Skill entry
     // files. This is a second structural gate behind discovery/watcher filters:
     // companion docs, transcripts and credentials beside a skill cannot be
     // imported merely because an event source hands us their path.
     if (channel === 'skill' && basename(filePath) !== 'SKILL.md') {
-      await this.deleteFile(filePath); // also removes rows imported by older watcher behavior
+      await this.deleteFileNow(filePath); // also removes rows imported by older watcher behavior
       return;
     }
     if (channel === 'capability' && !['plugin.json', 'gemini-extension.json'].includes(basename(filePath))) {
-      await this.deleteFile(filePath);
+      await this.deleteFileNow(filePath);
       return;
     }
     const content = readFileSync(filePath, 'utf-8');
@@ -111,17 +142,9 @@ export class IngestPipeline {
       ? splitForEmbed(rawChunks, this.maxInputTokens)
       : rawChunks;
 
-    // Drop old vector entries for this document before indexing the new version
-    if (existing) {
-      const oldChunks = this.meta.getChunksForDocument(existing.id);
-      if (oldChunks.length > 0) {
-        await this.vector.delete(this.collection, oldChunks.map(c => c.chunk_id));
-      }
-    }
-
     if (chunks.length === 0) {
-      // Empty file or all-whitespace — drop the document if it existed
-      if (existing) this.meta.deleteDocument(filePath);
+      // Empty file or all-whitespace — drop the document (and its vectors) if it existed
+      if (existing) await this.deleteFileNow(filePath);
       this.onIndexResult?.('indexed');
       return;
     }
@@ -135,7 +158,22 @@ export class IngestPipeline {
       metadata: c.metadata,
     }));
 
-    const embeddings = await this.embedder.embed(chunksWithIds.map(c => c.text));
+    let embeddings: number[][] | null = null;
+    try {
+      embeddings = await this.embedder.embed(chunksWithIds.map(c => c.text));
+    } catch (err) {
+      if (!this.pendingEmbed) throw err;
+      console.error(`[ingest] embed failed for ${filePath}; queueing ${chunksWithIds.length} chunk(s) for retry: ${(err as Error).message}`);
+    }
+
+    // Drop old vector entries for this document before indexing the new version. After the embed, so an
+    // embed failure with no queue to fall back on leaves the existing index intact.
+    if (existing) {
+      const oldChunks = this.meta.getChunksForDocument(existing.id);
+      if (oldChunks.length > 0) {
+        await this.vector.delete(this.collection, oldChunks.map(c => c.chunk_id));
+      }
+    }
 
     const documentId = this.meta.upsertDocument({
       source_path: filePath,
@@ -150,14 +188,20 @@ export class IngestPipeline {
     if (parsedSkill) this.meta.upsertSkill({ document_id: documentId, ...parsedSkill });
     if (parsedCapability) this.meta.upsertCapability({ document_id: documentId, ...parsedCapability });
 
-    await this.vector.add(
-      this.collection,
-      chunksWithIds.map((c, i) => ({ id: c.chunk_id, embedding: embeddings[i]! })),
-    );
+    if (embeddings) {
+      await this.vector.add(
+        this.collection,
+        chunksWithIds.map((c, i) => ({ id: c.chunk_id, embedding: embeddings![i]! })),
+      );
+    } else {
+      for (const c of chunksWithIds) {
+        this.pendingEmbed!.enqueue({ chunk_id: c.chunk_id, source_path: filePath, sha: c.sha, channel });
+      }
+    }
     this.onIndexResult?.('indexed');
   }
 
-  async deleteFile(filePath: string): Promise<void> {
+  private async deleteFileNow(filePath: string): Promise<void> {
     const existing = this.meta.getDocument(filePath);
     if (!existing) return;
     const oldChunks = this.meta.getChunksForDocument(existing.id);

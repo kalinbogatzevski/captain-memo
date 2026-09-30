@@ -1,8 +1,11 @@
 import { Database } from 'bun:sqlite';
 import { existsSync, lstatSync, realpathSync, rmSync, statSync } from 'fs';
 import { join, sep } from 'path';
-import { DATA_DIR, QUEUE_DB_PATH, META_DB_PATH, VECTOR_DB_DIR } from '../../shared/paths.ts';
-import { findOrphanVectors, deleteOrphanVectors, reclaimDb, openVectorDbForMaintenance } from '../../worker/maintenance.ts';
+import { DATA_DIR, QUEUE_DB_PATH, META_DB_PATH, VECTOR_DB_DIR, PENDING_EMBED_DB_PATH } from '../../shared/paths.ts';
+import { findOrphanVectors, deleteOrphanVectors, findZeroVectorChunks, openVectorDbForMaintenance } from '../../worker/maintenance.ts';
+import { PendingEmbedQueue } from '../../worker/pending-embed-queue.ts';
+import type { ChannelType } from '../../shared/types.ts';
+import { workerHealthy } from '../client.ts';
 import { ObservationQueue } from '../../worker/observation-queue.ts';
 import {
   CACHE_ROOT, DEFAULT_GRACE_DAYS, planPrune, reclaimableBytes,
@@ -18,10 +21,12 @@ const fmt = (b: number): string => `${(b / MB).toFixed(1)} MB`;
  *  Reports what the databases are carrying that nothing needs, and with --apply removes it. Dry-run by
  *  default: this deletes rows, and a tool that deletes should show its work before it does.
  *
- *  The database sweeps also run automatically in the worker on an hourly sweep — this command exists so
- *  they can be run on demand, and so the numbers are inspectable without reading a log. The plugin-cache
- *  prune below is deliberately NOT on that sweep: it deletes directories, so it stays a thing a human
- *  asks for after reading the dry-run. */
+ *  The worker runs the queue-retention and orphan-vector sweeps hourly on its own (the orphan sweep removes
+ *  at most 5,000 per run); this command runs them on demand, all at once, with the numbers on screen. Safe
+ *  with the worker running: vector deletes go in short paced transactions, embeddings.db is never
+ *  VACUUMed (it would free ~15 MB for ~100 s of exclusive lock), and queue.db is VACUUMed only when the
+ *  worker is stopped. The zero-vector repair and the plugin-cache prune are NOT on any sweep: a human
+ *  asks for them after reading the dry-run. */
 export async function maintenanceCommand(args: string[]): Promise<number> {
   const apply = args.includes('--apply');
   const dIdx = args.indexOf('--retention-days');
@@ -53,8 +58,16 @@ export async function maintenanceCommand(args: string[]): Promise<number> {
       const doneTotal = queue.doneCount();
       if (apply) {
         const removed = queue.pruneDone(cutoff);
-        if (removed > 0) queue.reclaim();
         console.log(`  queue: removed ${removed.toLocaleString()} finished row(s) older than ${retentionDays}d (of ${doneTotal.toLocaleString()} finished)`);
+        // VACUUM holds queue.db exclusively for seconds (~8 s at 356 MB) while every hook enqueues into it,
+        // so it runs only with the worker stopped. Freed pages are reused by later writes meanwhile.
+        if (removed > 0) {
+          if (await workerHealthy()) {
+            console.log('  queue: worker is running, file not shrunk (stop the worker and re-run --apply to return the space to disk)');
+          } else if (!queue.reclaim()) {
+            console.log('  queue: VACUUM done but the WAL checkpoint was blocked by another connection; the -wal file holds the rewrite until it drains');
+          }
+        }
       } else {
         // Count without deleting — same predicate the prune uses.
         const n = (queue as unknown as { db: Database }).db
@@ -69,13 +82,31 @@ export async function maintenanceCommand(args: string[]): Promise<number> {
   if (existsSync(vecPath) && existsSync(META_DB_PATH)) {
     const vec = openVectorDbForMaintenance(vecPath);
     try {
-      const orphans = findOrphanVectors(vec, META_DB_PATH);
+      const orphans = await findOrphanVectors(vec, META_DB_PATH);
       if (apply) {
-        const removed = deleteOrphanVectors(vec, orphans);
-        if (removed > 0) reclaimDb(vec);
+        // 50 ms between 25-id transactions: a concurrent write waited at most 129 ms (see ORPHAN_DELETE_BATCH).
+        const removed = await deleteOrphanVectors(vec, orphans, () => Bun.sleep(50));
         console.log(`  vectors: removed ${removed.toLocaleString()} orphaned embedding(s)`);
       } else {
         console.log(`  vectors: would remove ${orphans.length.toLocaleString()} orphaned embedding(s)`);
+      }
+
+      // ── 2b. all-zero embeddings of live chunks: re-embed them through the pending_embed retry queue ──
+      const zeros = findZeroVectorChunks(vec, META_DB_PATH);
+      if (zeros.total > 0) {
+        const rest = zeros.total - zeros.live.length;
+        const restNote = rest > 0 ? ` (${rest.toLocaleString()} more belong to orphaned vectors${apply ? ' and were not queued' : ''})` : '';
+        if (apply) {
+          const pending = new PendingEmbedQueue(PENDING_EMBED_DB_PATH);
+          try {
+            for (const z of zeros.live) {
+              pending.enqueue({ chunk_id: z.chunk_id, source_path: z.source_path, sha: z.sha, channel: z.channel as ChannelType });
+            }
+          } finally { pending.close(); }
+          console.log(`  zero vectors: queued ${zeros.live.length.toLocaleString()} chunk(s) for re-embedding${restNote}; the worker re-embeds 25 a minute`);
+        } else {
+          console.log(`  zero vectors: would queue ${zeros.live.length.toLocaleString()} chunk(s) with an all-zero embedding for re-embedding${restNote}`);
+        }
       }
     } finally { vec.close(); }
   }

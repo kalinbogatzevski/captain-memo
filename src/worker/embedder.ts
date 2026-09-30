@@ -77,6 +77,18 @@ interface AelitaResponse {
   embeddings: number[][];
 }
 
+/** Throw unless every vector has a finite, non-zero component. A zero vector has no direction: stored, it
+ *  sits at cos 0.5 from every query (538 of them pulled one IVF cluster's centroid toward the origin, and
+ *  79% of that cluster was zeros). Callers treat the throw like any embed failure and retry later. */
+export function assertUsableEmbeddings(vectors: number[][]): number[][] {
+  vectors.forEach((v, i) => {
+    if (!v.every(Number.isFinite) || !v.some(x => x !== 0)) {
+      throw new Error(`embedder returned an unusable vector (all zeros or non-finite) for input ${i}`);
+    }
+  });
+  return vectors;
+}
+
 export class Embedder {
   private endpoint: string;
   private model: string;

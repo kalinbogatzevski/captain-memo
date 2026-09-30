@@ -66,6 +66,8 @@ export class PendingEmbedQueue {
 
   constructor(path: string) {
     this.db = new Database(path);
+    // `captain-memo maintenance --apply` enqueues into the live worker's queue; wait, don't throw SQLITE_BUSY.
+    this.db.exec('PRAGMA busy_timeout = 5000;');
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec('PRAGMA synchronous = NORMAL;');   // see observations-store.ts
     this.db.exec(SCHEMA);

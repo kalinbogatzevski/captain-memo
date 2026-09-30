@@ -196,12 +196,14 @@ export class ObservationQueue {
   /** Return freed pages to the filesystem. SQLite does NOT shrink a file on DELETE — the pages go on the
    *  free list and the 610 MB stays 610 MB — so a prune without this reclaims nothing an operator can
    *  see. VACUUM rewrites the file and needs room for a copy, which is why it is a separate, deliberate
-   *  call rather than something folded into every prune. */
-  reclaim(): void {
+   *  call rather than something folded into every prune. Returns false when the checkpoint could not
+   *  complete (another connection held the WAL), i.e. the file has not shrunk yet. */
+  reclaim(): boolean {
     this.db.exec('VACUUM');
     // …and CHECKPOINT, or in WAL mode the rewrite lands in the -wal file and the main database is
     // exactly as large as before. Measured: VACUUM alone left a 2.8 MB test file at 2.8 MB.
-    this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    const r = this.db.query('PRAGMA wal_checkpoint(TRUNCATE)').get() as { busy: number } | null;
+    return !r || r.busy === 0;
   }
 
   markDone(ids: number[]): void {

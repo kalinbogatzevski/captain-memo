@@ -164,6 +164,16 @@ test('VectorStore — reassignCluster preserves the embedding across the delete+
   expect(Array.from(readBack!)).toEqual([0.5, 0.5, 0.5, 0.5]);
 });
 
+test('VectorStore — reassignCluster does not bring back a vector deleted after it was read', async () => {
+  // The IVF sweep reads a batch, awaits nearestInBatch, then reassigns; a delete in that gap (re-index,
+  // orphan sweep) must stay deleted, not come back as a vec0 row with no vec_chunk_meta row.
+  await store.add('coll_a', [{ id: 'a1', embedding: [1, 0, 0, 0] }]);
+  const [read] = store.getUnclusteredChunks('coll_a', 10);
+  await store.delete('coll_a', ['a1']);
+  store.reassignCluster(read!.chunkId, read!.embedding, 7);
+  expect(store.getEmbedding('a1')).toBeNull();
+});
+
 test('VectorStore — sampleAnyVectors returns vectors regardless of cluster assignment', async () => {
   await store.add('coll_a', [{ id: 'a1', embedding: [1, 0, 0, 0] }, { id: 'a2', embedding: [0, 1, 0, 0] }]);
   const [u1] = store.getUnclusteredChunks('coll_a', 1);

@@ -12893,7 +12893,7 @@ function loadWorkerEnv() {
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.47.1",
+  version: "0.48.0",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -13173,7 +13173,7 @@ var TOOLS = [
   },
   {
     name: "reindex",
-    description: "Trigger a reindex (admin). Optionally restrict to a channel or force re-embedding.",
+    description: 'Trigger a reindex (admin). Optionally restrict to a channel. Changed files are picked up automatically, so this is rarely needed. force=true re-embeds EVERY file in the channel (paid embedder calls for the whole corpus); use it only after changing the embedder or chunking, never to "make sure" something is indexed.',
     inputSchema: {
       type: "object",
       properties: {

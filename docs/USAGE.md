@@ -55,7 +55,9 @@ captain-memo maintenance --grace-days 14    # plugin-cache trees orphaned longer
 ```
 
 Three sweeps: finished queue rows past the retention window, embeddings whose chunk is gone, and
-superseded plugin-cache trees. Dry-run by default — it deletes, so it shows its work first.
+superseded plugin-cache trees. It also finds embeddings stored as all zeros (an old embed-failure
+fallback) and, with `--apply`, queues their chunks for re-embedding. Dry-run by default — it deletes, so it
+shows its work first. Safe to run with the worker up; queue.db is only shrunk when the worker is stopped.
 
 **About the plugin cache.** Upgrading re-points Claude Code at a new version directory under
 `~/.claude/plugins/cache/` and marks the old one `.orphaned_at`. Claude Code documents a 7-day grace

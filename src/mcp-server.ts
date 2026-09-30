@@ -234,7 +234,7 @@ export const TOOLS = [
   },
   {
     name: 'reindex',
-    description: 'Trigger a reindex (admin). Optionally restrict to a channel or force re-embedding.',
+    description: 'Trigger a reindex (admin). Optionally restrict to a channel. Changed files are picked up automatically, so this is rarely needed. force=true re-embeds EVERY file in the channel (paid embedder calls for the whole corpus); use it only after changing the embedder or chunking, never to "make sure" something is indexed.',
     inputSchema: {
       type: 'object',
       properties: {

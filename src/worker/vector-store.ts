@@ -49,6 +49,13 @@ const UNCLUSTERED = -1;
  *  for more chunks to walk. */
 export const VEC_CHUNK_SIZE = 128;
 
+/** How long a write waits for another connection's lock before SQLITE_BUSY. The default is 0 (measured in
+ *  Bun), so any overlap with `captain-memo maintenance` threw and a failed vector.add left chunks with no
+ *  vector. Measured against the paced orphan delete
+ *  (2026-09-30, dev-store copy, measured on the federation line): the longest wait a concurrent write saw was 129 ms (CLI) and 750 ms (worker
+ *  sweep, first batch), so 5 s is margin, not a stall anyone should hit. Same value as observations-store.ts. */
+export const VECTOR_BUSY_TIMEOUT_MS = 5_000;
+
 
 /** Cosine similarity from a vec0 L2 distance, for UNIT vectors only.
  *
@@ -133,6 +140,7 @@ export class VectorStore {
     // on Linux/Windows, where Bun bundles its own capable build.
     ensureExtensionCapableSqlite();
     this.db = new Database(opts.dbPath, opts.readonly ? { readonly: true } : undefined);
+    this.db.exec(`PRAGMA busy_timeout = ${VECTOR_BUSY_TIMEOUT_MS}`);
     try {
       sqliteVec.load(this.db);   // the vec0 extension is needed to READ as well as write
     } catch (err) {
@@ -710,8 +718,10 @@ export class VectorStore {
     const tx = this.db.transaction(() => {
       for (const it of items) {
         const blob = new Uint8Array(it.embedding.buffer, it.embedding.byteOffset, it.embedding.byteLength);
-        del.run(it.chunkId);
-        ins.run(it.chunkId, it.clusterId, blob);
+        // Only re-insert what was still there: the sweep reads vectors, awaits nearestInBatch, then lands
+        // here, and a chunk deleted in that gap (re-index, orphan sweep) came back as a vec0 row with no
+        // vec_chunk_meta row, which no orphan check can see.
+        if (Number(del.run(it.chunkId).changes) > 0) ins.run(it.chunkId, it.clusterId, blob);
       }
     });
     tx();
