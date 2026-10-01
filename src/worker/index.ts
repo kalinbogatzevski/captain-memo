@@ -2010,8 +2010,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           `Vector search will miss this chunk; FTS still works.`,
         );
         pendingEmbed.markEmbedded([row.id]);
-      } else if (alone && splittable(error) && row.retries + 1 >= PENDING_EMBED_MAX_ATTEMPTS) {
-        // Only a failure of this chunk alone counts: an outage must never park the whole queue.
+      } else if (alone && splittable(error) && embedded.length > 0 && row.retries + 1 >= PENDING_EMBED_MAX_ATTEMPTS) {
+        // Only when this chunk failed alone AND others embedded in the same pass: a wrong model name is an
+        // HTTP 400 for every input, and that must never park the whole queue.
         console.error(
           `[pending-embed] parking chunk ${row.chunk_id} (${row.source_path}) after ${row.retries + 1} failed attempts: ` +
           `${error.message}. Keyword search still finds it; it is retried once a day.`,

@@ -28,7 +28,8 @@ export function classifyEmbedError(msg: string): EmbedErrorClass {
   return 'other';
 }
 
-/** Failures ON ITS OWN before a chunk is parked. With the backoff above that is about 45 minutes of trying. */
+/** Failed attempts (of any kind) after which a chunk that fails ON ITS OWN, in a pass where other chunks
+ *  embedded, is parked. With the backoff above that is about 45 minutes of trying. */
 export const PENDING_EMBED_MAX_ATTEMPTS = 8;
 /** A parked chunk is tried again once a day: a fixed embedder then clears it, and a chunk whose text is gone
  *  leaves the queue through the normal stale check. Until then doctor reports it. */

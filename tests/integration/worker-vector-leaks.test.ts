@@ -190,3 +190,34 @@ test('one chunk the embedder always refuses no longer holds back the rest of its
   const stats = await (await fetch(`http://localhost:${worker.port}/stats`)).json() as { observations: { embed_parked?: number } };
   expect(stats.observations.embed_parked).toBe(1);
 });
+
+test('an embedder that refuses every input parks nothing', async () => {
+  // A wrong model name is an HTTP 400 for every input: that is the embedder, not the chunks.
+  workDir = mkdtempSync(join(tmpdir(), 'cm-pe-all400-'));
+  const metaPath = join(workDir, 'meta.sqlite3');
+  const pendingPath = join(workDir, 'pending.db');
+  const meta = new MetaStore(metaPath);
+  const seed = new PendingEmbedQueue(pendingPath);
+  const doc = meta.upsertDocument({ source_path: '/m/all.md', channel: 'memory', project_id: 'pe', sha: 'k', mtime_epoch: 1, metadata: {} });
+  const ids = ['memory:all:c0', 'memory:all:c1', 'memory:all:c2', 'memory:all:c3'];
+  meta.replaceChunksForDocument(doc, ids.map((chunk_id, i) => ({ chunk_id, text: `t${i}`, sha: `s${i}`, position: i, metadata: {} })));
+  for (const chunk_id of ids) seed.enqueue({ chunk_id, source_path: '/m/all.md', sha: 's', channel: 'memory' });
+  const raw = new Database(pendingPath);
+  raw.exec('UPDATE pending_embed SET retries = 7');
+  raw.close();
+  seed.close();
+  meta.close();
+
+  stub = Bun.serve({ port: 0, fetch: () => new Response('unknown model', { status: 400 }) });
+  worker = await startWorker({
+    port: 0, projectId: 'pe', metaDbPath: metaPath, vectorDbPath: join(workDir, 'vec.db'),
+    embedderEndpoint: `http://localhost:${stub.port}/v1/embeddings`, embedderModel: 'voyage-4-nano',
+    embeddingDimension: 8, pendingEmbedDbPath: pendingPath, pendingEmbedTickMs: 100,
+  });
+  const probe = new PendingEmbedQueue(pendingPath);
+  try {
+    for (let i = 0; i < 30 && probe.listDue(25).length > 0; i++) await new Promise(r => setTimeout(r, 100));
+    expect(probe.listDue(25)).toEqual([]);                        // the pass ran: every row is backing off
+    expect(probe.failureState()).toMatchObject({ pending: 4, parked: 0 });
+  } finally { probe.close(); }
+});

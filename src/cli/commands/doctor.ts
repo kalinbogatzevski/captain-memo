@@ -177,17 +177,13 @@ export function embedderVerdict(
   const pending = stats.embed_pending ?? 0;
   if (!stats.embed_error) return { name, status: 'PASS', detail: `external endpoint @ ${host} · queue clear` };
   const err = String(stats.embed_error).slice(0, 120);
-  if ((stats.embed_parked ?? 0) > 0) {
-    // Chunks the embedder refused on their own, again and again. The rest of the queue is not waiting on them.
-    return { name, status: 'WARN',
-             detail: `${host}: ${stats.embed_parked} chunk(s) parked after repeated embed failures (keyword search still finds them) — ${err}`,
-             remedy: 'nothing required — each is retried once a day. `grep "parking chunk" worker.log` names the files; editing one re-indexes it.' };
-  }
   if (stats.embed_error_class === 'auth') {
     // Retrying forever will never fix a bad key — this one needs a human.
     return { name, status: 'FAIL', detail: `${host}: ${pending} chunk(s) blocked on auth — ${err}`,
              remedy: 'check the API key in worker.env, then: captain-memo restart' };
   }
+  // After auth: a bad key fails everything, parked chunks included, and that is the thing to fix.
+  if ((stats.embed_parked ?? 0) > 0) return parkedEmbedCheck(name, host, stats.embed_parked!, err);
   if (stats.embed_error_class === 'rate_limited') {
     // Drains on its own; the remedy is optional. Say so, or the count reads as damage.
     return { name, status: 'WARN', detail: `${host}: ${pending} chunk(s) queued behind a rate limit — ${err}`,
@@ -197,17 +193,28 @@ export function embedderVerdict(
            remedy: 'run doctor again in a minute; if it persists, check worker.log' };
 }
 
+/** Chunks the embedder refused on their own, again and again. The rest of the queue is not waiting on them. */
+export function parkedEmbedCheck(name: string, host: string, parked: number, err: string): Check {
+  return { name, status: 'WARN',
+           detail: `${host}: ${parked} chunk(s) parked after repeated embed failures (keyword search still finds them) — ${err}`,
+           remedy: 'nothing required — each is retried once a day. `grep "parking chunk" worker.log` names them.' };
+}
+
 async function checkEmbedder(): Promise<void> {
   // Read worker.env to figure out what backend the user actually picked.
   // Hosted Voyage / OpenAI / aelita endpoints are normal — not warnings.
   const endpoint = readWorkerEnvVar('CAPTAIN_MEMO_EMBEDDER_ENDPOINT') ?? '';
   const isLocal = endpoint.startsWith('http://127.0.0.1:8124')
                || endpoint.startsWith('http://localhost:8124');
+  // The queue's state sits under `observations` in /stats. This read the top level, where it never was,
+  // so the hosted check passed whatever the queue was doing.
+  const queue = lastStats && ((lastStats.observations ?? {}) as NonNullable<Parameters<typeof embedderVerdict>[1]>);
   if (!isLocal) {
-    // The queue's state sits under `observations` in /stats. This read the top level, where it never was,
-    // so the hosted check passed whatever the queue was doing.
-    record(embedderVerdict(endpoint, lastStats && ((lastStats.observations ?? {}) as Parameters<typeof embedderVerdict>[1])));
+    record(embedderVerdict(endpoint, queue));
     return;
+  }
+  if ((queue?.embed_parked ?? 0) > 0) {
+    record(parkedEmbedCheck('embedder queue', 'local sidecar', queue!.embed_parked!, String(queue!.embed_error ?? '').slice(0, 120)));
   }
   // Local sidecar: the HTTP /health probe is authoritative for liveness; the
   // service-manager state only tells us why it's down (installed vs. not).
