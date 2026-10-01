@@ -69,7 +69,7 @@ in different files:
   publishes your claim AND returns `overlaps[]` — by topic, files, meaning or shared checkout (`kind` says
   which). Non-empty ⇒ tell the user before you edit. If it says `semantic.degraded`, meaning-match is off and
   topics are what keeps you honest.
-- Re-call `work_set` periodically to keep the lease alive (it auto-expires, so it never blocks an area), and
+- Re-call `work_set` periodically to keep the lease alive (it auto-expires, so a claim nobody renews does not hold an area forever), and
   `work_clear()` once your change is committed and deployed, not before; re-`work_set` after a long pause.
   `work_active()` lists the live claims and `topic_contention` (every topic two or
   more sessions hold, with who).

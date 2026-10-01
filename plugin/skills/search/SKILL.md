@@ -39,5 +39,5 @@ Tip the user: they can run `/captain-memo:recall <doc_id>` to fetch the full con
 ## On error
 
 - The tool errors with 503 or the worker is not reachable: tell the user to run `captain-memo doctor` to diagnose
-- The tool errors with 401: the call carried no valid worker secret (a session started before 0.52.0 sends none). Tell the user to restart the AI session; `captain-memo doctor` lists any caller still sending none
+- The tool errors with 401: the call carried no valid worker secret (a session started before 0.52.0 sends none). Tell the user to restart the AI session; `captain-memo doctor` lists the routes still called without one
 - Empty results: say "no hits — try a more specific query, or check `captain-memo stats` to confirm the corpus is indexed"

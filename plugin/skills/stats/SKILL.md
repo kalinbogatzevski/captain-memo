@@ -21,8 +21,9 @@ The response includes: `total_chunks`, `by_channel`, `observations` (total/queue
 
 A successful `/stats` response means the **backend worker is ONLINE** — lead with that
 and its uptime. Format `worker.uptime_s` compactly: `45s` / `12m` / `2h 13m` / `3d 4h`.
-If the call fails or the connection is refused, the worker is **OFFLINE**: say so and point
-the user at `captain-memo doctor` (see "On error").
+If the connection is refused or times out, the worker is **OFFLINE**: say so and point
+the user at `captain-memo doctor` (see "On error"). Any other error (a 401, say) means the worker
+answered: show the error text and point at `captain-memo doctor`.
 
 ## Output format
 
