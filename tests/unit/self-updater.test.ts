@@ -1,6 +1,8 @@
 import { test, expect } from 'bun:test';
 import {
   pickUpdateTarget, applyUpdateToRef, runAutoUpdate, rollbackTo, isUpdateCheckDue, isGitCheckout, originUrl,
+  DEFAULT_UPDATE_CHECK_INTERVAL_MS, UPDATE_CHECK_JITTER_MAX_MS, UPDATE_CHECK_BACKOFF_CAP_MS,
+  updateCheckIntervalFromEnv, nextUpdateCheckDelayMs, formatUpdateStamp, parseUpdateStamp,
   type UpdaterPort, type ExecResult,
 } from '../../src/worker/self-updater.ts';
 
@@ -231,4 +233,51 @@ test('isUpdateCheckDue throttles to the interval', () => {
   expect(isUpdateCheckDue(null, 1000, 6 * HOUR)).toBe(true);          // never checked → due
   expect(isUpdateCheckDue(1000, 1000 + HOUR, 6 * HOUR)).toBe(false);  // 1h ago, interval 6h → not due
   expect(isUpdateCheckDue(1000, 1000 + 6 * HOUR, 6 * HOUR)).toBe(true); // exactly at the interval → due
+});
+
+// ── #228: hourly checks, jitter, backoff ──
+
+test('default update check is 1 h, jitter up to 10 min, backoff capped at the old 6 h', () => {
+  expect(DEFAULT_UPDATE_CHECK_INTERVAL_MS).toBe(3_600_000);
+  expect(UPDATE_CHECK_JITTER_MAX_MS).toBe(600_000);
+  expect(UPDATE_CHECK_BACKOFF_CAP_MS).toBe(21_600_000);
+});
+
+test('updateCheckIntervalFromEnv keeps a valid override and falls back on junk', () => {
+  expect(updateCheckIntervalFromEnv(undefined)).toBe(3_600_000);
+  expect(updateCheckIntervalFromEnv('7200000')).toBe(7_200_000);
+  for (const bad of ['', ' ', 'abc', '0', '-5', 'Infinity']) expect(updateCheckIntervalFromEnv(bad)).toBe(3_600_000);
+});
+
+test('nextUpdateCheckDelayMs: jitter stays within [interval, interval + 10 min)', () => {
+  const H = 3_600_000;
+  expect(nextUpdateCheckDelayMs(H, 0, 0)).toBe(H);
+  expect(nextUpdateCheckDelayMs(H, 0, 0.999999)).toBeLessThan(H + 600_000);
+  expect(nextUpdateCheckDelayMs(H, 0, 0.5)).toBe(H + 300_000);
+  for (let i = 0; i < 1000; i++) {
+    const d = nextUpdateCheckDelayMs(H, 0);
+    expect(d).toBeGreaterThanOrEqual(H);
+    expect(d).toBeLessThan(H + 600_000);
+  }
+  // A short override gets proportionally short jitter (interval / 6), not 10 min on a 1-min interval.
+  expect(nextUpdateCheckDelayMs(60_000, 0, 0.999999)).toBeLessThan(70_000);
+});
+
+test('nextUpdateCheckDelayMs: failures double the wait up to 6 h, a success resets it', () => {
+  const H = 3_600_000;
+  expect(nextUpdateCheckDelayMs(H, 1, 0)).toBe(2 * H);
+  expect(nextUpdateCheckDelayMs(H, 2, 0)).toBe(4 * H);
+  expect(nextUpdateCheckDelayMs(H, 3, 0)).toBe(6 * H);    // capped
+  expect(nextUpdateCheckDelayMs(H, 500, 0)).toBe(6 * H);  // no overflow
+  expect(nextUpdateCheckDelayMs(H, 0, 0)).toBe(H);        // failures reset to 0 after a good fetch
+  // An interval already longer than the cap is never shortened by the cap.
+  expect(nextUpdateCheckDelayMs(24 * H, 3, 0)).toBe(24 * H);
+});
+
+test('update stamp round-trips delay and failures; an old timestamp-only stamp parses to defaults', () => {
+  const text = formatUpdateStamp(new Date('2026-10-01T10:00:00Z'), 4_012_345.6, 2);
+  expect(text.startsWith('2026-10-01T10:00:00.000Z')).toBe(true);
+  expect(parseUpdateStamp(text)).toEqual({ delayMs: 4_012_346, failures: 2 });
+  expect(parseUpdateStamp('2026-09-30T08:00:00.000Z\n')).toEqual({ delayMs: null, failures: 0 });
+  expect(parseUpdateStamp('')).toEqual({ delayMs: null, failures: 0 });
 });

@@ -7,6 +7,15 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+### Changed
+
+- **Auto-update checks for a new release every hour instead of every 6 hours.** With
+  `CAPTAIN_MEMO_AUTO_UPDATE=1`, a session start now looks for a new release when the last check is more than
+  1 hour old (plus a random wait of up to 10 minutes, so machines started together do not all ask at once).
+  A check that cannot reach the server waits twice as long before the next try, up to 6 hours, so an offline
+  laptop does not pay for a failed check every hour. `CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS` still sets the
+  gap; a value that is not a positive number is now ignored instead of switching checks off.
+
 ## [0.52.0] — 2026-10-01
 
 ### Security

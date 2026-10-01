@@ -17,9 +17,43 @@
 
 import { compareSemver } from '../shared/self-update.ts';
 
-/** Default gap between update checks. A check does a `git fetch`, so running it every session
- *  would hit the network on every prompt-0; 6h keeps clones current without hammering origin. */
-export const DEFAULT_UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+/** Default gap between update checks (#228: was 6 h, which left captains several same-day releases behind).
+ *  A check is one `git fetch --tags` against origin. Measured 2026-10-01 against gitlab, nothing new to fetch:
+ *  ~2.1 s wall, ~0.6 s CPU (user+sys), ~56 KB ref advertisement (893 refs). Hourly that is ~1.3 MB and ~15 s CPU
+ *  per captain per day. A check never restarts anything by itself: a restart happens once per release. */
+export const DEFAULT_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+/** Random extra delay per check, so a fleet restarted together does not hit origin in the same minute. */
+export const UPDATE_CHECK_JITTER_MAX_MS = 10 * 60 * 1000;
+/** Ceiling for the failure backoff (the old 6 h cadence), unless the configured interval is longer. */
+export const UPDATE_CHECK_BACKOFF_CAP_MS = 6 * 60 * 60 * 1000;
+
+/** An interval override from the environment; unset, non-numeric or non-positive falls back to the default
+ *  (a bare Number() gave NaN, and a NaN interval made a check never due). */
+export function updateCheckIntervalFromEnv(raw: string | undefined): number {
+  const n = Number(raw);
+  return raw !== undefined && raw.trim() !== '' && Number.isFinite(n) && n > 0 ? n : DEFAULT_UPDATE_CHECK_INTERVAL_MS;
+}
+
+/** Delay until the next check: the interval, doubled per consecutive failed check (capped at the larger of the
+ *  interval and 6 h), plus a random jitter of up to min(10 min, interval / 6). A failed fetch can cost its whole
+ *  20-25 s deadline (offline laptop, dead credential), so it must not be retried at the normal cadence. */
+export function nextUpdateCheckDelayMs(baseMs: number, failures: number, rand: number = Math.random()): number {
+  const backoff = Math.min(baseMs * 2 ** Math.min(Math.max(failures, 0), 16), Math.max(baseMs, UPDATE_CHECK_BACKOFF_CAP_MS));
+  return backoff + Math.floor(rand * Math.min(UPDATE_CHECK_JITTER_MAX_MS, baseMs / 6));
+}
+
+/** The session-start stamp (`.last-update-check`): its mtime is the last check; its content carries the delay
+ *  drawn for the next one and the failure count. The delay is drawn ONCE per check and stored: re-rolling it at
+ *  every session start would let a busy captain hit a small draw and lose the jitter. An older stamp holding
+ *  only a timestamp parses to { delayMs: null, failures: 0 } (use the plain interval). */
+export function formatUpdateStamp(at: Date, delayMs: number, failures: number): string {
+  return `${at.toISOString()} delay_ms=${Math.round(delayMs)} failures=${failures}\n`;
+}
+export function parseUpdateStamp(text: string): { delayMs: number | null; failures: number } {
+  const d = /delay_ms=(\d+)/.exec(text);
+  const f = /failures=(\d+)/.exec(text);
+  return { delayMs: d ? Number(d[1]) : null, failures: f ? Number(f[1]) : 0 };
+}
 
 /** Pure throttle: has enough time passed since the last check? lastCheckMs=null ⇒ never checked ⇒ due. */
 export function isUpdateCheckDue(lastCheckMs: number | null, nowMs: number, intervalMs: number): boolean {

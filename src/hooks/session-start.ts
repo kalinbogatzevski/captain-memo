@@ -8,7 +8,7 @@ import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS, DEFAULT_WORKER_PORT, DATA
 import { VERSION } from '../shared/version.ts';
 import { consumeUpgrade, formatUpgradeBanner, formatAutoUpdateBanner, formatRollbackBanner, writeMarker } from '../shared/self-update.ts';
 import { newsLines, type NewsItem } from '../shared/whats-new.ts';
-import { runAutoUpdate, rollbackTo, isUpdateCheckDue, DEFAULT_UPDATE_CHECK_INTERVAL_MS, type UpdaterPort } from '../worker/self-updater.ts';
+import { runAutoUpdate, rollbackTo, isUpdateCheckDue, updateCheckIntervalFromEnv, nextUpdateCheckDelayMs, formatUpdateStamp, parseUpdateStamp, type UpdaterPort } from '../worker/self-updater.ts';
 import { ensureWorkerHealthy } from '../shared/worker-health.ts';
 import { markTransition, readTransition, clearTransition, markSessionDegraded, type WorkerTransition } from '../shared/worker-transition.ts';
 import { restartWorker } from '../shared/worker-control.ts';
@@ -198,7 +198,8 @@ export async function main(): Promise<void> {
   // marketplace install already self-updates via Claude Code, and runAutoUpdate no-ops on a
   // non-git dir. Runs BEFORE self-heal so the worker restarts onto the freshly pulled code.
   // Fast-forward to the newest STABLE tag only, never over a dirty tree (see worker/self-updater.ts).
-  // Throttled to one `git fetch` per interval so it doesn't hit the network every session. Fully
+  // Throttled to one `git fetch` per interval (1 h plus jitter, longer after failed fetches: see the
+  // stamp below) so it doesn't hit the network every session. Fully
   // fail-open: any error is logged, never thrown, and the session continues on the current version.
   let autoUpdateNotice = '';
   let updatedThisSession = false;
@@ -220,18 +221,32 @@ export async function main(): Promise<void> {
         readPackageVersion: (dir) => readPkgField(dir, 'version'),
         readPackageName: (dir) => readPkgField(dir, 'name'),
       };
-      const intervalMs = Number(process.env.CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS ?? DEFAULT_UPDATE_CHECK_INTERVAL_MS);
+      // A failed fetch (offline, dead credential) can cost its whole deadline at session start, so failures
+      // back off: noted here, counted in the stamp, and nextUpdateCheckDelayMs doubles the wait per failure.
+      let fetchFailed = false;
+      const runGit = port.run;
+      port.run = (argv, cwd, timeoutMs) => {
+        const r = runGit(argv, cwd, timeoutMs);
+        if (argv[1] === 'fetch' && r.code !== 0) fetchFailed = true;
+        return r;
+      };
+      const intervalMs = updateCheckIntervalFromEnv(process.env.CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS);
       try { mkdirSync(DATA_DIR, { recursive: true }); } catch { /* dir may exist */ }
       const stampPath = join(DATA_DIR, '.last-update-check');
       let lastCheck: number | null = null;
-      try { lastCheck = statSync(stampPath).mtimeMs; } catch { /* never checked */ }
+      let stamp: { delayMs: number | null; failures: number } = { delayMs: null, failures: 0 };
+      try { lastCheck = statSync(stampPath).mtimeMs; stamp = parseUpdateStamp(readFileSync(stampPath, 'utf-8')); } catch { /* never checked */ }
+      const writeStamp = (failures: number): void => {
+        try { writeFileSync(stampPath, formatUpdateStamp(new Date(), nextUpdateCheckDelayMs(intervalMs, failures), failures)); } catch { /* stamp best-effort */ }
+      };
       // Lock serializes concurrent sessions: only one may fetch/ff/install/restart at a time.
-      if (isUpdateCheckDue(lastCheck, Date.now(), intervalMs) && acquireHealLock(AUTO_UPDATE_LOCK)) {
+      if (isUpdateCheckDue(lastCheck, Date.now(), stamp.delayMs ?? intervalMs) && acquireHealLock(AUTO_UPDATE_LOCK)) {
         try {
-          try { writeFileSync(stampPath, `${new Date().toISOString()}\n`); } catch { /* stamp best-effort */ }
+          writeStamp(stamp.failures + 1);   // counted as failed until it finishes: a hook killed mid-fetch still backs off
           const top = port.run(['git', 'rev-parse', '--show-toplevel'], import.meta.dir);
           const installDir = (top.code === 0 && top.stdout.trim()) ? top.stdout.trim() : import.meta.dir;
           const res = runAutoUpdate(port, installDir, VERSION, process.execPath);
+          writeStamp(fetchFailed ? stamp.failures + 1 : 0);
           if (res?.ok) {
             const { getServiceManager } = await import('../services/service-manager/index.ts');
             const sm = getServiceManager();
