@@ -34,7 +34,7 @@ re-work is avoided.
 
 ## AI sources
 
-One bar per originating tool, showing **which AI authored each observation**:
+One bar per originating tool, showing **which AI authored each observation**,
 such as `claude-code`, `codex`, `agy`, `gemini`, `kimi` and `opencode` (the README's Vendor provenance section lists them all). Observations from before
 cross-AI capture existed (no recorded origin) are attributed to `claude-code`.
 

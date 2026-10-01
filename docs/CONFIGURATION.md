@@ -65,8 +65,8 @@ misbehaves and you want it to stop.
 | `CAPTAIN_MEMO_DISABLE_SELF_HEAL=1` | The session-start hook's self-repair | OFF (hook) |
 | `CAPTAIN_MEMO_WORKBOARD_ENFORCE=0` | Blocking of an edit or upload over another session's live claim, and of an upload over a server copy that is not yours: both go back to warnings | ON (hook and MCP server) |
 
-Note the asymmetry in the last two rows: most switches are *off-by-writing-zero*, but
-`SKIP_EMBED` and `DISABLE_SELF_HEAL` are named negatively, so they are *on-by-writing-one*.
+Note the asymmetry in the `SKIP_EMBED` and `DISABLE_SELF_HEAL` rows: most switches are *off-by-writing-zero*, but
+these two are named negatively, so they are *on-by-writing-one*.
 
 ## Common tasks
 
@@ -462,7 +462,7 @@ worker. `captain-memo dedup --undo` and `captain-memo supersede undo` reverse th
 
 | Setting | Default | Notes |
 |---|---|---|
-| `CAPTAIN_MEMO_PROMOTE_ENABLE` | OFF | `1` (or `on`) lets a judge pass promote durable observations into curated memory. `shadow` runs the judge and records its verdicts but writes nothing (`captain-memo promote --shadow` runs the judge over your backlog from the CLI and writes nothing). |
+| `CAPTAIN_MEMO_PROMOTE_ENABLE` | OFF | `1` (or `on`) lets a judge pass promote durable observations into curated memory. `shadow` runs the judge and records its verdicts but writes nothing to curated memory (`captain-memo promote --shadow` runs the judge over your backlog from the CLI, also without writing to curated memory). |
 | `CAPTAIN_MEMO_PROMOTE_INTERVAL_MS` | `21600000` (6h) | |
 | `CAPTAIN_MEMO_PROMOTE_MAX_PER_RUN` | `5` | |
 
