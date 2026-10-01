@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite';
 import { existsSync, lstatSync, realpathSync, rmSync, statSync } from 'fs';
 import { join, sep } from 'path';
 import { DATA_DIR, QUEUE_DB_PATH, META_DB_PATH, VECTOR_DB_DIR, PENDING_EMBED_DB_PATH } from '../../shared/paths.ts';
-import { findOrphanVectors, deleteOrphanVectors, findZeroVectorChunks, openVectorDbForMaintenance } from '../../worker/maintenance.ts';
+import { findOrphanVectors, deleteOrphanVectors, findZeroVectorChunks, openVectorDbForMaintenance, removeNonMarkdownMemoryDocuments } from '../../worker/maintenance.ts';
 import { PendingEmbedQueue } from '../../worker/pending-embed-queue.ts';
 import type { ChannelType } from '../../shared/types.ts';
 import { workerHealthy } from '../client.ts';
@@ -76,6 +76,16 @@ export async function maintenanceCommand(args: string[]): Promise<number> {
         console.log(`  queue: would remove ${n.n.toLocaleString()} finished row(s) older than ${retentionDays}d (of ${doneTotal.toLocaleString()} finished)`);
       }
     } finally { queue.close(); }
+  }
+
+  // ── 1b. files indexed as memory that are not markdown (before step 2, which then removes their vectors) ──
+  if (existsSync(META_DB_PATH)) {
+    const junk = removeNonMarkdownMemoryDocuments(META_DB_PATH, apply);
+    if (junk.length > 0) {
+      console.log(`  memory: ${apply ? 'removed' : 'would remove'} ${junk.length.toLocaleString()} indexed file(s) that are not markdown`);
+      for (const p of junk.slice(0, 10)) console.log(`    ${p}`);
+      if (junk.length > 10) console.log(`    ... and ${junk.length - 10} more`);
+    }
   }
 
   // ── 2. embeddings whose chunk no longer exists ─────────────────────────────────────────────────

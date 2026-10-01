@@ -166,7 +166,7 @@ export function injectLatencyVerdict(
  *  what its embed queue is doing — which is the thing we actually care about. */
 export function embedderVerdict(
   endpoint: string,
-  stats: { embed_pending?: number; embed_error?: string; embed_error_class?: string } | null,
+  stats: { embed_pending?: number; embed_parked?: number; embed_error?: string; embed_error_class?: string } | null,
 ): Check {
   const host = endpoint.replace(/^https?:\/\//, '').split('/')[0] || '?';
   const name = 'embedder backend';
@@ -177,6 +177,12 @@ export function embedderVerdict(
   const pending = stats.embed_pending ?? 0;
   if (!stats.embed_error) return { name, status: 'PASS', detail: `external endpoint @ ${host} · queue clear` };
   const err = String(stats.embed_error).slice(0, 120);
+  if ((stats.embed_parked ?? 0) > 0) {
+    // Chunks the embedder refused on their own, again and again. The rest of the queue is not waiting on them.
+    return { name, status: 'WARN',
+             detail: `${host}: ${stats.embed_parked} chunk(s) parked after repeated embed failures (keyword search still finds them) — ${err}`,
+             remedy: 'nothing required — each is retried once a day. `grep "parking chunk" worker.log` names the files; editing one re-indexes it.' };
+  }
   if (stats.embed_error_class === 'auth') {
     // Retrying forever will never fix a bad key — this one needs a human.
     return { name, status: 'FAIL', detail: `${host}: ${pending} chunk(s) blocked on auth — ${err}`,
@@ -198,7 +204,9 @@ async function checkEmbedder(): Promise<void> {
   const isLocal = endpoint.startsWith('http://127.0.0.1:8124')
                || endpoint.startsWith('http://localhost:8124');
   if (!isLocal) {
-    record(embedderVerdict(endpoint, lastStats as Parameters<typeof embedderVerdict>[1]));
+    // The queue's state sits under `observations` in /stats. This read the top level, where it never was,
+    // so the hosted check passed whatever the queue was doing.
+    record(embedderVerdict(endpoint, lastStats && ((lastStats.observations ?? {}) as Parameters<typeof embedderVerdict>[1])));
     return;
   }
   // Local sidecar: the HTTP /health probe is authoritative for liveness; the

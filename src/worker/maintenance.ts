@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite';
 import { ensureExtensionCapableSqlite } from '../shared/sqlite-extensions.ts';
 import * as sqliteVec from 'sqlite-vec';
 import { VECTOR_BUSY_TIMEOUT_MS } from './vector-store.ts';
+import { isMemoryFilePath } from './ingest.ts';
 
 /** Housekeeping for the on-disk stores.
  *
@@ -111,6 +112,28 @@ export async function deleteOrphanVectors(
     })();
   }
   return removed;
+}
+
+/** Memory-channel documents that are not markdown: files a too-wide watcher indexed as memory (a captain
+ *  had ~/.codex/logs_2.sqlite-wal and models_cache.json). The rule is the one ingest now refuses by, not
+ *  "no watch pattern matches": remembered memories live outside every watch pattern and must stay.
+ *  With `apply` the documents go, their chunks with them (ON DELETE CASCADE); the vectors are then orphans
+ *  for the orphan step that follows. Returns the paths. */
+export function removeNonMarkdownMemoryDocuments(metaDbPath: string, apply: boolean): string[] {
+  const db = new Database(metaDbPath);
+  try {
+    db.exec('PRAGMA busy_timeout = 5000');
+    db.exec('PRAGMA foreign_keys = ON');
+    const paths = (db.query("SELECT source_path FROM documents WHERE channel = 'memory'").all() as Array<{ source_path: string }>)
+      .map(r => r.source_path).filter(p => !isMemoryFilePath(p));
+    if (apply) {
+      const del = db.query('DELETE FROM documents WHERE source_path = ?');
+      db.transaction(() => { for (const p of paths) del.run(p); })();
+    }
+    return paths;
+  } finally {
+    db.close();
+  }
 }
 
 export interface ZeroVectorChunk { chunk_id: string; source_path: string; sha: string; channel: string }

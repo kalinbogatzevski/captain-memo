@@ -130,3 +130,28 @@ test('finds all-zero and non-finite vectors, and which of them belong to a live 
   expect(z.live).toEqual([{ chunk_id: 'memory:x:zero', sha: 'b', source_path: '/m/x.md', channel: 'memory' }]);
   vec.close(); meta.close(); rmSync(dir, { recursive: true, force: true });
 });
+
+// #234: a captain indexed ~/.codex/logs_2.sqlite-wal and models_cache.json as memory.
+test('removes memory documents that are not markdown, with their chunks, and nothing else', async () => {
+  const { removeNonMarkdownMemoryDocuments } = await import('../../src/worker/maintenance.ts');
+  const dir = mkdtempSync(join(tmpdir(), 'cm-mnt-'));
+  const metaPath = join(dir, 'meta.sqlite3');
+  const meta = new MetaStore(metaPath);
+  const docs: Array<[string, 'memory' | 'capability']> = [
+    ['/h/.codex/logs_2.sqlite-wal', 'memory'], ['/h/.codex/models_cache.json', 'memory'],
+    ['/h/.claude/memory/lesson_x.md', 'memory'], ['/h/.cursor/rules/a.mdc', 'memory'],
+    ['/h/.codex/plugins/x/plugin.json', 'capability'],
+  ];
+  docs.forEach(([p, channel], i) => {
+    const id = meta.upsertDocument({ source_path: p, channel, project_id: 'p', sha: 's', mtime_epoch: 1, metadata: {} });
+    meta.replaceChunksForDocument(id, [{ chunk_id: `c${i}`, text: 't', sha: 's', position: 0, metadata: {} }]);
+  });
+  const junk = ['/h/.codex/logs_2.sqlite-wal', '/h/.codex/models_cache.json'];
+
+  expect(removeNonMarkdownMemoryDocuments(metaPath, false).sort()).toEqual(junk);
+  expect(meta.getDocument(junk[0]!)).not.toBeNull();            // a dry run changes nothing
+  expect(removeNonMarkdownMemoryDocuments(metaPath, true).sort()).toEqual(junk);
+  expect(docs.map(([p]) => meta.getDocument(p) !== null)).toEqual([false, false, true, true, true]);
+  expect(['c0', 'c1', 'c2', 'c3', 'c4'].map(c => meta.getChunkById(c) !== null)).toEqual([false, false, true, true, true]);
+  meta.close(); rmSync(dir, { recursive: true, force: true });
+});

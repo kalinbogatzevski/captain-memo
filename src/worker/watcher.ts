@@ -1,5 +1,5 @@
 import chokidar, { type FSWatcher } from 'chokidar';
-import { dirname, basename, join } from 'path';
+import { dirname, join } from 'path';
 
 export type WatcherEvent = 'add' | 'change' | 'unlink';
 
@@ -12,14 +12,12 @@ export interface FileWatcherOptions {
 
 interface WatchTarget {
   dir: string;
-  extFilter: string | null; // e.g. '.md', or null = watch all
-  exactFile: string | null; // e.g. 'SKILL.md'
 }
 
 /**
  * Resolve a list of paths (which may include glob-like patterns such as
  * `/some/dir/*.md` or `~/.claude/projects/* /memory/*.md`) into concrete
- * { dir, extFilter } watch targets.
+ * { dir } watch targets.
  *
  * chokidar v4 removed glob support, so we expand `*` segments at start time
  * via Bun.Glob, then watch each concrete leaf dir directly. Caveat: dirs
@@ -32,19 +30,13 @@ function resolveTargets(paths: string[]): WatchTarget[] {
     // produces backslashes on Windows, and leaving them intact makes both the
     // wildcard-segment scan and Bun.Glob parse the pattern incorrectly.
     const p = process.platform === 'win32' ? rawPath.replace(/\\/g, '/') : rawPath;
-    const base = basename(p);
-    const extFilter = base.startsWith('*')
-      ? (base.replace(/^\*/, '') || null) // "*.md" → ".md"
-      : null;
-    const exactFile = base.includes('*') ? null : base;
-
     const dir = dirname(p);
 
     // If only the basename has a glob (e.g., "/some/dir/*.md"), the dirname is
-    // already concrete — watch it directly. New files matching the extFilter
+    // already concrete — watch it directly. New files matching the pattern
     // will fire on chokidar's `add` event even if the dir was empty at start.
     if (!dir.includes('*')) {
-      targets.push({ dir, extFilter, exactFile });
+      targets.push({ dir });
       continue;
     }
 
@@ -86,7 +78,7 @@ function resolveTargets(paths: string[]): WatchTarget[] {
       continue;
     }
 
-    for (const d of dirs) targets.push({ dir: d, extFilter, exactFile });
+    for (const d of dirs) targets.push({ dir: d });
   }
   return targets;
 }
@@ -106,16 +98,14 @@ export class FileWatcher {
     // Deduplicate dirs
     const dirs = [...new Set(targets.map(t => t.dir))];
 
-    // Build combined extension filter (null = no filter = watch all)
-    const extFilters = targets
-      .map(t => t.extFilter)
-      .filter((e): e is string => e !== null);
-    const exactFiles = targets
-      .map(t => t.exactFile)
-      .filter((name): name is string => name !== null);
-    const hasFilter = extFilters.length > 0 || exactFiles.length > 0;
-    const matchesFilter = (p: string) =>
-      !hasFilter || exactFiles.includes(basename(p)) || extFilters.some(ext => p.endsWith(ext));
+    // An event is ours only when one of the configured patterns matches the file itself. The directories
+    // above are watched whole, and the old filter pooled every pattern's extension: `AGENTS*.md` gave none,
+    // so a host with only such patterns indexed every file in ~/.codex (logs_2.sqlite-wal, models_cache.json).
+    const globs = this.opts.paths.map(p => new Bun.Glob(p.replace(/\\/g, '/')));
+    const matchesFilter = (p: string) => {
+      const file = p.replace(/\\/g, '/');
+      return globs.some(g => g.match(file));
+    };
 
     this.watcher = chokidar.watch(dirs, {
       ignoreInitial: false,
