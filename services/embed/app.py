@@ -107,9 +107,15 @@ def _load() -> None:
 
 def _retry_until_loaded() -> None:
     # A crash loop used to retry for free (e.g. HuggingFace unreachable at boot); staying up must too.
+    # Measured 2026-10-01 (4 threads, weights cached): one FAILED load costs 1.5 s on transformers 5.18 (fails
+    # before the weights load) and 7.2 s on 5.9 (loads, then fails in the warm-up encode): 2.4% and 11% duty at
+    # 60 s. The wait is at least 4x the last attempt, so a slower host stays under 20% duty too.
+    delay = LOAD_RETRY_SECONDS
     while _load_error:
-        time.sleep(LOAD_RETRY_SECONDS)
+        time.sleep(delay)
+        started = time.monotonic()
         _load()
+        delay = max(LOAD_RETRY_SECONDS, 4 * (time.monotonic() - started))
         if not _load_error:
             logger.info("captain-memo-embed model loaded on retry (%s)", MODEL_NAME)
 
