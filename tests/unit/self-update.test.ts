@@ -1,9 +1,9 @@
 import { test, expect } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
-  compareSemver, decideUpdateAction, formatUpgradeBanner,
+  compareSemver, decideUpdateAction, formatUpgradeBanner, formatAutoUpdateBlockedBanner,
   readMarker, writeMarker, consumeUpgradeNotice, MARKER_FILENAME,
 } from '../../src/shared/self-update.ts';
 
@@ -74,4 +74,19 @@ test('consumeUpgradeNotice — a downgrade is silent', () => {
     consumeUpgradeNotice(dir, '0.9.0');
     expect(consumeUpgradeNotice(dir, '0.8.0')).toBe('');
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// #232: a refused auto-update (local edits, detached HEAD) was logged only, so the checkout never updated silently.
+test('formatAutoUpdateBlockedBanner — names the version it is stuck on, why, and how to fix it', () => {
+  const b = formatAutoUpdateBlockedBanner('0.53.0', 'dirty_tree', 'working tree not clean');
+  expect(b).toContain('BLOCKED');
+  expect(b).toContain('working tree not clean');
+  expect(b).toContain('stays on v0.53.0');
+  expect(b).toContain('captain-memo install');
+  expect(formatAutoUpdateBlockedBanner('0.53.0', 'pull_failed', '')).toContain('(pull_failed)');
+});
+
+test('session-start shows the blocked banner when a safety gate refuses the update', () => {
+  const src = readFileSync(join(import.meta.dir, '../../src/hooks/session-start.ts'), 'utf8');
+  expect(src).toContain('autoUpdateNotice = formatAutoUpdateBlockedBanner(res.from, res.code, res.reason);');
 });

@@ -6,7 +6,7 @@ import type { HomeworkItem } from '../worker/homework.ts';
 import { LOCAL_ARTICLES } from './local-articles.ts';
 import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS, DEFAULT_WORKER_PORT, DATA_DIR } from '../shared/paths.ts';
 import { VERSION } from '../shared/version.ts';
-import { consumeUpgrade, formatUpgradeBanner, formatAutoUpdateBanner, formatRollbackBanner, writeMarker } from '../shared/self-update.ts';
+import { consumeUpgrade, formatUpgradeBanner, formatAutoUpdateBanner, formatAutoUpdateBlockedBanner, formatRollbackBanner, writeMarker } from '../shared/self-update.ts';
 import { newsLines, type NewsItem } from '../shared/whats-new.ts';
 import { runAutoUpdate, rollbackTo, isUpdateCheckDue, updateCheckIntervalFromEnv, nextUpdateCheckDelayMs, formatUpdateStamp, parseUpdateStamp, type UpdaterPort } from '../worker/self-updater.ts';
 import { ensureWorkerHealthy } from '../shared/worker-health.ts';
@@ -278,7 +278,9 @@ export async function main(): Promise<void> {
               logHookError('SessionStart', new Error(`auto-update to ${res.to} failed to boot; rolled back=${rolled}`));
             }
           } else if (res && !res.ok) {
-            // A safety gate refused (dirty tree / detached HEAD / ff conflict). Expected, not an error.
+            // A safety gate refused (dirty tree / detached HEAD / ff conflict). Expected, not an error, but it
+            // repeats at every check, so say it in the banner: logged only, the checkout never updated and nobody knew.
+            autoUpdateNotice = formatAutoUpdateBlockedBanner(res.from, res.code, res.reason);
             logHookError('SessionStart', new Error(`auto-update skipped: ${res.code} — ${res.reason}`));
           }
         } finally {

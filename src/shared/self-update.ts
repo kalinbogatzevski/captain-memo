@@ -59,6 +59,17 @@ export function formatAutoUpdateBanner(from: string, to: string, installFailed?:
   return lines.join('\n');
 }
 
+/** Banner when a newer release was found but a safety gate refused to apply it (local edits, detached HEAD, a
+ *  fast-forward that does not apply). This used to go to the hook error log only, so the checkout stayed on the
+ *  old version indefinitely without the user ever being told. */
+export function formatAutoUpdateBlockedBanner(from: string, code: string | undefined, reason: string | undefined): string {
+  return [
+    `⚓ Captain Memo auto-update is BLOCKED: a newer release is available but was not applied (${reason || code || 'unknown reason'}).`,
+    `  Your checkout stays on v${from} until this is fixed: commit or stash local edits and make sure a branch is checked out,`,
+    '  or update by hand with `git pull` and `captain-memo install`.',
+  ].join('\n');
+}
+
 /** Banner when an auto-update's new code failed to boot and Captain rolled the checkout back. */
 export function formatRollbackBanner(from: string, attempted: string, rolledBack: boolean): string {
   return rolledBack
