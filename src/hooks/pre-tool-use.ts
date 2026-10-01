@@ -26,6 +26,7 @@ import { parseTransfers, remoteKey, checkUploads, SSH_KILL_MS, type Transfer } f
 import { patchFiles } from './post-tool-use.ts';
 import { detectRepoRootSync } from '../worker/branch.ts';
 import { globsOverlap } from '../worker/glob-overlap.ts';
+import { aiProcessPid } from '../shared/ai-process.ts';
 import { resolve, dirname } from 'path';
 
 interface PreToolUsePayload {
@@ -104,9 +105,10 @@ async function publishClaim(sid: string, cwd: string | undefined, touched: strin
     }
   }
 
-  // The pid marks a Claude Code claim, the only kind the edit guard enforces (see guardContested). Sent for Claude only:
-  // a Codex or Gemini process started from a Claude shell inherits CLAUDE_PID.
-  const pid = o.agent === 'claude' ? Number(process.env.CLAUDE_PID) : NaN;
+  // The pid of the AI CLI process this session runs in: the edit guard enforces only claims that carry one (see
+  // guardContested). CLAUDE_PID for Claude only: a Codex or Gemini process started from a Claude shell inherits it, so
+  // theirs comes from the process tree (off Linux none is found and the claim only warns, as before).
+  const pid = o.agent === 'claude' ? Number(process.env.CLAUDE_PID) : aiProcessPid([o.agent]) ?? NaN;
   const set = await workerFetch<SetResp>('/worknote/set', {
     method: 'POST',
     // enrich_from_observations: let the worker swap this generic `what` for the session's latest observation

@@ -37,7 +37,7 @@ export interface WorkNote {
                         // files resolved into. Absent for plain file-claims (relative globs, scratchpad paths).
   branch?: string;      // the repo's current branch at claim time, when repo_root is set.
   is_dirty?: boolean;   // whether the working tree had uncommitted changes at claim time, when repo_root is set.
-  pid?: number;         // the Claude Code process id (CLAUDE_PID), sent by its PreToolUse hook. Only claims that carry one
+  pid?: number;         // the AI CLI process id (Claude's CLAUDE_PID; Codex's or Gemini's from /proc), sent by the hook and MCP. Only claims that carry one
                         // take part in the edit guard (guardContested): a claim whose process has exited is released, and
                         // one from the SAME process (after /clear or a resume, which change the session id) is the caller's.
   // ── COMPUTED ON READ, NEVER STORED ──────────────────────────────────────────────────────────────
@@ -256,9 +256,10 @@ export function overlapsAgainst(mineFiles: string[], others: WorkNote[], exclude
 // ── THE EDIT GUARD (guard 2, 2026-09-30) ────────────────────────────────────────────────────────────────────────
 // Two sessions in one checkout each deployed over the other while the board only warned. A LIVE claim now blocks
 // another session's write to the same file; a stale one (no edit for STALE_AFTER_MS) only warns.
-// ponytail: Claude Code only. Both sides must carry a `pid` (Claude's PreToolUse hook sends CLAUDE_PID). Codex and
-// Gemini hooks run under a different session id from their MCP server's, and nothing here pairs the two, so enforcing
-// on them would block a session with its own work_set claim. They get claims and warnings, never a deny.
+// Both sides must carry a `pid`, the AI CLI process: Claude's hook sends CLAUDE_PID, a Codex or Gemini hook and MCP
+// server find theirs in /proc (aiProcessPid). Their hook and MCP claims run under different session ids; the shared pid
+// pairs them. ponytail: Linux only for Codex and Gemini; off Linux they send no pid and get claims and warnings, never
+// a deny.
 
 export interface GuardHolder { session_id: string; agent: string; what: string; age_s: number; files: string[] }
 export interface GuardCaller {
@@ -271,7 +272,7 @@ export interface GuardCaller {
 
 /** Which of `touched` (this call's new files) a LIVE claim of ANOTHER session holds. `contested` is what the caller must
  *  not write; `overridden` is what it may write only because the user typed `override: <file>`. Exempt: a caller or a
- *  holder without a pid (not Claude Code), the same process, a holder whose process has exited, a file the caller already
+ *  holder without a pid (no AI process found), the same process, a holder whose process has exited, a file the caller already
  *  held (both then hold it, so neither is blocked and both keep the advisory), whole-repo globs, stale claims. `others`
  *  must be decorateStaleness()d. Cheap when nothing matches: pids and the override are only consulted on a raw hit. */
 export function guardContested(touched: string[], others: WorkNote[], caller: GuardCaller, pidAlive: (pid: number) => boolean):

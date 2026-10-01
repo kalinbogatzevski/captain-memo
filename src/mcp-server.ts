@@ -13,6 +13,7 @@ import { DEFAULT_WORKER_PORT } from './shared/paths.ts';
 import { loadWorkerEnv } from './shared/worker-env.ts';
 import { VERSION } from './shared/version.ts';
 import { resolveProjectId, absoluteClaimFiles } from './hooks/shared.ts';
+import { aiProcessPid } from './shared/ai-process.ts';
 
 // Lives in hooks/shared.ts so the UserPromptSubmit hook (`override: <file>`) can use it without importing this module.
 export { absoluteClaimFiles };
@@ -74,6 +75,9 @@ export function liveSessionId(
 }
 
 const sessionIdNow = liveSessionId(PROCESS_SESSION_ID);
+
+/** The AI CLI process this server runs under: the claude parent (see liveSessionId), else a Codex or Gemini ancestor. */
+const hostAiPid = (): number | undefined => (process.env.CLAUDE_CODE_SESSION_ID ? process.ppid : aiProcessPid(['codex', 'gemini']));
 
 async function workerPost(base: string, path: string, body: unknown): Promise<unknown> {
   const res = await fetch(`${base}${path}`, {
@@ -259,7 +263,7 @@ export const TOOLS = [
   {
     name: 'work_set',
     description:
-      'Coordination board: publish or refresh a transient claim that YOU are working on something right now, then immediately get back any OTHER active sessions on this machine that overlap yours by TOPIC, by FILES, or by MEANING. Call this before diving into a codebase area, and re-call periodically (it is a heartbeat that keeps the lease alive). Other AI sessions on this machine (Claude, Codex, Gemini, Cursor all share one captain) see your claim at once. ALWAYS pass `topics`: 1–5 short tags for WHAT the work is about ("billing-rounding", "installer-windows") — two sessions on one topic are the collision that matters, whatever files they touch; a claim without topics is untitled work. Pass `agent` so the claim reads "codex on this captain", and `files` as EVERY file you will write or deploy, as absolute paths (a relative path is resolved against the repository root of this session). Claims are leases that auto-expire (default 30 min) so a crashed session never blocks an area. A LIVE Claude Code claim on this machine BLOCKS edits and uploads of the same files by other Claude Code sessions (the hook refuses them; only the user can lift that by typing `override: <file>`); a stale claim only warns. Returns { session_id, topics, overlaps[], semantic }: each overlap says `kind` (topics | files | semantic | repo) and what is shared, and one with `stale: true` (and `age_s`) is a peer with no recent edit, not necessarily ended (it may only be reading or testing): never edit or deploy over it, stop and tell the user which session holds it; `semantic.degraded` true means the meaning-match half is currently off (embedder down) — then topic and file overlap are all you have, say so if you rely on it.',
+      'Coordination board: publish or refresh a transient claim that YOU are working on something right now, then immediately get back any OTHER active sessions on this machine that overlap yours by TOPIC, by FILES, or by MEANING. Call this before diving into a codebase area, and re-call periodically (it is a heartbeat that keeps the lease alive). Other AI sessions on this machine (Claude, Codex, Gemini, Cursor all share one captain) see your claim at once. ALWAYS pass `topics`: 1–5 short tags for WHAT the work is about ("billing-rounding", "installer-windows") — two sessions on one topic are the collision that matters, whatever files they touch; a claim without topics is untitled work. Pass `agent` so the claim reads "codex on this captain", and `files` as EVERY file you will write or deploy, as absolute paths (a relative path is resolved against the repository root of this session). Claims are leases that auto-expire (default 30 min) so a crashed session never blocks an area. A LIVE claim on this machine BLOCKS edits and uploads of the same files by other sessions (the hook refuses them; only the user can lift that by typing `override: <file>`); a stale claim, or a Codex or Gemini claim off Linux, only warns. Returns { session_id, topics, overlaps[], semantic }: each overlap says `kind` (topics | files | semantic | repo) and what is shared, and one with `stale: true` (and `age_s`) is a peer with no recent edit, not necessarily ended (it may only be reading or testing): never edit or deploy over it, stop and tell the user which session holds it; `semantic.degraded` true means the meaning-match half is currently off (embedder down) — then topic and file overlap are all you have, say so if you rely on it.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -455,10 +459,11 @@ export async function dispatchTool(
       case 'work_set': {
         const a = (args ?? {}) as { session_id?: string; files?: unknown };
         // Under Claude Code this server's parent IS the claude process (see liveSessionId), whose pid its PreToolUse hook
-        // sends as CLAUDE_PID. Stamping it here keeps a work_set claim a guarded (pid-carrying) one; without it every
-        // work_set heartbeat dropped the pid and the claim only warned until the next edit. Set after `...a`: the
+        // sends as CLAUDE_PID; under Codex or Gemini it is the CLI process their hook finds the same way (aiProcessPid).
+        // Stamping it here keeps a work_set claim a guarded (pid-carrying) one paired with the hook's claim; without it
+        // every work_set heartbeat dropped the pid and the claim only warned until the next edit. Set after `...a`: the
         // model cannot choose it.
-        const pid = { pid: process.env.CLAUDE_CODE_SESSION_ID ? process.ppid : undefined };   // undefined drops a model-sent pid
+        const pid = { pid: hostAiPid() };   // undefined drops a model-sent pid
         const files = Array.isArray(a.files) ? absoluteClaimFiles(a.files, cwd()) : undefined;
         // The edit guard applies to a declared claim too: without it a session could work_set a file a live session holds
         // and then, "already holding" it, edit past the block. A file a live session holds is left out of the claim and
@@ -499,7 +504,7 @@ export async function dispatchTool(
         const a = (args ?? {}) as { session_id?: string };
         // `by` = the caller: the worker clears only the caller's own session (a session the edit guard blocked could
         // otherwise clear the holder and write anyway).
-        result = await workerPost(workerBase, '/worknote/clear', { session_id: a.session_id || sessionId, by: sessionId });
+        result = await workerPost(workerBase, '/worknote/clear', { session_id: a.session_id || sessionId, by: sessionId, pid: hostAiPid() });
         break;
       }
       default: throw new Error(`unknown tool: ${name}`);

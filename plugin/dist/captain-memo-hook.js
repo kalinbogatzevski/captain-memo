@@ -1508,7 +1508,7 @@ init_paths();
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.51.0",
+  version: "0.51.1",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -2956,6 +2956,31 @@ function globsOverlap(aGlobs, bGlobs) {
   return hits;
 }
 
+// src/shared/ai-process.ts
+import { readFileSync as readFileSync10 } from "fs";
+import { basename as basename2 } from "path";
+var MAX_DEPTH = 8;
+var name = (arg) => arg ? basename2(arg).replace(/\.[cm]?js$/, "") : "";
+function aiProcessPid(agents, start = process.ppid, root = "/proc", platform = process.platform) {
+  if (platform !== "linux")
+    return;
+  let pid = start;
+  for (let i = 0;i < MAX_DEPTH && pid > 1; i++) {
+    try {
+      const comm = readFileSync10(`${root}/${pid}/comm`, "utf8").trim();
+      const argv = readFileSync10(`${root}/${pid}/cmdline`, "utf8").split("\x00");
+      const script = argv.slice(1).find((a) => a !== "" && !a.startsWith("-"));
+      if (agents.some((a) => comm === a || name(argv[0]) === a || name(script) === a))
+        return pid;
+      const stat = readFileSync10(`${root}/${pid}/stat`, "utf8");
+      pid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+    } catch {
+      return;
+    }
+  }
+  return;
+}
+
 // src/hooks/pre-tool-use.ts
 import { resolve as resolve9, dirname as dirname4 } from "path";
 var HOOK_TIMEOUT_MS3 = Number(process.env.CAPTAIN_MEMO_PRE_TOOL_USE_TIMEOUT_MS ?? 1500);
@@ -3001,7 +3026,7 @@ async function publishClaim(sid, cwd, touched, o) {
       advisories.push(...res.nudges);
     }
   }
-  const pid = o.agent === "claude" ? Number(process.env.CLAUDE_PID) : NaN;
+  const pid = o.agent === "claude" ? Number(process.env.CLAUDE_PID) : aiProcessPid([o.agent]) ?? NaN;
   const set = await workerFetch("/worknote/set", {
     method: "POST",
     body: {

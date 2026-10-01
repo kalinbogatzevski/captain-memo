@@ -12828,7 +12828,7 @@ function customAlphabet(alphabet, size = 21) {
 }
 
 // src/mcp-server.ts
-import { readFileSync as readFileSync2 } from "fs";
+import { readFileSync as readFileSync3 } from "fs";
 import { join as join3 } from "path";
 import { homedir as homedir3 } from "os";
 
@@ -12893,7 +12893,7 @@ function loadWorkerEnv() {
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.51.0",
+  version: "0.51.1",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -13011,6 +13011,31 @@ function absoluteClaimFiles(files, cwd) {
   return files.map((f) => typeof f === "string" && !isAbsolute(f) ? resolve(base, f.trim() === "" || f.trim() === "." ? "**" : f) + (/[\\/]$/.test(f) ? "/" : "") : f);
 }
 
+// src/shared/ai-process.ts
+import { readFileSync as readFileSync2 } from "fs";
+import { basename } from "path";
+var MAX_DEPTH = 8;
+var name = (arg) => arg ? basename(arg).replace(/\.[cm]?js$/, "") : "";
+function aiProcessPid(agents, start = process.ppid, root = "/proc", platform = process.platform) {
+  if (platform !== "linux")
+    return;
+  let pid = start;
+  for (let i = 0;i < MAX_DEPTH && pid > 1; i++) {
+    try {
+      const comm = readFileSync2(`${root}/${pid}/comm`, "utf8").trim();
+      const argv = readFileSync2(`${root}/${pid}/cmdline`, "utf8").split("\x00");
+      const script = argv.slice(1).find((a) => a !== "" && !a.startsWith("-"));
+      if (agents.some((a) => comm === a || name(argv[0]) === a || name(script) === a))
+        return pid;
+      const stat = readFileSync2(`${root}/${pid}/stat`, "utf8");
+      pid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+    } catch {
+      return;
+    }
+  }
+  return;
+}
+
 // src/mcp-server.ts
 loadWorkerEnv();
 var WORKER_BASE2 = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
@@ -13021,7 +13046,7 @@ function resolveWorkBoardSessionId(env = process.env) {
 var PROCESS_SESSION_ID = resolveWorkBoardSessionId();
 function readClaudeSessionId(pid) {
   const base = process.env.CLAUDE_CONFIG_DIR ?? join3(homedir3(), ".claude");
-  const d = JSON.parse(readFileSync2(join3(base, "sessions", `${pid}.json`), "utf8"));
+  const d = JSON.parse(readFileSync3(join3(base, "sessions", `${pid}.json`), "utf8"));
   return typeof d.sessionId === "string" && d.sessionId ? d.sessionId : null;
 }
 function liveSessionId(fallback, env = process.env, read = readClaudeSessionId, ppid = process.ppid, now = Date.now) {
@@ -13041,6 +13066,7 @@ function liveSessionId(fallback, env = process.env, read = readClaudeSessionId, 
   };
 }
 var sessionIdNow = liveSessionId(PROCESS_SESSION_ID);
+var hostAiPid = () => process.env.CLAUDE_CODE_SESSION_ID ? process.ppid : aiProcessPid(["codex", "gemini"]);
 async function workerPost(base, path, body) {
   const res = await fetch(`${base}${path}`, {
     method: "POST",
@@ -13222,7 +13248,7 @@ var TOOLS = [
   },
   {
     name: "work_set",
-    description: 'Coordination board: publish or refresh a transient claim that YOU are working on something right now, then immediately get back any OTHER active sessions on this machine that overlap yours by TOPIC, by FILES, or by MEANING. Call this before diving into a codebase area, and re-call periodically (it is a heartbeat that keeps the lease alive). Other AI sessions on this machine (Claude, Codex, Gemini, Cursor all share one captain) see your claim at once. ALWAYS pass `topics`: 1\u20135 short tags for WHAT the work is about ("billing-rounding", "installer-windows") \u2014 two sessions on one topic are the collision that matters, whatever files they touch; a claim without topics is untitled work. Pass `agent` so the claim reads "codex on this captain", and `files` as EVERY file you will write or deploy, as absolute paths (a relative path is resolved against the repository root of this session). Claims are leases that auto-expire (default 30 min) so a crashed session never blocks an area. A LIVE Claude Code claim on this machine BLOCKS edits and uploads of the same files by other Claude Code sessions (the hook refuses them; only the user can lift that by typing `override: <file>`); a stale claim only warns. Returns { session_id, topics, overlaps[], semantic }: each overlap says `kind` (topics | files | semantic | repo) and what is shared, and one with `stale: true` (and `age_s`) is a peer with no recent edit, not necessarily ended (it may only be reading or testing): never edit or deploy over it, stop and tell the user which session holds it; `semantic.degraded` true means the meaning-match half is currently off (embedder down) \u2014 then topic and file overlap are all you have, say so if you rely on it.',
+    description: 'Coordination board: publish or refresh a transient claim that YOU are working on something right now, then immediately get back any OTHER active sessions on this machine that overlap yours by TOPIC, by FILES, or by MEANING. Call this before diving into a codebase area, and re-call periodically (it is a heartbeat that keeps the lease alive). Other AI sessions on this machine (Claude, Codex, Gemini, Cursor all share one captain) see your claim at once. ALWAYS pass `topics`: 1\u20135 short tags for WHAT the work is about ("billing-rounding", "installer-windows") \u2014 two sessions on one topic are the collision that matters, whatever files they touch; a claim without topics is untitled work. Pass `agent` so the claim reads "codex on this captain", and `files` as EVERY file you will write or deploy, as absolute paths (a relative path is resolved against the repository root of this session). Claims are leases that auto-expire (default 30 min) so a crashed session never blocks an area. A LIVE claim on this machine BLOCKS edits and uploads of the same files by other sessions (the hook refuses them; only the user can lift that by typing `override: <file>`); a stale claim, or a Codex or Gemini claim off Linux, only warns. Returns { session_id, topics, overlaps[], semantic }: each overlap says `kind` (topics | files | semantic | repo) and what is shared, and one with `stale: true` (and `age_s`) is a peer with no recent edit, not necessarily ended (it may only be reading or testing): never edit or deploy over it, stop and tell the user which session holds it; `semantic.degraded` true means the meaning-match half is currently off (embedder down) \u2014 then topic and file overlap are all you have, say so if you rely on it.',
     inputSchema: {
       type: "object",
       properties: {
@@ -13382,7 +13408,7 @@ async function dispatchTool(name, args, deps = defaultDispatchDeps()) {
       }
       case "work_set": {
         const a = args ?? {};
-        const pid = { pid: process.env.CLAUDE_CODE_SESSION_ID ? process.ppid : undefined };
+        const pid = { pid: hostAiPid() };
         const files = Array.isArray(a.files) ? absoluteClaimFiles(a.files, cwd()) : undefined;
         result = await workerPost(workerBase, "/worknote/set", {
           ...a,
@@ -13425,7 +13451,7 @@ async function dispatchTool(name, args, deps = defaultDispatchDeps()) {
       }
       case "work_clear": {
         const a = args ?? {};
-        result = await workerPost(workerBase, "/worknote/clear", { session_id: a.session_id || sessionId, by: sessionId });
+        result = await workerPost(workerBase, "/worknote/clear", { session_id: a.session_id || sessionId, by: sessionId, pid: hostAiPid() });
         break;
       }
       default:

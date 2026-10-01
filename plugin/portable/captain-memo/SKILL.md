@@ -70,9 +70,9 @@ in different files:
   `work_clear()` once your change is committed and deployed, not before; re-`work_set` after a long pause.
   `work_active()` lists the live claims and `topic_contention` (every topic two or
   more sessions hold, with who).
-- Claude Code, Codex and Gemini auto-claim the files they edit. A live Claude Code claim blocks another Claude Code
-  session's edit or upload of that file (only the user lifts it, by typing `override: <file>`); on Codex and Gemini
-  it only warns. On other CLIs nothing claims for you. State intent yourself.
+- Claude Code, Codex and Gemini auto-claim the files they edit. A live claim blocks another session's edit or
+  upload of that file (only the user lifts it, by typing `override: <file>`); on Codex and Gemini off Linux it only
+  warns. On other CLIs nothing claims for you. State intent yourself.
 
 ## Homework — ideas for later
 

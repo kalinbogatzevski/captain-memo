@@ -1,6 +1,6 @@
 // Guard 2 (2026-09-30): two sessions in one checkout each overwrote the other's uncommitted work while the board only
-// warned. /worknote/set with `enforce` now refuses a file a LIVE Claude Code claim (one carrying a pid) of another
-// session holds, and the refused file never enters the caller's claim. Stale, pid-less (Codex, Gemini), same-pid,
+// warned. /worknote/set with `enforce` now refuses a file a LIVE claim carrying an AI process pid of another
+// session holds, and the refused file never enters the caller's claim. Stale, pid-less (Codex, Gemini off Linux), same-pid,
 // dead-pid, already-held, overridden and whole-repo holders do not block. work_set and /worknote/clear act only on the
 // caller's own session.
 import { test, expect, beforeAll, afterAll, setSystemTime } from 'bun:test';
@@ -37,7 +37,7 @@ const post = async <T = SetR>(path: string, body: unknown): Promise<{ status: nu
   return { status: r.status, body: (await r.json()) as T };
 };
 /** A Claude hook edit: files = what it already held + touched (as the hook sends it), enforce on, a live pid unless
- *  the case says otherwise (`pid: undefined` = a Codex or Gemini hook, which sends none). */
+ *  the case says otherwise (`pid: undefined` = a Codex or Gemini hook off Linux, which sends none). */
 const CALLER_PID = 4_000_001;   // only a HOLDER's pid is liveness-checked; this one just differs from process.pid
 const edit = async (session_id: string, touched: string[], extra: Record<string, unknown> = {}) =>
   (await post('/worknote/set', { session_id, agent: 'claude', what: 'editing', files: touched, touched, enforce: true, enrich_from_observations: true, pid: CALLER_PID, ...extra })).body;
@@ -74,7 +74,7 @@ test('3. the caller already held the file: both hold it, no deny (the deadlock r
   expect(r.deny).toBeUndefined();
 });
 
-test('4. a Codex/Gemini hook (no pid) is never denied, and a pid-less claim (work_set, Codex) never blocks', async () => {
+test('4. a Codex/Gemini hook with no pid (off Linux) is never denied, and a pid-less claim (work_set, Codex) never blocks', async () => {
   await edit('A4', ['/w4/x.php'], { pid: process.pid });
   const r = await edit('H4', ['/w4/x.php'], { agent: 'codex', pid: undefined });
   expect(r.deny).toBeUndefined();
@@ -146,9 +146,19 @@ test('/worknote/clear clears only the caller\'s own session, live or stale', asy
   await edit('A14', ['/w14/x.php'], { pid: 424_242 });
   await edit('A14b', ['/w14/y.php'], { pid: 424_242 });
   expect((await post<{ cleared: boolean }>('/worknote/clear', { session_id: 'A14', by: 'A14b' })).body.cleared).toBe(true);
-  // a pid-less claim (a Codex hook claim, whose MCP id differs) can be cleared by another id: nothing pairs them here
+  // a pid-less claim (off Linux, or an older hook) can be cleared by another id: nothing pairs them
   await edit('A16', ['/w16/x.php'], { pid: undefined });
   expect((await post<{ cleared: boolean }>('/worknote/clear', { session_id: 'A16', by: 'mcp-16' })).body.cleared).toBe(true);
+  // a Codex hook claim carries the codex pid: its own MCP server (another id, the same pid) may clear it, a peer may not
+  await edit('C17', ['/w17/x.php'], { agent: 'codex', pid: 424_243 });
+  expect((await post<{ error?: string }>('/worknote/clear', { session_id: 'C17', by: 'mcp-other', pid: 424_244 })).body.error).toBe('not_your_session');
+  expect((await post<{ cleared: boolean }>('/worknote/clear', { session_id: 'C17', by: 'mcp-17', pid: 424_243 })).body.cleared).toBe(true);
+});
+
+test('a Codex hook and its own MCP server share the codex pid: never blocked by each other, a peer is', async () => {
+  await post('/worknote/set', { session_id: 'mcp-18', agent: 'codex', what: 'fix', files: ['/w18/x.php'], touched: ['/w18/x.php'], enforce: true, pid: process.pid });
+  expect((await edit('C18', ['/w18/x.php'], { agent: 'codex', pid: process.pid })).deny).toBeUndefined();
+  expect((await edit('G18', ['/w18/x.php'], { agent: 'gemini', pid: 999_999_8 })).deny?.files).toEqual(['/w18/x.php']);
 });
 
 test('work_set acts only on the caller\'s own session', async () => {

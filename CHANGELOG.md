@@ -7,6 +7,17 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.51.1] — 2026-10-01
+
+### Changed
+
+- **Codex and Gemini claims now block like Claude's, on Linux.** Their hooks and the captain-memo MCP server now find
+  the Codex or Gemini process they run under and stamp its process id on the work claim, as Claude's claims carry
+  CLAUDE_PID. A live Codex or Gemini claim now blocks another session's edit of the same file, a claim whose Codex or
+  Gemini process has exited counts as released, and `work_set` and `work_clear` act only on the caller's own session:
+  a Codex or Gemini session's hook and MCP server count as one through the shared process id. On macOS and Windows no
+  process id is found, and these claims only warn and stay clearable by anyone, as before.
+
 ## [0.51.0] — 2026-10-01
 
 ### Changed

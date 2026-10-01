@@ -2327,14 +2327,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   };
 
   // work_set / work_clear act only on the CALLER's own session (`by`, sent by the MCP tools): the same id, or the same
-  // Claude process (a /clear or resume changes the id). This build pairs no Codex or Gemini MCP id with its hook id, so
-  // a claim with no pid (a non-Claude claim, which the edit guard never enforces) stays open to any caller: a Codex MCP
-  // can still clear its own hook's claim. Not auth: a raw HTTP caller can still send anything.
-  const callersOwnSession = (by: string, sid: string): boolean => {
+  // AI process (`pid`, sent by the MCP tools, else the caller's stored claim's): a Claude /clear or resume changes the id,
+  // and a Codex or Gemini MCP server's id differs from its hook's. A claim with no pid (off Linux, or an older hook) stays
+  // open to any caller, since nothing pairs it. Not auth: a raw HTTP caller can still send anything.
+  const callersOwnSession = (by: string, sid: string, pid?: unknown): boolean => {
     if (by === sid) return true;
     const target = getWorkNote(meta, sid);
     if (target && typeof target.pid !== 'number') return true;
-    const a = getWorkNote(meta, by)?.pid;
+    const a = typeof pid === 'number' ? pid : getWorkNote(meta, by)?.pid;
     return typeof a === 'number' && a === target?.pid;
   };
   const notYourSession = (sid: string): Response => Response.json({
@@ -2371,7 +2371,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         if (!body || typeof body.session_id !== 'string' || body.session_id.trim() === '') {
           return Response.json({ error: 'invalid_request', details: 'session_id required' }, { status: 400 });
         }
-        if (typeof body.by === 'string' && body.by && !callersOwnSession(body.by, body.session_id)) return notYourSession(body.session_id);
+        if (typeof body.by === 'string' && body.by && !callersOwnSession(body.by, body.session_id, body.pid)) return notYourSession(body.session_id);
         const now = Date.now();
         const setBody = body as SetWorkNoteInput;
         // Enrich a hook-driven generic claim ("editing 3 files") with the session's latest observation TITLE (its
@@ -2527,14 +2527,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         return Response.json({ ok: true, files: override.files, until: override.until, holders: holders.map((h) => h.session_id) });
       }
       if (req.method === 'POST' && url.pathname === '/worknote/clear') {
-        const body = (await req.json().catch(() => null)) as { session_id?: unknown; by?: unknown } | null;
+        const body = (await req.json().catch(() => null)) as { session_id?: unknown; by?: unknown; pid?: unknown } | null;
         if (!body || typeof body.session_id !== 'string' || body.session_id.trim() === '') {
           return Response.json({ error: 'invalid_request', details: 'session_id required' }, { status: 400 });
         }
         // work_clear acts only on the caller's own session (callersOwnSession): a session the edit guard blocked could
         // otherwise clear the holder and write anyway. A missing `by` is a legacy caller (an MCP server started before this
         // change): refusing it would stop that session clearing its OWN claim, and a raw HTTP caller could bypass this anyway.
-        if (typeof body.by === 'string' && body.by && !callersOwnSession(body.by, body.session_id)) return notYourSession(body.session_id);
+        if (typeof body.by === 'string' && body.by && !callersOwnSession(body.by, body.session_id, body.pid)) return notYourSession(body.session_id);
         // A clear that did nothing must SAY it did nothing: this returned {ok:true} unconditionally, so a caller
         // clearing a claim this captain does not hold was told it had worked and found it still there on the next read.
         if (clearWorkNote(meta, body.session_id)) return Response.json({ ok: true, cleared: true });
