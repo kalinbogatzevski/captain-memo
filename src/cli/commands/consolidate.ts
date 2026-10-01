@@ -13,6 +13,7 @@
 
 import { DEFAULT_WORKER_PORT } from '../../shared/paths.ts';
 import { cyan, cyanBold, dim, gold, green, red } from '../../shared/ansi.ts';
+import { workerAuthHeaders } from '../../shared/worker-auth.ts';
 
 const HELP = `captain-memo consolidate — run a consolidation pass now, skipping the idle wait
 
@@ -65,7 +66,7 @@ async function awaitRuns(
     await new Promise(r => setTimeout(r, 2000));
     let stats: { qm?: { last_run: QmRun | null }; semantic?: { last_run: QmRun | null }; theme?: { last_run: QmRun | null } };
     try {
-      const r = await fetch(`http://127.0.0.1:${port}/stats`, { signal: AbortSignal.timeout(15_000) });
+      const r = await fetch(`http://127.0.0.1:${port}/stats`, { headers: workerAuthHeaders(), signal: AbortSignal.timeout(15_000) });
       stats = await r.json() as typeof stats;
     } catch { continue; }        // a busy worker may refuse a read mid-pass; just try again
     for (const name of [...pending]) {
@@ -118,7 +119,7 @@ export async function consolidateCommand(args: string[]): Promise<number> {
     // A forced pass is a whole-corpus scan plus, for themes, a model call per cluster. Bun's
     // default fetch timeout cut this off long before the worker finished and reported the
     // connection as unreachable — which reads as "the worker is down" when it is mid-work.
-    res = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(30_000) });
+    res = await fetch(url, { method: 'POST', headers: workerAuthHeaders(), signal: AbortSignal.timeout(30_000) });
   } catch (err) {
     // Name the failure. "Unreachable" swallowed a timeout and a connection reset alike, which
     // sent me looking for a dead worker that was in fact mid-pass.

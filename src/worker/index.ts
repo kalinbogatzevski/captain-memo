@@ -114,6 +114,7 @@ import { countTokens } from '../shared/tokens.ts';
 import { looksLikeCredential, redactSecrets } from '../shared/redact-secrets.ts';
 import { VERSION } from '../shared/version.ts';
 import { EDITION } from '../shared/edition.ts';
+import { withAuthReport, bootWorkerAuthGate } from '../shared/worker-auth.ts';
 
 // Recursive directory size in bytes. Returns 0 for missing dirs (fail-open
 // for /stats — better an under-counted disk number than a 500 response).
@@ -3801,11 +3802,13 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     };
   }
 
+  // Worker auth (#229) at the listener only: engine threads call `handler` with serialized requests and no token.
+  const authGate = bootWorkerAuthGate();
   const server = Bun.serve({
     port: opts.port,
-    // Loopback ONLY — the unauthenticated worker API must never be reachable off-box.
+    // Loopback ONLY — the worker API must never be reachable off-box.
     hostname: '127.0.0.1',
-    fetch: handler,
+    fetch: async (req) => authGate.check(req) ?? withAuthReport(req, await handler(req), authGate),
   });
   const resolvedPort = server.port ?? opts.port;
 

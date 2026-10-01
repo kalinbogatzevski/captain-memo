@@ -24,6 +24,7 @@ overriding.
 |---|---|
 | `~/.config/captain-memo/worker.env` | The operator file. `KEY=value` per line, `#` comments. Read by the worker at startup. |
 | Process environment | Anything exported before launching the worker or CLI wins the same way. |
+| `~/.config/captain-memo/worker.token` | The secret the worker's local HTTP API asks for. Created by the worker on first start, readable by you only. Not a setting: never edit or share it. Delete it and restart the worker to change it. |
 | `~/.captain-memo/` | Data, not config: the SQLite databases, vectors, and audit log. Move it with `CAPTAIN_MEMO_DATA_DIR`. |
 
 Changes take effect on worker restart:
@@ -183,6 +184,28 @@ one recall re-floats it. Rows that were ever drilled into, or explicitly anchore
 | `CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS` | `21600000` (6h) | Minimum gap between update checks. |
 | `CAPTAIN_MEMO_DISABLE_SELF_HEAL` | OFF | `1` stops the hook repairing a broken install. |
 | `CAPTAIN_MEMO_ENABLE_TEST_ENDPOINTS` | OFF | `1` exposes `/test/*`. Never set in production. |
+| `CAPTAIN_MEMO_WORKER_AUTH` | `warn` | `enforce` refuses every call without the worker token. See below. |
+
+**Worker API authentication.** The worker listens on 127.0.0.1 only, but any program on the machine can
+reach that address. So every call except `GET /health` must carry the secret from
+`~/.config/captain-memo/worker.token` in the `x-captain-memo-worker-token` header. The hooks, the MCP
+server, the CLI and `captain-memo doctor` send it for you. A wrong token is always refused (401).
+
+A session that was already running when you upgraded keeps its old hooks and MCP server, which send no
+token. So by default (`warn`) a call with no token is still answered, and the worker logs it once an hour
+per route. `captain-memo doctor` lists the routes still called without a token in the last 24 hours.
+Restart those sessions. Once doctor shows none, set `CAPTAIN_MEMO_WORKER_AUTH=enforce` in worker.env and
+restart the worker. From then on a call with no token is refused too.
+
+To call the API yourself, send the header without putting the token on the command line, where other
+users can see it:
+
+```bash
+{ printf 'x-captain-memo-worker-token: '; cat ~/.config/captain-memo/worker.token; } \
+  | curl -s -H @- http://127.0.0.1:39888/stats
+```
+
+What the token does not stop: any program running as you can read the file.
 
 ### Embedder (client side)
 

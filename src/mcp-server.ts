@@ -14,6 +14,7 @@ import { loadWorkerEnv } from './shared/worker-env.ts';
 import { VERSION } from './shared/version.ts';
 import { resolveProjectId, absoluteClaimFiles } from './hooks/shared.ts';
 import { aiProcessPid } from './shared/ai-process.ts';
+import { workerAuthHeaders } from './shared/worker-auth.ts';
 
 // Lives in hooks/shared.ts so the UserPromptSubmit hook (`override: <file>`) can use it without importing this module.
 export { absoluteClaimFiles };
@@ -82,7 +83,7 @@ const hostAiPid = (): number | undefined => (process.env.CLAUDE_CODE_SESSION_ID 
 async function workerPost(base: string, path: string, body: unknown): Promise<unknown> {
   const res = await fetch(`${base}${path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...workerAuthHeaders() },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -446,7 +447,7 @@ export async function dispatchTool(
           cwd,
         });
       case 'stats': {
-        const res = await fetch(`${workerBase}/stats`);
+        const res = await fetch(`${workerBase}/stats`, { headers: workerAuthHeaders() });
         if (!res.ok) throw new Error(`worker /stats returned ${res.status}`);
         result = await res.json();
         break;
@@ -482,7 +483,7 @@ export async function dispatchTool(
       }
       case 'todo_list': {
         const a = (args ?? {}) as { status?: string };
-        const res = await fetch(`${workerBase}/homework/list?status=${encodeURIComponent(a.status ?? 'open')}`);
+        const res = await fetch(`${workerBase}/homework/list?status=${encodeURIComponent(a.status ?? 'open')}`, { headers: workerAuthHeaders() });
         if (!res.ok) throw new Error(`worker /homework/list returned ${res.status}`);
         result = await res.json();
         break;
@@ -495,7 +496,7 @@ export async function dispatchTool(
       case 'work_active': {
         const a = (args ?? {}) as { session_id?: string };
         const q = new URLSearchParams({ session_id: a.session_id || sessionId });
-        const res = await fetch(`${workerBase}/worknote/active?${q.toString()}`);
+        const res = await fetch(`${workerBase}/worknote/active?${q.toString()}`, { headers: workerAuthHeaders() });
         if (!res.ok) throw new Error(`worker /worknote/active returned ${res.status}`);
         result = await res.json();
         break;

@@ -112,7 +112,8 @@ systemctl --user start captain-memo-worker
 ok "worker started"
 echo "  waiting 10s for initial re-index of memory channel..."
 sleep 10
-RESP=$(curl -s --max-time 5 http://127.0.0.1:39888/stats 2>/dev/null || echo '{}')
+# /stats needs the worker token (#229), piped as a header file so it never shows on argv.
+RESP=$({ printf 'x-captain-memo-worker-token: '; cat "${CAPTAIN_MEMO_CONFIG_DIR:-$HOME/.config/captain-memo}/worker.token" 2>/dev/null; } | curl -s --max-time 5 -H @- http://127.0.0.1:39888/stats 2>/dev/null || echo '{}')
 TOTAL=$(echo "$RESP" | python3 -c "import json,sys; r=json.loads(sys.stdin.read() or '{}'); print(r.get('total_chunks','?'))" 2>/dev/null || echo '?')
 ok "worker /stats: total_chunks=$TOTAL (should grow to ~275 as it re-indexes)"
 

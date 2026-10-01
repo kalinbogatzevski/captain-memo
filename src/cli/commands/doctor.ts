@@ -29,6 +29,7 @@ import { decideWorkerDrift, pickUpgradeTarget, parseRemoteCandidates } from '../
 import { compareSemver } from '../../shared/self-update.ts';
 import { describeSessionOf, readLivePluginPins, readPluginManifest } from '../../shared/plugin-cache.ts';
 import { geminiHooksToggleRejected } from '../cross-ai.ts';
+import { WORKER_TOKEN_PATH, readWorkerToken, workerAuthHeaders, type TokenlessRow } from '../../shared/worker-auth.ts';
 
 // Lookup a single key from worker.env (CONFIG_DIR per platform, then the /etc
 // system-mode fallback on Linux — workerEnvPaths() supplies the right list).
@@ -71,10 +72,12 @@ function svcMode(name: string): 'user' | 'system' | null {
 // Cross-platform HTTP probe (replaces the old `curl` shell-out). Returns the
 // parsed JSON body on success; { ok:false } on connection refused / timeout /
 // non-2xx / unparseable body.
-async function fetchJson(url: string, timeoutMs = 3000): Promise<{ ok: boolean; body: unknown }> {
+async function fetchJson(url: string, timeoutMs = 3000): Promise<{ ok: boolean; body: unknown; status?: number }> {
   try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
-    if (!r.ok) return { ok: false, body: null };
+    // The worker token goes to the worker only, never to the embedder this also probes.
+    const headers = url.startsWith(`http://127.0.0.1:${WORKER_PORT}/`) ? workerAuthHeaders() : {};
+    const r = await fetch(url, { headers, signal: AbortSignal.timeout(timeoutMs) });
+    if (!r.ok) return { ok: false, body: null, status: r.status };
     const text = await r.text();
     try { return { ok: true, body: JSON.parse(text) }; }
     catch { return { ok: false, body: text }; }
@@ -308,6 +311,35 @@ async function checkWorkerVersion(): Promise<void> {
   if (raw === null) return; // worker unreachable / no version — the `worker service` check owns that
   const v = decideWorkerDrift(raw, VERSION);
   record({ name: 'worker version', status: v.status, detail: v.detail, ...(v.remedy ? { remedy: v.remedy } : {}) });
+}
+
+/** Worker auth (#229): is the token file there and owner-only, did doctor's own token pass, and which callers
+ *  still come without one (warn mode serves them; enforce mode would refuse them). Pure, for the tests. */
+export function workerAuthVerdict(p: {
+  token: boolean; looseMode: boolean; statsStatus: number | null;
+  report?: { mode: string; armed: boolean; tokenless: Record<string, TokenlessRow> } | null; now: number;
+}): Check {
+  const name = 'worker auth';
+  if (!p.token) return { name, status: 'FAIL', detail: `no readable token at ${WORKER_TOKEN_PATH}`, remedy: 'restart the worker: it creates the file on start (and logs why when it cannot)' };
+  if (p.looseMode) return { name, status: 'WARN', detail: `${WORKER_TOKEN_PATH} is readable by other users`, remedy: `chmod 600 ${WORKER_TOKEN_PATH} (the worker also tightens it on start)` };
+  if (p.statsStatus === 401 || p.statsStatus === 503) return { name, status: 'FAIL', detail: `the worker refused doctor's token (HTTP ${p.statsStatus})`, remedy: 'restart the worker so it reads the current token file' };
+  if (!p.report) return { name, status: 'PASS', detail: 'token file present and owner-only (this worker does not report tokenless calls)' };
+  if (!p.report.armed) return { name, status: 'FAIL', detail: 'the worker runs without a token (it could not create or read the file)', remedy: 'see the [worker-auth] line in the worker log' };
+  const recent = Object.entries(p.report.tokenless).filter(([, r]) => p.now - r.last_at < 86_400_000);
+  if (p.report.mode === 'enforce') return { name, status: 'PASS', detail: 'enforced: every call except /health needs the token' };
+  if (recent.length === 0) return { name, status: 'PASS', detail: 'warn mode, and no tokenless call in the last 24 h', remedy: 'safe to set CAPTAIN_MEMO_WORKER_AUTH=enforce in worker.env and restart the worker' };
+  const list = recent.sort((a, b) => b[1].last_at - a[1].last_at).slice(0, 5).map(([k, r]) => `${k} x${r.count}`).join(', ');
+  return { name, status: 'WARN', detail: `warn mode: ${recent.length} route(s) still called without a token in the last 24 h (${list})`, remedy: 'restart the Claude/Codex/Gemini sessions and tools started before this upgrade, then re-run doctor' };
+}
+
+async function checkWorkerAuth(): Promise<void> {
+  const token = readWorkerToken() !== null;
+  let looseMode = false;
+  try { looseMode = process.platform !== 'win32' && (statSync(WORKER_TOKEN_PATH).mode & 0o077) !== 0; } catch { /* missing: token=false says so */ }
+  const s = await fetchJson(`http://127.0.0.1:${WORKER_PORT}/stats`);
+  if (!s.ok && s.status === undefined) return;   // worker unreachable: the `worker service` check owns that
+  const report = s.ok ? (s.body as { worker_auth?: Parameters<typeof workerAuthVerdict>[0]['report'] }).worker_auth ?? null : null;
+  record(workerAuthVerdict({ token, looseMode, statsStatus: s.ok ? null : s.status ?? null, report, now: Date.now() }));
 }
 
 async function checkVectorDim(): Promise<void> {
@@ -1108,6 +1140,7 @@ export async function doctorCommand(_args: string[]): Promise<number> {
   await checkWorker();
   await checkEmbedder();
   await checkWorkerVersion();
+  await checkWorkerAuth();
   await checkVectorDim();
   await checkCapture();
   checkCheckout();

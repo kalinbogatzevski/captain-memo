@@ -8,6 +8,7 @@
 // re-probe /health a couple of times and only reclaim if it stays unreachable.
 // (Field 2026-06-02: a single Voyage-induced /inject/context timeout was
 // force-killing a healthy worker on every prompt → a restart-thrash cascade.)
+import { workerAuthHeaders } from './worker-auth.ts';
 
 /** True iff the worker answers GET /health with {"healthy":true} within timeoutMs. */
 export async function probeHealthOnce(port: number, timeoutMs = 3000): Promise<boolean> {
@@ -53,7 +54,7 @@ async function readJson(port: number, path: string, timeoutMs: number, okOnly: b
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeoutMs);
   try {
-    const r = await fetch(`http://127.0.0.1:${port}${path}`, { signal: ctl.signal });
+    const r = await fetch(`http://127.0.0.1:${port}${path}`, { headers: workerAuthHeaders(), signal: ctl.signal });
     if (okOnly && !r.ok) return null;
     return await r.json().catch(() => null);
   } catch {

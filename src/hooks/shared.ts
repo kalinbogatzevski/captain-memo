@@ -16,6 +16,7 @@ import { fileURLToPath } from 'url';
 import { DEFAULT_WORKER_PORT } from '../shared/paths.ts';
 import { detectRepoRootSync } from '../worker/branch.ts';
 import { workerEnvLoadedKeys } from '../shared/worker-env.ts';
+import { workerAuthHeaders } from '../shared/worker-auth.ts';
 
 const HOOK_LOG_DIR = join(homedir(), '.captain-memo', 'logs');
 const HOOK_LOG_FILE = join(HOOK_LOG_DIR, 'hook.log');
@@ -120,9 +121,9 @@ export async function workerFetch<T>(
     const init: RequestInit = {
       method: opts.method ?? 'GET',
       signal: controller.signal,
+      headers: { ...workerAuthHeaders(), ...(opts.body !== undefined ? { 'content-type': 'application/json' } : {}) },
     };
     if (opts.body !== undefined) {
-      init.headers = { 'content-type': 'application/json' };
       init.body = JSON.stringify(opts.body);
     }
     const res = await fetch(`${WORKER_BASE}${path}`, init);

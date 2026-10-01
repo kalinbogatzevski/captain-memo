@@ -1,9 +1,10 @@
 import { DEFAULT_WORKER_PORT } from '../shared/paths.ts';
+import { workerAuthHeaders } from '../shared/worker-auth.ts';
 
 const BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
 
 export async function workerGet(path: string): Promise<unknown> {
-  const res = await fetch(`${BASE}${path}`);
+  const res = await fetch(`${BASE}${path}`, { headers: workerAuthHeaders() });
   if (!res.ok) throw new Error(`${path} → ${res.status}: ${await res.text()}`);
   return res.json();
 }
@@ -11,7 +12,7 @@ export async function workerGet(path: string): Promise<unknown> {
 export async function workerPost(path: string, body: unknown): Promise<unknown> {
   const res = await fetch(`${BASE}${path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...workerAuthHeaders() },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`${path} → ${res.status}: ${await res.text()}`);
@@ -22,7 +23,7 @@ export async function workerPost(path: string, body: unknown): Promise<unknown> 
  *  absent/unreachable. Lets optional panels degrade silently. */
 export async function workerGetOptional(path: string, timeoutMs?: number): Promise<unknown | null> {
   try {
-    const res = await fetch(`${BASE}${path}`, timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : undefined);
+    const res = await fetch(`${BASE}${path}`, { headers: workerAuthHeaders(), ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}) });
     if (!res.ok) return null;
     return await res.json();
   } catch {

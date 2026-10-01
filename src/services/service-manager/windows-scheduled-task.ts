@@ -32,6 +32,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import type { ServiceManager, ServiceSpec, ServiceState, StopOptions } from './types.ts';
 import { DEFAULT_WORKER_PORT } from '../../shared/paths.ts';
+import { workerAuthHeaders } from '../../shared/worker-auth.ts';
 
 // --- PowerShell quoting -----------------------------------------------------
 // PowerShell single-quoted strings are literal; the only escape is a doubled
@@ -342,7 +343,7 @@ class WindowsScheduledTaskServiceManager implements ServiceManager {
       const ctl = new AbortController();
       const t = setTimeout(() => ctl.abort(), 3_000);
       try {
-        await fetch(`http://127.0.0.1:${port}/shutdown`, { method: 'POST', signal: ctl.signal });
+        await fetch(`http://127.0.0.1:${port}/shutdown`, { method: 'POST', headers: workerAuthHeaders(), signal: ctl.signal });
       } catch {
         // ignore — fall through to Stop-ScheduledTask
       } finally {

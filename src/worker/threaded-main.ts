@@ -14,6 +14,7 @@ import { classifyRoute } from './route-class.ts';
 import { InjectLatencyRing } from './inject-latency.ts';
 import { ReaderPool } from './reader-pool.ts';
 import { startWorker, buildWorkerOptionsFromEnv, type WorkerHandle } from './index.ts';
+import { bootWorkerAuthGate } from '../shared/worker-auth.ts';
 
 // Pass the URL OBJECT, not its .href string: on Windows a "file:///C:/…/engine.ts" string is
 // not reliably resolved by `new Worker(string)` across bun versions, whereas the URL object is
@@ -336,7 +337,11 @@ export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
   }
 
   // Common HTTP routing — always resolves to a Response. Proxies to the writer / reader pool.
+  // Worker auth (#229): checked first. Engines never see this gate: main hands them serialized requests, not HTTP.
+  const authGate = bootWorkerAuthGate();
   const route = async (req: Request): Promise<Response> => {
+    const denied = authGate.check(req);
+    if (denied) return denied;
     const url = new URL(req.url);
     // /health is answered LOCALLY from the WRITER heartbeat only — never proxied, never affected by
     // a busy reader (invariant 1). This is the unchanged heartbeat verdict.
@@ -399,6 +404,7 @@ export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
         const body = await res.text();
         const parsed = JSON.parse(body) as Record<string, unknown>;
         parsed['inject_latency'] = injectLatency.stats();
+        parsed['worker_auth'] = authGate.report();
         return Response.json(parsed, { status: res.status });
       } catch {
         return forwardToWriter(wire);   // unparseable (error body) — hand back the writer's answer untouched
@@ -417,7 +423,7 @@ export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
     );
   };
 
-  // The worker's HTTP API (search, stats, /shutdown) is UNAUTHENTICATED, so it binds to
+  // The worker's HTTP API (search, stats, /shutdown) trusts the local owner token only (#229), and binds to
   // LOOPBACK ONLY — never any external interface. No env override — this is not negotiable.
   const host = '127.0.0.1';
   const server = Bun.serve({ port, hostname: host, fetch: route });

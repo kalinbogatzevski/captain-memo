@@ -7,6 +7,19 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+### Security
+
+- **The worker's local API now asks for a secret.** Until now any program on the machine could call the
+  worker on 127.0.0.1:39888: file homework, set or clear another session's claimed files, or stop the
+  worker. The worker now creates a secret on first start, in `~/.config/captain-memo/worker.token`, readable
+  by you only, and every call except `GET /health` must send it. The hooks, the MCP server, the CLI, the
+  service managers and `captain-memo doctor` send it for you. A wrong secret is always refused.
+- **Sessions already running keep working.** A session started before this upgrade keeps its old hooks and
+  MCP server, which send no secret. By default (`CAPTAIN_MEMO_WORKER_AUTH=warn`) such a call is still
+  answered and logged once an hour per route, and `captain-memo doctor` lists the routes still called
+  without a secret. Restart those sessions, then set `CAPTAIN_MEMO_WORKER_AUTH=enforce` in worker.env and
+  restart the worker to refuse calls without the secret.
+
 ## [0.51.1] — 2026-10-01
 
 ### Changed
