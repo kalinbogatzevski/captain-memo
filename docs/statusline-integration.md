@@ -3,7 +3,7 @@
 Add a compact Captain Memo summary to your Claude Code status line so you always know the corpus is healthy and what it's doing.
 
 ```
-kalin@dev:~/projects/erp-platform  |  Opus 4.7 (1M)  effort:high
+me@dev:~/projects/my-app  |  Opus 4.7 (1M)  effort:high
 ctx:23% used  cache:125k  |  cm:● 2,413 obs · 571M  |  ↑4 pending
 ```
 
@@ -168,7 +168,7 @@ That's it. Open a Claude Code session — the bar redraws on the next event and 
   "indexing": { "status": "ready", "total": 279, "done": 279, "percent": 100, "errors": 0, "last_error": null, "elapsed_s": 0, "started_at_epoch": 1778407869, "finished_at_epoch": 1778407869 },
   "project_id": "default",
   "embedder": { "model": "voyage-4-lite", "endpoint": "https://api.voyageai.com/v1/embeddings" },
-  "disk": { "bytes": 598395312, "path": "/home/kalin/.captain-memo" },
+  "disk": { "bytes": 598395312, "path": "/home/me/.captain-memo" },
   "version": "0.1.2"
 }
 

@@ -35,7 +35,7 @@ re-work is avoided.
 ## AI sources
 
 One bar per originating tool, showing **which AI authored each observation**:
-`claude-code`, `codex`, `agy`, `gemini`, `kimi`, `opencode`. Observations from before
+such as `claude-code`, `codex`, `agy`, `gemini`, `kimi` and `opencode` (the README's Vendor provenance section lists them all). Observations from before
 cross-AI capture existed (no recorded origin) are attributed to `claude-code`.
 
 ### Cross-AI capture paths
@@ -99,6 +99,20 @@ This section shows the **inputs** that pass would read — not its output.
 |---|---|
 | **Audit log** | The `recall-audit.jsonl` write log — records each surfacing event. It feeds co-retrieval, and is **on by default** (set `CAPTAIN_MEMO_RECALL_AUDIT=0` in `worker.env` to disable). Bounded: past 32 MB it rotates to `.1`, keeping one generation. |
 | **Co-retrieval** | Count of observation **pairs that co-occur** in the same retrievals, plus how many observations that covers. This is the raw signal the Dreams pipeline mines for connections. |
+
+---
+
+## Homework
+
+Ideas and todos parked for later, per captain (see the README's Homework section). `captain-memo top` shows
+them; `captain-memo stats` does not.
+
+| Term | Meaning |
+|---|---|
+| **Homework** | The dashboard section under the status block: how many items are open and claimed, and the first three open ones. |
+| **`h` panel** | Press `h` in `top`: every open item, then the ones closed this week, with the selected one shown in full (who filed it and when, its project, its text, its topics and the close note). |
+| **`c` / `d`** | In the panel, `c` claims the selected item in your name (`<user> (top)`; claiming one a session already holds takes a second `c`), and `d` closes it with an optional note. |
+| **Done items** | Kept for a week, then they drop out of the list. |
 
 ---
 

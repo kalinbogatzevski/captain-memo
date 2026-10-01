@@ -22,6 +22,19 @@ exact session native; from then on, the compatibility reader skips it to prevent
 | Antigravity (`agy`) | Agy 1.1.11 exposes named hooks, but its documented PostToolUse payload contains step/error metadata rather than the executed tool input and result. | Do not install a lossy observation hook. Continue reading the richer persisted conversation data. Re-audit when Agy expands the payload. |
 | Ollama | Ollama exposes model inference and tool calling; the application around it owns the agent loop and tool execution. It does not expose an agent-session lifecycle hook contract. | Observe the host agent, such as Kimi or opencode, not Ollama. The same rule applies when Ollama is used only as Captain Memo's summarizer or embedder endpoint. |
 
+## Hooks installed per CLI
+
+Recall and capture use the three hooks above. Since 0.50.0 and 0.51.0, `captain-memo connect` also installs
+a session-start hook and a pre-tool hook for Codex and Gemini:
+
+| CLI | Recall and capture | Working rules at session start | Work-board guard |
+|---|---|---|---|
+| Codex CLI | `UserPromptSubmit`, `PostToolUse`, `Stop` | `SessionStart` (sent again after `/compact`) | `PreToolUse` |
+| Gemini CLI | `BeforeAgent`, `AfterTool`, `AfterAgent` | `SessionStart` (not sent again after a compression) | `BeforeTool` (`write_file`, `replace`, `run_shell_command`) |
+| Kimi CLI | `UserPromptSubmit`, `PostToolUse`, `Stop` | none | none |
+
+A session counts as native only after `PostToolUse` reaches the worker; the other hooks do not change that.
+
 Primary references:
 
 - [Codex hooks](https://learn.chatgpt.com/docs/hooks)
@@ -40,6 +53,9 @@ there is no stable public hook reference to link yet.
   the transcript/rollout reader remains active.
 - Hook discovery or trust is not treated as successful delivery. This matters for Codex, which asks
   the user to review project hooks once in `/hooks`.
+- A Captain Memo upgrade from a release before 0.51.0 adds hooks: re-run `captain-memo connect` to install the
+  newer `SessionStart` (0.50.0) and `PreToolUse` / `BeforeTool` (0.51.0) hooks for Codex and Gemini. Codex asks
+  you to trust them once.
 - A CLI upgrade needs no migration command: re-run `captain-memo connect`. Codex and Gemini are
   capability-probed again; Kimi's version gate is re-evaluated.
 - Upgrading Captain Memo from a release before 0.43.3 on Windows: re-run `captain-memo connect` (or

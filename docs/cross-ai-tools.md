@@ -1,4 +1,4 @@
-# Captain Memo across AI tools (Codex, Cursor, Gemini CLI, Antigravity, opencode, Mistral Vibe, Kimi CLI, VS Code, JetBrains, …)
+# Captain Memo across AI tools (Codex, Cursor, Gemini CLI, Antigravity, goose, opencode, Mistral Vibe, Kimi CLI, VS Code, JetBrains, Claude Desktop, …)
 
 Captain Memo's worker is an **agent-agnostic local HTTP service**, and it ships an **MCP server**. So
 *any* MCP-speaking AI coding tool can share the **same local memory corpus** — the same one Claude Code
@@ -18,6 +18,11 @@ auto-injection need a hook or an on-disk transcript — neither of which a GUI c
 | **Kimi CLI** | Yes | Yes — native hooks on 1.28+, transcript fallback otherwise | Yes — native hooks on 1.28+ | `captain-memo connect kimi` |
 | **Antigravity (`agy`)** | Yes | Yes — transcript capture | No | `captain-memo connect agy` |
 | **opencode** | Yes | Yes — transcript capture | No | `captain-memo connect opencode` |
+| **goose** | Yes | No | No | `captain-memo connect goose` (tools only; no skill is installed) |
+| **Cursor** | Yes | No | No | `captain-memo connect cursor` |
+| **Mistral Vibe** | Yes | No | No | `captain-memo connect vibe` |
+| **VS Code** (Copilot agent mode) | Yes | No | No | `captain-memo connect vscode` |
+| **JetBrains** (AI Assistant) | Yes, once you add the server in the IDE | No | No | `captain-memo connect jetbrains` writes a snippet to paste |
 | **Claude Desktop chat app** | Yes | No | No | `captain-memo connect claude-desktop` |
 
 ¹ *Unverified.* Observe/auto-inject need the worker to read the Code tab's on-disk transcripts, and
@@ -28,6 +33,8 @@ app's own data directory instead. Until confirmed either way, treat the Code tab
 as unverified — the CLI and IDE-extension rows are unaffected.
 
 **Work in Claude Code (CLI/IDE extension) and you get everything; the chat app gives you tools only.**
+
+**The work board.** Claude Code, Codex and Gemini claim the files they edit for you, and a live claim blocks another such session's edit or upload of that file (for Codex and Gemini the blocking works on Linux; see the [README](../README.md)). Every other tool reaches the board only by calling `work_set`, and is never blocked.
 
 One command covers a whole tool family, not one surface: `~/.codex/config.toml` is shared by
 the Codex CLI, the VS Code extension and the Codex desktop app, and all three write their
@@ -74,8 +81,8 @@ the worker, so an untrusted, disabled, or broken hook cannot silently turn fallb
 
 | Runtime | Native contract used | Captain Memo behavior |
 |---|---|---|
-| Codex CLI | Stable `hooks` feature; `UserPromptSubmit`, `PostToolUse`, `Stop` | Probes `codex features list`; installs only when the effective value is `true`. Older or explicitly disabled installs keep rollout capture. Review the managed hooks once in `/hooks`. |
-| Gemini CLI | Experimental hooks; `BeforeAgent`, `AfterTool`, `AfterAgent` | Probes `gemini hooks --help`, then reads `gemini --version` to pick the switch: `tools.enableHooks` and `hooksConfig.enabled` always, `hooks.enabled` only on 0.24-0.25 (the releases that need it; 0.26+ reject it with "Expected array" on every start). Re-running connect removes a `hooks.enabled` an older connect wrote. Preserves foreign hook groups. Older releases keep transcript capture. |
+| Codex CLI | Stable `hooks` feature; `UserPromptSubmit`, `PostToolUse`, `Stop`, plus `SessionStart` (working rules) and `PreToolUse` (work-board guard) | Probes `codex features list`; installs only when the effective value is `true`. Older or explicitly disabled installs keep rollout capture. Review the managed hooks once in `/hooks`. |
+| Gemini CLI | Experimental hooks; `BeforeAgent`, `AfterTool`, `AfterAgent`, plus `SessionStart` (working rules) and `BeforeTool` (work-board guard) | Probes `gemini hooks --help`, then reads `gemini --version` to pick the switch: `tools.enableHooks` and `hooksConfig.enabled` always, `hooks.enabled` only on 0.24-0.25 (the releases that need it; 0.26+ reject it with "Expected array" on every start). Re-running connect removes a `hooks.enabled` an older connect wrote. Preserves foreign hook groups. Older releases keep transcript capture. |
 | Kimi CLI | Beta hooks introduced in 1.28.0; `UserPromptSubmit`, `PostToolUse`, `Stop` | Version-gated because Kimi exposes no feature-list command. Older releases keep transcript capture. |
 | Antigravity (`agy`) | Hooks exist in 1.1.11, but documented `PostToolUse` omits tool input and result | Keeps its persisted conversation capture; installing a lossy native hook would produce worse observations. |
 | Ollama | Model server/API with tool calling, not an agent lifecycle host | No direct hook is installed. Captain Memo observes the host agent (for example Kimi or opencode) that runs the Ollama-backed loop. |
@@ -86,7 +93,7 @@ The detailed contract audit and upgrade rules live in
 **The fast path: `captain-memo connect`.** Every tool below except JetBrains can be wired automatically (for JetBrains it writes a snippet you paste in the IDE) —
 `captain-memo connect` detects every installed tool and wires all of them in one shot;
 `captain-memo connect --list` shows what's detected without changing anything;
-`captain-memo connect <tool>` wires just one (`codex | gemini | agy | cursor | opencode | vibe | kimi | vscode | jetbrains`).
+`captain-memo connect <tool>` wires just one (`codex | gemini | agy | goose | cursor | opencode | vibe | kimi | vscode | jetbrains | claude-desktop`).
 The manual steps in each section below are what `connect` does under the hood, for tools that don't have
 one, want to inspect the exact config, or are on an unsupported OS.
 
@@ -109,11 +116,16 @@ cp /path/to/captain-memo/skills/captain-memo/SKILL.md ~/.codex/skills/captain-me
 Codex loads the skill automatically and will call `search_all` on its own. Verified live: Codex
 recalled an observation that Claude Code had captured, from the same worker.
 
-On current Codex versions, `captain-memo connect codex` also merges three managed commands into
-`~/.codex/hooks.json`. The prompt hook injects recall automatically, PostToolUse feeds observations
-without waiting for the rollout to go idle, and Stop flushes the session. Foreign hooks and top-level
-settings are preserved. Codex asks you to review newly discovered hooks once in `/hooks`; until a
-Captain Memo hook actually succeeds, rollout capture remains active.
+On current Codex versions, `captain-memo connect codex` also merges five managed commands into
+`~/.codex/hooks.json`. The prompt hook (`UserPromptSubmit`) injects recall automatically, `PostToolUse` feeds
+observations without waiting for the rollout to go idle, `Stop` flushes the session, `SessionStart` sends
+the working rules (again after `/compact`), and `PreToolUse` is the work-board guard. Gemini gets the same
+five as `BeforeAgent`, `AfterTool`, `AfterAgent`, `SessionStart` and `BeforeTool`; Kimi gets three
+(`UserPromptSubmit`, `PostToolUse`, `Stop`). Foreign hooks and top-level settings are preserved. Codex asks
+you to review newly discovered hooks once in `/hooks` ("Trust all and continue"); until you do they do not
+run, and until a Captain Memo hook actually succeeds, rollout capture remains active. Run
+`captain-memo connect` again after upgrading from a release before 0.51.0 to add the newer `SessionStart` (0.50.0)
+and `PreToolUse` (0.51.0) hooks.
 
 **Registering the server is not enough to make it work non-interactively — `captain-memo connect
 codex` also pre-approves the tools, and here is why.** Codex gates every MCP tool call behind an
@@ -171,9 +183,13 @@ Register the MCP server in Gemini's settings (`~/.gemini/settings.json` `mcpServ
 and place the skill text in `GEMINI.md`.
 
 When `gemini hooks --help` confirms support, `connect gemini` also installs `BeforeAgent`, `AfterTool`,
-and `AfterAgent` commands in that same settings file. It enables Gemini's two currently required
-experimental flags and preserves unrelated settings and hooks. Unsupported versions remain fully
+`AfterAgent`, `SessionStart` (the working rules) and `BeforeTool` (the work-board guard, for `write_file`,
+`replace` and `run_shell_command`) commands in that same settings file. It enables Gemini's two currently
+required experimental flags and preserves unrelated settings and hooks. Unsupported versions remain fully
 usable through MCP plus the existing session transcript reader.
+
+Current gemini-cli (0.61 and later) writes sessions as `.jsonl`; capture reads both formats, and reads only
+the part of a session that is new since the last read.
 
 ## Antigravity CLI (agy)
 
@@ -268,6 +284,12 @@ Kimi 1.28.0 and newer also receive a managed `[[hooks]]` block for automatic rec
 PostToolUse observation capture, and Stop flushing. Older Kimi releases keep the transcript reader;
 re-running `connect kimi` after an upgrade adds the native path automatically.
 
+The managed block writes `max_context_size = 131072` for the models it manages (kimi compacts its
+conversation when its tokens plus a 50,000-token reserve reach that size, so a small value leaves no room
+for your prompt) and `api_key = "ollama"` (kimi 1.48 requires the field even for a local server). It never
+edits a provider or model table of yours, and it names any model table of yours below about 70,000, which
+you have to raise yourself. Re-run `captain-memo connect kimi` to update the managed block.
+
 Honest about capability, by design:
 
 - **No local Ollama models ⇒ no managed Ollama provider/model block is written** (a `base_url`-only
@@ -286,7 +308,9 @@ Honest about capability, by design:
 
 VS Code's MCP support is GA and auto-wireable. `captain-memo connect vscode` merges
 `~/.config/Code/User/mcp.json` — note the top-level key is `servers`, not `mcpServers` like the other
-tools. Skill copied as `~/.config/Code/User/prompts/captain-memo.instructions.md`.
+tools. Skill copied as `~/.config/Code/User/prompts/captain-memo.instructions.md`. On Linux that is
+VS Code's user config folder. `connect vscode` writes the same `~/.config/Code/User/` path on macOS and
+Windows too, and that has not been checked against where VS Code reads its user `mcp.json` there.
 
 ## JetBrains (AI Assistant / Junie)
 
