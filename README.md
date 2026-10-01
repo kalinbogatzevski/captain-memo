@@ -404,7 +404,7 @@ These fire when the model decides retrieval would help your prompt — no slash 
 | `reindex` | Trigger re-embed |
 | `stats` | Corpus stats |
 | `status` | Worker health |
-| `todo_add` | Homework: park an idea or a task for later (open → claimed → done); `idea: …` / `todo: …` at the start of a prompt does the same through the hook |
+| `todo_add` | Homework: park an idea or a task for later (open → claimed → done), with an optional `due` time that makes it a reminder; `idea: …` / `todo: …` at the start of a prompt does the same through the hook |
 | `todo_list` | Homework: what is open (default), done (kept a week), or all |
 | `todo_claim` | Homework: mark an item taken; every session on this machine sees who has it (advisory: claiming again just changes the holder) |
 | `todo_done` | Homework: close an item with a one-line note |
@@ -427,7 +427,7 @@ An idea arrives mid-task, and acting on it now would derail the task. Homework p
 📝 Filed as homework #14 on this captain (not for now): retry the embed call once on a 429 — todo_list() shows the list; the user may just want a short "noted". (3 open)
 ```
 
-The prompt still reaches the model, so it can answer "noted"; memory recall is skipped for that prompt. Only the start of the prompt counts, and any prompt that starts that way is filed, even "later - can you check X". A session files one directly with `todo_add(text, topics, project)`; only `todo_add` sets topics.
+The prompt still reaches the model, so it can answer "noted"; memory recall is skipped for that prompt. Only the start of the prompt counts, and any prompt that starts that way is filed, even "later - can you check X". A session files one directly with `todo_add(text, topics, project, due)`; only `todo_add` sets topics and a due time.
 
 **The next Claude Code session** shows the open items in its start banner, at most three, then `… N more`:
 
@@ -437,6 +437,16 @@ The prompt still reaches the model, so it can answer "noted"; memory recall is s
              #13 shorten the install wizard's summarizer question
              #14 retry the embed call once on a 429
 ```
+
+**Due times.** `todo_add` takes an optional `due`, which turns the item into a reminder: an ISO 8601 date (`2026-10-01`, this host's midnight) or date-time (`2026-10-01T09:30`, this host's local time unless it carries a zone such as `Z` or `+02:00`). Once it is due, the item leads the banner ahead of the others, the one due longest ago first, marked `⏰` with the time it fell due; before then it keeps its place and shows `(due …)`:
+
+```
+  Homework   2 open — todo_list() for all, todo_claim(id) before starting one
+             ⏰ #15 renew the staging certificate (DUE since 2026-10-01 09:30)
+             #12 look at the flaky backup test on macOS
+```
+
+A date that does not exist (`2026-02-30`) or a phrase such as `tomorrow` is refused with an error that says why; a date already past is accepted and shows as overdue at once. A done item is never marked. It is a reminder only: nothing starts by itself. `todo_list` returns the time in UTC, and `top` does not show it. An `idea:` prompt cannot set one.
 
 **Which AI tools do what.**
 

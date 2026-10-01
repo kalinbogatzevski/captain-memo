@@ -81,6 +81,9 @@ open → claimed → done, visible to every AI session here.
 - If the user starts a message with `idea:`, `todo:`, `later:` (or `идея:`) and a hook already filed it,
   you see `📝 Filed as homework #N` — answer with a short "noted" and carry on. If no such line appears
   (this CLI has no prompt hook wired), file it yourself with `todo_add(text, topics)` and say so.
+- `todo_add(text, due)` makes it a reminder: `due` is an ISO 8601 date or date-time (no zone = this host's local
+  time). From then on Claude Code's session-start list shows it first, marked ⏰; `todo_list()` returns it with
+  its due time (UTC). Nothing runs by itself.
 - `todo_list()` — what is open (Claude Code also lists it in the session banner). `todo_claim(id)` before you
   start one, so other sessions see it is taken (advisory, not a lock); `todo_done(id, note)` when it is done.
 - Not a memory (`remember` is for facts to recall) and not a work claim (`work_set` is what you do now).
