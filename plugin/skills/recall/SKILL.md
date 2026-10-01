@@ -9,15 +9,8 @@ When the user invokes this skill, they want the *full* text of a previously-foun
 
 ## What to do
 
-1. Take the user's argument as the doc_id (e.g. `memory:feedback_no_clone_smy:abc1234`).
-2. Run:
-
-```bash
-curl -s -X POST http://127.0.0.1:39888/get_full \
-  -H 'content-type: application/json' \
-  -d "$(jq -nc --arg id "<DOC_ID>" '{doc_id: $id}')"
-```
-
+1. Take the user's argument as the doc_id (e.g. `memory:feedback_no_mocked_db:abc1234`).
+2. Call the captain-memo MCP tool `get_full` with `doc_id` set to that value. The MCP server sends the worker's secret for you: there is no token to handle.
 3. Format the response. The body is `{ content: "...", metadata: {...} }`.
 
 ## Output format
@@ -25,15 +18,11 @@ curl -s -X POST http://127.0.0.1:39888/get_full \
 Show the source path from `metadata.source_path` first as a header, then the full `content`, then a small footer with notable metadata (memory_type, created_at_epoch as a date if present, etc.).
 
 ```
-📄 /home/kalin/.claude/projects/.../memory/feedback_no_clone_smy.md
+📄 ~/.claude/projects/.../memory/feedback_no_mocked_db.md
    type: feedback · 2026-04-15
 
-In the multi-tenant ERP at /home/kalin/projects/erp-platform/, **do NOT** use
-this pattern in CLI smoke tests:
-
-```bash
-php -r "require 'core/inc/boot.php'; \\$smy_test = clone \\$smy; ..."
-```
+In this project, **do NOT** mock the database in integration tests: they
+must run against a real test database.
 
 […full content…]
 ```
@@ -41,4 +30,5 @@ php -r "require 'core/inc/boot.php'; \\$smy_test = clone \\$smy; ..."
 ## On error
 
 - 404 not_found: tell the user "no document with that doc_id — was the search recent? Try `/captain-memo:search` again to get fresh doc_ids"
+- 401: this session started before the worker began asking for its secret (0.52.0) and sends none. Tell the user to restart the AI session
 - worker unreachable: `captain-memo doctor` to diagnose

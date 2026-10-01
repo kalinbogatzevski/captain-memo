@@ -31,7 +31,6 @@ If even the CLI invocation fails, that's a sign something is broken at the insta
 
 ```bash
 ls ~/.claude/plugins/captain-memo
-systemctl --user list-units 'captain-memo-*'
 ```
 
-…to see whether the install ever happened, then `captain-memo install` if not.
+…and look at the worker's service. On Linux: `systemctl --user list-units 'captain-memo-*'` (a `--system` install: without `--user`). On macOS: `launchctl print gui/$(id -u)/com.captainmemo.worker`. On Windows (PowerShell): `Get-ScheduledTask -TaskName 'captain-memo-worker'`. That shows whether the install ever happened; run `captain-memo install` if not.

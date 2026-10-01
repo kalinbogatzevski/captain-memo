@@ -1,6 +1,6 @@
 ---
 name: observations
-description: List recent captured session observations (the Haiku-summarized voyage logs). Use when the user wants to see what Captain Memo has logged from past sessions.
+description: List recent captured session observations (the summarized voyage logs). Use when the user wants to see what Captain Memo has logged from past sessions.
 ---
 
 # Captain Memo — recent observations
@@ -13,26 +13,24 @@ When the user invokes this skill, they want a quick view of recent session obser
 2. Run:
 
 ```bash
-curl -s "http://127.0.0.1:39888/observations/recent?limit=<LIMIT>" | jq '.'
+captain-memo observation list --limit <LIMIT>
 ```
 
-3. The response is `{ items: [{id, session_id, prompt_number, type, title, created_at_epoch}] }`.
+The CLI sends the worker's secret for you: there is no token to handle. If `captain-memo` is not on PATH, use the shim and checkout fallbacks described in the `doctor` skill.
+
+3. Pass the output back as it is. It is one line per observation, newest first, then a row count.
 
 ## Output format
 
 ```
-Recent observations (N total):
-
-  2026-05-07 14:32  [bugfix    ]  Fix off-by-one in billing pro-ration loop
-                    session=ses_..._abc123 · prompt#1 · id=42
-
-  2026-05-07 14:18  [feature   ]  Add NetLine SPM rule 75 for Pernik discount
-                    session=ses_..._xyz890 · prompt#3 · id=41
-
-  …
+Recent observations
+---
+2026-05-07T14:32:10  [bugfix    ]  Fix off-by-one in pagination loop
+2026-05-07T14:18:44  [feature   ]  Add retry to the embed call on HTTP 429
+(2 rows)
 ```
 
-Format `created_at_epoch` as a UTC date in the user's timezone. Pad `[type]` to 10 chars for alignment.
+The timestamp is UTC. For a hit worth reading in full, `search_observations` or `search_all` returns its `doc_id` and `get_full` opens it.
 
 ## If empty
 
