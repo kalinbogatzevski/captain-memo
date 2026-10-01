@@ -12828,8 +12828,8 @@ function customAlphabet(alphabet, size = 21) {
 }
 
 // src/mcp-server.ts
-import { readFileSync as readFileSync3 } from "fs";
-import { join as join3 } from "path";
+import { readFileSync as readFileSync4 } from "fs";
+import { join as join4 } from "path";
 import { homedir as homedir3 } from "os";
 
 // src/shared/paths.ts
@@ -12893,7 +12893,7 @@ function loadWorkerEnv() {
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.51.1",
+  version: "0.52.0",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -12969,7 +12969,7 @@ var VERSION = package_default.version;
 
 // src/hooks/shared.ts
 import { homedir as homedir2 } from "os";
-import { join as join2, resolve, isAbsolute } from "path";
+import { join as join3, resolve, isAbsolute } from "path";
 
 // src/worker/branch.ts
 import { spawnSync } from "child_process";
@@ -12991,9 +12991,26 @@ function detectRepoRootSync(cwd) {
 var repoRootCache = new Map;
 var dirtyCache = new Map;
 
+// src/shared/worker-auth.ts
+import { chmodSync as chmodSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, statSync, writeFileSync as writeFileSync2 } from "fs";
+import { dirname, join as join2 } from "path";
+var WORKER_TOKEN_HEADER = "x-captain-memo-worker-token";
+var WORKER_TOKEN_PATH = join2(CONFIG_DIR, "worker.token");
+function readWorkerToken(path = WORKER_TOKEN_PATH) {
+  try {
+    return readFileSync2(path, "utf8").trim() || null;
+  } catch {
+    return null;
+  }
+}
+function workerAuthHeaders(path = WORKER_TOKEN_PATH) {
+  const t = readWorkerToken(path);
+  return t ? { [WORKER_TOKEN_HEADER]: t } : {};
+}
+
 // src/hooks/shared.ts
-var HOOK_LOG_DIR = join2(homedir2(), ".captain-memo", "logs");
-var HOOK_LOG_FILE = join2(HOOK_LOG_DIR, "hook.log");
+var HOOK_LOG_DIR = join3(homedir2(), ".captain-memo", "logs");
+var HOOK_LOG_FILE = join3(HOOK_LOG_DIR, "hook.log");
 var HOOK_LOG_ROTATE_BYTES = 10 * 1024 * 1024;
 var WORKER_BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
 function resolveProjectId(cwd) {
@@ -13012,7 +13029,7 @@ function absoluteClaimFiles(files, cwd) {
 }
 
 // src/shared/ai-process.ts
-import { readFileSync as readFileSync2 } from "fs";
+import { readFileSync as readFileSync3 } from "fs";
 import { basename } from "path";
 var MAX_DEPTH = 8;
 var name = (arg) => arg ? basename(arg).replace(/\.[cm]?js$/, "") : "";
@@ -13022,12 +13039,12 @@ function aiProcessPid(agents, start = process.ppid, root = "/proc", platform = p
   let pid = start;
   for (let i = 0;i < MAX_DEPTH && pid > 1; i++) {
     try {
-      const comm = readFileSync2(`${root}/${pid}/comm`, "utf8").trim();
-      const argv = readFileSync2(`${root}/${pid}/cmdline`, "utf8").split("\x00");
+      const comm = readFileSync3(`${root}/${pid}/comm`, "utf8").trim();
+      const argv = readFileSync3(`${root}/${pid}/cmdline`, "utf8").split("\x00");
       const script = argv.slice(1).find((a) => a !== "" && !a.startsWith("-"));
       if (agents.some((a) => comm === a || name(argv[0]) === a || name(script) === a))
         return pid;
-      const stat = readFileSync2(`${root}/${pid}/stat`, "utf8");
+      const stat = readFileSync3(`${root}/${pid}/stat`, "utf8");
       pid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
     } catch {
       return;
@@ -13045,8 +13062,8 @@ function resolveWorkBoardSessionId(env = process.env) {
 }
 var PROCESS_SESSION_ID = resolveWorkBoardSessionId();
 function readClaudeSessionId(pid) {
-  const base = process.env.CLAUDE_CONFIG_DIR ?? join3(homedir3(), ".claude");
-  const d = JSON.parse(readFileSync3(join3(base, "sessions", `${pid}.json`), "utf8"));
+  const base = process.env.CLAUDE_CONFIG_DIR ?? join4(homedir3(), ".claude");
+  const d = JSON.parse(readFileSync4(join4(base, "sessions", `${pid}.json`), "utf8"));
   return typeof d.sessionId === "string" && d.sessionId ? d.sessionId : null;
 }
 function liveSessionId(fallback, env = process.env, read = readClaudeSessionId, ppid = process.ppid, now = Date.now) {
@@ -13070,7 +13087,7 @@ var hostAiPid = () => process.env.CLAUDE_CODE_SESSION_ID ? process.ppid : aiProc
 async function workerPost(base, path, body) {
   const res = await fetch(`${base}${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...workerAuthHeaders() },
     body: JSON.stringify(body)
   });
   if (!res.ok) {
@@ -13395,7 +13412,7 @@ async function dispatchTool(name, args, deps = defaultDispatchDeps()) {
           cwd
         });
       case "stats": {
-        const res = await fetch(`${workerBase}/stats`);
+        const res = await fetch(`${workerBase}/stats`, { headers: workerAuthHeaders() });
         if (!res.ok)
           throw new Error(`worker /stats returned ${res.status}`);
         result = await res.json();
@@ -13428,7 +13445,7 @@ async function dispatchTool(name, args, deps = defaultDispatchDeps()) {
       }
       case "todo_list": {
         const a = args ?? {};
-        const res = await fetch(`${workerBase}/homework/list?status=${encodeURIComponent(a.status ?? "open")}`);
+        const res = await fetch(`${workerBase}/homework/list?status=${encodeURIComponent(a.status ?? "open")}`, { headers: workerAuthHeaders() });
         if (!res.ok)
           throw new Error(`worker /homework/list returned ${res.status}`);
         result = await res.json();
@@ -13443,7 +13460,7 @@ async function dispatchTool(name, args, deps = defaultDispatchDeps()) {
       case "work_active": {
         const a = args ?? {};
         const q = new URLSearchParams({ session_id: a.session_id || sessionId });
-        const res = await fetch(`${workerBase}/worknote/active?${q.toString()}`);
+        const res = await fetch(`${workerBase}/worknote/active?${q.toString()}`, { headers: workerAuthHeaders() });
         if (!res.ok)
           throw new Error(`worker /worknote/active returned ${res.status}`);
         result = await res.json();

@@ -7,6 +7,8 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.52.0] — 2026-10-01
+
 ### Security
 
 - **The worker's local API now asks for a secret.** Until now any program on the machine could call the
