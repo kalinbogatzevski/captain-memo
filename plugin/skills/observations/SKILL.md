@@ -16,7 +16,7 @@ When the user invokes this skill, they want a quick view of recent session obser
 captain-memo observation list --limit <LIMIT>
 ```
 
-The CLI sends the worker's secret for you: there is no token to handle. If `captain-memo` is not on PATH, use the shim and checkout fallbacks described in the `doctor` skill.
+The CLI sends the worker's secret for you: there is no token to handle. If `captain-memo` is not on PATH, use the shim and checkout fallbacks described in the `doctor` skill. With no CLI at all (a plugin-only install), call the MCP tool `search_observations` with a query instead; it has no plain "recent" listing.
 
 3. Pass the output back as it is. It is one line per observation, newest first, then a row count.
 

@@ -39,7 +39,7 @@ It is local-first: the corpus lives on this machine, not in a vendor cloud.
 - **`list_capabilities` / `recommend_capabilities` / `get_capability`** — discover sanitized
   plugin/extension capabilities and the runtime that owns them. These are routing descriptors, not
   portable instructions or executable code; delegate to the returned runtime.
-- **`remember`** — persist a durable decision, preference, convention or hard-won fact into curated
+- **`remember`**: persist a durable decision, preference, convention or hard-won fact into curated
   memory (`body` and a `type`). It is indexed at once and recalled in later sessions.
 
 ## How to use the results

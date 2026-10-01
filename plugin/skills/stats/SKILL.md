@@ -9,17 +9,19 @@ When invoked, fetch the worker's stats and present them readably.
 
 ## What to do
 
+Call the captain-memo MCP tool `stats` (no arguments). It returns the worker's `/stats` body and sends the worker's secret for you: there is no token to handle. Where the CLI is installed, the same body is one command away, as one line of JSON:
+
 ```bash
 captain-memo stats --json
 ```
 
-The CLI sends the worker's secret for you: there is no token to handle. If `captain-memo` is not on PATH, use the shim and checkout fallbacks described in the `doctor` skill. The output is the worker's `/stats` body as one line of JSON.
+If `captain-memo` is not on PATH, use the shim and checkout fallbacks described in the `doctor` skill.
 
 The response includes: `total_chunks`, `by_channel`, `observations` (total/queue_pending/queue_processing), `indexing` (status/done/total/percent/elapsed_s/errors/last_error), `project_id`, `embedder` (model/endpoint), `efficiency`, and `worker` (`started_at_epoch`, `uptime_s`).
 
 A successful `/stats` response means the **backend worker is ONLINE** — lead with that
 and its uptime. Format `worker.uptime_s` compactly: `45s` / `12m` / `2h 13m` / `3d 4h`.
-If the command fails or the connection is refused, the worker is **OFFLINE** — say so and point
+If the call fails or the connection is refused, the worker is **OFFLINE**: say so and point
 the user at `captain-memo doctor` (see "On error").
 
 ## Output format
