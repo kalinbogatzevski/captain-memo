@@ -12893,7 +12893,7 @@ function loadWorkerEnv() {
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.53.0",
+  version: "0.54.0",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -13030,10 +13030,51 @@ function absoluteClaimFiles(files, cwd) {
 
 // src/shared/ai-process.ts
 import { readFileSync as readFileSync3 } from "fs";
+import { spawnSync as spawnSync2 } from "child_process";
 import { basename } from "path";
 var MAX_DEPTH = 8;
+var PS_TIMEOUT_MS = 1000;
+var realPs = () => {
+  try {
+    const r = spawnSync2("ps", ["-ax", "-o", "pid=,ppid=,args="], { encoding: "utf8", timeout: PS_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
+    return r.status === 0 ? r.stdout : null;
+  } catch {
+    return null;
+  }
+};
+var psCache = new Map;
+function psWalk(agents, start, snapshot) {
+  const procs = new Map;
+  for (const line of snapshot.split(`
+`)) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    if (m)
+      procs.set(Number(m[1]), { ppid: Number(m[2]), argv: m[3].trim().split(/\s+/) });
+  }
+  let pid = start;
+  for (let i = 0;i < MAX_DEPTH && pid > 1; i++) {
+    const p = procs.get(pid);
+    if (!p)
+      return;
+    const script = p.argv.slice(1).find((a) => !a.startsWith("-"));
+    if (agents.some((a) => name(p.argv[0]) === a || name(script) === a))
+      return pid;
+    pid = p.ppid;
+  }
+  return;
+}
 var name = (arg) => arg ? basename(arg).replace(/\.[cm]?js$/, "") : "";
-function aiProcessPid(agents, start = process.ppid, root = "/proc", platform = process.platform) {
+function aiProcessPid(agents, start = process.ppid, root = "/proc", platform = process.platform, ps = realPs) {
+  if (platform === "darwin") {
+    const key = `${agents.join(",")}\x00${start}`;
+    if (!psCache.has(key)) {
+      const snapshot = ps();
+      if (snapshot === null)
+        return;
+      psCache.set(key, psWalk(agents, start, snapshot));
+    }
+    return psCache.get(key);
+  }
   if (platform !== "linux")
     return;
   let pid = start;

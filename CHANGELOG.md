@@ -7,6 +7,8 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.54.0] — 2026-10-01
+
 ### Fixed
 
 - When auto-update finds a newer release but cannot apply it (local edits in the checkout, no branch checked out, or a fast-forward that does not apply), the session start banner now says so and how to fix it. Before, this was written only to the hook error log and the checkout quietly stayed on the old version.

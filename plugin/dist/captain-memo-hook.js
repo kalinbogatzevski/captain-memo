@@ -891,6 +891,14 @@ function formatAutoUpdateBanner(from, to, installFailed, news = []) {
   return lines.join(`
 `);
 }
+function formatAutoUpdateBlockedBanner(from, code, reason) {
+  return [
+    `\u2693 Captain Memo auto-update is BLOCKED: a newer release is available but was not applied (${reason || code || "unknown reason"}).`,
+    `  Your checkout stays on v${from} until this is fixed: commit or stash local edits and make sure a branch is checked out,`,
+    "  or update by hand with `git pull` and `captain-memo install`."
+  ].join(`
+`);
+}
 function formatRollbackBanner(from, attempted, rolledBack) {
   return rolledBack ? [
     `\u2693 Captain Memo auto-update to v${attempted} FAILED to start \u2014 rolled back to v${from}.`,
@@ -1536,7 +1544,7 @@ init_paths();
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.53.0",
+  version: "0.54.0",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -2000,6 +2008,7 @@ async function main2() {
               logHookError("SessionStart", new Error(`auto-update to ${res.to} failed to boot; rolled back=${rolled}`));
             }
           } else if (res && !res.ok) {
+            autoUpdateNotice = formatAutoUpdateBlockedBanner(res.from, res.code, res.reason);
             logHookError("SessionStart", new Error(`auto-update skipped: ${res.code} \u2014 ${res.reason}`));
           }
         } finally {
@@ -2332,11 +2341,13 @@ function splitSegments(command, cwd, shell = "posix") {
   const maskedAll = maskQuotedCode(stripped);
   const raw = [];
   let start = 0;
+  let piped = false;
   for (const b of maskedAll.matchAll(/&&|\|\||;|\||\n/g)) {
-    raw.push({ seg: stripped.slice(start, b.index), masked: maskedAll.slice(start, b.index) });
+    raw.push({ seg: stripped.slice(start, b.index), masked: maskedAll.slice(start, b.index), ...piped ? { piped: true } : {} });
     start = b.index + b[0].length;
+    piped = b[0] === "|";
   }
-  raw.push({ seg: stripped.slice(start), masked: maskedAll.slice(start) });
+  raw.push({ seg: stripped.slice(start), masked: maskedAll.slice(start), ...piped ? { piped: true } : {} });
   const out = [];
   let dir = cwd;
   for (const r of raw) {
@@ -2494,22 +2505,27 @@ var defaultIsDir = (p) => {
   }
 };
 var VAR_REF = /\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)/g;
+var POS_REF = /\$\{([1-9])\}|\$([1-9])/g;
+var MAX_BINDINGS = 25;
+var MAX_EXPANSIONS = 20;
 function bindingsFor(seg, vars) {
-  const names = [...seg.matchAll(VAR_REF)].map((m) => m[1] ?? m[2]);
-  const loop = names.find((n) => (vars.get(n)?.length ?? 0) > 1);
-  const base = new Map;
-  for (const n of names) {
+  let out = [new Map];
+  for (const n of new Set([...seg.matchAll(VAR_REF)].map((m) => m[1] ?? m[2]))) {
     const v = vars.get(n);
-    if (v?.length === 1)
-      base.set(n, v[0]);
+    if (!v?.length || out.length * v.length > MAX_BINDINGS)
+      continue;
+    out = out.flatMap((b) => v.map((x) => new Map([...b, [n, x]])));
   }
-  return loop ? vars.get(loop).map((v) => new Map([...base, [loop, v]])) : [base];
+  return out;
 }
 var substitute = (t, b) => t.replace(VAR_REF, (m, a, c) => b.get(a ?? c) ?? m);
 function parseTransfers(command, cwd, isDir = defaultIsDir) {
   const uploads = [], downloads = [];
   let unchecked = 0;
   const vars = new Map;
+  const funcs = new Map;
+  const loops = [];
+  let expansions = 0;
   const assign = (n, v) => {
     if (v.some((x) => x.includes("$") || x.includes("`")))
       vars.delete(n);
@@ -2519,13 +2535,49 @@ function parseTransfers(command, cwd, isDir = defaultIsDir) {
   try {
     if (typeof command !== "string" || !cwd || !/\b(scp|rsync|ssh)\b/.test(command))
       return { uploads, downloads };
-    for (const { seg, masked, dir } of splitSegments(command, cwd)) {
+    const segs = splitSegments(command, cwd);
+    for (let si = 0;si < segs.length; si++) {
+      const { seg, masked, dir, piped } = segs[si];
       const toks0 = tokenize(seg).map((t) => t.replace(/["']/g, ""));
-      if (/^[A-Za-z_][\w-]*\(\)$/.test(toks0[0] ?? "") && toks0[1] === "{")
+      const def = /^\s*(?:function\s+([A-Za-z_][\w-]*)\s*(?:\(\))?|([A-Za-z_][\w-]*)\s*\(\))\s*\{/.exec(seg);
+      if (def) {
+        const body = [seg.slice(def[0].length)];
+        let depth = 1;
+        while (++si < segs.length) {
+          const s = segs[si];
+          const first = s.seg.trim()[0];
+          if (first === "{")
+            depth++;
+          else if (first === "}" && --depth === 0)
+            break;
+          body.push((s.piped ? "| " : `
+`) + s.seg);
+        }
+        funcs.set((def[1] ?? def[2]).toLowerCase(), body.join(""));
+        continue;
+      }
+      if (toks0[0] === "{")
+        toks0.shift();
+      if (toks0[0] === "<")
         toks0.splice(0, 2);
-      else if (toks0[0] === "{")
+      else if (/^<[^<]/.test(toks0[0] ?? ""))
         toks0.shift();
       const head = cmdName(toks0);
+      const fn = funcs.get(head.name);
+      if (fn !== undefined && expansions++ < MAX_EXPANSIONS) {
+        const text = fn.replace(POS_REF, (m, a, c) => head.rest[Number(a ?? c) - 1] ?? m);
+        segs.splice(si + 1, 0, ...splitSegments(text, dir ?? cwd).map((s) => dir === null ? { ...s, dir: null } : s));
+        continue;
+      }
+      if (head.name === "while" || head.name === "until" || head.name === "select")
+        loops.push(null);
+      if (head.name === "done") {
+        const n = loops.pop();
+        const v = n ? vars.get(n) : undefined;
+        if (n && v?.length)
+          vars.set(n, v.slice(-1));
+        continue;
+      }
       if (head.name === "" || head.name === "export" || head.name === "local") {
         for (const t of toks0) {
           const a = /^([A-Za-z_]\w*)=(.*)$/s.exec(t);
@@ -2539,6 +2591,8 @@ function parseTransfers(command, cwd, isDir = defaultIsDir) {
         }
         continue;
       }
+      if (head.name === "for")
+        loops.push(head.rest[1] === "in" ? head.rest[0] : null);
       if (head.name === "for" && head.rest[1] === "in") {
         assign(head.rest[0], head.rest.slice(2).flatMap((w) => bindingsFor(w, vars).flatMap((b) => substitute(w, b).split(/\s+/).filter(Boolean))));
         continue;
@@ -2598,7 +2652,7 @@ function parseTransfers(command, cwd, isDir = defaultIsDir) {
               let path = intoDir ? dest.path === "" ? basename(local) : `${dest.path.replace(/\/+$/, "")}/${basename(local)}` : dest.path;
               if (name === "rsync" && isDirSrc && src.endsWith("/"))
                 path = dest.path.replace(/\/+$/, "");
-              uploads.push({ local, userhost: dest.userhost, path, sshArgs: [...sshArgs], ...isDirSrc ? { dir: true } : {} });
+              uploads.push({ local, userhost: dest.userhost, path, sshArgs: [...sshArgs], ...isDirSrc ? { dir: true } : !intoDir ? { orDir: true } : {} });
             }
           } else if (!destTok.includes("$")) {
             for (const src of sources) {
@@ -2644,6 +2698,17 @@ function parseTransfers(command, cwd, isDir = defaultIsDir) {
               uploads.push({ local: resolve8(dir, tilde(src)), userhost, path, sshArgs });
             continue;
           }
+          if (up && piped) {
+            const prev = segs[si - 1];
+            const cat = cmdName(tokenize(prev.seg).map((t) => sub(t.replace(/["']/g, ""))));
+            const src = cat.name === "cat" && cat.rest.length === 1 && !/^-|[<>]/.test(cat.rest[0]) ? cat.rest[0] : "$";
+            const path = up[1] ?? up[2];
+            if (/[$*?{]/.test(src) || path.includes("$") || userhost.includes("$") || prev.dir === null)
+              unchecked++;
+            else
+              uploads.push({ local: resolve8(prev.dir, tilde(src)), userhost, path, sshArgs });
+            continue;
+          }
           const down = /^\s*cat\s+([^\s;|&<>'"]+)\s*$/.exec(remoteCmd);
           const outRedirect = /(?:^|[^0-9>&])>(?!>)\s*/.exec(masked);
           if (down && outRedirect) {
@@ -2675,7 +2740,7 @@ function decideDeploy(server, known) {
 function denyDeployText(t, md5, holder) {
   const k = remoteKey(t);
   const board = holder ? `; the board last saw ${holder.local} held by ${holder.session_id} (${holder.agent ?? "?"}, ${Math.round((holder.age_s ?? 0) / 60)} min ago)` : "";
-  return `DEPLOY BLOCKED: ${k} on the server (md5 ${md5.slice(0, 8)}) is not your file, not a committed version (HEAD, the last 9 commits or the default branch), and not a copy you fetched or uploaded in this session. Someone deployed uncommitted work there${board}. Uploading now erases it. Instead: 1) scp ${t.sshArgs.includes("-p") ? `-P ${t.sshArgs[t.sshArgs.indexOf("-p") + 1]} ` : ""}${k} <your scratchpad>/${basename(t.path)}.live  2) apply your change onto that LIVE copy  3) upload the merged file (the guard allows an upload whose server copy matches what you fetched). Do not bypass this with another command. If the user explicitly wants to overwrite, they type \`override: ${k}\`.`;
+  return `DEPLOY BLOCKED: ${k} on the server (md5 ${md5.slice(0, 8)}) is not your file, not a committed version (HEAD, the last ${COMMITTED_DEPTH} commits or the default branch), and not a copy you fetched or uploaded in this session. Someone deployed uncommitted work there${board}. Uploading now erases it. Instead: 1) scp ${t.sshArgs.includes("-p") ? `-P ${t.sshArgs[t.sshArgs.indexOf("-p") + 1]} ` : ""}${k} <your scratchpad>/${basename(t.path)}.live  2) apply your change onto that LIVE copy  3) upload the merged file (the guard allows an upload whose server copy matches what you fetched). Do not bypass this with another command. If the user explicitly wants to overwrite, they type \`override: ${k}\`.`;
 }
 function deployNudge(t, note) {
   return `DEPLOY: server copy of ${t.path} ${note}. Build a deploy from the LIVE copy plus your change, never from HEAD plus your change.`;
@@ -2702,11 +2767,13 @@ function localMd5(p) {
   }
 }
 var SSH_KILL_MS = 3000;
-function remoteMd5s(userhost, sshArgs, paths, killMs = SSH_KILL_MS) {
+var DIR_MARK = "cm-is-dir ";
+function remoteMd5s(userhost, sshArgs, paths, killMs = SSH_KILL_MS, probeDirs = []) {
   const out = new Map;
   const q = (p) => `'${p.replace(/'/g, `'\\''`)}'`;
+  const cmd = `md5sum -- ${paths.map(q).join(" ")}${probeDirs.map((p) => `; test -d ${q(p)} && echo ${q(`${DIR_MARK}${p}`)}`).join("")}`;
   try {
-    const r = spawnSync5("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=2", ...sshArgs, userhost, `md5sum -- ${paths.map(q).join(" ")}`], { encoding: "utf-8", timeout: killMs });
+    const r = spawnSync5("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=2", ...sshArgs, userhost, cmd], { encoding: "utf-8", timeout: killMs });
     if (r.error || r.status === null || r.status === 255) {
       const reason = r.error ? r.error.code === "ETIMEDOUT" ? "ssh timed out" : r.error.message : `ssh failed: ${(r.stderr ?? "").trim().split(`
 `).pop() ?? ""}`.slice(0, 120);
@@ -2715,9 +2782,10 @@ function remoteMd5s(userhost, sshArgs, paths, killMs = SSH_KILL_MS) {
       return out;
     }
     const lines = parseMd5sumLines(r.stdout ?? "");
+    const dirs = new Set(String(r.stdout ?? "").split(/\r?\n/).filter((l) => l.startsWith(DIR_MARK)).map((l) => l.slice(DIR_MARK.length)));
     for (const p of paths) {
       const m = lines.get(p);
-      out.set(p, m ? { kind: "md5", md5: m } : { kind: "absent" });
+      out.set(p, { ...m ? { kind: "md5", md5: m } : { kind: "absent" }, ...dirs.has(p) ? { dir: true } : {} });
     }
   } catch (e) {
     for (const p of paths)
@@ -2725,6 +2793,7 @@ function remoteMd5s(userhost, sshArgs, paths, killMs = SSH_KILL_MS) {
   }
   return out;
 }
+var COMMITTED_DEPTH = 9;
 function committedMd5s(file, remotePath, cwd) {
   const out = new Map;
   try {
@@ -2745,7 +2814,7 @@ function committedMd5s(file, remotePath, cwd) {
       ["origin/HEAD", "the default branch"],
       ["origin/master", "the default branch"],
       ["origin/main", "the default branch"],
-      ...Array.from({ length: 9 }, (_, k) => [`HEAD~${k + 1}`, "a recent commit"])
+      ...Array.from({ length: COMMITTED_DEPTH }, (_, k) => [`HEAD~${k + 1}`, "a recent commit"])
     ];
     const r = spawnSync5("git", ["-C", root, "cat-file", "--batch"], { input: refs.map(([ref]) => `${ref}:${rel}`).join(`
 `) + `
@@ -2803,15 +2872,23 @@ function checkUploads(sid, uploads, opts = {}) {
   }
   const nudges = [];
   for (const group of byHost.values()) {
-    const server = remoteMd5s(group[0].userhost, group[0].sshArgs, group.map((u) => u.path), opts.killMs);
+    const inside = (u) => `${u.path.replace(/\/+$/, "")}/${basename(u.local)}`;
+    const maybe = group.filter((u) => u.orDir);
+    const server = remoteMd5s(group[0].userhost, group[0].sshArgs, [...group.map((u) => u.path), ...maybe.map(inside)], opts.killMs, maybe.map((u) => u.path));
     for (const u of group) {
+      if (u.orDir && server.get(u.path)?.dir) {
+        u.path = inside(u);
+        if (opts.skip?.(remoteKey(u)))
+          continue;
+      }
+      const copy = server.get(u.path) ?? { kind: "error", reason: "no answer" };
       const mine = localMd5(u.local);
       const known = committedMd5s(u.local, u.path, opts.cwd);
       if (mine)
         known.set(mine, "your file");
       for (const e of base[remoteKey(u)] ?? [])
         known.set(e.md5, e.how === "upload" ? "your last upload" : "your fetched copy");
-      const v = decideDeploy(server.get(u.path) ?? { kind: "error", reason: "no answer" }, known);
+      const v = decideDeploy(copy, known);
       if (!v.allow)
         return { deny: denyDeployText(u, v.md5, opts.holderOf?.(u.local)), nudges: [] };
       nudges.push(deployNudge(u, v.note));
@@ -3018,10 +3095,51 @@ function globsOverlap(aGlobs, bGlobs) {
 
 // src/shared/ai-process.ts
 import { readFileSync as readFileSync11 } from "fs";
+import { spawnSync as spawnSync6 } from "child_process";
 import { basename as basename2 } from "path";
 var MAX_DEPTH = 8;
+var PS_TIMEOUT_MS = 1000;
+var realPs = () => {
+  try {
+    const r = spawnSync6("ps", ["-ax", "-o", "pid=,ppid=,args="], { encoding: "utf8", timeout: PS_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
+    return r.status === 0 ? r.stdout : null;
+  } catch {
+    return null;
+  }
+};
+var psCache = new Map;
+function psWalk(agents, start, snapshot) {
+  const procs = new Map;
+  for (const line of snapshot.split(`
+`)) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    if (m)
+      procs.set(Number(m[1]), { ppid: Number(m[2]), argv: m[3].trim().split(/\s+/) });
+  }
+  let pid = start;
+  for (let i = 0;i < MAX_DEPTH && pid > 1; i++) {
+    const p = procs.get(pid);
+    if (!p)
+      return;
+    const script = p.argv.slice(1).find((a) => !a.startsWith("-"));
+    if (agents.some((a) => name(p.argv[0]) === a || name(script) === a))
+      return pid;
+    pid = p.ppid;
+  }
+  return;
+}
 var name = (arg) => arg ? basename2(arg).replace(/\.[cm]?js$/, "") : "";
-function aiProcessPid(agents, start = process.ppid, root = "/proc", platform = process.platform) {
+function aiProcessPid(agents, start = process.ppid, root = "/proc", platform = process.platform, ps = realPs) {
+  if (platform === "darwin") {
+    const key = `${agents.join(",")}\x00${start}`;
+    if (!psCache.has(key)) {
+      const snapshot = ps();
+      if (snapshot === null)
+        return;
+      psCache.set(key, psWalk(agents, start, snapshot));
+    }
+    return psCache.get(key);
+  }
   if (platform !== "linux")
     return;
   let pid = start;
@@ -3069,6 +3187,7 @@ async function publishClaim(sid, cwd, touched, o) {
     if (killMs < 500) {
       advisories.push(...uploads.map((u) => `DEPLOY: server copy of ${u.path} could not be checked (no time left in this CLI's hook budget): fetch and diff before uploading. Build a deploy from the LIVE copy plus your change, never from HEAD plus your change.`));
     } else {
+      const keys = uploads.map(remoteKey);
       const res = checkUploads(sid, uploads, {
         skip: (key) => globsOverlap([key], ov).length > 0,
         holderOf: (local) => {
@@ -3078,6 +3197,11 @@ async function publishClaim(sid, cwd, touched, o) {
         killMs,
         ...cwd ? { cwd } : {}
       });
+      const moved = new Map(uploads.flatMap((u, i) => remoteKey(u) === keys[i] ? [] : [[keys[i], remoteKey(u)]]));
+      if (moved.size) {
+        files = files.map((f) => moved.get(f) ?? f);
+        touched = touched.map((f) => moved.get(f) ?? f);
+      }
       if (res.deny) {
         if (enforcing())
           return { deny: res.deny, advisories: [] };
@@ -3179,7 +3303,7 @@ async function main4(opts = {}) {
     const transfers = shell === "posix" ? parseTransfers(cmd, cwd ?? "") : { uploads: [] };
     const uploads = transfers.uploads.filter((u) => !/^\/(?:var\/)?tmp\//.test(u.path));
     if (transfers.unchecked)
-      advisories.push(`DEPLOY: ${transfers.unchecked} upload(s) in this command name their file, host or path through a shell expansion the guard cannot resolve ($(...), $1, a glob), so the server copy was not checked: fetch the live copy and diff before uploading. Build a deploy from the LIVE copy plus your change, never from HEAD plus your change.`);
+      advisories.push(`DEPLOY: ${transfers.unchecked} upload(s) in this command name their file, host or path through a shell expansion the guard cannot resolve ($(...), $@, a glob, a pipe from another command), so the server copy was not checked: fetch the live copy and diff before uploading. Build a deploy from the LIVE copy plus your change, never from HEAD plus your change.`);
     let repoRoot;
     if (cwd && isCoarseClaim(written, cwd)) {
       const root = detectRepoRootSync(cwd);
