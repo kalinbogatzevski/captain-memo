@@ -183,7 +183,7 @@ claude plugin install captain-memo@captain-memo
 
 The plugin only ever talks to a worker on **localhost** (`CAPTAIN_MEMO_WORKER_PORT` overrides the port, not the host), so forward the remote worker's `:39888` onto this machine's localhost — e.g. `ssh -L 39888:localhost:39888 <remote-host>`. This is a power-user setup; most people should run the wizard.
 
-The worker's local API asks for a per-install secret in `~/.config/captain-memo/worker.token` (`%APPDATA%\captain-memo\worker.token` on Windows; owner-only). The hooks, the MCP server, the CLI and `captain-memo doctor` send it for you, reading it from the local file. With the default `CAPTAIN_MEMO_WORKER_AUTH=warn` a call without it is still answered, so this setup works as it is. A secret that differs from the worker's is refused even in `warn`, so if you ever turn on `enforce` on the remote worker, put that worker's `worker.token` at the same path on this machine first. [Configuration](docs/CONFIGURATION.md#worker-runtime) has the details.
+The worker's local API asks for a per-install secret in `~/.config/captain-memo/worker.token` (`%APPDATA%\captain-memo\worker.token` on Windows; owner-only). The hooks, the MCP server, the CLI and `captain-memo doctor` send it for you, reading it from the local file. A machine with no `worker.token` sends none, and with the default `CAPTAIN_MEMO_WORKER_AUTH=warn` the remote worker still answers, so this setup works as it is. If this machine does have a `worker.token` (an earlier local install left one), the plugin sends it, and a secret that differs from the remote worker's is refused even in `warn`: put the remote worker's `worker.token` at the same path here. You need the same copy before you turn on `enforce` on the remote worker. [Configuration](docs/CONFIGURATION.md#worker-runtime) has the details.
 
 ### Updating
 
@@ -508,7 +508,7 @@ captain-memo inspect-claude-mem        # read-only row counts of ~/.claude-mem/
 captain-memo migrate-from-claude-mem   # one-time migration (--dry-run for preview)
 ```
 
-`status` and `stats` accept `--json` for machine-readable output — handy for statuslines, dashboards, monitoring probes. `captain-memo watch` is a deprecated alias for `top`. `captain-memo help` lists every command, including the ones not shown here. If `captain-memo remember` prints `Memory write UNCONFIRMED`, the write most likely landed: do not retry, wait a few seconds and search for it.
+`status` and `stats` accept `--json` for machine-readable output — handy for statuslines, dashboards, monitoring probes. `captain-memo watch` is a deprecated alias for `top`. `captain-memo help` lists the main commands, including some not shown here. If `captain-memo remember` prints `Memory write UNCONFIRMED`, the write most likely landed: do not retry, wait a few seconds and search for it.
 
 ### Interactive `top` (v0.1.16)
 
