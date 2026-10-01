@@ -30,5 +30,5 @@ must run against a real test database.
 ## On error
 
 - 404 not_found: tell the user "no document with that doc_id — was the search recent? Try `/captain-memo:search` again to get fresh doc_ids"
-- 401: this session started before the worker began asking for its secret (0.52.0) and sends none. Tell the user to restart the AI session
+- 401: the call carried no valid worker secret (a session started before 0.52.0 sends none). Tell the user to restart the AI session; `captain-memo doctor` lists any caller still sending none
 - worker unreachable: `captain-memo doctor` to diagnose

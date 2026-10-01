@@ -116,7 +116,7 @@ A live claim blocks. Another Claude Code, Codex or Gemini session's edit or uplo
 
 ### Session-start working rules
 
-Claude Code, Codex and Gemini sessions are sent a fixed set of working rules (about 2.8 KB) at session start, and again after `/compact` in Claude Code and Codex. The work-board steps come first, then seven rules: search memory before acting, never guess, committed is not deployed, ask when intent is unclear, `idea:` / `todo:` is homework, run tests and data scripts next to the data they use, and run independent work in parallel. They are always on in this release. Other AI tools get the work-board part through the captain-memo skill, when the model loads it.
+Claude Code, Codex and Gemini sessions are sent a fixed set of working rules (under 3 KB) at session start, and again after `/compact` in Claude Code and Codex. The work-board steps come first, then seven rules: search memory before acting, never guess, committed is not deployed, ask when intent is unclear, `idea:` / `todo:` is homework, run tests and data scripts next to the data they use, and run independent work in parallel. They are always on in this release. Other AI tools get the work-board part through the captain-memo skill, when the model loads it.
 
 ### Homework
 
