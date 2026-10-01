@@ -48,8 +48,43 @@ test('only the named agents match: a codex hook never takes the claude above it'
 });
 
 test('fails open: off Linux, past the depth cap, or a missing /proc entry', () => {
-  expect(aiProcessPid(['codex'], 22, root, 'darwin')).toBeUndefined();
+  expect(aiProcessPid(['codex'], 22, root, 'win32')).toBeUndefined();
   expect(aiProcessPid(['codex'], 51, root, 'linux')).toBeUndefined();
   expect(aiProcessPid(['codex'], 47, root, 'linux')).toBe(40);
   expect(aiProcessPid(['codex'], 999, root, 'linux')).toBeUndefined();
+});
+
+// macOS: no /proc, so the walk runs over one `ps -ax -o pid=,ppid=,args=` snapshot (the same trees as above).
+const PS = [
+  '    1     0 /sbin/launchd',
+  '   10     1 /Users/u/.local/bin/claude',
+  '   11    10 /bin/zsh -c codex',
+  '   20    11 node /Users/u/.npm-global/bin/codex exec hi',
+  '   21    20 /x/vendor/aarch64-apple-darwin/bin/codex exec hi',
+  '   22    21 sh -c bun /p/captain-memo-hook.js CodexPreToolUse m',
+  '   24    21 bun /p/mcp-server.js',
+  '   31    30 /opt/homebrew/bin/node --max-old-space-size=7924 /Users/u/.npm-global/bin/gemini -p hi',
+  '   30    11 node /Users/u/.npm-global/bin/gemini -p hi',
+  '   32    31 bun /p/captain-memo-hook.js GeminiBeforeTool m',
+].join('\n');
+
+test('macOS: codex and gemini are found through one ps snapshot, which is taken once per process and question', () => {
+  let calls = 0;
+  const ps = () => { calls++; return PS; };
+  expect(aiProcessPid(['codex'], 22, root, 'darwin', ps)).toBe(21);
+  expect(aiProcessPid(['codex', 'gemini'], 24, root, 'darwin', ps)).toBe(21);
+  expect(aiProcessPid(['gemini'], 32, root, 'darwin', ps)).toBe(31);
+  expect(aiProcessPid(['gemini'], 22, root, 'darwin', ps)).toBeUndefined();   // none above: undefined is cached too
+  expect(calls).toBe(4);
+  expect(aiProcessPid(['codex'], 22, root, 'darwin', ps)).toBe(21);
+  expect(aiProcessPid(['gemini'], 22, root, 'darwin', ps)).toBeUndefined();
+  expect(calls).toBe(4);
+  expect(aiProcessPid(['codex'], 24, root, 'darwin', () => null)).toBeUndefined();   // ps failed: no pid, as before
+  expect(aiProcessPid(['codex'], 24, root, 'darwin', ps)).toBe(21);                  // and the failure was not cached
+});
+
+test('macOS path against the real ps on this host: this test process finds itself', () => {
+  if (process.platform === 'win32') return;
+  expect(aiProcessPid(['bun'], process.pid, root, 'darwin')).toBe(process.pid);
+  expect(aiProcessPid(['no-such-agent-cli'], process.pid, root, 'darwin')).toBeUndefined();
 });

@@ -169,3 +169,18 @@ test('two sessions writing the same /tmp scratch file never block each other', a
   const b = await bash('tmpB', `echo b > ${f}`, 5_100_002);
   expect(b.json?.hookSpecificOutput?.permissionDecision).toBeUndefined();
 });
+
+// #227: `scp f host:/dir` with no trailing slash, where /dir is a directory on the server: the file inside it is the target.
+test('an upload into a server directory is claimed and reported under the file it lands on', async () => {
+  const bin = join(binDir, '..', 'bin-dir');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'ssh'), '#!/bin/sh\necho "cm-is-dir /srv/app"\n');
+  chmodSync(join(bin, 'ssh'), 0o755);
+  writeFileSync(join(root, 'up2.php'), '<?php // mine\n');
+  const r = await hook('PreToolUse', { session_id: 'dir-A', cwd: root, tool_name: 'Bash', tool_input: { command: 'scp -q up2.php root@h9:/srv/app' } },
+    { CLAUDE_PID: '5200001', PATH: `${bin}:${process.env.PATH}` });
+  expect(r.json.hookSpecificOutput.additionalContext).toContain('server copy of /srv/app/up2.php is new');
+  const files = (await active('dir-A')).claims.find((c) => c.session_id === 'dir-A')!.files;
+  expect(files).toContain('root@h9:/srv/app/up2.php');
+  expect(files).not.toContain('root@h9:/srv/app');
+});

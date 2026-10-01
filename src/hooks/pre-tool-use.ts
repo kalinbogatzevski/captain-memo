@@ -88,6 +88,7 @@ async function publishClaim(sid: string, cwd: string | undefined, touched: strin
     if (killMs < 500) {
       advisories.push(...uploads.map((u) => `DEPLOY: server copy of ${u.path} could not be checked (no time left in this CLI's hook budget): fetch and diff before uploading. Build a deploy from the LIVE copy plus your change, never from HEAD plus your change.`));
     } else {
+      const keys = uploads.map(remoteKey);
       const res = checkUploads(sid, uploads, {
         skip: (key) => globsOverlap([key], ov).length > 0,
         holderOf: (local) => {
@@ -97,6 +98,9 @@ async function publishClaim(sid: string, cwd: string | undefined, touched: strin
         killMs,
         ...(cwd ? { cwd } : {}),
       });
+      // `scp f host:/dir` where /dir is a directory: the check found the real target, so the claim names it too
+      const moved = new Map(uploads.flatMap((u, i): [string, string][] => (remoteKey(u) === keys[i] ? [] : [[keys[i]!, remoteKey(u)]])));
+      if (moved.size) { files = files.map((f) => moved.get(f) ?? f); touched = touched.map((f) => moved.get(f) ?? f); }
       if (res.deny) {
         if (enforcing()) return { deny: res.deny, advisories: [] };
         advisories.push(res.deny);
@@ -107,7 +111,7 @@ async function publishClaim(sid: string, cwd: string | undefined, touched: strin
 
   // The pid of the AI CLI process this session runs in: the edit guard enforces only claims that carry one (see
   // guardContested). CLAUDE_PID for Claude only: a Codex or Gemini process started from a Claude shell inherits it, so
-  // theirs comes from the process tree (off Linux none is found and the claim only warns, as before).
+  // theirs comes from the process tree (/proc on Linux, one ps snapshot on macOS; on Windows none is found and the claim only warns, as before).
   const pid = o.agent === 'claude' ? Number(process.env.CLAUDE_PID) : aiProcessPid([o.agent]) ?? NaN;
   const set = await workerFetch<SetResp>('/worknote/set', {
     method: 'POST',
@@ -203,7 +207,7 @@ export async function main(opts: PreToolUseOptions = {}): Promise<void> {
     let written = parseWrittenPaths(cmd, cwd ?? '', shell);
     const transfers: { uploads: Transfer[]; unchecked?: number } = shell === 'posix' ? parseTransfers(cmd, cwd ?? '') : { uploads: [] };
     const uploads = transfers.uploads.filter((u) => !/^\/(?:var\/)?tmp\//.test(u.path));   // a server's /tmp is scratch too
-    if (transfers.unchecked) advisories.push(`DEPLOY: ${transfers.unchecked} upload(s) in this command name their file, host or path through a shell expansion the guard cannot resolve ($(...), \$1, a glob), so the server copy was not checked: fetch the live copy and diff before uploading. Build a deploy from the LIVE copy plus your change, never from HEAD plus your change.`);
+    if (transfers.unchecked) advisories.push(`DEPLOY: ${transfers.unchecked} upload(s) in this command name their file, host or path through a shell expansion the guard cannot resolve ($(...), \$@, a glob, a pipe from another command), so the server copy was not checked: fetch the live copy and diff before uploading. Build a deploy from the LIVE copy plus your change, never from HEAD plus your change.`);
     let repoRoot: string | undefined;
 
     // The parser's "I could not name the target" fallback is `<cwd>/**`. That claim named no file, yet it overlapped

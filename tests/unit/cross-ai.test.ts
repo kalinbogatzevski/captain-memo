@@ -224,11 +224,19 @@ test('connectCrossAi — Codex installs native hooks only when the effective fea
   expect(hooks.hooks.UserPromptSubmit[0].hooks[0].command).toContain('CodexUserPromptSubmit');
   expect(hooks.hooks.PostToolUse[0].hooks[0].command).toContain('captain-memo-hook.js');
   expect(hooks.hooks.SessionStart[0].hooks[0].command).toContain('CodexSessionStart');
-  expect(result?.detail).toContain('trust the new SessionStart hook');   // said once, when the hook is new
+  expect(result?.detail).toContain('trust the new SessionStart and PreToolUse (the work-board guard) hooks');   // said once, naming every new hook (#223)
   const [again] = connectCrossAi({
     only: ['codex'], mcpCommand: ['bun', MCP_PATH], skillSource, home, run,
   });
   expect(again?.detail ?? '').not.toContain('trust');
+  // an install from before the edit guard: only PreToolUse is new, and only it is named
+  delete hooks.hooks.PreToolUse;
+  writeFileSync(hooksPath, JSON.stringify(hooks));
+  const [upgraded] = connectCrossAi({
+    only: ['codex'], mcpCommand: ['bun', MCP_PATH], skillSource, home, run,
+  });
+  expect(upgraded?.detail).toContain('trust the new PreToolUse (the work-board guard) hook (');
+  expect(upgraded?.detail).not.toContain('SessionStart');
 });
 
 test('connectCrossAi — old or hooks-disabled Codex stays on rollout fallback', () => {

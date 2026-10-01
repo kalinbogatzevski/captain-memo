@@ -8,14 +8,14 @@ import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import {
   parseTransfers, decideDeploy, denyDeployText, deployNudge, parseMd5sumLines, md5Of, remoteKey, checkUploads,
-  recordBaseline, readBaselines, recordFetchBaselines, committedMd5s,
+  recordBaseline, readBaselines, recordFetchBaselines, committedMd5s, remoteMd5s, COMMITTED_DEPTH,
 } from '../../src/hooks/deploy-guard.ts';
 
 const noDir = () => false;
 
 test('scp: flags with values are skipped, the last positional is the destination, ssh args are carried', () => {
   const r = parseTransfers('scp -P 30043 -i /k/id -o StrictHostKeyChecking=no hr/functions.php root@deploy.example.com:/var/www/app/hr/functions.php', '/repo', noDir);
-  expect(r.uploads).toEqual([{ local: '/repo/hr/functions.php', userhost: 'root@deploy.example.com', path: '/var/www/app/hr/functions.php', sshArgs: ['-p', '30043', '-i', '/k/id', '-o', 'StrictHostKeyChecking=no'] }]);
+  expect(r.uploads).toEqual([{ local: '/repo/hr/functions.php', userhost: 'root@deploy.example.com', path: '/var/www/app/hr/functions.php', sshArgs: ['-p', '30043', '-i', '/k/id', '-o', 'StrictHostKeyChecking=no'], orDir: true }]);
   expect(r.downloads).toEqual([]);
 });
 
@@ -195,4 +195,86 @@ test('loop-body assignments are never pinned to the first iteration; quotes insi
     ['/repo/core/hr/rpc.php', `root@deploy2.example.com:/var/www/app/core/hr/rpc.php`], ['/repo/core/hr/rpc.php', `root@deploy.example.com:/var/www/app/core/hr/rpc.php`],
   ]);
   expect(parseTransfers('S="/x/scratch"; scp -q $S/a.php root@h1:/srv/a.php', '/r', noDir).uploads[0]!.local).toBe('/x/scratch/a.php');
+});
+
+// #227: shapes the first parser reported as unchecked, or missed
+test('a shell function runs where it is called, with its positional arguments; the definition alone uploads nothing', () => {
+  const def = 'R=/srv/app; put() { scp -q "$2" root@$1:"$R/$3.deploytmp" && ssh root@$1 "mv -f $R/$3.deploytmp $R/$3"; }';
+  expect(parseTransfers(def, '/r', noDir)).toEqual({ uploads: [], downloads: [] });
+  const r = parseTransfers(`${def}; put h1 hr/a.php hr/a.php; put h2 /x/b.php hr/b.php`, '/r', noDir);
+  expect(r.unchecked).toBeUndefined();
+  expect(r.uploads.map((u) => [u.local, remoteKey(u)])).toEqual([['/r/hr/a.php', 'root@h1:/srv/app/hr/a.php'], ['/x/b.php', 'root@h2:/srv/app/hr/b.php']]);
+  // `function put {`, a call inside a loop, and an argument the call does not give
+  expect(parseTransfers('function put { scp $1 root@$2:/srv/$1; }\nfor h in h1 h2; do put a.php $h; done', '/r', noDir).uploads.map(remoteKey)).toEqual(['root@h1:/srv/a.php', 'root@h2:/srv/a.php']);
+  expect(parseTransfers('put() { scp "$1" root@h1:"$2"; }; put a.php', '/r', noDir)).toEqual({ uploads: [], downloads: [], unchecked: 1 });
+  expect(parseTransfers('put() { scp "$@" root@h1:/srv/; }; put a.php b.php', '/r', noDir).unchecked).toBe(1);
+  expect(parseTransfers('f() { f; scp a.php root@h1:/srv/a.php; }; f', '/r', noDir).uploads.length).toBeLessThanOrEqual(21);   // a function that calls itself ends
+});
+
+test('nested loops give every combination; a loop that has ended leaves its last value', () => {
+  const r = parseTransfers('for h in h1 h2; do for f in a.php b.php; do scp $f root@$h:/srv/$f; done; done', '/r', noDir);
+  expect(r.unchecked).toBeUndefined();
+  expect(r.uploads.map(remoteKey).sort()).toEqual(['root@h1:/srv/a.php', 'root@h1:/srv/b.php', 'root@h2:/srv/a.php', 'root@h2:/srv/b.php']);
+  // two loops in a row are not nested: the first variable holds its last value in the second loop
+  expect(parseTransfers('for f in a.php b.php; do php -l $f; done; for h in h1 h2; do scp $f root@$h:/srv/$f; done', '/r', noDir).uploads.map(remoteKey)).toEqual(['root@h1:/srv/b.php', 'root@h2:/srv/b.php']);
+  // past 25 combinations the variable stays unresolved: counted, never guessed
+  const many = Array.from({ length: 6 }, (_, i) => `x${i}`).join(' ');
+  expect(parseTransfers(`for h in ${many}; do for f in ${many}; do scp $f root@$h:/srv/$f; done; done`, '/r', noDir).unchecked).toBeGreaterThan(0);
+});
+
+test("cat f | ssh h 'cat > p' and a leading < f are uploads; another producer before the pipe is unchecked", () => {
+  const up = [{ local: '/r/a.php', userhost: 'root@h1', path: '/srv/a.php', sshArgs: [] }];
+  expect(parseTransfers("cat a.php | ssh root@h1 'cat > /srv/a.php'", '/r', noDir).uploads).toEqual(up);
+  expect(parseTransfers('cd sub && cat ../a.php | ssh root@h1 "sudo tee /srv/a.php >/dev/null"', '/r', noDir).uploads).toEqual(up);
+  expect(parseTransfers("< a.php ssh root@h1 'cat > /srv/a.php'", '/r', noDir).uploads).toEqual(up);
+  expect(parseTransfers("git show HEAD:a.php | ssh root@h1 'cat > /srv/a.php'", '/r', noDir)).toEqual({ uploads: [], downloads: [], unchecked: 1 });
+  expect(parseTransfers("cat a.php b.php | ssh root@h1 'cat > /srv/a.php'", '/r', noDir).unchecked).toBe(1);
+  expect(parseTransfers("cat <<'EOF' | ssh root@h1 'cat > /etc/x.conf'\nhi\nEOF", '/r', noDir)).toEqual({ uploads: [], downloads: [], unchecked: 1 });   // a heredoc is no file
+  expect(parseTransfers("cat <a.php | ssh root@h1 'cat > /srv/a.php'", '/r', noDir).uploads).toEqual([]);
+  expect(parseTransfers("cat a.php | ssh root@h1 'wc -l'", '/r', noDir)).toEqual({ uploads: [], downloads: [] });
+  expect(parseTransfers("ssh root@h1 'cat > /srv/a.php' || cat a.php", '/r', noDir).uploads).toEqual([]);   // `||` is not a pipe
+});
+
+test('scp f host:/dir with no trailing slash: when /dir is a directory the file inside it is what is checked', () => {
+  const srv = join(dir, 'server/hr');
+  writeFileSync(join(srv, 'functions.php'), '<?php // peer\'s uncommitted deploy\n');
+  writeFileSync(join(dir, 'repo/hr/functions.php'), '<?php // v2 committed\n// my hunk\n');
+  const up = parseTransfers(`scp hr/functions.php root@h1:${srv}`, join(dir, 'repo'), noDir).uploads;
+  expect(up[0]).toMatchObject({ path: srv, orDir: true });
+  const r = checkUploads('D1', up);
+  expect(r.deny).toContain(`DEPLOY BLOCKED: root@h1:${srv}/functions.php`);
+  expect(up[0]!.path).toBe(`${srv}/functions.php`);   // the claim and the baseline use the real target
+  // the override the deny text names covers it
+  const again = parseTransfers(`scp hr/functions.php root@h1:${srv}`, join(dir, 'repo'), noDir).uploads;
+  expect(checkUploads('D1', again, { skip: (k) => k === `root@h1:${srv}/functions.php` })).toEqual({ nudges: [] });
+  // a directory that does not hold the file yet: new; a plain file path is read as before, in the same single ssh
+  const fresh = parseTransfers(`scp hr/functions.php root@h1:${join(dir, 'server')}`, join(dir, 'repo'), noDir).uploads;
+  expect(checkUploads('D2', fresh).nudges[0]).toContain(`${join(dir, 'server')}/functions.php is new`);
+  const m = remoteMd5s('root@h1', [], [srv, `${srv}/functions.php`], 3000, [srv, `${srv}/functions.php`]);
+  expect(m.get(srv)).toEqual({ kind: 'absent', dir: true });
+  expect(m.get(`${srv}/functions.php`)).toEqual({ kind: 'md5', md5: md5Of('<?php // peer\'s uncommitted deploy\n') });
+  // two files into one directory in one command: each is checked under its own name
+  writeFileSync(join(dir, 'repo/hr/other.php'), '<?php // other\n');
+  const two = parseTransfers(`scp hr/other.php root@h1:${srv}; scp hr/functions.php root@h1:${srv}`, join(dir, 'repo'), noDir).uploads;
+  expect(checkUploads('D3', two).deny).toContain(`root@h1:${srv}/functions.php`);
+  expect(two.map((u) => u.path)).toEqual([`${srv}/other.php`, `${srv}/functions.php`]);
+  // ssh 'cat > /dir' writes nothing into a directory, so it is never probed
+  expect(parseTransfers(`ssh root@h1 'cat > ${srv}' < hr/functions.php`, join(dir, 'repo'), noDir).uploads[0]!.orDir).toBeUndefined();
+});
+
+test('committed versions: the default branch tip counts from a feature branch, and exactly COMMITTED_DEPTH ancestors of HEAD', () => {
+  const repo = join(dir, 'repo2');
+  mkdirSync(repo);
+  const git = (...a: string[]) => spawnSync('git', ['-C', repo, '-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { encoding: 'utf-8' });
+  git('init', '-q', '-b', 'main');
+  const f = join(repo, 'a.php');
+  for (let i = 0; i <= COMMITTED_DEPTH + 1; i++) { writeFileSync(f, `<?php // c${i}\n`); git('add', '.'); git('commit', '-qm', `c${i}`); }
+  const m = committedMd5s(f);
+  expect(m.get(md5Of(`<?php // c${COMMITTED_DEPTH + 1}\n`))).toBe('HEAD');
+  expect(m.get(md5Of('<?php // c1\n'))).toBe('a recent commit');   // HEAD~COMMITTED_DEPTH
+  expect(m.get(md5Of('<?php // c0\n'))).toBeUndefined();           // one commit further back
+  git('checkout', '-q', '-b', 'feature', 'HEAD~5');                // a branch that does not hold main's tip
+  writeFileSync(f, '<?php // feature\n'); git('commit', '-qam', 'feature');
+  expect(committedMd5s(f).get(md5Of(`<?php // c${COMMITTED_DEPTH + 1}\n`))).toBe('the default branch');
+  expect(denyDeployText({ local: f, userhost: 'h', path: '/p', sshArgs: [] }, 'a'.repeat(32))).toContain(`the last ${COMMITTED_DEPTH} commits`);
 });

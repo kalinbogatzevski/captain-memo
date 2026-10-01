@@ -875,11 +875,10 @@ const codexAdapter: ToolAdapter = {
           mkdirSync(dirname(hooksPath), { recursive: true });
           writeFileSync(hooksPath, after);
           // Codex keeps a trusted_hash per hook and holds a new one back until the user accepts it in the TUI.
-          if (!before?.includes('CodexSessionStart')) {
-            const note = 'Codex will ask once to trust the new SessionStart hook ("Trust all and continue")';
-            detail = detail ? `${detail}; ${note}` : note;
-          } else if (!before.includes('CodexPreToolUse')) {
-            const note = 'Codex will ask once to trust the new PreToolUse hook, the work-board guard ("Trust all and continue"); until then codex exec skips it';
+          // Both hooks Codex asks about are named: a first connect adds SessionStart and PreToolUse together (#223).
+          const fresh = [['CodexSessionStart', 'SessionStart'], ['CodexPreToolUse', 'PreToolUse (the work-board guard)']].filter(([alias]) => !before?.includes(alias!)).map(([, label]) => label);
+          if (fresh.length > 0) {
+            const note = `Codex will ask once to trust the new ${fresh.join(' and ')} ${fresh.length > 1 ? 'hooks' : 'hook'} ("Trust all and continue"); until then codex exec skips ${fresh.length > 1 ? 'them' : 'it'}`;
             detail = detail ? `${detail}; ${note}` : note;
           }
         }
