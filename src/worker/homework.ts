@@ -20,6 +20,7 @@ export interface HomeworkItem {
   done_at?: number;
   done_by?: string;
   note?: string;          // what was done / why closed
+  due?: string;           // when it is due (ISO 8601, UTC); from then on the session-start list leads with it, ⏰
 }
 
 const PREFIX = 'hw:';
@@ -48,16 +49,31 @@ function nextId(kv: InboxKv): string {
 }
 
 /** File a homework item. Text is required; topics normalised; the id is the next number on this captain. */
-export function addHomework(kv: InboxKv, m: { text: string; topics?: unknown; project?: string; by?: string }, now: number = Date.now()): HomeworkItem {
+export function addHomework(kv: InboxKv, m: { text: string; topics?: unknown; project?: string; by?: string; due?: unknown }, now: number = Date.now()): HomeworkItem {
   const text = String(m.text ?? '').trim().slice(0, MAX_TEXT);
   if (!text) throw new Error('empty');
+  const due = m.due === undefined ? undefined : parseDue(m.due);   // before nextId: a refused due does not use up a number
   const item: HomeworkItem = {
     id: nextId(kv), text, topics: normTopics(m.topics),
     ...(m.project ? { project: String(m.project).slice(0, 128) } : {}),
     by: String(m.by ?? 'hook').slice(0, 128), created_at: now,
+    ...(due ? { due } : {}),
   };
   kv.setKv(rowKey(item.id), JSON.stringify(item));
   return item;
+}
+
+/** A due time as ISO 8601 UTC. Takes an ISO date or date-time: a date-time without a zone is this host's local time, a
+ *  bare date is this host's midnight. Throws 'bad_due' for anything else, an impossible date included. A reminder, not a job. */
+export function parseDue(v: unknown): string {
+  const t = typeof v === 'string' ? v.trim() : '';
+  // JS reads a bare date as UTC midnight but a date-time without a zone as local: "on 2026-10-01" means local.
+  // And it rolls an impossible day over (2026-09-31 becomes Oct 1): the day must exist in its month.
+  const d = /^(\d{4})-(\d{2})-(\d{2})/.exec(t);
+  if (!d || new Date(Date.UTC(+d[1]!, +d[2]! - 1, +d[3]!)).getUTCDate() !== +d[3]!) throw new Error('bad_due');
+  const ms = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(t) ? `${t}T00:00` : t);
+  if (Number.isNaN(ms)) throw new Error('bad_due');
+  return new Date(ms).toISOString();
 }
 
 export function getHomework(kv: InboxKv, id: string): HomeworkItem | null {
@@ -113,9 +129,28 @@ export function homeworkFiledLine(it: HomeworkItem): string {
   return `📝 Filed as homework #${it.id} on this captain (not for now): ${it.text.split('\n')[0]!.slice(0, 160)} — todo_list() shows the list; the user may just want a short "noted".`;
 }
 
-/** The session-start line: what is waiting. Empty when nothing is open. */
-export function homeworkStartLines(items: HomeworkItem[]): string {
+/** An open item whose due time has come. */
+export function isHomeworkDue(it: HomeworkItem, now: number): boolean {
+  return !!it.due && !it.done_at && Date.parse(it.due) <= now;
+}
+
+/** Due items first, the one due longest ago first, then the rest in the order given. */
+export function homeworkDueFirst(items: HomeworkItem[], now: number): HomeworkItem[] {
+  const due = items.filter((it) => isHomeworkDue(it, now)).sort((a, b) => Date.parse(a.due!) - Date.parse(b.due!));
+  return [...due, ...items.filter((it) => !isHomeworkDue(it, now))];
+}
+
+/** What a list puts before and after an open item's title: ["⏰ ", " (DUE since 2026-10-01 00:05)"] once it is due,
+ *  ["", " (due 2026-10-01 00:05)"] before, ["", ""] with no due time. Times in this host's zone. */
+export function homeworkDueParts(it: HomeworkItem, now: number): [string, string] {
+  if (!it.due || it.done_at) return ['', ''];
+  const at = new Date(it.due).toLocaleString('sv-SE').slice(0, 16);   // YYYY-MM-DD HH:MM
+  return isHomeworkDue(it, now) ? ['⏰ ', ` (DUE since ${at})`] : ['', ` (due ${at})`];
+}
+
+/** The session-start line: what is waiting. Empty when nothing is open. Items that are due lead. */
+export function homeworkStartLines(items: HomeworkItem[], now: number = Date.now()): string {
   if (items.length === 0) return '';
-  const head = items.slice(0, 6).map((it) => `  #${it.id} ${it.text.split('\n')[0]!.slice(0, 100)}${it.claimed_by ? ` (claimed by ${it.claimed_by})` : ''}${it.topics.length ? ` #${it.topics.join(' #')}` : ''}`);
+  const head = homeworkDueFirst(items, now).slice(0, 6).map((it) => { const [mark, due] = homeworkDueParts(it, now); return `  ${mark}#${it.id} ${it.text.split('\n')[0]!.slice(0, 100)}${due}${it.claimed_by ? ` (claimed by ${it.claimed_by})` : ''}${it.topics.length ? ` #${it.topics.join(' #')}` : ''}`; });
   return [`📝 Open homework on this captain (${items.length}): todo_list() for all; todo_claim(id) before you start one; todo_done(id, note) when it is.`, ...head, ...(items.length > 6 ? [`  … ${items.length - 6} more`] : [])].join('\n');
 }

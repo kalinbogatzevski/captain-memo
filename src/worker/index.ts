@@ -45,7 +45,7 @@ import { runQmSupersedeSlice, applySupersedeDemotion } from './supersede.ts';
 import { setWorkNote, inheritDeclaredIntent, leaseSeconds, listLocalActive, clearWorkNote, decorateStaleness, overlapsAgainst, topicOverlapsAgainst, groupTopicContention, repoOverlapsAgainst, groupRepoContention, repoActiveHolders, guardContested, wholeRepo, pidAlive, setWorkOverride, getWorkOverride, getWorkNote, isStale, type SetWorkNoteInput, type GuardHolder } from './work-notes.ts';
 import { resolveRepoClaim } from './repo-claim.ts';
 import { warmWorknoteVecs, semanticOverlapPass, hasIntent, SEMANTIC_ENABLED, semanticStatus } from './worknote-semantic.ts';
-import { addHomework, listHomework, claimHomework, doneHomework } from './homework.ts';
+import { addHomework, listHomework, claimHomework, doneHomework, parseDue } from './homework.ts';
 import { whatsNew } from '../shared/whats-new.ts';
 import { centroid } from '../shared/vector-math.ts';
 import { PendingEmbedQueue, embedIsolating, isPerInputEmbedError, PENDING_EMBED_MAX_ATTEMPTS } from './pending-embed-queue.ts';
@@ -2484,9 +2484,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       }
       // ── Homework: ideas and todos parked for later (open → claimed → done), per captain ──────
       if (req.method === 'POST' && url.pathname === '/homework/add') {
-        const b = (await req.json().catch(() => null)) as { text?: unknown; topics?: unknown; project?: unknown; by?: unknown } | null;
+        const b = (await req.json().catch(() => null)) as { text?: unknown; topics?: unknown; project?: unknown; by?: unknown; due?: unknown } | null;
         if (!b || typeof b.text !== 'string' || !b.text.trim()) return Response.json({ error: 'invalid_request', details: 'text required' }, { status: 400 });
-        const item = addHomework(meta, { text: b.text, topics: b.topics, ...(typeof b.project === 'string' ? { project: b.project } : {}), ...(typeof b.by === 'string' ? { by: b.by } : {}) }, Date.now());
+        if (b.due !== undefined) { try { parseDue(b.due); } catch { return Response.json({ error: 'invalid_request', details: 'due must be an ISO 8601 date or date-time, e.g. 2026-10-01 or 2026-10-01T09:30' }, { status: 400 }); } }
+        const item = addHomework(meta, { text: b.text, topics: b.topics, ...(typeof b.project === 'string' ? { project: b.project } : {}), ...(typeof b.by === 'string' ? { by: b.by } : {}), due: b.due }, Date.now());
         return Response.json({ item, open: listHomework(meta, { status: 'open' }, Date.now()).length });
       }
       if (req.method === 'GET' && url.pathname === '/homework/list') {

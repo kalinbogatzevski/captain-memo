@@ -281,11 +281,11 @@ export const TOOLS = [
   {
     name: 'todo_add',
     description: 'File HOMEWORK on this captain: an idea or a task for later — not for now. Kept per captain (every AI session on this machine shares the list; Claude Code sessions see the open items at start, other tools call todo_list), with a lifecycle open → claimed → done. Use it when the user says "idea:", "todo:", "later:", "note for later", or when you notice work that should happen but not in this session. NOT a memory (that is `remember`: a fact to recall) and NOT a work claim (that is `work_set`: what you are doing right now). Returns the item with its number (#12) and how many are open.',
-    inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'What to do, in one or two lines; the first line is the title.' }, topics: { type: 'array', items: { type: 'string' }, description: 'Optional 1–5 kebab tags, like work_set topics.' }, project: { type: 'string', description: 'Optional project it belongs to; defaults to this cwd\'s project.' } }, required: ['text'] },
+    inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'What to do, in one or two lines; the first line is the title.' }, topics: { type: 'array', items: { type: 'string' }, description: 'Optional 1–5 kebab tags, like work_set topics.' }, project: { type: 'string', description: 'Optional project it belongs to; defaults to this cwd\'s project.' }, due: { type: 'string', description: 'Optional: when it is due, an ISO 8601 date or date-time ("2026-10-01T00:05"; no zone = this host\'s local time, a bare date = its midnight). From then on the session-start list in Claude Code shows it first, marked due; todo_list returns it with its due time. A reminder: nothing runs by itself.' } }, required: ['text'] },
   },
   {
     name: 'todo_list',
-    description: 'The homework on this captain: open items (default), done ones (kept a week), or all — each with number, text, topics, who filed it, who claimed it. Read it at the start of a session when you have nothing else to do, or when the user asks "what is pending / what did I want to do".',
+    description: 'The homework on this captain: open items (default), done ones (kept a week), or all — each with number, text, topics, who filed it, who claimed it, and its due time (UTC) when it has one. Read it at the start of a session when you have nothing else to do, or when the user asks "what is pending / what did I want to do".',
     inputSchema: { type: 'object', properties: { status: { type: 'string', enum: ['open', 'done', 'all'] } } },
   },
   {
@@ -477,8 +477,8 @@ export async function dispatchTool(
         break;
       }
       case 'todo_add': {
-        const a = (args ?? {}) as { text?: string; topics?: string[]; project?: string };
-        result = await workerPost(workerBase, '/homework/add', { text: a.text, topics: a.topics, project: a.project ?? resolveProjectId(cwd()), by: sessionId });
+        const a = (args ?? {}) as { text?: string; topics?: string[]; project?: string; due?: string };
+        result = await workerPost(workerBase, '/homework/add', { text: a.text, topics: a.topics, project: a.project ?? resolveProjectId(cwd()), by: sessionId, ...(a.due ? { due: a.due } : {}) });   // the route refuses a bad due
         break;
       }
       case 'todo_list': {

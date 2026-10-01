@@ -1,7 +1,7 @@
 import { join } from 'path';
 import { homedir } from 'os';
 import { readStdinJson, writeStdout, workerFetch, logHookError, workerFailureMessage, isMainModule } from './shared.ts';
-import type { HomeworkItem } from '../worker/homework.ts';
+import { homeworkDueFirst, homeworkDueParts, type HomeworkItem } from '../worker/homework.ts';
 import { LOCAL_ARTICLES } from './local-articles.ts';
 import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS, DEFAULT_WORKER_PORT, DATA_DIR } from '../shared/paths.ts';
 import { VERSION } from '../shared/version.ts';
@@ -79,9 +79,10 @@ function formatBanner(stats: StatsResponse, homework: HomeworkItem[] = []): stri
   lines.push(`  Embedder   ${stats.embedder.model} @ ${host}`);
   lines.push(`  Retrieval  silent envelope on each prompt (top-5)`);
   // HOMEWORK: what earlier sessions parked for later (`idea: …` / todo_add). One line per item, at most three,
-  // so a new session knows what is waiting without being told to start on it.
+  // so a new session knows what is waiting without being told to start on it. Items that are due lead.
   if (homework.length > 0) {
-    const shown = homework.slice(0, 3).map((h) => `#${h.id} ${h.text.split('\n')[0]!.slice(0, 70)}${h.claimed_by ? ` (claimed by ${h.claimed_by})` : ''}`);
+    const now = Date.now();
+    const shown = homeworkDueFirst(homework, now).slice(0, 3).map((h) => { const [mark, due] = homeworkDueParts(h, now); return `${mark}#${h.id} ${h.text.split('\n')[0]!.slice(0, 70)}${due}${h.claimed_by ? ` (claimed by ${h.claimed_by})` : ''}`; });
     lines.push(`  Homework   ${homework.length} open — todo_list() for all, todo_claim(id) before starting one`);
     for (const s of shown) lines.push(`             ${s}`);
     if (homework.length > 3) lines.push(`             … ${homework.length - 3} more`);

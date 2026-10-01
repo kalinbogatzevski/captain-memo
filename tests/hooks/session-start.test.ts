@@ -21,6 +21,7 @@ const FIXTURE = readFileSync(
 const HOOK_PATH = join(import.meta.dir, '../../src/hooks/session-start.ts');
 
 let statsCalls = 0;
+let homeworkItems: unknown[] = [];
 let server: ReturnType<typeof Bun.serve>;
 
 beforeAll(() => {
@@ -40,6 +41,7 @@ beforeAll(() => {
           version: VERSION,
         });
       }
+      if (url.pathname === '/homework/list') return Response.json({ items: homeworkItems });
       return new Response('nf', { status: 404 });
     },
   });
@@ -141,4 +143,30 @@ test('SessionStart — a STALE breadcrumb falls through to the honest degraded b
     expect(stdout).toContain('unreachable');
     expect(stdout).not.toContain('still starting up');
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Homework due times. The hook runs on the real clock, so these use a due time far in the past and one far in the future;
+// the zone is pinned so the printed times are exact. The ordering and label rules themselves are in homework.test.ts.
+const homeworkLines = async () => {
+  const { stdout, exitCode } = await runHook({ TZ: 'UTC' });
+  expect(exitCode).toBe(0);
+  const msg = JSON.parse(stdout).systemMessage as string;
+  return { msg, hw: msg.split('\n').filter((l) => /^\s{13}\S/.test(l)).map((l) => l.trim()) };
+};
+const hwItem = (id: string, extra: Record<string, unknown> = {}) => ({ id, text: `item ${id}`, topics: [], by: 't', created_at: Number(id), ...extra });
+
+test('SessionStart — a homework item that is due leads the banner, marked; one not due yet keeps its place', async () => {
+  homeworkItems = [hwItem('1'), hwItem('2', { due: '2099-01-01T00:00:00.000Z' }), hwItem('3', { due: '2020-01-01T00:00:00.000Z', claimed_by: 'erp-18' }), hwItem('4', { due: '2019-06-30T12:30:00.000Z' })];
+  try {
+    const { msg, hw } = await homeworkLines();
+    expect(hw).toEqual(['⏰ #4 item 4 (DUE since 2019-06-30 12:30)', '⏰ #3 item 3 (DUE since 2020-01-01 00:00) (claimed by erp-18)', '#1 item 1', '… 1 more']);
+    expect(msg).toContain('Homework   4 open');
+  } finally { homeworkItems = []; }
+});
+
+test('SessionStart — homework without due times is listed exactly as before, and a done item is never marked due', async () => {
+  homeworkItems = [hwItem('1'), hwItem('2', { claimed_by: 'x' }), hwItem('3', { due: '2020-01-01T00:00:00.000Z', done_at: 9 })];
+  try {
+    expect((await homeworkLines()).hw).toEqual(['#1 item 1', '#2 item 2 (claimed by x)', '#3 item 3']);
+  } finally { homeworkItems = []; }
 });

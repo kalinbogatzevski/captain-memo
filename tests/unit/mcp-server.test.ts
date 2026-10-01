@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test';
-import { dispatchTool, resolveWorkBoardSessionId, absoluteClaimFiles } from '../../src/mcp-server.ts';
+import { dispatchTool, resolveWorkBoardSessionId, absoluteClaimFiles, TOOLS } from '../../src/mcp-server.ts';
 
 // THE SELF-OVERLAP BUG. The PreToolUse auto-claim publishes under CLAUDE_CODE_SESSION_ID; minting an
 // unrelated `mcp-…` id put one session on the board twice, and work-notes.ts excludes self by EXACT
@@ -128,5 +128,31 @@ test('work_set and work_clear send the caller as `by`, over any `by` the model p
     expect(seen['/worknote/set']).toMatchObject({ session_id: 'peer', by: 's' });
     await dispatchTool('work_clear', { session_id: 'peer' }, deps);
     expect(seen['/worknote/clear']).toEqual({ session_id: 'peer', by: 's' });
+  } finally { srv.stop(); }
+});
+
+test('todo_add: `due` is in the schema, optional, and reaches the worker only when given', async () => {
+  const props = (TOOLS.find((t) => t.name === 'todo_add')!.inputSchema as { properties: Record<string, { type: string }>; required: string[] });
+  expect(props.properties.due?.type).toBe('string');
+  expect(props.required).toEqual(['text']);
+  const bodies: Array<Record<string, unknown>> = [];
+  const srv = Bun.serve({ port: 0, async fetch(req) { bodies.push(await req.json() as Record<string, unknown>); return Response.json({ item: { id: '1' }, open: 1 }); } });
+  try {
+    const deps = { workerBase: `http://localhost:${srv.port}`, sessionId: 's', cwd: () => '/' };
+    await dispatchTool('todo_add', { text: 'with a due time', due: '2026-10-01T09:30' }, deps);
+    await dispatchTool('todo_add', { text: 'without' }, deps);
+    await dispatchTool('todo_add', { text: 'client sent an empty optional', due: '' }, deps);
+    expect(bodies[0]).toMatchObject({ text: 'with a due time', due: '2026-10-01T09:30' });
+    expect('due' in bodies[1]!).toBe(false);
+    expect('due' in bodies[2]!).toBe(false);
+  } finally { srv.stop(); }
+});
+
+test('todo_add: the worker refusing a bad `due` reaches the model as an error that says why', async () => {
+  const srv = Bun.serve({ port: 0, fetch() { return Response.json({ error: 'invalid_request', details: 'due must be an ISO 8601 date or date-time, e.g. 2026-10-01 or 2026-10-01T09:30' }, { status: 400 }); } });
+  try {
+    const r = await dispatchTool('todo_add', { text: 'x', due: 'tomorrow' }, { workerBase: `http://localhost:${srv.port}`, sessionId: 's', cwd: () => '/' });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toContain('due must be an ISO 8601 date or date-time');
   } finally { srv.stop(); }
 });
