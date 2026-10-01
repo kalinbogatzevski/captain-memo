@@ -1,6 +1,6 @@
 ---
 name: captain-memo
-description: Persistent cross-session, cross-tool memory for this project via captain-memo. Use at the START of any non-trivial task to recall prior context, decisions, conventions, and past bugs/fixes, and whenever you'd ask "have we done / decided / hit this before?". Searches a shared local memory corpus (past session observations, curated project memory, skills) through the captain-memo MCP tools; the same tools coordinate work with the other AI sessions on this machine (work board) and park ideas for later (homework). Works across AI tools (Claude Code, Codex, Cursor, Gemini CLI) pointed at the same captain-memo worker.
+description: Persistent cross-session, cross-tool memory for this project via captain-memo. Use at the START of any non-trivial task to recall prior context, decisions, conventions, and past bugs/fixes, and whenever you'd ask "have we done / decided / hit this before?". Searches a shared local memory corpus (past session observations, curated project memory, skills) through the captain-memo MCP tools; the same tools coordinate work with the other AI sessions on this machine (work board) and park ideas for later (homework). Works across AI tools (Claude Code, Codex, Gemini CLI, Antigravity, goose, Cursor, opencode, Kimi CLI and more) pointed at the same captain-memo worker.
 metadata:
   short-description: Recall project memory before acting — it persists across sessions and across AI tools.
 ---
@@ -39,14 +39,17 @@ It is local-first: the corpus lives on this machine, not in a vendor cloud.
 - **`list_capabilities` / `recommend_capabilities` / `get_capability`** — discover sanitized
   plugin/extension capabilities and the runtime that owns them. These are routing descriptors, not
   portable instructions or executable code; delegate to the returned runtime.
+- **`remember`** — persist a durable decision, preference, convention or hard-won fact into curated
+  memory (`body` and a `type`). It is indexed at once and recalled in later sessions.
 
 ## How to use the results
 - Treat retrieved memory as **authoritative project context**: cite it ("per prior memory, X was decided
   because Y") and let it constrain your plan.
 - If memory conflicts with the current request, **surface the conflict** — don't silently override a
   recorded decision.
-- Recall is the contract here. New learnings are captured automatically by the session's memory hooks
-  where they run (e.g. Claude Code); you don't need to write memory yourself.
+- Recall is the main job. Session observations are captured automatically where hooks run (Claude Code, and
+  Codex, Gemini and Kimi with native hooks). Call `remember` for a decision or fact that must outlive the
+  session and is not obvious from the code.
 
 ## Coordinating concurrent work (when other sessions/AIs share this codebase)
 
@@ -71,8 +74,9 @@ in different files:
   `work_active()` lists the live claims and `topic_contention` (every topic two or
   more sessions hold, with who).
 - Claude Code, Codex and Gemini auto-claim the files they edit. A live claim blocks another session's edit or
-  upload of that file (only the user lifts it, by typing `override: <file>`); on Codex and Gemini off Linux it only
-  warns. On other CLIs nothing claims for you. State intent yourself.
+  upload of that file (only the user lifts it, by typing `override: <file>`); a claim with no edit for 10 minutes
+  only warns. Codex and Gemini claims block on Linux; the macOS lookup has not been run on a Mac yet, and on
+  Windows those claims only warn. On other CLIs nothing claims for you. State intent yourself.
 
 ## Homework — ideas for later
 
