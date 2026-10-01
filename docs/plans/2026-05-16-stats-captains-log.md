@@ -515,7 +515,7 @@ const SAMPLE: StatsResponse = {
   project_id: 'default',
   version: '0.1.10',
   embedder: { model: 'voyage-4-lite', endpoint: 'https://api.voyageai.com/v1/embeddings' },
-  disk: { bytes: 515_000_000, path: '/home/k/.captain-memo' },
+  disk: { bytes: 515_000_000, path: '/home/me/.captain-memo' },
   efficiency: {
     corpus: { work_tokens: 9_300_000, stored_tokens: 710_000, ratio: 13.1, saved_pct: 92,
               coverage: { with_data: 10593, total: 10593 } },
