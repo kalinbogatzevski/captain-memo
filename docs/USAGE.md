@@ -5,7 +5,7 @@ The worker, the CLI and the MCP server driven by hand. Hooks, the observation pi
 ## Prerequisites
 
 - Bun ≥ 1.1.14 installed.
-- A reachable Voyage embeddings endpoint (default: `http://localhost:8124/v1/embeddings`, model `voyage-4-nano`). Local Voyage installation is out of scope for this plan — see project-level install notes.
+- An embedder: hosted Voyage (the install default), the local sidecar, any OpenAI-compatible endpoint, or none (`CAPTAIN_MEMO_SKIP_EMBED=1`, keyword search only). `captain-memo install` sets one up.
 
 The vector store is in-process via `sqlite-vec` (no separate Chroma daemon needed).
 
@@ -21,15 +21,15 @@ Default port: `39888`. Override via env:
 |---|---|---|
 | `CAPTAIN_MEMO_WORKER_PORT` | `39888` | HTTP port for the long-lived worker. |
 | `CAPTAIN_MEMO_PROJECT_ID` | `default` | Project namespace for the per-project vector collection. |
-| `CAPTAIN_MEMO_VOYAGE_ENDPOINT` | `http://localhost:8124/v1/embeddings` | Voyage embeddings endpoint. |
-| `CAPTAIN_MEMO_VOYAGE_MODEL` | `voyage-4-nano` | Model identifier passed to Voyage. |
-| `CAPTAIN_MEMO_VOYAGE_API_KEY` | — | Optional bearer token for Voyage. |
+| `CAPTAIN_MEMO_EMBEDDER_ENDPOINT` | `http://localhost:8124/v1/embeddings` | Embeddings endpoint. |
+| `CAPTAIN_MEMO_EMBEDDER_MODEL` | `voyageai/voyage-4-nano` | Model identifier sent to the endpoint. |
+| `CAPTAIN_MEMO_EMBEDDER_API_KEY` | — | Optional bearer token; hosted providers need one. |
 | `CAPTAIN_MEMO_WATCH_MEMORY` | — | Comma-separated globs to watch for memory files (channel = `memory`). The sentinel **`auto`** expands to every installed assistant's memory location that exists on this machine (Claude, Codex, Gemini, Cursor, Copilot, repo `AGENTS.md`). Composes: `auto,/my/notes/*.md`. |
 | `CAPTAIN_MEMO_WATCH_SKILLS` | `auto` | Comma-separated globs to watch for skill files (channel = `skill`). Missing means auto-discover installed AI skills; an explicitly empty value opts out. |
 | `CAPTAIN_MEMO_WATCH_CAPABILITIES` | `auto` | Known plugin/extension manifests (channel = `capability`). Missing auto-discovers installed Gemini/Agy, Claude, and Codex capabilities; explicitly empty opts out. Only sanitized descriptors are stored. |
 | `CAPTAIN_MEMO_DATA_DIR` | `~/.captain-memo` | Where the meta SQLite + vector SQLite + logs live. |
 
-The worker watches memory, skill, and capability sources together.
+The worker watches memory, skill, and capability sources together. [CONFIGURATION.md](CONFIGURATION.md) lists every setting.
 
 ## Use the CLI
 
@@ -112,6 +112,12 @@ Skill-broker tools: `list_skills` browses the synchronized catalog, `recommend_s
 
 Work coordination is `work_set` / `work_active` / `work_clear`. Always pass `topics` to `work_set`: 1–5 short kebab tags for what the work is *about* (`billing-rounding`, `installer-windows`) — two sessions on one topic are flagged whatever files they touch. Each row in `overlaps[]` says its `kind` (`topics` | `files` | `semantic` | `repo`) and what is shared; `work_active` adds `topic_contention` (every topic two or more sessions hold, and who), and both report `semantic` — whether the meaning-match pass is working right now, and since when / why it is degraded.
 
+A live claim blocks. Another Claude Code, Codex or Gemini session's edit or upload of a file you hold is refused until the user types `override: <file>`; the override lasts 30 minutes and shows on `work_active`. A claim with no edit for 10 minutes (`CAPTAIN_MEMO_WORKNOTE_STALE_MS`) only warns, and `work_set` cannot claim a file a live session holds. `work_set` and `work_clear` act only on your own session: another session's id is refused with `not_your_session` (Claude Code, and Codex and Gemini where their process id is found). Blocking needs the AI process id of both sessions. It is found on Linux, the macOS lookup is built but has not been run on a Mac yet, and on Windows Codex and Gemini claims only warn. `CAPTAIN_MEMO_WORKBOARD_ENFORCE=0`, set in the AI tool's environment, turns blocking back into warnings.
+
+### Session-start working rules
+
+Claude Code, Codex and Gemini sessions are sent a fixed set of working rules (about 2.8 KB) at session start, and again after `/compact` in Claude Code and Codex. The work-board steps come first, then seven rules: search memory before acting, never guess, committed is not deployed, ask when intent is unclear, `idea:` / `todo:` is homework, run tests and data scripts next to the data they use, and run independent work in parallel. They are always on in this release. Other AI tools get the work-board part through the captain-memo skill, when the model loads it.
+
 ### Homework
 
 Ideas and todos parked for later, per captain — every AI session on this machine sees the same list. Not a memory (a memory is a fact) and not a work claim (a claim is now): an item has a lifecycle, open → claimed → done.
@@ -119,7 +125,7 @@ Ideas and todos parked for later, per captain — every AI session on this machi
 - Type `idea: …`, `todo: …`, `homework: …` or `later: …` (`идея:` / `за после:`) at the start of a prompt (then `:`, `-` or `—`) and the prompt hook files it on this machine before the model acts on it. The prompt still reaches the model, with memory recall skipped; the model sees `📝 Filed as homework #N on this captain (not for now): …` and can just answer "noted". The hook runs in Claude Code, and in Codex, Gemini and Kimi where `connect` wired their native hooks (Codex runs them only after you approve them once in `/hooks`). Elsewhere nothing files it automatically: the `todo_add` tool description, and the skill `connect` copies in where the tool reads it, ask the model to file it with `todo_add`. JetBrains gets the `todo_*` tools only once you add the MCP server in the IDE from the snippet `connect` writes.
 - `todo_add(text, topics, project, due)` files one from a session; `due` is optional: an ISO 8601 date (`2026-10-01`, this host's midnight) or date-time (`2026-10-01T09:30`, this host's local time unless it carries a zone), refused if it is not one or the date does not exist; `todo_list(status)` shows what is `open` (default), `done` (kept a week) or `all`; `todo_claim(id)` takes one, so every other session on this machine sees it as taken (advisory: claiming again just changes the holder); `todo_done(id, note)` closes it.
 - Claude Code sessions list up to three open items in the session-start banner; an item whose due time has come leads it, marked `⏰ … (DUE since 2026-10-01 09:30)`, the one due longest ago first, and a due item still ahead shows `(due …)` in its place. A reminder only: nothing starts by itself. Other AI tools have no session-start hook; their model calls `todo_list()`, which returns `due` in UTC.
-- Worker routes: `POST /homework/add`, `GET /homework/list`, `POST /homework/claim`, `POST /homework/done`.
+- Worker routes: `POST /homework/add`, `GET /homework/list`, `POST /homework/claim`, `POST /homework/done`. Like every worker route except `GET /health`, they need the worker secret, which the hooks, the MCP server and the CLI send for you (see [CONFIGURATION.md](CONFIGURATION.md#worker-runtime)).
 - Full guide: [captain-memo.ispcq.com/homework.html](https://captain-memo.ispcq.com/homework.html).
 
 ## Watch paths
@@ -136,7 +142,7 @@ CAPTAIN_MEMO_WATCH_MEMORY="/home/me/.claude/memory/*.md" bun run worker:start
 
 # Hooks + observation pipeline
 
-Auto-injection hooks, the observation queue, and a configurable Haiku-class summarizer
+Auto-injection hooks, the observation queue, and a configurable summarizer
 on top of the foundation above.
 
 ## Summarizer — pick a provider
@@ -309,12 +315,14 @@ captain-memo install-hooks --project
 
 | Hook | Latency budget | Behavior on worker down |
 |---|---|---|
-| `UserPromptSubmit` | 1500 ms (`CAPTAIN_MEMO_HOOK_TIMEOUT_MS`); an `idea:` / `todo:` prompt waits a fixed 6 s for the homework write instead, whatever that setting says | No envelope; original prompt still passes through. A homework prompt tells the model it may not have been filed: check `todo_list()`, else `todo_add` it |
-| `SessionStart` | registered with a 60 s timeout; waits ≤15 s for a starting worker, ≤20 s for one that is updating or booting | Prints a banner: the degraded one, or — when the worker left a transition breadcrumb — "updating (vX → vY)" with a note that memory resumes by itself, no restart needed |
-| `PreToolUse` | 1500 ms per worker call (`CAPTAIN_MEMO_PRE_TOOL_USE_TIMEOUT_MS`); Claude Code only | No work-board claim or overlap warning; the tool call proceeds (advisory, never blocks) |
+| `UserPromptSubmit` | 1500 ms (`CAPTAIN_MEMO_HOOK_TIMEOUT_MS`); an `idea:` / `todo:` prompt waits up to 6 s for the homework write instead, whatever that setting says (less under Codex, Gemini and Kimi, whose hosts kill the hook at 5 s); with `CAPTAIN_MEMO_AUTO_UPDATE=1` in Claude Code, a prompt that finds an update check due also waits a few seconds for it | No envelope; original prompt still passes through. A homework prompt tells the model it may not have been filed: check `todo_list()`, else `todo_add` it |
+| `SessionStart` | registered with a 60 s timeout; waits ≤15 s for a starting worker, ≤20 s for one that is updating or booting | Prints a banner: the degraded one, or — when the worker left a transition breadcrumb — "updating (vX → vY)" with a note that memory resumes by itself, no restart needed. The working rules are sent either way |
+| `PreToolUse` | 1500 ms per worker call (`CAPTAIN_MEMO_PRE_TOOL_USE_TIMEOUT_MS`); Claude Code, Codex and Gemini (Gemini calls it `BeforeTool`) | Fails open: with no answer from the worker the tool call proceeds. With the worker up it refuses an edit or upload over another session's live claim, and an upload whose server copy is not yours, until the user types `override: <file>` (`CAPTAIN_MEMO_WORKBOARD_ENFORCE=0` makes both advisory) |
 | `PostToolUse` | 1000 ms to enqueue (`CAPTAIN_MEMO_POST_TOOL_USE_TIMEOUT_MS`) | Event dropped |
 | `Stop` | 5 s drain | Queue persists for next session |
 | `PreCompact` | 5 s to enqueue (`CAPTAIN_MEMO_PRE_COMPACT_TIMEOUT_MS`), registered with a 10 s timeout | Pre-compaction event dropped; compaction proceeds |
+
+The hooks read their settings (`CAPTAIN_MEMO_HOOK_TIMEOUT_MS`, the `*_TIMEOUT_MS` ones above, `CAPTAIN_MEMO_AUTO_UPDATE`, `CAPTAIN_MEMO_DISABLE_SELF_HEAL`, `CAPTAIN_MEMO_HOOK_DEBUG`, `CAPTAIN_MEMO_WORKBOARD_ENFORCE`) from the environment of the AI tool, not from `worker.env`. For Claude Code, put them in the `env` block of its `settings.json` or export them before it starts. They apply from the next session.
 
 ## Migrating from claude-mem
 
@@ -331,7 +339,7 @@ captain-memo inspect-claude-mem
 captain-memo migrate-from-claude-mem --dry-run
 
 # 3. Real migration (writes to ~/.captain-memo/, never to ~/.claude-mem/):
-captain-memo migrate-from-claude-mem --project erp-platform
+captain-memo migrate-from-claude-mem --project my-project
 
 # Resumable / partial:
 captain-memo migrate-from-claude-mem --limit 1000        # process first 1000 rows then stop
@@ -361,7 +369,7 @@ captain-memo migrate-from-claude-mem --db /custom/path/claude-mem.db
 - Re-running with `--dry-run` always reports the count of rows that *would*
   be migrated — it does not write progress, so it remains a true preview.
 - claude-mem continues running side by side for the dual-running phase
-  (Spec §7 Phase 3). You can keep both installed indefinitely.
+  You can keep both installed indefinitely.
 
 ### Rollback
 
@@ -380,8 +388,8 @@ hooks are completely untouched by Captain Memo.
 
 | Source table | Destination | Notes |
 |---|---|---|
-| `observations` | One `Document` per row, channel `observation` | `narrative` becomes one chunk, each non-empty entry in `facts[]` becomes another chunk. Empty rows are marked done and skipped. |
-| `session_summaries` | One `Document` per row, channel `observation` | One chunk per non-empty field across `request`, `investigated`, `learned`, `completed`, `next_steps`, `notes`. |
+| `observations` | One `Document` per row, channel `observation` | One bundled chunk per row (title, narrative and facts together). Empty rows are marked done and skipped. |
+| `session_summaries` | One `Document` per row, channel `observation` | One chunk per summary, with the non-empty fields among `request`, `investigated`, `learned`, `completed`, `next_steps`, `notes` under headers. |
 | `sdk_sessions` / `user_prompts` / `pending_messages` | not migrated | Session/prompt logs are session-bound and not useful as cross-session memory. |
 
 Each migrated chunk carries `metadata.migrated_from = "claude-mem"` plus the
