@@ -7,6 +7,8 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.53.0] — 2026-10-01
+
 ### Changed
 
 - **Auto-update checks for a new release every hour instead of every 6 hours.** With

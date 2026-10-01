@@ -1536,7 +1536,7 @@ init_paths();
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.52.0",
+  version: "0.53.0",
   description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
   type: "module",
   private: true,
@@ -1628,7 +1628,26 @@ function newsLines(items, max = NEWS_MAX) {
 
 // src/worker/self-updater.ts
 init_self_update();
-var DEFAULT_UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+var DEFAULT_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+var UPDATE_CHECK_JITTER_MAX_MS = 10 * 60 * 1000;
+var UPDATE_CHECK_BACKOFF_CAP_MS = 6 * 60 * 60 * 1000;
+function updateCheckIntervalFromEnv(raw) {
+  const n = Number(raw);
+  return raw !== undefined && raw.trim() !== "" && Number.isFinite(n) && n > 0 ? n : DEFAULT_UPDATE_CHECK_INTERVAL_MS;
+}
+function nextUpdateCheckDelayMs(baseMs, failures, rand = Math.random()) {
+  const backoff = Math.min(baseMs * 2 ** Math.min(Math.max(failures, 0), 16), Math.max(baseMs, UPDATE_CHECK_BACKOFF_CAP_MS));
+  return backoff + Math.floor(rand * Math.min(UPDATE_CHECK_JITTER_MAX_MS, baseMs / 6));
+}
+function formatUpdateStamp(at, delayMs, failures) {
+  return `${at.toISOString()} delay_ms=${Math.round(delayMs)} failures=${failures}
+`;
+}
+function parseUpdateStamp(text) {
+  const d = /delay_ms=(\d+)/.exec(text);
+  const f = /failures=(\d+)/.exec(text);
+  return { delayMs: d ? Number(d[1]) : null, failures: f ? Number(f[1]) : 0 };
+}
 function isUpdateCheckDue(lastCheckMs, nowMs, intervalMs) {
   if (lastCheckMs === null)
     return true;
@@ -1922,24 +1941,37 @@ async function main2() {
         readPackageVersion: (dir) => readPkgField(dir, "version"),
         readPackageName: (dir) => readPkgField(dir, "name")
       };
-      const intervalMs = Number(process.env.CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS ?? DEFAULT_UPDATE_CHECK_INTERVAL_MS);
+      let fetchFailed = false;
+      const runGit = port.run;
+      port.run = (argv, cwd, timeoutMs) => {
+        const r = runGit(argv, cwd, timeoutMs);
+        if (argv[1] === "fetch" && r.code !== 0)
+          fetchFailed = true;
+        return r;
+      };
+      const intervalMs = updateCheckIntervalFromEnv(process.env.CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS);
       try {
         mkdirSync7(DATA_DIR, { recursive: true });
       } catch {}
       const stampPath = join16(DATA_DIR, ".last-update-check");
       let lastCheck = null;
+      let stamp = { delayMs: null, failures: 0 };
       try {
         lastCheck = statSync5(stampPath).mtimeMs;
+        stamp = parseUpdateStamp(readFileSync9(stampPath, "utf-8"));
       } catch {}
-      if (isUpdateCheckDue(lastCheck, Date.now(), intervalMs) && acquireHealLock(AUTO_UPDATE_LOCK)) {
+      const writeStamp = (failures) => {
         try {
-          try {
-            writeFileSync7(stampPath, `${new Date().toISOString()}
-`);
-          } catch {}
+          writeFileSync7(stampPath, formatUpdateStamp(new Date, nextUpdateCheckDelayMs(intervalMs, failures), failures));
+        } catch {}
+      };
+      if (isUpdateCheckDue(lastCheck, Date.now(), stamp.delayMs ?? intervalMs) && acquireHealLock(AUTO_UPDATE_LOCK)) {
+        try {
+          writeStamp(stamp.failures + 1);
           const top = port.run(["git", "rev-parse", "--show-toplevel"], import.meta.dir);
           const installDir = top.code === 0 && top.stdout.trim() ? top.stdout.trim() : import.meta.dir;
           const res = runAutoUpdate(port, installDir, VERSION, process.execPath);
+          writeStamp(fetchFailed ? stamp.failures + 1 : 0);
           if (res?.ok) {
             await Promise.resolve().then(() => init_service_manager());
             const sm = getServiceManager();
