@@ -224,20 +224,22 @@ function chdirTarget(seg: string): string | null {
 /** The command line split into segments (`&&`, `||`, `;`, `|`, newline) with the directory each one runs in: a `cd`
  *  earlier on the line moves every later relative path. `dir` is null once a `cd` we cannot resolve has run. Heredoc
  *  bodies are dropped, and a separator inside quoted code (`python -c '…; …'`) does not split. `cd` segments
- *  themselves are consumed, not returned. */
-export function splitSegments(command: string, cwd: string, shell: ShellKind = 'posix'): { seg: string; masked: string; dir: string | null }[] {
+ *  themselves are consumed, not returned. `piped` marks a segment that reads the one before it through a `|`. */
+export function splitSegments(command: string, cwd: string, shell: ShellKind = 'posix'): { seg: string; masked: string; dir: string | null; piped?: true }[] {
   const norm = (t: string): string => (shell === 'powershell' ? t.replace(/\\/g, '/') : t);
   // Split on the MASKED text, but hand each segment's ORIGINAL text to the tokenizer, which honours the quotes.
   const stripped = stripHeredocs(command);
   const maskedAll = maskQuotedCode(stripped);
-  const raw: { seg: string; masked: string }[] = [];
+  const raw: { seg: string; masked: string; piped?: true }[] = [];
   let start = 0;
+  let piped = false;
   for (const b of maskedAll.matchAll(/&&|\|\||;|\||\n/g)) {
-    raw.push({ seg: stripped.slice(start, b.index), masked: maskedAll.slice(start, b.index) });
+    raw.push({ seg: stripped.slice(start, b.index), masked: maskedAll.slice(start, b.index), ...(piped ? { piped: true as const } : {}) });
     start = b.index + b[0].length;
+    piped = b[0] === '|';
   }
-  raw.push({ seg: stripped.slice(start), masked: maskedAll.slice(start) });
-  const out: { seg: string; masked: string; dir: string | null }[] = [];
+  raw.push({ seg: stripped.slice(start), masked: maskedAll.slice(start), ...(piped ? { piped: true as const } : {}) });
+  const out: { seg: string; masked: string; dir: string | null; piped?: true }[] = [];
   let dir: string | null = cwd;
   for (const r of raw) {
     const cd = chdirTarget(r.seg);
