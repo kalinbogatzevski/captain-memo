@@ -1,8 +1,9 @@
 // `captain-memo forget <doc_id|path>` — the other half of `remember`.
 //
-// Deleting the .md by hand does NOT unpublish a memory: the document, its chunks and its vectors stay
-// in the index and keep answering searches, so the entry lives on with no file behind it. This is the
-// supported way to remove one, and it takes the index down first and the file second.
+// Deleting the .md by hand de-indexes it only while the worker is running and the folder is watched. A file
+// removed while the worker was stopped, or from a folder created after the worker started, keeps its document,
+// chunks and vectors in the index and keeps answering searches, with no file behind it. This is the supported
+// way to remove one in every case, and it takes the index down first and the file second.
 //
 // DESTRUCTIVE and not undoable — there is no tombstone and no trash. So it CONFIRMS by default and
 // prints exactly what it is about to remove; --yes is for scripts that already know.

@@ -3444,8 +3444,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 
       // The other half of /remember. Until now nothing could FORGET: `ingest.deleteFile()` existed and
       // did the whole job, but had no route and no command, so the only way to unpublish a memory was
-      // to empty its body via another /remember. Deleting the .md by hand does NOT work — the document,
-      // its chunks and its vectors stay indexed and keep answering searches.
+      // to empty its body via another /remember. Deleting the .md by hand de-indexes it only while the worker
+      // is running and the folder is watched (the watcher's unlink handler); a file removed while the worker was
+      // stopped, or from a folder created after it started, stays indexed and keeps answering searches.
       //
       // Deletes the FILE too, deliberately: leaving it on disk under a watched directory means the
       // watcher re-indexes it on the next tick and the memory comes back.
