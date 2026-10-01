@@ -88,5 +88,5 @@ test('formatAutoUpdateBlockedBanner — names the version it is stuck on, why, a
 
 test('session-start shows the blocked banner when a safety gate refuses the update', () => {
   const src = readFileSync(join(import.meta.dir, '../../src/hooks/session-start.ts'), 'utf8');
-  expect(src).toContain('autoUpdateNotice = formatAutoUpdateBlockedBanner(res.from, res.code, res.reason);');
+  expect(src).toContain('autoUpdateNotice = formatAutoUpdateBlockedBanner(out.res.from, out.res.code, out.res.reason);');
 });

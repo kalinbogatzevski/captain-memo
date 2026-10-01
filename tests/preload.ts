@@ -27,6 +27,8 @@ if (process.platform === 'win32') {
   process.env.LOCALAPPDATA = join(home, 'AppData', 'Local');
 }
 process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL = '1';
+// An opted-in developer environment would make every spawned hook run a real update pass (git, bun install, a service restart).
+delete process.env.CAPTAIN_MEMO_AUTO_UPDATE;
 
 const scratchOs = { ...os, homedir: () => home };
 mock.module('os', () => ({ ...scratchOs, default: scratchOs }));

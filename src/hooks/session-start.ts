@@ -1,4 +1,3 @@
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { readStdinJson, writeStdout, workerFetch, logHookError, workerFailureMessage, isMainModule } from './shared.ts';
@@ -8,18 +7,11 @@ import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS, DEFAULT_WORKER_PORT, DATA
 import { VERSION } from '../shared/version.ts';
 import { consumeUpgrade, formatUpgradeBanner, formatAutoUpdateBanner, formatAutoUpdateBlockedBanner, formatRollbackBanner, writeMarker } from '../shared/self-update.ts';
 import { newsLines, type NewsItem } from '../shared/whats-new.ts';
-import { runAutoUpdate, rollbackTo, isUpdateCheckDue, updateCheckIntervalFromEnv, nextUpdateCheckDelayMs, formatUpdateStamp, parseUpdateStamp, type UpdaterPort } from '../worker/self-updater.ts';
+import { runAutoUpdatePass } from './auto-update.ts';
 import { ensureWorkerHealthy } from '../shared/worker-health.ts';
-import { markTransition, readTransition, clearTransition, markSessionDegraded, type WorkerTransition } from '../shared/worker-transition.ts';
+import { readTransition, markSessionDegraded, type WorkerTransition } from '../shared/worker-transition.ts';
 import { restartWorker } from '../shared/worker-control.ts';
 import { acquireHealLock, releaseHealLock } from '../shared/worker-heal-lock.ts';
-
-/** Read one string field from <dir>/package.json, or null. Used by the auto-updater's port to read
- *  the post-update version and to confirm the resolved checkout is actually captain-memo. */
-function readPkgField(dir: string, field: 'version' | 'name'): string | null {
-  try { return (JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')) as Record<string, string>)[field] ?? null; }
-  catch { return null; }
-}
 
 interface SessionStartPayload {
   session_id?: string;
@@ -183,7 +175,8 @@ export async function main(): Promise<void> {
   let stats = await probeStats();
 
   // Poll /stats until the worker answers healthy (updating `stats` on success) or the budget elapses.
-  // Used after an auto-update restart to decide success vs rollback. Mirrors the self-heal waitHealthy.
+  // Used to refresh `stats` after an auto-update restart (the pass itself judges the restart by the new worker process's
+  // identity, not by /stats) and to wait out a worker transition. Mirrors the self-heal waitHealthy.
   async function waitWorkerHealthy(budgetMs = 15_000): Promise<boolean> {
     const deadline = Date.now() + budgetMs;
     while (Date.now() < deadline) {
@@ -203,95 +196,21 @@ export async function main(): Promise<void> {
   // fail-open: any error is logged, never thrown, and the session continues on the current version.
   let autoUpdateNotice = '';
   let updatedThisSession = false;
-  let wroteTransition = false;   // did WE leave a breadcrumb that must not outlive a failed restart?
   if (process.env.CAPTAIN_MEMO_AUTO_UPDATE === '1') {
-    const AUTO_UPDATE_LOCK = join(DATA_DIR, '.auto-update.lock');
-    try {
-      const port: UpdaterPort = {
-        run: (argv, cwd, timeoutMs) => {
-          // env: make git FAIL FAST instead of blocking on a credential / host-key prompt (which
-          // would otherwise stall the session for the whole timeout). timeoutMs is per-call — short
-          // for git fetch (default 20s), generous for `bun install` (installDeps passes 300s).
-          const r = Bun.spawnSync(argv, {
-            cwd, stdout: 'pipe', stderr: 'pipe', timeout: timeoutMs ?? 20_000,
-            env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_SSH_COMMAND: 'ssh -oBatchMode=yes -oConnectTimeout=10' } as Record<string, string>,
-          });
-          return { code: r.exitCode ?? 1, stdout: r.stdout.toString(), stderr: r.stderr.toString() };
-        },
-        readPackageVersion: (dir) => readPkgField(dir, 'version'),
-        readPackageName: (dir) => readPkgField(dir, 'name'),
-      };
-      // A failed fetch (offline, dead credential) can cost its whole deadline at session start, so failures
-      // back off: noted here, counted in the stamp, and nextUpdateCheckDelayMs doubles the wait per failure.
-      let fetchFailed = false;
-      const runGit = port.run;
-      port.run = (argv, cwd, timeoutMs) => {
-        const r = runGit(argv, cwd, timeoutMs);
-        if (argv[1] === 'fetch' && r.code !== 0) fetchFailed = true;
-        return r;
-      };
-      const intervalMs = updateCheckIntervalFromEnv(process.env.CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS);
-      try { mkdirSync(DATA_DIR, { recursive: true }); } catch { /* dir may exist */ }
-      const stampPath = join(DATA_DIR, '.last-update-check');
-      let lastCheck: number | null = null;
-      let stamp: { delayMs: number | null; failures: number } = { delayMs: null, failures: 0 };
-      try { lastCheck = statSync(stampPath).mtimeMs; stamp = parseUpdateStamp(readFileSync(stampPath, 'utf-8')); } catch { /* never checked */ }
-      const writeStamp = (failures: number): void => {
-        try { writeFileSync(stampPath, formatUpdateStamp(new Date(), nextUpdateCheckDelayMs(intervalMs, failures), failures)); } catch { /* stamp best-effort */ }
-      };
-      // Lock serializes concurrent sessions: only one may fetch/ff/install/restart at a time.
-      if (isUpdateCheckDue(lastCheck, Date.now(), stamp.delayMs ?? intervalMs) && acquireHealLock(AUTO_UPDATE_LOCK)) {
-        try {
-          writeStamp(stamp.failures + 1);   // counted as failed until it finishes: a hook killed mid-fetch still backs off
-          const top = port.run(['git', 'rev-parse', '--show-toplevel'], import.meta.dir);
-          const installDir = (top.code === 0 && top.stdout.trim()) ? top.stdout.trim() : import.meta.dir;
-          const res = runAutoUpdate(port, installDir, VERSION, process.execPath);
-          writeStamp(fetchFailed ? stamp.failures + 1 : 0);
-          if (res?.ok) {
-            const { getServiceManager } = await import('../services/service-manager/index.ts');
-            const sm = getServiceManager();
-            const wport = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
-            // Same breadcrumb the worker leaves when it replaces itself: a CONCURRENT session starting
-            // during this replacement must wait it out, not reclaim the port from under us. It MUST be
-            // cleared again on every path where the replacement does not land — otherwise this hook
-            // reads its own note back below, shields the worker it just failed to restart, and tells
-            // the user "updating, coming back by itself" about a worker that is simply dead.
-            wroteTransition = true;
-            markTransition({ phase: 'updating', from: res.from, ...(res.to ? { to: res.to } : {}) });
-            await restartWorker(sm, 'captain-memo-worker', { port: wport, graceful: true });
-            const healthy = await waitWorkerHealthy();
-            if (healthy) {
-              updatedThisSession = true;   // suppress the self-heal restart below (VERSION is now frozen-stale)
-              if (res.to) writeMarker(DATA_DIR, res.to);
-              autoUpdateNotice = formatAutoUpdateBanner(res.from, res.to ?? '?', res.installFailed, res.to ? await fetchNews(res.from, res.to) : []);
-            } else {
-              // New code didn't boot (bad deps / crash-loop). Roll the checkout back to the prior
-              // sha and restart the OLD, known-good code rather than strand the worker dead.
-              const rolled = res.priorSha ? rollbackTo(port, installDir, res.priorSha, process.execPath) : false;
-              markTransition({ phase: 'updating', to: res.from });   // rolling BACK to the known-good version
-              await restartWorker(sm, 'captain-memo-worker', { port: wport });
-              const backOnOld = await waitWorkerHealthy();
-              if (!backOnOld) { clearTransition(); wroteTransition = false; }   // nothing is coming back — stop shielding it
-              stats = await probeStats();
-              updatedThisSession = true;
-              autoUpdateNotice = formatRollbackBanner(res.from, res.to ?? '?', rolled);
-              logHookError('SessionStart', new Error(`auto-update to ${res.to} failed to boot; rolled back=${rolled}`));
-            }
-          } else if (res && !res.ok) {
-            // A safety gate refused (dirty tree / detached HEAD / ff conflict). Expected, not an error, but it
-            // repeats at every check, so say it in the banner: logged only, the checkout never updated and nobody knew.
-            autoUpdateNotice = formatAutoUpdateBlockedBanner(res.from, res.code, res.reason);
-            logHookError('SessionStart', new Error(`auto-update skipped: ${res.code} — ${res.reason}`));
-          }
-        } finally {
-          releaseHealLock(AUTO_UPDATE_LOCK);
-        }
-      }
-    } catch (err) {
-      // The restart itself threw (service manager missing, task locked). Our breadcrumb would
-      // otherwise shield a worker nobody restarted, for the full TTL.
-      if (wroteTransition) { clearTransition(); wroteTransition = false; }
-      logHookError('SessionStart', err);
+    // One pass, shared with the UserPromptSubmit hook (hooks/auto-update.ts): same stamp, same lock, same gates.
+    const out = await runAutoUpdatePass({ event: 'SessionStart', afterBoot: waitWorkerHealthy });
+    if (out.kind === 'updated') {
+      updatedThisSession = true;   // suppress the self-heal restart below (VERSION is now frozen-stale)
+      if (out.res.to) writeMarker(DATA_DIR, out.res.to);
+      autoUpdateNotice = formatAutoUpdateBanner(out.res.from, out.res.to ?? '?', out.res.installFailed, out.res.to ? await fetchNews(out.res.from, out.res.to) : []);
+    } else if (out.kind === 'rolled-back') {
+      stats = await probeStats();
+      updatedThisSession = true;
+      autoUpdateNotice = formatRollbackBanner(out.res.from, out.res.to ?? '?', out.rolled);
+    } else if (out.kind === 'blocked') {
+      // Expected, not an error, but it repeats at every check, so say it in the banner: logged only (by the pass), the
+      // checkout never updated and nobody knew.
+      autoUpdateNotice = formatAutoUpdateBlockedBanner(out.res.from, out.res.code, out.res.reason);
     }
   }
 

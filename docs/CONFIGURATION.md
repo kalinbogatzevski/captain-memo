@@ -180,7 +180,7 @@ one recall re-floats it. Rows that were ever drilled into, or explicitly anchore
 | `CAPTAIN_MEMO_REINDEX_MS` | `1800000` | Deadline for long write operations. |
 | `CAPTAIN_MEMO_STATS_CACHE_MS` | `5000` | How long `/stats` is cached. |
 | `CAPTAIN_MEMO_QUEUE_RETENTION_DAYS` | `30` | Age at which processed queue rows are swept. |
-| `CAPTAIN_MEMO_AUTO_UPDATE` | OFF | `1` lets the session-start hook self-update. |
+| `CAPTAIN_MEMO_AUTO_UPDATE` | OFF | `1` lets the session-start hook, and in Claude Code the prompt hook once a check is due, self-update. |
 | `CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS` | `3600000` (1h) | Minimum gap between update checks. Each check adds a random wait of up to 10 minutes, and each failed check in a row doubles the gap, up to 6 hours. |
 | `CAPTAIN_MEMO_DISABLE_SELF_HEAL` | OFF | `1` stops the hook repairing a broken install. |
 | `CAPTAIN_MEMO_ENABLE_TEST_ENDPOINTS` | OFF | `1` exposes `/test/*`. Never set in production. |

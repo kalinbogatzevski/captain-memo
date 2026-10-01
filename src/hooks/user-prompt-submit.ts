@@ -175,6 +175,27 @@ export async function main(options: UserPromptSubmitOptions = {}): Promise<void>
     }
   }
   if (options.emitOriginalPrompt !== false) writeStdout(prompt);
+
+  // OPT-IN git self-update (CAPTAIN_MEMO_AUTO_UPDATE=1). A session kept open for days never reaches SessionStart again,
+  // so the check is also made here, after the envelope is out. It shares SessionStart's stamp and lock (hooks/auto-update.ts):
+  // one check per interval across both hooks, and the same gates (clean tree, branch checked out, fast-forward only, newest
+  // stable tag). Claude Code only: the native hosts kill this hook at 5 s, a check takes longer. A healthy worker only.
+  // COST (measured 2026-10-01, load 37 on 24 cores): between checks one stat and one read of the stamp, 0.1 ms (the whole
+  // hook +14 ms at the median over 30 runs from source, mostly loading the module). A due check that finds nothing is
+  // `git fetch` 3.3 s plus `git ls-remote` 3.1 s, hourly with jitter. Both are held to 8 s here (20 s at SessionStart), so a
+  // dead origin costs one prompt at most 16 s and then backs off 2 h, 4 h, 6 h. An apply adds `bun install` (own 300 s cap),
+  // the restart and up to 30 s waiting for the new worker process; against a local origin the whole apply took 1.7 s.
+  if (result.ok && process.env.CAPTAIN_MEMO_AUTO_UPDATE === '1' && options.hostTimeoutMs === undefined) {
+    try {
+      const { runAutoUpdatePass } = await import('./auto-update.ts');
+      const out = await runAutoUpdatePass({ event: 'UserPromptSubmit', networkTimeoutMs: 8_000 });
+      // No banner on this path (the hook's stdout is the prompt's context). The version marker is left alone, so the next
+      // SessionStart announces the upgrade; the log is where this one shows.
+      if (out.kind === 'updated') logHookError('UserPromptSubmit', new Error(`auto-updated v${out.res.from} -> v${out.res.to ?? '?'}`));
+    } catch (err) {
+      logHookError('UserPromptSubmit', err);
+    }
+  }
 }
 
 if (isMainModule(import.meta)) {

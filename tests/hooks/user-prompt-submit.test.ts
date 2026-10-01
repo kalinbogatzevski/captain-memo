@@ -1,10 +1,11 @@
 import { test, expect, beforeAll, afterAll } from 'bun:test';
 import { join } from 'path';
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawn } from 'bun';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
 import { homeworkWaitMs } from '../../src/hooks/user-prompt-submit.ts';
+import { parseUpdateStamp } from '../../src/worker/self-updater.ts';
 import { BOOT_SLACK_MS } from '../support/worker-boot.ts';
 
 const FIXTURE = readFileSync(
@@ -97,6 +98,48 @@ test('UserPromptSubmit — respects CAPTAIN_MEMO_HOOK_TIMEOUT_MS', async () => {
   expect(exitCode).toBe(0);
   expect(elapsed).toBeLessThan(800);
   expect(stdout).toContain('How do I run the worker');
+});
+
+// The opt-in self-update also runs from this hook (a session kept open for days never reaches SessionStart again).
+test('UserPromptSubmit — with CAPTAIN_MEMO_AUTO_UPDATE=1 and no check due, the prompt is unchanged and nothing is fetched', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'captain-memo-hook-autoupdate-'));
+  const stamp = join(dataDir, '.last-update-check');
+  writeFileSync(stamp, `${new Date().toISOString()} delay_ms=3600000 failures=0\n`);
+  const before = readFileSync(stamp, 'utf-8');
+  // GIT_DIR points nowhere: even if a check did come due, git cannot touch this checkout from the test.
+  const { stdout, exitCode } = await runHook(FIXTURE, { CAPTAIN_MEMO_AUTO_UPDATE: '1', CAPTAIN_MEMO_DATA_DIR: dataDir, GIT_DIR: join(dataDir, 'no-such-git-dir') });
+  expect(exitCode).toBe(0);
+  expect(stdout).toContain('<memory-context');
+  expect(stdout).toContain('How do I run the worker');
+  expect(readFileSync(stamp, 'utf-8')).toBe(before);
+  rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('UserPromptSubmit — a due check is made from this hook (stamp rewritten), but not while the worker is down', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'captain-memo-hook-autoupdate-due-'));
+  const stamp = join(dataDir, '.last-update-check');
+  const due = (): string => { writeFileSync(stamp, '2020-01-01T00:00:00.000Z delay_ms=3600000 failures=0\n'); utimesSync(stamp, new Date('2020-01-01'), new Date('2020-01-01')); return readFileSync(stamp, 'utf-8'); };
+  // GIT_DIR points nowhere, so the pass finds "not a git checkout" and changes nothing but the stamp it rewrites.
+  const env = { CAPTAIN_MEMO_AUTO_UPDATE: '1', CAPTAIN_MEMO_DATA_DIR: dataDir, GIT_DIR: join(dataDir, 'no-such-git-dir'), CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1' };
+  let before = due();
+  expect((await runHook(FIXTURE, env)).exitCode).toBe(0);
+  expect(readFileSync(stamp, 'utf-8')).not.toBe(before);                       // the pass ran
+  expect(parseUpdateStamp(readFileSync(stamp, 'utf-8')).failures).toBe(0);
+  before = due();
+  expect((await runHook(FIXTURE, { ...env, CAPTAIN_MEMO_WORKER_PORT: '1' })).exitCode).toBe(0);
+  expect(readFileSync(stamp, 'utf-8')).toBe(before);                           // worker down: left for SessionStart / the next prompt
+  rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('UserPromptSubmit — the self-update pass runs only for an opted-in, healthy, Claude Code (no host timeout) prompt', () => {
+  const src = readFileSync(join(import.meta.dir, '../../src/hooks/user-prompt-submit.ts'), 'utf8');
+  const at = src.indexOf("await import('./auto-update.ts')");
+  expect(at).toBeGreaterThan(0);
+  const gate = src.slice(src.lastIndexOf('if (', at), at);
+  expect(gate).toContain('result.ok');
+  expect(gate).toContain("process.env.CAPTAIN_MEMO_AUTO_UPDATE === '1'");
+  expect(gate).toContain('options.hostTimeoutMs === undefined');
+  expect(src.indexOf('writeStdout(prompt)')).toBeLessThan(at);   // the prompt is written before the check starts (the host still waits for the hook to exit)
 });
 
 test('UserPromptSubmit — empty stdin is tolerated', async () => {
