@@ -127,6 +127,20 @@ echo "==> Installing/refreshing Python deps (~3 GB on first run)..."
 "${INSTALL_DIR}/venv/bin/pip" install --upgrade pip --quiet
 "${INSTALL_DIR}/venv/bin/pip" install -r "${INSTALL_DIR}/requirements.txt" --quiet
 
+# ---- 4b. load the model BEFORE the service is touched ---------------------
+# pip succeeding says nothing about whether voyage-4-nano runs under the versions it resolved (a
+# transformers release its remote code cannot load under installs fine and then fails at load).
+# Run the sidecar's own load + one embed here, so a broken install stops now with the reason.
+# Before step 5 so a system install's downloaded weights are chowned with the rest.
+echo "==> Verifying the model loads (first run downloads ~700 MB from HuggingFace)..."
+if ! (cd "${INSTALL_DIR}" && HF_HOME="${INSTALL_DIR}/models" "${INSTALL_DIR}/venv/bin/python" -c \
+  "from app import get_model, EMBED_DIM; v = get_model().embed_batch(['smoke test'], input_type='query'); assert v.shape == (1, EMBED_DIM), v.shape; print('model OK:', v.shape)"); then
+  echo "!! The embedder model failed to load in this venv (the error is above) - NOT starting the service." >&2
+  echo "   The Python packages pip chose cannot run the model. Pins live in ${SRC_DIR}/requirements.txt;" >&2
+  echo "   pip list in ${INSTALL_DIR}/venv shows what was installed." >&2
+  exit 1
+fi
+
 # ---- 5. ownership (system mode only) -------------------------------------
 if [[ "$mode" == "system" ]]; then
   chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}"
@@ -143,14 +157,19 @@ fi
 
 "${SYSTEMCTL[@]}" daemon-reload
 "${SYSTEMCTL[@]}" enable "${SERVICE_NAME}"
-echo "==> Starting service (first run pulls voyage-4-nano model from HuggingFace, ~250 MB)..."
+echo "==> Starting service..."
 "${SYSTEMCTL[@]}" restart "${SERVICE_NAME}"
 
 # ---- 7. health probe -----------------------------------------------------
 echo "==> Waiting for embedder to be reachable..."
 for i in {1..120}; do
-  if curl -s -m 2 "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
-    echo "==> Embedder is up: $(curl -s http://127.0.0.1:${PORT}/health)"
+  health="$(curl -s -m 2 "http://127.0.0.1:${PORT}/health" 2>/dev/null || true)"
+  if [[ "$health" == *'"healthy":false'* ]]; then
+    echo "!! Embedder is running but its model failed to load: ${health}" >&2
+    exit 1
+  fi
+  if [[ "$health" == *'"healthy":true'* ]]; then
+    echo "==> Embedder is up: ${health}"
     if [[ "$mode" == "user" ]]; then
       echo
       echo "Tip: to keep the service running after you log out, enable lingering ONCE:"

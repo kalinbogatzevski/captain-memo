@@ -102,20 +102,21 @@ if ($LASTEXITCODE -ne 0) { Write-Error 'pip self-upgrade failed.' }
 & $VenvPython -m pip install -r (Join-Path $InstallDir 'requirements.txt') --quiet
 if ($LASTEXITCODE -ne 0) { Write-Error 'pip install -r requirements.txt failed.' }
 
-# ---- 4. pre-download the model -------------------------------------------
+# ---- 4. load the model (also pre-downloads it) ----------------------------
 # On Linux the systemd unit starts uvicorn and the FastAPI startup hook pulls the
 # model on first boot. Windows has no systemd here (the Scheduled Task is registered
 # by the ServiceManager separately), so warm the HF cache now — cache the weights
 # under <installDir>\models via HF_HOME so the first real request is instant.
-Write-Host '==> Pre-downloading model (first run pulls voyage-4-nano from HuggingFace, ~250 MB)...'
+# Runs the sidecar's own load + one embed (app.get_model), not just SentenceTransformer(): pip succeeding
+# says nothing about whether the model runs under the versions it resolved (see requirements.txt on transformers).
+Write-Host '==> Loading the model (first run downloads ~700 MB from HuggingFace)...'
 $env:HF_HOME = $ModelsDir
 $env:CAPTAIN_MEMO_EMBED_MODEL = $Model
 $warm = @'
-import os
-from sentence_transformers import SentenceTransformer
-name = os.environ.get("CAPTAIN_MEMO_EMBED_MODEL", "voyageai/voyage-4-nano")
-SentenceTransformer(name, device="cpu", trust_remote_code=True)
-print("model cached:", name)
+from app import get_model, EMBED_DIM
+v = get_model().embed_batch(["smoke test"], input_type="query")
+assert v.shape == (1, EMBED_DIM), v.shape
+print("model OK:", v.shape)
 '@
 # Run it from a file, not `-c $warm`: Windows PowerShell 5.1 strips the double quotes embedded in a native
 # argument, which broke the script. ASCII, so 5.1 writes no BOM.
@@ -124,7 +125,7 @@ Set-Content -LiteralPath $warmFile -Value $warm -Encoding ASCII
 & $VenvPython $warmFile
 $warmExit = $LASTEXITCODE
 Remove-Item -LiteralPath $warmFile -Force -ErrorAction SilentlyContinue
-if ($warmExit -ne 0) { Write-Error 'model pre-download failed.' }
+if ($warmExit -ne 0) { Write-Error 'The embedder model failed to load in this venv (the error is above); the Python packages pip chose cannot run it. See the transformers pin in services\embed\requirements.txt.' }
 
 Write-Host ''
 Write-Host '==> Embedder venv ready.'

@@ -46,10 +46,11 @@ export function buildVenvCommands(opts: EmbedderInstallOpts): string[] {
     // python deps via the venv's own interpreter (Scripts\python.exe -m pip).
     `& "${venvPython}" -m pip install --upgrade pip --quiet`,
     `& "${venvPython}" -m pip install -r "${requirements}" --quiet`,
-    // pre-download the model into <installDir>\models via HF_HOME.
+    // load the model (downloads it into <installDir>\models via HF_HOME) the way the sidecar does: app.get_model + one embed.
     `$env:HF_HOME = "${modelsDir}"`,
+    `$env:CAPTAIN_MEMO_EMBED_MODEL = "${opts.model}"`,
     // from a FILE, not `-c`: Windows PowerShell 5.1 strips double quotes embedded in a native argument.
-    `Set-Content -LiteralPath "${warmFile}" -Value "from sentence_transformers import SentenceTransformer; SentenceTransformer('${opts.model}', device='cpu', trust_remote_code=True)" -Encoding ASCII`,
+    `Set-Content -LiteralPath "${warmFile}" -Value "from app import get_model, EMBED_DIM; v = get_model().embed_batch(['smoke test'], input_type='query'); assert v.shape == (1, EMBED_DIM), v.shape" -Encoding ASCII`,
     `& "${venvPython}" "${warmFile}"`,
   ];
 }

@@ -27,13 +27,16 @@ test('buildVenvCommands — references the requested model id', () => {
   expect(all).toContain('voyageai/voyage-4-nano');
 });
 
-test('buildVenvCommands — pre-downloads via SentenceTransformer into models cache', () => {
+test('buildVenvCommands — loads the model the way the sidecar does (get_model + one embed) into the models cache', () => {
   const cmds = buildVenvCommands(OPTS);
   const all = cmds.join('\n');
   // HF_HOME points the model cache at <installDir>\models.
   expect(all).toContain('embed\\models');
   expect(all).toContain('HF_HOME');
-  expect(all).toContain('SentenceTransformer');
+  // not a bare SentenceTransformer(): a model that constructs but fails in forward() must fail the install too.
+  expect(all).toContain('get_model()');
+  expect(all).toContain('embed_batch');
+  expect(all).toContain('CAPTAIN_MEMO_EMBED_MODEL = "voyageai/voyage-4-nano"');
 });
 
 test('buildVenvCommands — creates the venv with py -3.11 then a python fallback', () => {

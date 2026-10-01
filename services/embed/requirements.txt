@@ -9,7 +9,13 @@ uvicorn[standard]>=0.32.0,<1.0
 # and torch >=2.6 (uses or_mask_function from the transformers masking API).
 sentence-transformers>=5.0.0,<6.0.0
 torch>=2.6.0,<3.0.0
-transformers>=4.46.0,<6.0.0
+# transformers stays on 4.x: the model's remote code (modeling_qwen3_bidirectional.py, fetched from the model
+# repo at load time) targets the 4.x API. Measured 2026-10-01 on Python 3.12/3.13, sentence-transformers 5.7.0,
+# torch 2.14.1: 4.57.6 loads and embeds; 5.0.0 loads; 5.9.0 fails (TypeError: create_causal_mask() got an
+# unexpected keyword argument 'input_embeds'); 5.17.0 and 5.18.0 fail (AttributeError in
+# auto_factory.register: config_class is None). 4.57.6 is the version verified (4.57.0 was yanked).
+# Do not raise the cap without re-running the model load (scripts/install-embedder.sh does it).
+transformers>=4.57.1,<5.0.0
 # numpy<2.0 = works on any x86_64 CPU (no AVX2 required).
 # Modern sentence-transformers 5.x is fine with numpy 1.26.
 # Bump to >=2.0,<3.0 if you want slight perf on AVX2 hardware.

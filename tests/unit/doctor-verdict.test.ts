@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { schemaDrift, migrationVerdict, workerVerdict, embedderVerdict, injectLatencyVerdict, INJECT_MIN_SAMPLES, captureSourceVerdict, summarizerVerdict } from '../../src/cli/commands/doctor.ts';
+import { schemaDrift, migrationVerdict, workerVerdict, embedderVerdict, sidecarHealthVerdict, injectLatencyVerdict, INJECT_MIN_SAMPLES, captureSourceVerdict, summarizerVerdict } from '../../src/cli/commands/doctor.ts';
 
 // ---------------------------------------------------------------------------
 // schemaDrift — does the live DB actually HAVE what the migrations promise?
@@ -409,4 +409,28 @@ test('boot skips still WARN, and demotions + skips coexist', () => {
   });
   expect(both.detail).toContain('FAILED OVER');
   expect(both.detail).toContain('PREFERRED provider(s) skipped');
+});
+
+// ---------------------------------------------------------------------------
+// sidecarHealthVerdict — a local sidecar whose model cannot load (transformers 5.x vs voyage-4-nano's code) used
+// to crash-loop and show up as "not running". It now stays up and says so in /health; doctor must name it.
+test('sidecarHealthVerdict PASSes a sidecar that loaded its model', () => {
+  const c = sidecarHealthVerdict({ healthy: true, model: 'voyageai/voyage-4-nano', dim: 2048 });
+  expect(c).toMatchObject({ name: 'embedder service', status: 'PASS' });
+  expect(c.detail).toContain('voyageai/voyage-4-nano');
+});
+
+test('sidecarHealthVerdict FAILs plainly when the model did not load, naming the model and the error', () => {
+  const c = sidecarHealthVerdict({ healthy: false, model: 'voyageai/voyage-4-nano',
+    error: "AttributeError: 'NoneType' object has no attribute '__name__'" });
+  expect(c).toMatchObject({ name: 'embedder model', status: 'FAIL' });
+  expect(c.detail).toContain('could not load voyageai/voyage-4-nano');
+  expect(c.detail).toContain("AttributeError: 'NoneType' object has no attribute '__name__'");
+  expect(c.remedy).toContain('captain-memo install');
+});
+
+test('sidecarHealthVerdict keeps a runaway traceback to one short line', () => {
+  const c = sidecarHealthVerdict({ healthy: false, model: 'm', error: `Boom\n${'x'.repeat(2000)}` });
+  expect(c.detail).not.toContain('\n');
+  expect(c.detail.length).toBeLessThan(300);
 });

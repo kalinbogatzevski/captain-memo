@@ -200,6 +200,19 @@ export function parkedEmbedCheck(name: string, host: string, parked: number, err
            remedy: 'nothing required — each is retried once a day. `grep "parking chunk" worker.log` names them.' };
 }
 
+export interface SidecarHealth { healthy?: boolean; model?: string; dim?: number; error?: string }
+
+/** The local sidecar's own /health. A sidecar whose model cannot load (the transformers / sentence-transformers
+ *  pair it was installed with cannot run voyage-4-nano's code) stays up and says so here, rather than
+ *  crash-looping with no answer: so this names the failure instead of showing a green service that embeds nothing. */
+export function sidecarHealthVerdict(b: SidecarHealth): Check {
+  if (b.healthy) return { name: 'embedder service', status: 'PASS', detail: `${b.model} dim=${b.dim} on :8124` };
+  const why = String(b.error ?? 'it gave no reason').replace(/\s+/g, ' ').slice(0, 200);
+  return { name: 'embedder model', status: 'FAIL',
+           detail: `local sidecar is running but could not load ${b.model ?? 'its model'}: ${why}`,
+           remedy: 're-run `captain-memo install` and pick "local sidecar": it re-pins the sidecar\'s Python packages and checks the model loads before starting it' };
+}
+
 async function checkEmbedder(): Promise<void> {
   // Read worker.env to figure out what backend the user actually picked.
   // Hosted Voyage / OpenAI / aelita endpoints are normal — not warnings.
@@ -219,14 +232,15 @@ async function checkEmbedder(): Promise<void> {
   // Local sidecar: the HTTP /health probe is authoritative for liveness; the
   // service-manager state only tells us why it's down (installed vs. not).
   const h = await fetchJson('http://127.0.0.1:8124/health');
-  if (h.ok && (h.body as { healthy?: boolean }).healthy) {
-    const b = h.body as { model?: string; dim?: number };
-    record({ name: 'embedder service', status: 'PASS', detail: `${b.model} dim=${b.dim} on :8124` });
+  const hb = h.ok ? (h.body as SidecarHealth | null) : null;
+  if (typeof hb?.healthy === 'boolean') {   // anything else on :8124 is not our sidecar: fall through to the service checks
+    record(sidecarHealthVerdict(hb));
     return;
   }
   if (await getServiceManager().isActive('captain-memo-embed')) {
-    record({ name: 'embedder service', status: 'FAIL', detail: 'service active but /health not responding',
-             remedy: isWindows ? 'Get-ScheduledTaskInfo captain-memo-embed' : 'journalctl -u captain-memo-embed -n 30 --no-pager' });
+    record({ name: 'embedder service', status: 'FAIL',
+             detail: 'service active but /health not responding (a sidecar that cannot load its model exits and restarts; its log names the error)',
+             remedy: isWindows ? 'Get-ScheduledTaskInfo captain-memo-embed' : 'journalctl --user -u captain-memo-embed -n 30 --no-pager   (system install: without --user)' });
     return;
   }
   record({ name: 'embedder service', status: 'FAIL', detail: 'worker.env points at local sidecar but the service is not running',
