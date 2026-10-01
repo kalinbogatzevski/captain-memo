@@ -112,6 +112,20 @@ test('embedderVerdict PASSes a hosted endpoint whose queue is draining clean', (
   expect(c.status).toBe('PASS');
 });
 
+test('embedderVerdict reports parked chunks, and says nothing needs doing', () => {
+  const c = embedderVerdict('https://api.voyageai.com/v1/embeddings',
+    { embed_pending: 2, embed_parked: 2, embed_error: 'Embedder HTTP 400: input rejected', embed_error_class: 'other' });
+  expect(c.status).toBe('WARN');
+  expect(c.detail).toContain('2 chunk(s) parked');
+  expect(c.remedy).toContain('once a day');
+});
+
+test('embedderVerdict: a bad key outranks parked chunks', () => {
+  const c = embedderVerdict('https://api.voyageai.com/v1/embeddings',
+    { embed_pending: 5, embed_parked: 1, embed_error: '401 unauthorized', embed_error_class: 'auth' });
+  expect(c.status).toBe('FAIL');
+});
+
 test('embedderVerdict cannot confirm a hosted endpoint when the worker did not answer', () => {
   const c = embedderVerdict('https://api.voyageai.com/v1/embeddings', null);
   expect(c.status).toBe('WARN');

@@ -179,3 +179,24 @@ test('IngestPipeline — deleteFile drops document and chunks + vectors', async 
   const deletes = vecCalls.filter(c => c.kind === 'delete');
   expect(deletes.length).toBeGreaterThan(0);
 });
+
+// #234: ~/.codex/logs_2.sqlite-wal and models_cache.json were indexed as memory.
+test('IngestPipeline — refuses non-markdown, binary and oversized files, and drops what was indexed from them', async () => {
+  const { MAX_INDEX_FILE_BYTES } = await import('../../src/worker/ingest.ts');
+  const wal = join(workDir, 'logs_2.sqlite-wal');
+  const cache = join(workDir, 'models_cache.json');
+  const binary = join(workDir, 'binary.md');
+  const huge = join(workDir, 'huge.md');
+  writeFileSync(wal, Buffer.from([0x37, 0x7f, 0x06, 0x82, 0, 0, 0, 1]));
+  writeFileSync(cache, '{"models":[]}');
+  writeFileSync(binary, Buffer.concat([Buffer.from('# title\n'), Buffer.alloc(16)]));
+  writeFileSync(huge, '# big\n' + 'word '.repeat(MAX_INDEX_FILE_BYTES / 5 + 1));
+  // A row an older worker left behind for the cache file.
+  const docId = store.upsertDocument({ source_path: cache, channel: 'memory', project_id: 'erp-platform', sha: 'old', mtime_epoch: 1, metadata: {} });
+  store.replaceChunksForDocument(docId, [{ chunk_id: 'memory:models_cache:old', text: 'x', sha: 'x', position: 0, metadata: {} }]);
+
+  for (const f of [wal, cache, binary, huge]) await pipeline.indexFile(f, 'memory');
+
+  for (const f of [wal, cache, binary, huge]) expect(store.getDocument(f)).toBeNull();
+  expect(vecCalls).toEqual([{ kind: 'delete', collection: 'test_col', payload: ['memory:models_cache:old'] }]);
+});

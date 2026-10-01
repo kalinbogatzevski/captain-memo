@@ -15,6 +15,7 @@ import type {
 } from './claude-mem-schema.ts';
 import type { MetaStore } from '../worker/meta.ts';
 import type { VectorStore } from '../worker/vector-store.ts';
+import { assertUsableEmbeddings } from '../worker/embedder.ts';
 
 const SPINNER = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
 const BAR_WIDTH = 24;
@@ -62,6 +63,14 @@ async function writeDocWithEmbeddings(
   deps: MigrationDeps,
 ): Promise<void> {
   if (doc.chunks.length === 0) return;
+  // As ingest does: never store a zero vector (the throw leaves this doc unmigrated, so the next run retries
+  // it), and drop the vectors of the chunks about to be replaced, or a re-run leaves them orphaned.
+  assertUsableEmbeddings(embeddings);
+  const existing = deps.meta.getDocument(doc.source_path);
+  if (existing) {
+    const oldChunks = deps.meta.getChunksForDocument(existing.id);
+    if (oldChunks.length > 0) await deps.vector.delete(deps.collectionName, oldChunks.map(c => c.chunk_id));
+  }
 
   const sourceKind = doc.source_path.startsWith('claude-mem://observation/')
     ? 'observation'

@@ -141,3 +141,83 @@ test('a zero-vector embed response from the worker\'s ingest path is queued for 
   const pending = new PendingEmbedQueue(pendingPath);
   try { expect(pending.totalCount()).toBe(chunks); } finally { pending.close(); }
 });
+
+test('one chunk the embedder always refuses no longer holds back the rest of its batch, and gets parked', async () => {
+  // #226(c): the batch of 25 failed as a whole on every tick, so 24 good chunks never got a vector.
+  workDir = mkdtempSync(join(tmpdir(), 'cm-pe-isolate-'));
+  const metaPath = join(workDir, 'meta.sqlite3');
+  const vecPath = join(workDir, 'vec.db');
+  const pendingPath = join(workDir, 'pending.db');
+  const meta = new MetaStore(metaPath);
+  const seed = new PendingEmbedQueue(pendingPath);
+  const doc = meta.upsertDocument({ source_path: '/m/batch.md', channel: 'memory', project_id: 'pe', sha: 'k', mtime_epoch: 1, metadata: {} });
+  const ids = Array.from({ length: 25 }, (_, i) => `memory:batch:c${String(i).padStart(2, '0')}`);
+  meta.replaceChunksForDocument(doc, ids.map((chunk_id, i) => ({
+    chunk_id, text: i === 13 ? 'poison' : `good ${i}`, sha: `s${i}`, position: i, metadata: {},
+  })));
+  for (const chunk_id of ids) seed.enqueue({ chunk_id, source_path: '/m/batch.md', sha: 's', channel: 'memory' });
+  // The poison chunk has already failed 7 times; one more on its own parks it.
+  const raw = new Database(pendingPath);
+  raw.query('UPDATE pending_embed SET retries = 7 WHERE chunk_id = ?').run(ids[13]!);
+  raw.close();
+  seed.close();
+  meta.close();
+
+  let calls = 0;
+  stub = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const body = await req.json() as { input: string[] };
+      if (body.input[0] !== 'probe') calls++;
+      if (body.input.includes('poison')) return new Response('input rejected by the model', { status: 400 });
+      return Response.json({ model: 'stub', data: body.input.map((_, index) => ({ index, embedding: [1, 0, 0, 0, 0, 0, 0, 0] })) });
+    },
+  });
+  worker = await startWorker({
+    port: 0, projectId: 'pe', metaDbPath: metaPath, vectorDbPath: vecPath,
+    embedderEndpoint: `http://localhost:${stub.port}/v1/embeddings`, embedderModel: 'voyage-4-nano',
+    embeddingDimension: 8, pendingEmbedDbPath: pendingPath, pendingEmbedTickMs: 100,
+  });
+
+  const probe = new PendingEmbedQueue(pendingPath);
+  try {
+    for (let i = 0; i < 50 && probe.failureState().parked === 0; i++) await new Promise(r => setTimeout(r, 100));
+    expect(probe.failureState()).toMatchObject({ pending: 1, parked: 1 });
+    expect(probe.listDue(25)).toEqual([]);                       // parked: not due again for a day
+  } finally { probe.close(); }
+  expect(vecIds(vecPath).sort()).toEqual(ids.filter((_, i) => i !== 13));
+  expect(calls).toBeLessThanOrEqual(12);
+  const stats = await (await fetch(`http://localhost:${worker.port}/stats`)).json() as { observations: { embed_parked?: number } };
+  expect(stats.observations.embed_parked).toBe(1);
+});
+
+test('an embedder that refuses every input parks nothing', async () => {
+  // A wrong model name is an HTTP 400 for every input: that is the embedder, not the chunks.
+  workDir = mkdtempSync(join(tmpdir(), 'cm-pe-all400-'));
+  const metaPath = join(workDir, 'meta.sqlite3');
+  const pendingPath = join(workDir, 'pending.db');
+  const meta = new MetaStore(metaPath);
+  const seed = new PendingEmbedQueue(pendingPath);
+  const doc = meta.upsertDocument({ source_path: '/m/all.md', channel: 'memory', project_id: 'pe', sha: 'k', mtime_epoch: 1, metadata: {} });
+  const ids = ['memory:all:c0', 'memory:all:c1', 'memory:all:c2', 'memory:all:c3'];
+  meta.replaceChunksForDocument(doc, ids.map((chunk_id, i) => ({ chunk_id, text: `t${i}`, sha: `s${i}`, position: i, metadata: {} })));
+  for (const chunk_id of ids) seed.enqueue({ chunk_id, source_path: '/m/all.md', sha: 's', channel: 'memory' });
+  const raw = new Database(pendingPath);
+  raw.exec('UPDATE pending_embed SET retries = 7');
+  raw.close();
+  seed.close();
+  meta.close();
+
+  stub = Bun.serve({ port: 0, fetch: () => new Response('unknown model', { status: 400 }) });
+  worker = await startWorker({
+    port: 0, projectId: 'pe', metaDbPath: metaPath, vectorDbPath: join(workDir, 'vec.db'),
+    embedderEndpoint: `http://localhost:${stub.port}/v1/embeddings`, embedderModel: 'voyage-4-nano',
+    embeddingDimension: 8, pendingEmbedDbPath: pendingPath, pendingEmbedTickMs: 100,
+  });
+  const probe = new PendingEmbedQueue(pendingPath);
+  try {
+    for (let i = 0; i < 30 && probe.listDue(25).length > 0; i++) await new Promise(r => setTimeout(r, 100));
+    expect(probe.listDue(25)).toEqual([]);                        // the pass ran: every row is backing off
+    expect(probe.failureState()).toMatchObject({ pending: 4, parked: 0 });
+  } finally { probe.close(); }
+});

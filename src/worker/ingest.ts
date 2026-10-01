@@ -43,6 +43,24 @@ export interface IngestPipelineOptions {
   pendingEmbed?: Pick<PendingEmbedQueue, 'enqueue'>;
 }
 
+/** Largest file the ingest path reads. The largest real memory, skill or plugin manifest on the dev host is
+ *  58,690 bytes (2026-10-01, 1,821 documents), so 1 MB is 17x headroom; a database or a log is not memory. */
+export const MAX_INDEX_FILE_BYTES = 1024 * 1024;
+
+/** Memory is markdown (.md, or Cursor's .mdc). Every shipped source and the memory writer produce only
+ *  that, so anything else in the memory channel got there by a watcher that matched too much. */
+export const isMemoryFilePath = (p: string): boolean => /\.mdc?$/i.test(p);
+
+/** Why a file must not be indexed, or null when it may. One place: the watcher event, the boot pass and
+ *  /reindex all end in indexFile. A captain indexed ~/.codex/logs_2.sqlite-wal (12 chunks) and
+ *  models_cache.json (1,670 chunks) as memory before this existed. */
+export function unindexableReason(filePath: string, channel: ChannelType, sizeBytes: number, content: Buffer): string | null {
+  if (channel === 'memory' && !isMemoryFilePath(filePath)) return 'not a markdown file';
+  if (sizeBytes > MAX_INDEX_FILE_BYTES) return `${sizeBytes} bytes is over the ${MAX_INDEX_FILE_BYTES} byte limit`;
+  if (content.subarray(0, 8192).includes(0)) return 'binary content';
+  return null;
+}
+
 export class IngestPipeline {
   private meta: MetaStore;
   private embedder: { embed: (texts: string[]) => Promise<number[][]> };
@@ -105,8 +123,16 @@ export class IngestPipeline {
       await this.deleteFileNow(filePath);
       return;
     }
-    const content = readFileSync(filePath, 'utf-8');
     const stat = statSync(filePath);
+    const raw = stat.size > MAX_INDEX_FILE_BYTES ? Buffer.alloc(0) : readFileSync(filePath);
+    const refused = unindexableReason(filePath, channel, stat.size, raw);
+    if (refused) {
+      console.error(`[ingest] skipping ${filePath}: ${refused}`);
+      await this.deleteFileNow(filePath); // and drop what an older version indexed from it
+      this.onIndexResult?.('skipped');
+      return;
+    }
+    const content = raw.toString('utf-8');
     const mtime_epoch = Math.floor(stat.mtimeMs / 1000);
 
     const existing = this.meta.getDocument(filePath);

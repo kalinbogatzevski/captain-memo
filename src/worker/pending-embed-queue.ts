@@ -28,6 +28,65 @@ export function classifyEmbedError(msg: string): EmbedErrorClass {
   return 'other';
 }
 
+/** Failed attempts (of any kind) after which a chunk that fails ON ITS OWN, in a pass where other chunks
+ *  embedded, is parked. With the backoff above that is about 45 minutes of trying. */
+export const PENDING_EMBED_MAX_ATTEMPTS = 8;
+/** A parked chunk is tried again once a day: a fixed embedder then clears it, and a chunk whose text is gone
+ *  leaves the queue through the normal stale check. Until then doctor reports it. */
+export const PARKED_RETRY_SEC = 86_400;
+/** Embed calls one tick may spend splitting a failed batch. One bad chunk in 25 takes about 10. */
+export const ISOLATE_MAX_CALLS = 12;
+
+/** True when a failure can belong to one input rather than to the embedder as a whole, so splitting the
+ *  batch can find it: the provider refusing the request body (HTTP 400, 413, 422) or returning an unusable
+ *  vector. A list of what qualifies, not of what does not: throttling, auth, 5xx, a refused connection and
+ *  timeouts fail every half the same way, splitting them turns one call into a dozen against a provider
+ *  that is already struggling, and counting them would park a healthy queue during an outage. */
+export function isPerInputEmbedError(err: Error): boolean {
+  return /\bHTTP 4(00|13|22)\b|unusable vector/.test(err.message);
+}
+
+export interface IsolatedEmbedResult<T> {
+  embedded: Array<{ row: T; embedding: number[] }>;
+  /** `alone`: the row failed in a call of its own, so the failure is that row's. */
+  failed: Array<{ row: T; error: Error; alone: boolean }>;
+}
+
+/** Embed `rows`; when the batch fails with a per-input error, retry it in halves until the failing rows
+ *  stand alone. One chunk the embedder can never take used to fail its whole batch of 25 on every tick. */
+export async function embedIsolating<T>(
+  rows: T[],
+  embed: (rows: T[]) => Promise<number[][]>,
+  splittable: (err: Error) => boolean = isPerInputEmbedError,
+  maxCalls: number = ISOLATE_MAX_CALLS,
+): Promise<IsolatedEmbedResult<T>> {
+  const out: IsolatedEmbedResult<T> = { embedded: [], failed: [] };
+  let calls = 0;
+  let last = new Error('embed call budget spent');
+  const run = async (part: T[]): Promise<void> => {
+    if (calls >= maxCalls) {
+      out.failed.push(...part.map(row => ({ row, error: last, alone: false })));
+      return;
+    }
+    calls++;
+    try {
+      const vectors = await embed(part);
+      part.forEach((row, i) => out.embedded.push({ row, embedding: vectors[i]! }));
+    } catch (e) {
+      const error = last = e as Error;
+      if (part.length === 1) out.failed.push({ row: part[0]!, error, alone: true });
+      else if (!splittable(error)) out.failed.push(...part.map(row => ({ row, error, alone: false })));
+      else {
+        const mid = part.length >> 1;
+        await run(part.slice(0, mid));
+        await run(part.slice(mid));
+      }
+    }
+  };
+  if (rows.length > 0) await run(rows);
+  return out;
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS pending_embed (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,7 +101,9 @@ CREATE TABLE IF NOT EXISTS pending_embed (
   -- cockpit and the operator had to read worker.log to discover it was a Voyage free-tier
   -- rate limit -- a configuration state they could fix, not a defect.
   last_error TEXT,
-  last_error_at_epoch INTEGER
+  last_error_at_epoch INTEGER,
+  -- Set when the chunk was parked after PENDING_EMBED_MAX_ATTEMPTS failures on its own.
+  dead_at_epoch INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_pe_due ON pending_embed(next_retry_at_epoch);
 `;
@@ -91,6 +152,7 @@ export class PendingEmbedQueue {
     );
     if (!cols.has('last_error')) this.db.exec('ALTER TABLE pending_embed ADD COLUMN last_error TEXT');
     if (!cols.has('last_error_at_epoch')) this.db.exec('ALTER TABLE pending_embed ADD COLUMN last_error_at_epoch INTEGER');
+    if (!cols.has('dead_at_epoch')) this.db.exec('ALTER TABLE pending_embed ADD COLUMN dead_at_epoch INTEGER');
   }
 
   enqueue(input: PendingEmbedInput): void {
@@ -158,20 +220,33 @@ export class PendingEmbedQueue {
     tx();
   }
 
+  /** Park chunks that keep failing on their own: out of the minute-by-minute retry, tried again once a
+   *  day, and counted in failureState().parked so doctor shows them. */
+  park(ids: number[], lastError: string): void {
+    const now = Math.floor(Date.now() / 1000);
+    const q = this.db.query(
+      `UPDATE pending_embed SET retries = retries + 1, next_retry_at_epoch = ?, last_error = ?,
+              last_error_at_epoch = ?, dead_at_epoch = COALESCE(dead_at_epoch, ?) WHERE id = ?`);
+    this.db.transaction(() => {
+      for (const id of ids) q.run(now + PARKED_RETRY_SEC, String(lastError).slice(0, 400), now, now, id);
+    })();
+  }
+
   /** What is stuck, and WHY — the shape a dashboard can render without a log file.
    *  Reports the most RECENT failure: with one embedder, a backlog shares one cause, and
    *  showing five variants of the same 429 helps nobody. */
-  failureState(): { pending: number; last_error: string | null; error_class: EmbedErrorClass | null; last_error_at_epoch: number | null } {
+  failureState(): { pending: number; parked: number; last_error: string | null; error_class: EmbedErrorClass | null; last_error_at_epoch: number | null } {
     const row = this.db
-      .query(`SELECT COUNT(*) AS pending,
+      .query(`SELECT COUNT(*) AS pending, COUNT(dead_at_epoch) AS parked,
                      (SELECT last_error FROM pending_embed WHERE last_error IS NOT NULL
                        ORDER BY last_error_at_epoch DESC LIMIT 1) AS last_error,
                      (SELECT last_error_at_epoch FROM pending_embed WHERE last_error IS NOT NULL
                        ORDER BY last_error_at_epoch DESC LIMIT 1) AS last_error_at_epoch
                 FROM pending_embed`)
-      .get() as { pending: number; last_error: string | null; last_error_at_epoch: number | null };
+      .get() as { pending: number; parked: number; last_error: string | null; last_error_at_epoch: number | null };
     return {
       pending: row?.pending ?? 0,
+      parked: row?.parked ?? 0,
       last_error: row?.last_error ?? null,
       error_class: row?.last_error ? classifyEmbedError(row.last_error) : null,
       last_error_at_epoch: row?.last_error_at_epoch ?? null,

@@ -174,6 +174,17 @@ test('VectorStore — reassignCluster does not bring back a vector deleted after
   expect(store.getEmbedding('a1')).toBeNull();
 });
 
+test('VectorStore — reassignCluster does not write a stale vector over one re-embedded after it was read', async () => {
+  // #226(b): pending-embed (or the zero-vector repair) re-adds the same chunk_id while the sweep is paused
+  // in nearestInBatch; the sweep must not put back the vector it read before that.
+  await store.add('coll_a', [{ id: 'a1', embedding: [1, 0, 0, 0] }]);
+  const [read] = store.getUnclusteredChunks('coll_a', 10);
+  await store.add('coll_a', [{ id: 'a1', embedding: [0, 1, 0, 0] }]);
+  store.reassignCluster(read!.chunkId, read!.embedding, 7);
+  expect(Array.from(store.getEmbedding('a1')!)).toEqual([0, 1, 0, 0]);
+  expect(store.getUnclusteredChunks('coll_a', 10).map(c => c.chunkId)).toEqual(['a1']);   // left for the next sweep
+});
+
 test('VectorStore — sampleAnyVectors returns vectors regardless of cluster assignment', async () => {
   await store.add('coll_a', [{ id: 'a1', embedding: [1, 0, 0, 0] }, { id: 'a2', embedding: [0, 1, 0, 0] }]);
   const [u1] = store.getUnclusteredChunks('coll_a', 1);

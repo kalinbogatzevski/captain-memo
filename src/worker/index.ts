@@ -48,7 +48,7 @@ import { warmWorknoteVecs, semanticOverlapPass, hasIntent, SEMANTIC_ENABLED, sem
 import { addHomework, listHomework, claimHomework, doneHomework } from './homework.ts';
 import { whatsNew } from '../shared/whats-new.ts';
 import { centroid } from '../shared/vector-math.ts';
-import { PendingEmbedQueue } from './pending-embed-queue.ts';
+import { PendingEmbedQueue, embedIsolating, isPerInputEmbedError, PENDING_EMBED_MAX_ATTEMPTS } from './pending-embed-queue.ts';
 import { chunkObservation } from './chunkers/observation.ts';
 import { splitForEmbed } from './chunkers/safe-split.ts';
 import { EmbedderInputTooLarge, assertUsableEmbeddings } from './embedder.ts';
@@ -1980,48 +1980,64 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     if (staleIds.length > 0) pendingEmbed.markEmbedded(staleIds);
     if (liveRows.length === 0) return { retried: due.length, embedded: 0 };
 
+    // A failed batch is retried in halves until the failing chunk stands alone (embedIsolating): one chunk
+    // the embedder can never take used to fail its whole batch of 25 on every tick.
+    const textOf = new Map(liveRows.map((row, i) => [row.id, texts[i]!]));
+    const splittable = (err: Error) => err instanceof EmbedderInputTooLarge || isPerInputEmbedError(err);
+    const { embedded, failed } = await embedIsolating(
+      liveRows,
+      async rows => assertUsableEmbeddings(await embedder.embed(rows.map(r => textOf.get(r.id)!))),
+      splittable,
+    );
+    // Re-check after the await: a chunk replaced while its embed was in flight must not get a vector
+    // (it would be an orphan the moment it landed).
+    const stillLive = embedded.filter(({ row }) => meta.getChunkById(row.chunk_id));
+    let stored = 0;
     try {
-      const embeddings = assertUsableEmbeddings(await embedder.embed(texts));
-      // Re-check after the await: a chunk replaced while its embed was in flight must not get a vector
-      // (it would be an orphan the moment it landed).
-      const stillLive = liveRows.map((row, i) => ({ row, embedding: embeddings[i]! }))
-        .filter(({ row }) => meta.getChunkById(row.chunk_id));
       await vector.add(collectionName, stillLive.map(({ row, embedding }) => ({ id: row.chunk_id, embedding })));
-      pendingEmbed.markEmbedded(liveRows.map(r => r.id));
-      return { retried: due.length, embedded: stillLive.length };
+      pendingEmbed.markEmbedded(embedded.map(e => e.row.id));
+      stored = stillLive.length;
     } catch (err) {
-      // EmbedderInputTooLarge is permanent — the stored chunk text won't
-      // change on retry. Pop the offending row from the queue (FTS still
-      // serves it; vector search misses) so it doesn't loop forever.
-      // All other failures are transient → standard retry-with-backoff.
-      if (err instanceof EmbedderInputTooLarge) {
-        const badRow = liveRows[err.inputIndex];
-        if (badRow) {
-          console.error(
-            `[pending-embed] dropping permanently oversized chunk ${badRow.chunk_id}: ` +
-            `${err.tokensEstimated} tok > ${err.tokensLimit} limit. ` +
-            `Vector search will miss this chunk; FTS still works.`,
-          );
-          pendingEmbed.markEmbedded([badRow.id]);
-          const remainingIds = liveRows.filter((_, i) => i !== err.inputIndex).map(r => r.id);
-          if (remainingIds.length > 0) {
-            pendingEmbed.markRetried(remainingIds, (err as Error).message);
-          }
-          return { retried: due.length, embedded: 0 };
-        }
-      }
-      // Record WHY. A bare retry count rendered as "19 failed" in the cockpit and the
+      pendingEmbed.markRetried(embedded.map(e => e.row.id), (err as Error).message);
+    }
+    for (const { row, error, alone } of failed) {
+      if (alone && error instanceof EmbedderInputTooLarge) {
+        // Permanent: the stored chunk text won't change on retry. Pop it from the queue (FTS still
+        // serves it; vector search misses) so it doesn't loop forever.
+        console.error(
+          `[pending-embed] dropping permanently oversized chunk ${row.chunk_id}: ` +
+          `${error.tokensEstimated} tok > ${error.tokensLimit} limit. ` +
+          `Vector search will miss this chunk; FTS still works.`,
+        );
+        pendingEmbed.markEmbedded([row.id]);
+      } else if (alone && splittable(error) && embedded.length > 0 && row.retries + 1 >= PENDING_EMBED_MAX_ATTEMPTS) {
+        // Only when this chunk failed alone AND others embedded in the same pass: a wrong model name is an
+        // HTTP 400 for every input, and that must never park the whole queue.
+        console.error(
+          `[pending-embed] parking chunk ${row.chunk_id} (${row.source_path}) after ${row.retries + 1} failed attempts: ` +
+          `${error.message}. Keyword search still finds it; it is retried once a day.`,
+        );
+        pendingEmbed.park([row.id], error.message);
+      } else {
+        // Record WHY. A bare retry count rendered as "19 failed" in the cockpit and the
         // operator had to read worker.log to learn it was a Voyage free-tier rate limit —
         // a setting they could change, not a defect. The queue was working the whole time.
-        pendingEmbed.markRetried(liveRows.map(r => r.id), (err as Error).message);
-      return { retried: due.length, embedded: 0 };
+        pendingEmbed.markRetried([row.id], error.message);
+      }
     }
+    return { retried: due.length, embedded: stored };
   }
 
   let pendingTickTimer: ReturnType<typeof setInterval> | null = null;
   if (!opts.readOnly && pendingEmbed && !opts.skipEmbed) {
+    // One pass at a time: a pass that splits a failed batch makes several embed calls, and a second tick
+    // starting meanwhile would embed the same rows again and count each failure twice.
+    let pendingTickBusy = false;
     pendingTickTimer = setInterval(() => {
-      processPendingEmbed(PENDING_BATCH).catch(err => console.error('[pe-tick]', err));
+      if (pendingTickBusy) return;
+      pendingTickBusy = true;
+      processPendingEmbed(PENDING_BATCH).catch(err => console.error('[pe-tick]', err))
+        .finally(() => { pendingTickBusy = false; });
     }, opts.pendingEmbedTickMs ?? PENDING_RETRY_TICK_MS);
   }
 
@@ -2712,6 +2728,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
                 return f.last_error
                   ? {
                       embed_pending: f.pending,
+                      embed_parked: f.parked,
                       embed_error: f.last_error,
                       embed_error_class: f.error_class,
                       embed_error_at_epoch: f.last_error_at_epoch,

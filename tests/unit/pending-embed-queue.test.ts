@@ -128,3 +128,71 @@ test('a database created BEFORE the error columns existed is migrated, not broke
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// #226(c): one permanently failing chunk held back its whole batch.
+import { embedIsolating, isPerInputEmbedError, PARKED_RETRY_SEC } from '../../src/worker/pending-embed-queue.ts';
+
+const refuse = (bad: number[]) => {
+  const calls: number[][] = [];
+  const embed = async (rows: number[]) => {
+    calls.push(rows);
+    if (rows.some(r => bad.includes(r))) throw new Error('Embedder HTTP 400: input rejected');
+    return rows.map(r => [r]);
+  };
+  return { calls, embed };
+};
+
+test('embedIsolating — embeds everything but the one bad row, which fails alone', async () => {
+  const { calls, embed } = refuse([13]);
+  const rows = Array.from({ length: 25 }, (_, i) => i);
+  const r = await embedIsolating(rows, embed);
+  expect(r.embedded.map(e => e.row).sort((a, b) => a - b)).toEqual(rows.filter(i => i !== 13));
+  expect(r.embedded.every(e => e.embedding[0] === e.row)).toBe(true);      // each row kept its own vector
+  expect(r.failed.map(f => [f.row, f.alone])).toEqual([[13, true]]);
+  expect(calls.length).toBeLessThanOrEqual(12);
+});
+
+test('embedIsolating — an outage is one call, never a split', async () => {
+  for (const msg of ['Embedder HTTP 429: rate limited', 'Embedder HTTP 503: down', 'fetch failed', 'The operation was aborted',
+    'Unable to connect. Is the computer able to access the url?']) {
+    let calls = 0;
+    const r = await embedIsolating([1, 2, 3, 4], async () => { calls++; throw new Error(msg); });
+    expect(calls).toBe(1);
+    expect(r.failed.map(f => f.alone)).toEqual([false, false, false, false]);
+    expect(isPerInputEmbedError(new Error(msg))).toBe(false);
+  }
+});
+
+test('embedIsolating — stops at the call budget; rows it did not reach are failed, not lost', async () => {
+  const rows = Array.from({ length: 25 }, (_, i) => i);
+  const { calls, embed } = refuse(rows);                                    // every row is bad
+  const r = await embedIsolating(rows, embed, undefined, 12);
+  expect(calls.length).toBe(12);
+  expect(r.embedded).toEqual([]);
+  expect(r.failed.map(f => f.row).sort((a, b) => a - b)).toEqual(rows);
+});
+
+test('PendingEmbedQueue — park takes a row out of the retry loop for a day and counts it', () => {
+  q.enqueue({ chunk_id: 'c1', source_path: '/p', sha: 's', channel: 'memory' });
+  q.enqueue({ chunk_id: 'c2', source_path: '/p', sha: 's', channel: 'memory' });
+  const [first] = q.listDue(10);
+  q.park([first!.id], 'input rejected');
+  expect(q.listDue(10).map(r => r.chunk_id)).toEqual(['c2']);
+  expect(q.failureState()).toMatchObject({ pending: 2, parked: 1, last_error: 'input rejected' });
+  const raw = new Database(join(workDir, 'pending.db'), { readonly: true });
+  const row = raw.query('SELECT next_retry_at_epoch AS n, dead_at_epoch AS d FROM pending_embed WHERE chunk_id = ?').get('c1') as { n: number; d: number };
+  raw.close();
+  expect(row.n - row.d).toBe(PARKED_RETRY_SEC);
+});
+
+test('PendingEmbedQueue — an existing table without dead_at_epoch is migrated, not broken', () => {
+  const path = join(workDir, 'old.db');
+  const old = new Database(path);
+  old.exec(`CREATE TABLE pending_embed (id INTEGER PRIMARY KEY AUTOINCREMENT, chunk_id TEXT NOT NULL UNIQUE,
+    source_path TEXT NOT NULL, sha TEXT NOT NULL, channel TEXT NOT NULL, retries INTEGER NOT NULL DEFAULT 0,
+    next_retry_at_epoch INTEGER NOT NULL, enqueued_at_epoch INTEGER NOT NULL, last_error TEXT, last_error_at_epoch INTEGER)`);
+  old.close();
+  const upgraded = new PendingEmbedQueue(path);
+  expect(upgraded.failureState().parked).toBe(0);
+  upgraded.close();
+});

@@ -127,6 +127,7 @@ export class VectorStore {
    *  and re-preparing per row was a measurable share of an 18-hour job. */
   private reassignDelStmt: ReturnType<Database['query']> | null = null;
   private reassignInsStmt: ReturnType<Database['query']> | null = null;
+  private reassignSelStmt: ReturnType<Database['query']> | null = null;
 
   private db: Database;
   private dimension: number;
@@ -715,13 +716,23 @@ export class VectorStore {
     const del = this.reassignDelStmt ??= this.db.query(`DELETE FROM vec_chunks_p WHERE chunk_id = ?`);
     const ins = this.reassignInsStmt ??= this.db.query(
       `INSERT INTO vec_chunks_p (chunk_id, cluster_id, embedding) VALUES (?, ?, ?)`);
+    const sel = this.reassignSelStmt ??= this.db.query(`SELECT embedding FROM vec_chunks_p WHERE chunk_id = ?`);
     const tx = this.db.transaction(() => {
       for (const it of items) {
         const blob = new Uint8Array(it.embedding.buffer, it.embedding.byteOffset, it.embedding.byteLength);
-        // Only re-insert what was still there: the sweep reads vectors, awaits nearestInBatch, then lands
-        // here, and a chunk deleted in that gap (re-index, orphan sweep) came back as a vec0 row with no
-        // vec_chunk_meta row, which no orphan check can see.
-        if (Number(del.run(it.chunkId).changes) > 0) ins.run(it.chunkId, it.clusterId, blob);
+        // Only re-insert what is still there AND unchanged: the sweep reads vectors, awaits nearestInBatch,
+        // then lands here. A chunk deleted in that gap (re-index, orphan sweep) came back as a vec0 row with
+        // no vec_chunk_meta row, which no orphan check can see; one re-embedded in that gap under the same
+        // chunk_id (pending-embed, the zero-vector repair) got its old vector written back over the new one.
+        // The read is inside the transaction, so nothing can change between it and the delete.
+        // MEASURED on a copy of the dev store (230,653 vectors x 1024, 2026-10-01, 40 batches of 64, twice):
+        // the 64 key reads are 8.4-9.0 ms p50 (0.15-0.19 ms/row; p95 26-36 ms) on a transaction that was
+        // 30-34 ms p50 without them and is 37-40 ms with; the tail (p95 160-270 ms, the WAL commit) is unchanged.
+        // One batch per 60 s sweep tick, so the writer's duty cycle stays under 0.5%.
+        const stored = sel.get(it.chunkId) as { embedding: Uint8Array } | null;
+        if (!stored || Buffer.compare(stored.embedding, blob) !== 0) continue;
+        del.run(it.chunkId);
+        ins.run(it.chunkId, it.clusterId, blob);
       }
     });
     tx();

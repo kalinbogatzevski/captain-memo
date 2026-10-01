@@ -22,7 +22,7 @@ const fixtureSrc = join(
 
 const fakeEmbedder = {
   embed: async (texts: string[]) =>
-    texts.map(() => new Array(1024).fill(0)),
+    texts.map(() => new Array(1024).fill(0.1)),
 };
 
 beforeAll(() => {
