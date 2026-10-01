@@ -1,3 +1,5 @@
+> Historical design record, not current documentation.
+
 # Snapshot Efficiency Stats Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -468,7 +470,7 @@ test('IngestPipeline — onIndexResult reports indexed then skipped on unchanged
     embedder: fakeEmbedder,
     vector: fakeVectorStore as any,
     collectionName: 'test_col',
-    projectId: 'erp-platform',
+    projectId: 'my-project',
     onIndexResult: (r) => results.push(r),
   });
   const filePath = join(workDir, 'feedback_dedup.md');

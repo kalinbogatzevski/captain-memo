@@ -1,3 +1,5 @@
+> Historical design record, not current documentation.
+
 # Captain Memo — Windows Compatibility (v0.2.0)
 
 - **Date:** 2026-05-30

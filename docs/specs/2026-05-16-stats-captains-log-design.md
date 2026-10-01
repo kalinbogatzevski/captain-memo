@@ -1,3 +1,5 @@
+> Historical design record, not current documentation.
+
 # Stats Efficiency Fix + Captain's Log Revamp — Design
 
 **Date:** 2026-05-16

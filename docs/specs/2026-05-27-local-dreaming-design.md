@@ -1,3 +1,5 @@
+> Historical design record, not current documentation.
+
 # Captain Memo — Local Dreaming Design Sketch
 
 **Status:** Draft (pre-data; v0.1.12 widened the upstream signal — see "Update 2026-05-28")

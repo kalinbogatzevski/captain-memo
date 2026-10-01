@@ -1,3 +1,5 @@
+> Historical design record, not current documentation.
+
 # Captain Memo — Worker Auto-Recovery + Upgrade-Staleness Self-Heal (v0.2.14)
 
 - **Date:** 2026-05-31

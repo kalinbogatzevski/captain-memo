@@ -1,3 +1,5 @@
+> Historical design record, not current documentation.
+
 # Interactive `captain-memo top` TUI + recall content foundation
 
 - **Date:** 2026-05-29

@@ -1,3 +1,5 @@
+> Historical design record, not current documentation.
+
 # Captain Memo — Worker Threading: a non-starvable HTTP/health front
 
 - **Date:** 2026-06-03

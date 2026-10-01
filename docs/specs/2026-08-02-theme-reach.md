@@ -1,3 +1,5 @@
+> Historical design record, not current documentation.
+
 # Theme reach — why 124k observations yield ~14 clusters, and what would change it
 
 **Status:** Measured. One fix shipped, one ceiling documented, one design open.
@@ -64,7 +66,7 @@ Clustering is all-pairs within each (project, branch) partition. On the full liv
 
 ```
 124,841 rows · 315 partitions · 1,339,804,978 in-partition pairs
-  erp-platform/master alone:  48,556 rows -> 1,178,818,290 pairs
+  one project/master alone:   48,556 rows -> 1,178,818,290 pairs
 ```
 
 At the measured throughput (15.1M pairs in 33 s ≈ 460k pairs/s) that is **~48 minutes of dot

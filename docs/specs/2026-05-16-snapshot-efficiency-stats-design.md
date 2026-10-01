@@ -1,3 +1,5 @@
+> Historical design record, not current documentation.
+
 # Snapshot Efficiency Stats — Design
 
 **Date:** 2026-05-16
