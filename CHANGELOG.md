@@ -7,6 +7,38 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+### Fixed
+
+- When auto-update finds a newer release but cannot apply it (local edits in the checkout, no branch checked out, or a fast-forward that does not apply), the session start banner now says so and how to fix it. Before, this was written only to the hook error log and the checkout quietly stayed on the old version.
+- Captain Memo no longer indexes another assistant's internal files as memory. The file watcher let through every file in a watched folder when the patterns had the wildcard inside the name (AGENTS*.md, CLAUDE*.md), so files such as ~/.codex/logs_2.sqlite-wal and models_cache.json were indexed. Only files that match a configured pattern are indexed now. (#234)
+- Indexing skips, with one log line, any memory file that is not markdown, any file over 1 MB and any binary file. (#234)
+- Migrating from claude-mem no longer leaves old vectors behind when a document is written again, and no longer stores an all-zero vector. (#226)
+- The cluster sweep no longer writes an old vector back over one that was re-embedded while the sweep was paused. (#226)
+- One chunk the embedder always refuses no longer holds back the other 24 in its retry batch. The batch is retried in halves until the bad chunk stands alone; after 8 failed attempts it is parked and retried once a day, and doctor reports it. (#226)
+- Doctor's check of a hosted embedder now sees the retry queue. It read the queue state from the wrong place and reported "queue clear" whatever the queue was doing.
+- **The deploy guard checks uploads it used to skip.** An upload through a shell function
+  (`put() { scp "$1" host:"$2"; }; put a b`) and uploads inside nested `for` loops are now resolved and checked
+  instead of reported as unchecked. `cat file | ssh host 'cat > path'` and `< file ssh host 'cat > path'` are now
+  seen as uploads; before, the piped form was not noticed at all. Anything the guard still cannot resolve (`$@`,
+  `$(...)`, a pipe from another command, more than 25 loop combinations) is reported as unchecked, as before.
+- **`scp file host:/dir` is checked against the file it really replaces.** When `/dir` is a directory on the server,
+  the guard now reads `/dir/file`; before, it read `/dir`, found nothing, and let the upload through as new. The
+  directory test rides in the same ssh call as the md5 check. The work-board claim and the `override:` line name
+  the real file too.
+- **`captain-memo connect` names every new Codex hook in its trust note.** A first connect adds both the SessionStart
+  and the PreToolUse (work-board guard) hook, but the note named only SessionStart.
+
+### Changed
+
+- `captain-memo maintenance` lists memory documents that are not markdown, and `--apply` removes them together with their vectors. (#234)
+- `/stats` reports `embed_parked`, the number of chunks parked after repeated embed failures.
+- **Codex and Gemini claims carry their process id on macOS too, so the edit guard now blocks for them there.** Only
+  claims with a process id are enforced, and on macOS none was found, so those claims only warned. The hook and the
+  captain-memo MCP server now read one `ps` listing and walk up to the Codex or Gemini process. Windows still sends
+  no process id and still only warns. Not yet run on a Mac.
+- **The deploy guard counts the last 9 commits through one named setting** (`COMMITTED_DEPTH`). The number is
+  unchanged: reading 9 older versions of a 450 KB file costs about 86 ms per upload, 30 would cost about 220 ms.
+
 ## [0.53.0] — 2026-10-01
 
 ### Changed
