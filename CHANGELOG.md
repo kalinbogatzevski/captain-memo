@@ -7,6 +7,21 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.55.0] — 2026-10-01
+
+### Fixed
+
+- **A fresh local-sidecar install could finish "successfully" with an embedder that cannot load its model.** The sidecar's Python packages were allowed to resolve to transformers 5.x, which cannot load voyage-4-nano (5.17 and 5.18 fail with an AttributeError, 5.9 with a TypeError). They are now pinned to transformers 4.57 or later in the 4.x line, which loads and embeds. An existing install picks the pin up when `captain-memo install` is re-run; an automatic update does not touch the sidecar's Python packages. (#255)
+- The installer, on Linux and on Windows, now loads the model and embeds one test sentence before it starts the sidecar, and stops with the reason if that fails. The Linux health probe no longer counts any answer as success. On Windows the old check only constructed the model, so a model that failed while embedding passed it. (#255)
+- **A session left open for days now checks for updates.** With `CAPTAIN_MEMO_AUTO_UPDATE=1` the check only ran when a session started, so a captain that was never restarted never looked for a new release. In Claude Code the prompt hook now makes the same check once one is due. It shares the session-start throttle (one check per hour plus a few minutes, longer after failures) and all its safety rules: clean checkout, branch checked out, fast-forward only, newest stable tag only. The prompt that triggers a check waits for it, roughly 2 to 8 seconds when nothing is new, and a slow or dead origin is cut off after 8 seconds per call. The upgrade is announced at the next session start. (#256)
+- **A good update is no longer rolled back on a large corpus.** The update used to be judged by whether the worker's stats answered within 15 seconds, but a big corpus keeps stats unavailable while it indexes after a restart. It is now judged by a new worker process answering, the same test `captain-memo restart` uses. (#256)
+- **A release that failed to start is no longer retried every hour.** After a rollback it is skipped until a newer release is published, as the rollback message already said. (#256)
+
+### Changed
+
+- A sidecar that cannot load its model now stays up instead of crash-looping: it reports the failure in /health, answers embedding requests with a 503 that carries the reason, and retries the load (at least every minute, longer when the attempt is slow), so a download that failed at boot still recovers. `captain-memo doctor` shows it as "embedder model: local sidecar is running but could not load voyageai/voyage-4-nano: <error>" instead of "service not running". The log hint for a sidecar that does not answer now says `journalctl --user`, since the default install is a user service. (#255)
+- The auto-update steps that lived in the session-start hook are now one shared function used by both hooks. The session-start banner is unchanged. (#256)
+
 ## [0.54.0] — 2026-10-01
 
 ### Fixed

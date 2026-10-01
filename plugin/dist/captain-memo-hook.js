@@ -255,6 +255,87 @@ var init_shared = __esm(() => {
   WORKER_BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
 });
 
+// src/shared/worker-transition.ts
+import { mkdirSync as mkdirSync3, readFileSync as readFileSync2, readdirSync, renameSync as renameSync2, statSync as statSync3, unlinkSync, writeFileSync as writeFileSync2 } from "fs";
+import { dirname as dirname2, join as join4 } from "path";
+function markTransition(t, path = TRANSITION_PATH, now = Date.now()) {
+  try {
+    const live = readTransition(path, now);
+    const entry = {
+      ...t,
+      ...t.from === undefined && live?.from !== undefined ? { from: live.from } : {},
+      ...t.to === undefined && live?.to !== undefined ? { to: live.to } : {},
+      ts: live?.ts ?? now
+    };
+    mkdirSync3(dirname2(path), { recursive: true });
+    const tmp = `${path}.tmp-${process.pid}`;
+    writeFileSync2(tmp, JSON.stringify(entry), "utf-8");
+    renameSync2(tmp, path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function readTransition(path = TRANSITION_PATH, now = Date.now()) {
+  try {
+    const t = JSON.parse(readFileSync2(path, "utf-8"));
+    if (t.phase !== "booting" && t.phase !== "updating")
+      return null;
+    if (!Number.isFinite(t.ts) || Math.abs(now - t.ts) > TRANSITION_TTL_MS)
+      return null;
+    return t;
+  } catch {
+    return null;
+  }
+}
+function clearTransition(path = TRANSITION_PATH) {
+  try {
+    unlinkSync(path);
+  } catch {}
+}
+function degradedPath(sessionId, dataDir) {
+  return join4(dataDir, `${DEGRADED_PREFIX}${sessionId.replace(/[^a-zA-Z0-9_-]/g, "")}`);
+}
+function markSessionDegraded(sessionId, dataDir = DATA_DIR) {
+  if (!sessionId)
+    return false;
+  const now = Date.now();
+  try {
+    mkdirSync3(dataDir, { recursive: true });
+    writeFileSync2(degradedPath(sessionId, dataDir), new Date(now).toISOString(), "utf-8");
+    for (const f of readdirSync(dataDir)) {
+      if (!f.startsWith(DEGRADED_PREFIX))
+        continue;
+      const p = join4(dataDir, f);
+      try {
+        if (now - statSync3(p).mtimeMs > DEGRADED_MAX_AGE_MS)
+          unlinkSync(p);
+      } catch {}
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+function consumeSessionDegraded(sessionId, dataDir = DATA_DIR) {
+  if (!sessionId)
+    return false;
+  try {
+    const p = degradedPath(sessionId, dataDir);
+    statSync3(p);
+    unlinkSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+var TRANSITION_PATH, TRANSITION_TTL_MS = 120000, DEGRADED_PREFIX = ".degraded-", DEGRADED_MAX_AGE_MS;
+var init_worker_transition = __esm(() => {
+  init_paths();
+  TRANSITION_PATH = join4(DATA_DIR, ".worker-transition");
+  DEGRADED_MAX_AGE_MS = 24 * 60 * 60000;
+});
+
 // src/shared/worker-heal-lock.ts
 import { openSync, closeSync, readFileSync as readFileSync3, unlinkSync as unlinkSync2, writeSync } from "fs";
 import { join as join5 } from "path";
@@ -302,6 +383,28 @@ async function probeHealthOnce(port, timeoutMs = 3000) {
     return body?.healthy === true;
   } catch {
     return false;
+  } finally {
+    clearTimeout(t);
+  }
+}
+async function readWorkerInstance(port, timeoutMs = 3000) {
+  const health = await readJson(port, "/health", timeoutMs, false);
+  if (typeof health?.instance === "number" && Number.isFinite(health.instance))
+    return health.instance;
+  const stats = await readJson(port, "/stats", timeoutMs, true);
+  const v = stats?.worker?.started_at_epoch;
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+async function readJson(port, path, timeoutMs, okOnly) {
+  const ctl = new AbortController;
+  const t = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}${path}`, { headers: workerAuthHeaders(), signal: ctl.signal });
+    if (okOnly && !r.ok)
+      return null;
+    return await r.json().catch(() => null);
+  } catch {
+    return null;
   } finally {
     clearTimeout(t);
   }
@@ -848,6 +951,90 @@ async function restartWorker(sm, name, opts) {
   await sm.restart(name, { graceful: opts.graceful ?? false, port: opts.port, force: true });
 }
 
+// package.json
+var package_default;
+var init_package = __esm(() => {
+  package_default = {
+    name: "captain-memo",
+    version: "0.55.0",
+    description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
+    type: "module",
+    private: true,
+    license: "Apache-2.0",
+    author: {
+      name: "Kalin Bogatzevski",
+      url: "https://github.com/kalinbogatzevski"
+    },
+    homepage: "https://github.com/kalinbogatzevski/captain-memo",
+    repository: {
+      type: "git",
+      url: "https://github.com/kalinbogatzevski/captain-memo.git"
+    },
+    bugs: {
+      url: "https://github.com/kalinbogatzevski/captain-memo/issues"
+    },
+    keywords: [
+      "claude-code",
+      "claude-code-plugin",
+      "memory",
+      "rag",
+      "embeddings",
+      "voyage-ai",
+      "sqlite-vec",
+      "mcp",
+      "anthropic"
+    ],
+    engines: {
+      bun: ">=1.1.14"
+    },
+    bin: {
+      "captain-memo": "./bin/captain-memo"
+    },
+    scripts: {
+      test: "bun test --timeout 15000",
+      "test:unit": "bun test --timeout 15000 tests/unit/",
+      "test:integration": "bun test --timeout 15000 tests/integration/",
+      "test:hooks": "bun test --timeout 15000 tests/hooks/",
+      typecheck: "tsc --noEmit",
+      "worker:start": "bun src/worker/index.ts",
+      "worker:dev": "CAPTAIN_MEMO_DATA_DIR=./.captain-memo.dev bun --watch src/worker/index.ts",
+      "mcp:start": "bun src/mcp-server.ts",
+      cli: "bun bin/captain-memo",
+      hook: "bun bin/captain-memo-hook.ts",
+      "build:plugin": `bun build src/mcp-server.ts --target bun --outfile plugin/dist/mcp-server.js && bun build bin/captain-memo-hook.ts --target bun --outfile plugin/dist/captain-memo-hook.js && bun -e "require('fs').copyFileSync('skills/captain-memo/SKILL.md','plugin/portable/captain-memo/SKILL.md')"`
+    },
+    dependencies: {
+      "@anthropic-ai/sdk": "^0.95.0",
+      "@modelcontextprotocol/sdk": "^1.25.1",
+      chokidar: "^4.0.3",
+      "gpt-tokenizer": "^2.5.1",
+      nanoid: "^5.1.16",
+      "sqlite-vec": "^0.1.9",
+      zod: "^3.24.0"
+    },
+    overrides: {
+      qs: "^6.16.0",
+      hono: "^4.13.5",
+      "body-parser": "^2.3.0",
+      "@hono/node-server": "^2.0.5",
+      "fast-uri": "^3.1.6",
+      "ip-address": "^10.7.2"
+    },
+    devDependencies: {
+      "@types/bun": "^1.1.0",
+      "@types/node": "^20.0.0",
+      typescript: "^5.6.0"
+    }
+  };
+});
+
+// src/shared/version.ts
+var VERSION;
+var init_version = __esm(() => {
+  init_package();
+  VERSION = package_default.version;
+});
+
 // src/shared/self-update.ts
 import { mkdirSync as mkdirSync6, readFileSync as readFileSync6, writeFileSync as writeFileSync6, renameSync as renameSync3 } from "fs";
 import { join as join9 } from "path";
@@ -946,699 +1133,7 @@ function consumeUpgrade(dataDir, runningVersion) {
 var MARKER_FILENAME = ".install-version";
 var init_self_update = () => {};
 
-// src/shared/plugin-cache.ts
-import { existsSync as existsSync5, readFileSync as readFileSync7, readdirSync as readdirSync2, statSync as statSync4 } from "fs";
-import { homedir as homedir5 } from "os";
-import { join as join10 } from "path";
-function normalizePath(p) {
-  return p.replace(/\\/g, "/").replace(/\/+$/, "");
-}
-function parseInstalledPaths(json) {
-  let parsed;
-  try {
-    parsed = JSON.parse(json);
-  } catch {
-    return null;
-  }
-  const plugins = parsed?.plugins;
-  if (!plugins || typeof plugins !== "object")
-    return null;
-  const out = new Set;
-  for (const installs of Object.values(plugins)) {
-    if (!Array.isArray(installs))
-      continue;
-    for (const install of installs) {
-      const p = install?.installPath;
-      if (typeof p === "string" && p.length > 0)
-        out.add(normalizePath(p));
-    }
-  }
-  if (out.size === 0 && Object.keys(plugins).length > 0)
-    return null;
-  return out;
-}
-function readPluginManifest(root) {
-  try {
-    const m = JSON.parse(readFileSync7(join10(root, ".claude-plugin", "plugin.json"), "utf-8"));
-    if (typeof m.name !== "string")
-      return null;
-    return { name: m.name, version: typeof m.version === "string" ? m.version : null };
-  } catch {
-    return null;
-  }
-}
-function readInstalledPaths(file = INSTALLED_PLUGINS_PATH) {
-  try {
-    return parseInstalledPaths(readFileSync7(file, "utf-8"));
-  } catch {
-    return null;
-  }
-}
-var CACHE_ROOT, INSTALLED_PLUGINS_PATH;
-var init_plugin_cache = __esm(() => {
-  CACHE_ROOT = join10(homedir5(), ".claude", "plugins", "cache");
-  INSTALLED_PLUGINS_PATH = join10(homedir5(), ".claude", "plugins", "installed_plugins.json");
-});
-
-// src/shared/ansi.ts
-var init_ansi = () => {};
-
-// src/cli/banner.ts
-var init_banner = __esm(() => {
-  init_ansi();
-});
-
-// src/shared/platform.ts
-var isWindows, isMac, isLinux;
-var init_platform = __esm(() => {
-  isWindows = process.platform === "win32";
-  isMac = process.platform === "darwin";
-  isLinux = process.platform === "linux";
-});
-
-// src/shared/sqlite-extensions.ts
-var MACOS_SQLITE_REMEDY;
-var init_sqlite_extensions = __esm(() => {
-  init_platform();
-  MACOS_SQLITE_REMEDY = `macOS ships SQLite without extension support, so the vector index cannot load.
-` + `  Fix:  brew install sqlite
-` + `  Then: captain-memo restart
-` + '  (Or install with the embedder set to "skip" for keyword-only retrieval, which needs no extension.)';
-});
-
-// src/shared/summarizer-login.ts
-var init_summarizer_login = () => {};
-
-// src/cli/commands/install-hooks.ts
-var init_install_hooks = () => {};
-
-// src/services/embedder-installer/bash.ts
-import { join as join11, resolve as resolve4 } from "path";
-var REPO_ROOT3, SCRIPT;
-var init_bash = __esm(() => {
-  REPO_ROOT3 = resolve4(import.meta.dir, "../../..");
-  SCRIPT = join11(REPO_ROOT3, "scripts/install-embedder.sh");
-});
-
-// src/services/embedder-installer/powershell.ts
-import { join as join12, resolve as resolve5 } from "path";
-var REPO_ROOT4, SCRIPT2;
-var init_powershell = __esm(() => {
-  REPO_ROOT4 = resolve5(import.meta.dir, "../../..");
-  SCRIPT2 = join12(REPO_ROOT4, "scripts/install-embedder.ps1");
-});
-
-// src/services/embedder-installer/index.ts
-var init_embedder_installer = __esm(() => {
-  init_platform();
-  init_bash();
-  init_powershell();
-});
-
-// src/cli/cross-ai.ts
-var PROBE_CLEAR, bunYaml, OPENCODE_LOCAL_PROVIDERS, OPENCODE_LOCAL_PROVIDER_KEYS;
-var init_cross_ai = __esm(() => {
-  init_platform();
-  init_paths();
-  init_self_update();
-  PROBE_CLEAR = process.stdout.isTTY === true ? "\r\x1B[2K" : "\r";
-  bunYaml = globalThis.Bun?.YAML;
-  OPENCODE_LOCAL_PROVIDERS = {
-    ollama: { name: "Ollama (local)", baseURL: "http://localhost:11434/v1" },
-    vllm: { name: "vLLM (local)", baseURL: "http://localhost:8000/v1" },
-    lmstudio: { name: "LM Studio (local)", baseURL: "http://127.0.0.1:1234/v1" }
-  };
-  OPENCODE_LOCAL_PROVIDER_KEYS = Object.keys(OPENCODE_LOCAL_PROVIDERS);
-});
-
-// src/shared/ai-memory-sources.ts
-import { homedir as homedir6 } from "os";
-var H;
-var init_ai_memory_sources = __esm(() => {
-  H = homedir6();
-});
-
-// src/cli/commands/install.ts
-import { dirname as dirname3, join as join13, resolve as resolve6 } from "path";
-import { homedir as homedir7 } from "os";
-function pluginRegistrationSteps(repoRoot) {
-  return [
-    ["plugin", "marketplace", "remove", "captain-memo", "--scope", "user"],
-    ["plugin", "marketplace", "add", repoRoot],
-    ["plugin", "install", "captain-memo@captain-memo"]
-  ];
-}
-var REPO_ROOT5, PLUGIN_LINK, MANAGED_ENV_KEYS;
-var init_install = __esm(() => {
-  init_banner();
-  init_platform();
-  init_sqlite_extensions();
-  init_paths();
-  init_worker_env();
-  init_summarizer_login();
-  init_service_manager();
-  init_install_hooks();
-  init_embedder_installer();
-  init_cross_ai();
-  init_ai_memory_sources();
-  REPO_ROOT5 = resolve6(import.meta.dir, "../../..");
-  PLUGIN_LINK = join13(homedir7(), ".claude", "plugins", "captain-memo");
-  MANAGED_ENV_KEYS = new Set([
-    "CAPTAIN_MEMO_DATA_DIR",
-    "CAPTAIN_MEMO_PROJECT_ID",
-    "CAPTAIN_MEMO_WORKER_PORT",
-    "CAPTAIN_MEMO_HOOK_TIMEOUT_MS",
-    "CAPTAIN_MEMO_SUMMARIZER_PROVIDER",
-    "CAPTAIN_MEMO_SUMMARIZER_MODEL",
-    "ANTHROPIC_API_KEY",
-    "CAPTAIN_MEMO_OPENAI_ENDPOINT",
-    "CAPTAIN_MEMO_OPENAI_API_KEY",
-    "CAPTAIN_MEMO_SKIP_EMBED",
-    "CAPTAIN_MEMO_EMBEDDER_ENDPOINT",
-    "CAPTAIN_MEMO_EMBEDDER_MODEL",
-    "CAPTAIN_MEMO_EMBEDDING_DIM",
-    "CAPTAIN_MEMO_EMBEDDER_API_KEY",
-    "CAPTAIN_MEMO_WATCH_MEMORY",
-    "CAPTAIN_MEMO_WATCH_SKILLS"
-  ]);
-});
-
-// src/cli/plugin-cache-refresh.ts
-import { spawnSync as spawnSync4 } from "child_process";
-import { readFileSync as readFileSync8 } from "fs";
-import { homedir as homedir8 } from "os";
-import { join as join14 } from "path";
-function marketplacePointsAtCheckout(repoRoot, home = homedir8()) {
-  try {
-    const file = join14(home, ".claude", "plugins", "known_marketplaces.json");
-    const parsed = JSON.parse(readFileSync8(file, "utf-8"));
-    const src = parsed["captain-memo"]?.source;
-    return src?.source === "directory" && typeof src.path === "string" && normalizePath(src.path) === normalizePath(repoRoot);
-  } catch {
-    return false;
-  }
-}
-function activeCachedVersion(home = homedir8()) {
-  const installed = readInstalledPaths(join14(home, ".claude", "plugins", "installed_plugins.json"));
-  if (installed === null)
-    return null;
-  for (const path of installed) {
-    const m = readPluginManifest(path);
-    if (m?.name === "captain-memo")
-      return m.version;
-  }
-  return null;
-}
-function needsCacheRefresh(cachedVersion, runningVersion) {
-  return cachedVersion !== null && cachedVersion !== runningVersion;
-}
-function refreshPluginCacheIfStale(runningVersion, repoRoot = REPO_ROOT6, deps = {}) {
-  const cachedVersion = (deps.cachedVersion ?? activeCachedVersion)();
-  if (!needsCacheRefresh(cachedVersion, runningVersion))
-    return { refreshed: false, skipped: "cache is in step" };
-  const pointsAt = deps.pointsAtCheckout ?? ((r) => marketplacePointsAtCheckout(r));
-  if (!pointsAt(repoRoot))
-    return { refreshed: false, skipped: "not a directory marketplace on this checkout" };
-  const run = deps.run ?? ((args) => {
-    const r = spawnSync4("claude", args, { stdio: "pipe", timeout: 120000 });
-    return r.status ?? 1;
-  });
-  const steps = pluginRegistrationSteps(repoRoot);
-  run(steps[0]);
-  if (run(steps[1]) !== 0)
-    return { refreshed: false, skipped: "marketplace add failed" };
-  if (run(steps[2]) !== 0)
-    return { refreshed: false, skipped: "plugin install failed" };
-  return { refreshed: true, from: cachedVersion };
-}
-var REPO_ROOT6, CACHE_REFRESH_LOCK = ".plugin-cache-refresh.lock";
-var init_plugin_cache_refresh = __esm(() => {
-  init_plugin_cache();
-  init_install();
-  REPO_ROOT6 = join14(import.meta.dir, "..", "..");
-});
-
-// src/cli/skill-refresh.ts
-import { existsSync as existsSync6, copyFileSync } from "fs";
-import { join as join15 } from "path";
-function resolveMemoSkillSource(base = import.meta.dir) {
-  return [
-    join15(base, "..", "..", "skills", "captain-memo", "SKILL.md"),
-    join15(base, "..", "portable", "captain-memo", "SKILL.md")
-  ].find((p) => existsSync6(p)) ?? null;
-}
-function refreshMemoSkills(source, home, deps = {}) {
-  const exists = deps.exists ?? existsSync6;
-  const copy = deps.copy ?? copyFileSync;
-  if (!exists(source))
-    return [];
-  const refreshed = [];
-  for (const rel of MEMO_SKILL_RELPATHS) {
-    const dest = join15(home, ...rel.split("/"));
-    if (!exists(dest))
-      continue;
-    try {
-      copy(source, dest);
-      refreshed.push(dest);
-    } catch {}
-  }
-  return refreshed;
-}
-var MEMO_SKILL_RELPATHS;
-var init_skill_refresh = __esm(() => {
-  MEMO_SKILL_RELPATHS = [
-    ".codex/skills/captain-memo/SKILL.md",
-    ".gemini/skills/captain-memo/SKILL.md",
-    ".cursor/rules/captain-memo.md",
-    ".config/opencode/skills/captain-memo/SKILL.md",
-    ".vibe/skills/captain-memo/SKILL.md",
-    ".kimi/skills/captain-memo/SKILL.md",
-    ".config/Code/User/prompts/captain-memo.instructions.md",
-    ".config/JetBrains/captain-memo.md"
-  ];
-});
-
-// src/hooks/pre-git.ts
-var exports_pre_git = {};
-__export(exports_pre_git, {
-  runPreGit: () => runPreGit
-});
-function parseGitOp(command) {
-  if (typeof command !== "string")
-    return null;
-  for (const seg of command.split(/&&|\|\||;|\|/)) {
-    const toks = seg.trim().split(/\s+/).filter(Boolean);
-    let i = 0;
-    while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i]))
-      i++;
-    if (toks[i] !== "git")
-      continue;
-    let j = i + 1;
-    while (j < toks.length && toks[j].startsWith("-")) {
-      const flag = toks[j];
-      j++;
-      if (flag === "-C" || flag === "-c")
-        j++;
-    }
-    const sub = toks[j];
-    if (sub && MUTATING.test(sub))
-      return sub;
-  }
-  return null;
-}
-async function runPreGit(payload) {
-  const op = parseGitOp(typeof payload.tool_input?.command === "string" ? payload.tool_input.command : "");
-  if (!op || !payload.cwd)
-    return null;
-  const root = detectRepoRootSync(payload.cwd);
-  if (!root || root.includes("/claude-1000/"))
-    return null;
-  const res = await workerFetch(`/worknote/repo-active?repo_root=${encodeURIComponent(root)}`, { method: "GET", timeoutMs: HOOK_TIMEOUT_MS2 });
-  if (!res.ok || !res.body?.holders)
-    return null;
-  const peers = res.body.holders.filter((h) => h.session_id !== payload.session_id);
-  if (peers.length === 0)
-    return null;
-  const who = peers.map((h) => `${(h.session_id ?? "").slice(0, 12)} (${h.agent ?? "?"})${h.branch ? ` on ${h.branch}` : ""}${h.is_dirty ? ", dirty" : ""}${h.stale ? `, ${staleNote(h)}` : ""}`).join(" ; ");
-  return `WORK-BOARD SHARED CHECKOUT: peer session(s) are using ${root} \u2014 ${who}. Running \`git ${op}\` here changes that shared working tree for them. Isolate instead: \`git worktree add ../<name> <branch>\` and work there. (advisory)`;
-}
-var MUTATING, HOOK_TIMEOUT_MS2;
-var init_pre_git = __esm(() => {
-  init_shared();
-  init_branch();
-  MUTATING = /^(checkout|switch|commit|reset|stash|rebase|merge|cherry-pick|clean|restore)$/;
-  HOOK_TIMEOUT_MS2 = Number(process.env.CAPTAIN_MEMO_PRE_TOOL_USE_TIMEOUT_MS ?? 1500);
-});
-
-// src/hooks/dispatcher.ts
-init_shared();
-init_paths();
-
-// src/hooks/user-prompt-submit.ts
-init_shared();
-init_paths();
-
-// src/worker/homework.ts
-var HOMEWORK_DONE_KEEP_MS = 7 * 24 * 3600000;
-function parseHomeworkPrompt(prompt2) {
-  const m = /^\s*(?:idea|todo|homework|later|\u0438\u0434\u0435\u044F|\u0437\u0430 \u043F\u043E\u0441\u043B\u0435)\s*[:\-\u2014]\s*(\S[\s\S]*)$/i.exec(String(prompt2));
-  return m ? m[1].trim() : null;
-}
-function homeworkFiledLine(it) {
-  return `\uD83D\uDCDD Filed as homework #${it.id} on this captain (not for now): ${it.text.split(`
-`)[0].slice(0, 160)} \u2014 todo_list() shows the list; the user may just want a short "noted".`;
-}
-
-// src/shared/worker-transition.ts
-init_paths();
-import { mkdirSync as mkdirSync3, readFileSync as readFileSync2, readdirSync, renameSync as renameSync2, statSync as statSync3, unlinkSync, writeFileSync as writeFileSync2 } from "fs";
-import { dirname as dirname2, join as join4 } from "path";
-var TRANSITION_PATH = join4(DATA_DIR, ".worker-transition");
-var TRANSITION_TTL_MS = 120000;
-function markTransition(t, path = TRANSITION_PATH, now = Date.now()) {
-  try {
-    const live = readTransition(path, now);
-    const entry = {
-      ...t,
-      ...t.from === undefined && live?.from !== undefined ? { from: live.from } : {},
-      ...t.to === undefined && live?.to !== undefined ? { to: live.to } : {},
-      ts: live?.ts ?? now
-    };
-    mkdirSync3(dirname2(path), { recursive: true });
-    const tmp = `${path}.tmp-${process.pid}`;
-    writeFileSync2(tmp, JSON.stringify(entry), "utf-8");
-    renameSync2(tmp, path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function readTransition(path = TRANSITION_PATH, now = Date.now()) {
-  try {
-    const t = JSON.parse(readFileSync2(path, "utf-8"));
-    if (t.phase !== "booting" && t.phase !== "updating")
-      return null;
-    if (!Number.isFinite(t.ts) || Math.abs(now - t.ts) > TRANSITION_TTL_MS)
-      return null;
-    return t;
-  } catch {
-    return null;
-  }
-}
-function clearTransition(path = TRANSITION_PATH) {
-  try {
-    unlinkSync(path);
-  } catch {}
-}
-var DEGRADED_PREFIX = ".degraded-";
-var DEGRADED_MAX_AGE_MS = 24 * 60 * 60000;
-function degradedPath(sessionId, dataDir) {
-  return join4(dataDir, `${DEGRADED_PREFIX}${sessionId.replace(/[^a-zA-Z0-9_-]/g, "")}`);
-}
-function markSessionDegraded(sessionId, dataDir = DATA_DIR) {
-  if (!sessionId)
-    return false;
-  const now = Date.now();
-  try {
-    mkdirSync3(dataDir, { recursive: true });
-    writeFileSync2(degradedPath(sessionId, dataDir), new Date(now).toISOString(), "utf-8");
-    for (const f of readdirSync(dataDir)) {
-      if (!f.startsWith(DEGRADED_PREFIX))
-        continue;
-      const p = join4(dataDir, f);
-      try {
-        if (now - statSync3(p).mtimeMs > DEGRADED_MAX_AGE_MS)
-          unlinkSync(p);
-      } catch {}
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-function consumeSessionDegraded(sessionId, dataDir = DATA_DIR) {
-  if (!sessionId)
-    return false;
-  try {
-    const p = degradedPath(sessionId, dataDir);
-    statSync3(p);
-    unlinkSync(p);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// src/hooks/user-prompt-submit.ts
-var HOST_EXIT_MARGIN_MS = 750;
-function homeworkWaitMs(hostTimeoutMs, elapsedMs) {
-  if (hostTimeoutMs === undefined)
-    return 6000;
-  return Math.max(0, Math.min(6000, hostTimeoutMs - elapsedMs - HOST_EXIT_MARGIN_MS));
-}
-function parseOverridePrompt(prompt2, cwd) {
-  const m = /^\s*override\s*:\s*(\S[\s\S]*)$/i.exec(String(prompt2 ?? "").split(/\r?\n/)[0] ?? "");
-  if (!m)
-    return null;
-  const raw = m[1].split(/[\s,]+/).map((f) => f.replace(/^[`'"]+|[`'".]+$/g, "")).filter(Boolean);
-  const remote = (f) => /^(?:[^@\s:/]+@)?[^@\s:/]{2,}:/.test(f);
-  const local = absoluteClaimFiles(raw.filter((f) => !remote(f)), cwd ?? "").filter((f) => typeof f === "string");
-  const files = [...local, ...raw.filter(remote)];
-  return files.length ? files : null;
-}
-async function main(options = {}) {
-  let payload = {};
-  try {
-    payload = await readStdinJson();
-  } catch (err) {
-    logHookError("UserPromptSubmit", err);
-    return;
-  }
-  const prompt2 = payload.prompt ?? "";
-  const timeoutMs = Number(process.env[ENV_HOOK_TIMEOUT_MS] ?? DEFAULT_HOOK_TIMEOUT_MS);
-  const homework = parseHomeworkPrompt(prompt2);
-  if (homework) {
-    const filed = await workerFetch("/homework/add", { method: "POST", body: { text: homework, by: payload.session_id ?? "hook", project: resolveProjectId(payload.cwd) }, timeoutMs: homeworkWaitMs(options.hostTimeoutMs, performance.now()) });
-    const line = filed.ok && filed.body ? homeworkFiledLine(filed.body.item) + ` (${filed.body.open} open)` : '\uD83D\uDCDD The worker did not confirm filing this as homework in time \u2014 it may still have landed: todo_list() shows; if it is not there, say "noted" and todo_add it yourself.';
-    logWorkerFailure("UserPromptSubmit", "/homework/add", filed);
-    if (options.structuredContextJson)
-      writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: options.contextEventName ?? "UserPromptSubmit", additionalContext: line } }));
-    else {
-      writeStdout(line);
-      writeStdout(`
-
-`);
-    }
-    if (options.emitOriginalPrompt !== false)
-      writeStdout(prompt2);
-    return;
-  }
-  const overrideFiles = payload.session_id ? parseOverridePrompt(prompt2, payload.cwd) : null;
-  if (overrideFiles) {
-    const r = await workerFetch("/worknote/override", { method: "POST", body: { session_id: payload.session_id, files: overrideFiles }, timeoutMs: 2000 });
-    logWorkerFailure("UserPromptSubmit", "/worknote/override", r);
-    const line = r.ok && r.body ? `Override recorded for ${r.body.files.join(", ")} (30 min); ${r.body.holders.length ? `holder(s) ${r.body.holders.join(", ")} will see it on the work board` : "no live holder"}.` : "The worker did not confirm the override, so the work-board block still stands. Tell the user; they can retry.";
-    if (options.structuredContextJson)
-      writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: options.contextEventName ?? "UserPromptSubmit", additionalContext: line } }));
-    else {
-      writeStdout(line);
-      writeStdout(`
-
-`);
-    }
-    if (options.emitOriginalPrompt !== false)
-      writeStdout(prompt2);
-    return;
-  }
-  const result = await workerFetch("/inject/context", {
-    method: "POST",
-    body: {
-      prompt: prompt2,
-      top_k: 5,
-      session_id: payload.session_id,
-      project_id: resolveProjectId(payload.cwd)
-    },
-    timeoutMs
-  });
-  logWorkerFailure("UserPromptSubmit", "/inject/context", result);
-  const transition = result.ok ? null : readTransition();
-  if (transition) {
-    logHookError("UserPromptSubmit", new Error(`worker is ${transition.phase} \u2014 skipping the reclaim`));
-  }
-  if (!result.ok && process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL !== "1" && !transition) {
-    try {
-      await Promise.resolve().then(() => init_worker_heal_lock());
-      if (acquireHealLock()) {
-        try {
-          await Promise.resolve().then(() => init_worker_health_probe());
-          const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
-          const reachable = await probeHealthyWithRetries(() => probeHealthOnce(port, 1500), 2, 1000);
-          if (!reachable) {
-            await Promise.resolve().then(() => init_service_manager());
-            await Promise.resolve();
-            await restartWorker(getServiceManager(), "captain-memo-worker", { port });
-          }
-        } finally {
-          releaseHealLock();
-        }
-      }
-    } catch (err) {
-      logHookError("UserPromptSubmit", err);
-    }
-  }
-  if (result.ok && result.body && result.body.envelope) {
-    if (options.structuredContextJson) {
-      writeStdout(JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: options.contextEventName ?? "UserPromptSubmit",
-          additionalContext: result.body.envelope
-        }
-      }));
-    } else {
-      writeStdout(result.body.envelope);
-      writeStdout(`
-
-`);
-    }
-  }
-  if (options.emitOriginalPrompt !== false)
-    writeStdout(prompt2);
-}
-if (isMainModule(import.meta)) {
-  try {
-    await main();
-  } catch (err) {
-    logHookError("UserPromptSubmit", err);
-    process.exit(0);
-  }
-}
-
-// src/hooks/session-start.ts
-init_shared();
-import { mkdirSync as mkdirSync7, readFileSync as readFileSync9, statSync as statSync5, writeFileSync as writeFileSync7 } from "fs";
-import { join as join16 } from "path";
-import { homedir as homedir9 } from "os";
-
-// src/hooks/local-articles.ts
-var LOCAL_ARTICLES = [
-  "## Captain Memo articles: you are one AI among several sessions on this machine",
-  "",
-  "FOUNDATION: THE WORK BOARD. Every session, every project, before anything else.",
-  "- LOOK FIRST: `work_active()` before your first edit, to see what other sessions hold.",
-  '- CLAIM BEFORE TOUCHING ANYTHING: `work_set("<what>", { topics: [1-5 tags], files: [paths] })`. List',
-  "  EVERY file you will write, append to or deploy, as ABSOLUTE paths.",
-  "- RE-CHECK `work_active` before writing a shared file, before commit/checkout/reset/stash/add, and before",
-  `  any deploy (scp, rsync). Never ship a copy built earlier, or "HEAD + my hunk" around another session's`,
-  "  work. Deploy only if the remote md5 equals what you last read.",
-  "- RESPECT A CLAIM: never edit or deploy over another session's claim. Stop and tell the user which",
-  "  session holds it, and let them decide. A LIVE Claude Code claim BLOCKS your edit and upload; only the",
-  "  user lifts it (`override: <file>`). Stale means no recent edit, not ended: it may only be reading.",
-  "- RELEASE with `work_clear` only once committed AND deployed; re-`work_set` after a long pause.",
-  "- ONE TREE PER SESSION: your own `git worktree add ../<n>`. Shared tree? `git add <paths>`, never -A.",
-  "- AUTO-CLAIM (Claude Code, Codex, Gemini) records the files you touch but INFERS the why, and",
-  "  can miss. State intent yourself with `work_set`. Elsewhere nothing claims for you.",
-  "Why: on 2026-09-30 two sessions in one checkout skipped these steps and each deployed over the other.",
-  "",
-  "1. SEARCH BEFORE YOU ACT. `search_all` first, grep second. `remember` what is non-obvious, with the WHY.",
-  "2. NEVER GUESS. Verify against memory, the repo's docs, the code path INCLUDING its call sites, and the",
-  '   live data. If you have not, say "I have not verified X".',
-  "3. COMMITTED IS NOT DEPLOYED. Before reporting done, check the RUNNING process started AFTER your edit.",
-  "   A service that predates your change is serving the old code.",
-  "4. ASK when intent is ambiguous; verification tells you how something works, never what is wanted.",
-  "   If mid-task discovery widens the scope, stop and report it before acting.",
-  '5. `idea:` / `todo:` FROM THE USER IS HOMEWORK, NOT A TASK SWITCH: say "noted" (`todo_add` if no hook did).',
-  "   `todo_list()` = what waits; `todo_claim(id)` before starting one, `todo_done(id, note)` after.",
-  "   DEFERRED SCOPE IS HOMEWORK: agreed to leave a piece for later? `todo_add` it in that turn, unasked,",
-  '   and say "filed as homework #N".',
-  "6. RUN WORK NEXT TO ITS DATA: tests and data scripts run on (or beside) the DB host, never over a WAN",
-  "   (~190 vs ~0.2 ms a query). Iterate on the tests a change touches; one full run at the end.",
-  "7. THE USER'S TIME IS THE COST. Independent work runs in parallel. Review a small change yourself, no",
-  "   build -> review -> fix chain. Over ~15 min? Say so first.",
-  "",
-  "Work-board and homework tools in full: the captain-memo skill (`skills/captain-memo/SKILL.md`)."
-].join(`
-`);
-
-// src/hooks/session-start.ts
-init_paths();
-// package.json
-var package_default = {
-  name: "captain-memo",
-  version: "0.54.0",
-  description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
-  type: "module",
-  private: true,
-  license: "Apache-2.0",
-  author: {
-    name: "Kalin Bogatzevski",
-    url: "https://github.com/kalinbogatzevski"
-  },
-  homepage: "https://github.com/kalinbogatzevski/captain-memo",
-  repository: {
-    type: "git",
-    url: "https://github.com/kalinbogatzevski/captain-memo.git"
-  },
-  bugs: {
-    url: "https://github.com/kalinbogatzevski/captain-memo/issues"
-  },
-  keywords: [
-    "claude-code",
-    "claude-code-plugin",
-    "memory",
-    "rag",
-    "embeddings",
-    "voyage-ai",
-    "sqlite-vec",
-    "mcp",
-    "anthropic"
-  ],
-  engines: {
-    bun: ">=1.1.14"
-  },
-  bin: {
-    "captain-memo": "./bin/captain-memo"
-  },
-  scripts: {
-    test: "bun test --timeout 15000",
-    "test:unit": "bun test --timeout 15000 tests/unit/",
-    "test:integration": "bun test --timeout 15000 tests/integration/",
-    "test:hooks": "bun test --timeout 15000 tests/hooks/",
-    typecheck: "tsc --noEmit",
-    "worker:start": "bun src/worker/index.ts",
-    "worker:dev": "CAPTAIN_MEMO_DATA_DIR=./.captain-memo.dev bun --watch src/worker/index.ts",
-    "mcp:start": "bun src/mcp-server.ts",
-    cli: "bun bin/captain-memo",
-    hook: "bun bin/captain-memo-hook.ts",
-    "build:plugin": `bun build src/mcp-server.ts --target bun --outfile plugin/dist/mcp-server.js && bun build bin/captain-memo-hook.ts --target bun --outfile plugin/dist/captain-memo-hook.js && bun -e "require('fs').copyFileSync('skills/captain-memo/SKILL.md','plugin/portable/captain-memo/SKILL.md')"`
-  },
-  dependencies: {
-    "@anthropic-ai/sdk": "^0.95.0",
-    "@modelcontextprotocol/sdk": "^1.25.1",
-    chokidar: "^4.0.3",
-    "gpt-tokenizer": "^2.5.1",
-    nanoid: "^5.1.16",
-    "sqlite-vec": "^0.1.9",
-    zod: "^3.24.0"
-  },
-  overrides: {
-    qs: "^6.16.0",
-    hono: "^4.13.5",
-    "body-parser": "^2.3.0",
-    "@hono/node-server": "^2.0.5",
-    "fast-uri": "^3.1.6",
-    "ip-address": "^10.7.2"
-  },
-  devDependencies: {
-    "@types/bun": "^1.1.0",
-    "@types/node": "^20.0.0",
-    typescript: "^5.6.0"
-  }
-};
-
-// src/shared/version.ts
-var VERSION = package_default.version;
-
-// src/hooks/session-start.ts
-init_self_update();
-
-// src/shared/whats-new.ts
-init_self_update();
-var NEWS_MAX = 5;
-function newsLines(items, max = NEWS_MAX) {
-  if (items.length === 0)
-    return [];
-  const multi = new Set(items.map((i) => i.version)).size > 1;
-  const lines = ["  What changed:", ...items.slice(0, max).map((i) => `  \u2022 ${i.text}${multi ? ` (${i.version})` : ""}`)];
-  if (items.length > max)
-    lines.push(`  \u2026 and ${items.length - max} more in CHANGELOG.md`);
-  return lines;
-}
-
 // src/worker/self-updater.ts
-init_self_update();
-var DEFAULT_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
-var UPDATE_CHECK_JITTER_MAX_MS = 10 * 60 * 1000;
-var UPDATE_CHECK_BACKOFF_CAP_MS = 6 * 60 * 60 * 1000;
 function updateCheckIntervalFromEnv(raw) {
   const n = Number(raw);
   return raw !== undefined && raw.trim() !== "" && Number.isFinite(n) && n > 0 ? n : DEFAULT_UPDATE_CHECK_INTERVAL_MS;
@@ -1770,6 +1265,706 @@ function runAutoUpdate(port, installDir, runningVersion, bunPath) {
     return null;
   }
 }
+var DEFAULT_UPDATE_CHECK_INTERVAL_MS, UPDATE_CHECK_JITTER_MAX_MS, UPDATE_CHECK_BACKOFF_CAP_MS;
+var init_self_updater = __esm(() => {
+  init_self_update();
+  DEFAULT_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+  UPDATE_CHECK_JITTER_MAX_MS = 10 * 60 * 1000;
+  UPDATE_CHECK_BACKOFF_CAP_MS = 6 * 60 * 60 * 1000;
+});
+
+// src/hooks/auto-update.ts
+import { mkdirSync as mkdirSync7, readFileSync as readFileSync7, statSync as statSync4, writeFileSync as writeFileSync7 } from "fs";
+import { join as join10 } from "path";
+function readPkgField(dir, field) {
+  try {
+    return JSON.parse(readFileSync7(join10(dir, "package.json"), "utf-8"))[field] ?? null;
+  } catch {
+    return null;
+  }
+}
+function gitTimeoutFor(argv, requestedMs, networkCapMs) {
+  const network = argv[1] === "fetch" || argv[1] === "ls-remote";
+  return Math.min(requestedMs ?? 20000, network ? networkCapMs ?? Infinity : Infinity);
+}
+async function awaitNewProcess(before, port, read, o) {
+  const probe = o.probe ?? ((p) => probeHealthOnce(p, 1500));
+  const { waitMs, pollMs } = o.bootWait ?? { waitMs: 30000, pollMs: 500 };
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    const cur = await read(port);
+    if (cur !== null && (before === null || cur > before))
+      return true;
+    if (before === null && await probe(port))
+      return true;
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  return false;
+}
+function readSkippedRelease() {
+  try {
+    return readFileSync7(SKIPPED_RELEASE_FILE, "utf-8").trim() || null;
+  } catch {
+    return null;
+  }
+}
+async function runAutoUpdatePass(o) {
+  let wroteTransition = false;
+  const readInstance = o.readInstance ?? ((p) => readWorkerInstance(p, 1500));
+  try {
+    const port = o.port ?? {
+      run: (argv, cwd, timeoutMs) => {
+        const r = Bun.spawnSync(argv, {
+          cwd,
+          stdout: "pipe",
+          stderr: "pipe",
+          timeout: gitTimeoutFor(argv, timeoutMs, o.networkTimeoutMs),
+          env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oConnectTimeout=10" }
+        });
+        return { code: r.exitCode ?? 1, stdout: r.stdout.toString(), stderr: r.stderr.toString() };
+      },
+      readPackageVersion: (dir) => readPkgField(dir, "version"),
+      readPackageName: (dir) => readPkgField(dir, "name")
+    };
+    let fetchFailed = false;
+    const runGit = port.run;
+    port.run = (argv, cwd, timeoutMs) => {
+      const r = runGit(argv, cwd, timeoutMs);
+      if (argv[1] === "fetch" && r.code !== 0)
+        fetchFailed = true;
+      return r;
+    };
+    const intervalMs = updateCheckIntervalFromEnv(process.env.CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS);
+    try {
+      mkdirSync7(DATA_DIR, { recursive: true });
+    } catch {}
+    let lastCheck = null;
+    let stamp = { delayMs: null, failures: 0 };
+    try {
+      lastCheck = statSync4(UPDATE_STAMP).mtimeMs;
+      stamp = parseUpdateStamp(readFileSync7(UPDATE_STAMP, "utf-8"));
+    } catch {}
+    const writeStamp = (failures) => {
+      try {
+        writeFileSync7(UPDATE_STAMP, formatUpdateStamp(new Date, nextUpdateCheckDelayMs(intervalMs, failures), failures));
+      } catch {}
+    };
+    if (!isUpdateCheckDue(lastCheck, Date.now(), stamp.delayMs ?? intervalMs) || !acquireHealLock(AUTO_UPDATE_LOCK))
+      return { kind: "none" };
+    try {
+      writeStamp(stamp.failures + 1);
+      const version = o.version ?? VERSION;
+      const top = port.run(["git", "rev-parse", "--show-toplevel"], import.meta.dir);
+      const installDir = top.code === 0 && top.stdout.trim() ? top.stdout.trim() : import.meta.dir;
+      const skipped = readSkippedRelease();
+      const res = runAutoUpdate(port, installDir, skipped && compareSemver(skipped, version) > 0 ? skipped : version, process.execPath);
+      if (res)
+        res.from = version;
+      writeStamp(fetchFailed ? stamp.failures + 1 : 0);
+      if (res?.ok) {
+        const wport = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
+        const restart = o.restart ?? (async (graceful) => {
+          await Promise.resolve().then(() => init_service_manager());
+          await restartWorker(getServiceManager(), "captain-memo-worker", graceful ? { port: wport, graceful: true } : { port: wport });
+        });
+        wroteTransition = true;
+        const outgoing = await readInstance(wport);
+        markTransition({ phase: "updating", from: res.from, ...res.to ? { to: res.to } : {} });
+        await restart(true);
+        if (await awaitNewProcess(outgoing, wport, readInstance, o)) {
+          await o.afterBoot?.();
+          return { kind: "updated", res };
+        }
+        const failed = await readInstance(wport);
+        const rolled = res.priorSha ? rollbackTo(port, installDir, res.priorSha, process.execPath) : false;
+        if (res.to) {
+          try {
+            writeFileSync7(SKIPPED_RELEASE_FILE, res.to + `
+`);
+          } catch {}
+        }
+        markTransition({ phase: "updating", to: res.from });
+        await restart(false);
+        if (!await awaitNewProcess(failed, wport, readInstance, o)) {
+          clearTransition();
+          wroteTransition = false;
+        }
+        logHookError(o.event, new Error(`auto-update to ${res.to} failed to boot; rolled back=${rolled}`));
+        return { kind: "rolled-back", res, rolled };
+      }
+      if (res && !res.ok) {
+        logHookError(o.event, new Error(`auto-update skipped: ${res.code} \u2014 ${res.reason}`));
+        return { kind: "blocked", res };
+      }
+      return { kind: "none" };
+    } finally {
+      releaseHealLock(AUTO_UPDATE_LOCK);
+    }
+  } catch (err) {
+    if (wroteTransition)
+      clearTransition();
+    logHookError(o.event, err);
+    return { kind: "none" };
+  }
+}
+var AUTO_UPDATE_LOCK, UPDATE_STAMP, SKIPPED_RELEASE_FILE;
+var init_auto_update = __esm(() => {
+  init_paths();
+  init_version();
+  init_self_update();
+  init_self_updater();
+  init_worker_transition();
+  init_worker_heal_lock();
+  init_worker_health_probe();
+  init_shared();
+  AUTO_UPDATE_LOCK = join10(DATA_DIR, ".auto-update.lock");
+  UPDATE_STAMP = join10(DATA_DIR, ".last-update-check");
+  SKIPPED_RELEASE_FILE = join10(DATA_DIR, ".auto-update-skip");
+});
+
+// src/shared/plugin-cache.ts
+import { existsSync as existsSync5, readFileSync as readFileSync8, readdirSync as readdirSync2, statSync as statSync5 } from "fs";
+import { homedir as homedir5 } from "os";
+import { join as join11 } from "path";
+function normalizePath(p) {
+  return p.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+function parseInstalledPaths(json) {
+  let parsed;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  const plugins = parsed?.plugins;
+  if (!plugins || typeof plugins !== "object")
+    return null;
+  const out = new Set;
+  for (const installs of Object.values(plugins)) {
+    if (!Array.isArray(installs))
+      continue;
+    for (const install of installs) {
+      const p = install?.installPath;
+      if (typeof p === "string" && p.length > 0)
+        out.add(normalizePath(p));
+    }
+  }
+  if (out.size === 0 && Object.keys(plugins).length > 0)
+    return null;
+  return out;
+}
+function readPluginManifest(root) {
+  try {
+    const m = JSON.parse(readFileSync8(join11(root, ".claude-plugin", "plugin.json"), "utf-8"));
+    if (typeof m.name !== "string")
+      return null;
+    return { name: m.name, version: typeof m.version === "string" ? m.version : null };
+  } catch {
+    return null;
+  }
+}
+function readInstalledPaths(file = INSTALLED_PLUGINS_PATH) {
+  try {
+    return parseInstalledPaths(readFileSync8(file, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+var CACHE_ROOT, INSTALLED_PLUGINS_PATH;
+var init_plugin_cache = __esm(() => {
+  CACHE_ROOT = join11(homedir5(), ".claude", "plugins", "cache");
+  INSTALLED_PLUGINS_PATH = join11(homedir5(), ".claude", "plugins", "installed_plugins.json");
+});
+
+// src/shared/ansi.ts
+var init_ansi = () => {};
+
+// src/cli/banner.ts
+var init_banner = __esm(() => {
+  init_ansi();
+});
+
+// src/shared/platform.ts
+var isWindows, isMac, isLinux;
+var init_platform = __esm(() => {
+  isWindows = process.platform === "win32";
+  isMac = process.platform === "darwin";
+  isLinux = process.platform === "linux";
+});
+
+// src/shared/sqlite-extensions.ts
+var MACOS_SQLITE_REMEDY;
+var init_sqlite_extensions = __esm(() => {
+  init_platform();
+  MACOS_SQLITE_REMEDY = `macOS ships SQLite without extension support, so the vector index cannot load.
+` + `  Fix:  brew install sqlite
+` + `  Then: captain-memo restart
+` + '  (Or install with the embedder set to "skip" for keyword-only retrieval, which needs no extension.)';
+});
+
+// src/shared/summarizer-login.ts
+var init_summarizer_login = () => {};
+
+// src/cli/commands/install-hooks.ts
+var init_install_hooks = () => {};
+
+// src/services/embedder-installer/bash.ts
+import { join as join12, resolve as resolve4 } from "path";
+var REPO_ROOT3, SCRIPT;
+var init_bash = __esm(() => {
+  REPO_ROOT3 = resolve4(import.meta.dir, "../../..");
+  SCRIPT = join12(REPO_ROOT3, "scripts/install-embedder.sh");
+});
+
+// src/services/embedder-installer/powershell.ts
+import { join as join13, resolve as resolve5 } from "path";
+var REPO_ROOT4, SCRIPT2;
+var init_powershell = __esm(() => {
+  REPO_ROOT4 = resolve5(import.meta.dir, "../../..");
+  SCRIPT2 = join13(REPO_ROOT4, "scripts/install-embedder.ps1");
+});
+
+// src/services/embedder-installer/index.ts
+var init_embedder_installer = __esm(() => {
+  init_platform();
+  init_bash();
+  init_powershell();
+});
+
+// src/cli/cross-ai.ts
+var PROBE_CLEAR, bunYaml, OPENCODE_LOCAL_PROVIDERS, OPENCODE_LOCAL_PROVIDER_KEYS;
+var init_cross_ai = __esm(() => {
+  init_platform();
+  init_paths();
+  init_self_update();
+  PROBE_CLEAR = process.stdout.isTTY === true ? "\r\x1B[2K" : "\r";
+  bunYaml = globalThis.Bun?.YAML;
+  OPENCODE_LOCAL_PROVIDERS = {
+    ollama: { name: "Ollama (local)", baseURL: "http://localhost:11434/v1" },
+    vllm: { name: "vLLM (local)", baseURL: "http://localhost:8000/v1" },
+    lmstudio: { name: "LM Studio (local)", baseURL: "http://127.0.0.1:1234/v1" }
+  };
+  OPENCODE_LOCAL_PROVIDER_KEYS = Object.keys(OPENCODE_LOCAL_PROVIDERS);
+});
+
+// src/shared/ai-memory-sources.ts
+import { homedir as homedir6 } from "os";
+var H;
+var init_ai_memory_sources = __esm(() => {
+  H = homedir6();
+});
+
+// src/cli/commands/install.ts
+import { dirname as dirname3, join as join14, resolve as resolve6 } from "path";
+import { homedir as homedir7 } from "os";
+function pluginRegistrationSteps(repoRoot) {
+  return [
+    ["plugin", "marketplace", "remove", "captain-memo", "--scope", "user"],
+    ["plugin", "marketplace", "add", repoRoot],
+    ["plugin", "install", "captain-memo@captain-memo"]
+  ];
+}
+var REPO_ROOT5, PLUGIN_LINK, MANAGED_ENV_KEYS;
+var init_install = __esm(() => {
+  init_banner();
+  init_platform();
+  init_sqlite_extensions();
+  init_paths();
+  init_worker_env();
+  init_summarizer_login();
+  init_service_manager();
+  init_install_hooks();
+  init_embedder_installer();
+  init_cross_ai();
+  init_ai_memory_sources();
+  REPO_ROOT5 = resolve6(import.meta.dir, "../../..");
+  PLUGIN_LINK = join14(homedir7(), ".claude", "plugins", "captain-memo");
+  MANAGED_ENV_KEYS = new Set([
+    "CAPTAIN_MEMO_DATA_DIR",
+    "CAPTAIN_MEMO_PROJECT_ID",
+    "CAPTAIN_MEMO_WORKER_PORT",
+    "CAPTAIN_MEMO_HOOK_TIMEOUT_MS",
+    "CAPTAIN_MEMO_SUMMARIZER_PROVIDER",
+    "CAPTAIN_MEMO_SUMMARIZER_MODEL",
+    "ANTHROPIC_API_KEY",
+    "CAPTAIN_MEMO_OPENAI_ENDPOINT",
+    "CAPTAIN_MEMO_OPENAI_API_KEY",
+    "CAPTAIN_MEMO_SKIP_EMBED",
+    "CAPTAIN_MEMO_EMBEDDER_ENDPOINT",
+    "CAPTAIN_MEMO_EMBEDDER_MODEL",
+    "CAPTAIN_MEMO_EMBEDDING_DIM",
+    "CAPTAIN_MEMO_EMBEDDER_API_KEY",
+    "CAPTAIN_MEMO_WATCH_MEMORY",
+    "CAPTAIN_MEMO_WATCH_SKILLS"
+  ]);
+});
+
+// src/cli/plugin-cache-refresh.ts
+import { spawnSync as spawnSync4 } from "child_process";
+import { readFileSync as readFileSync9 } from "fs";
+import { homedir as homedir8 } from "os";
+import { join as join15 } from "path";
+function marketplacePointsAtCheckout(repoRoot, home = homedir8()) {
+  try {
+    const file = join15(home, ".claude", "plugins", "known_marketplaces.json");
+    const parsed = JSON.parse(readFileSync9(file, "utf-8"));
+    const src = parsed["captain-memo"]?.source;
+    return src?.source === "directory" && typeof src.path === "string" && normalizePath(src.path) === normalizePath(repoRoot);
+  } catch {
+    return false;
+  }
+}
+function activeCachedVersion(home = homedir8()) {
+  const installed = readInstalledPaths(join15(home, ".claude", "plugins", "installed_plugins.json"));
+  if (installed === null)
+    return null;
+  for (const path of installed) {
+    const m = readPluginManifest(path);
+    if (m?.name === "captain-memo")
+      return m.version;
+  }
+  return null;
+}
+function needsCacheRefresh(cachedVersion, runningVersion) {
+  return cachedVersion !== null && cachedVersion !== runningVersion;
+}
+function refreshPluginCacheIfStale(runningVersion, repoRoot = REPO_ROOT6, deps = {}) {
+  const cachedVersion = (deps.cachedVersion ?? activeCachedVersion)();
+  if (!needsCacheRefresh(cachedVersion, runningVersion))
+    return { refreshed: false, skipped: "cache is in step" };
+  const pointsAt = deps.pointsAtCheckout ?? ((r) => marketplacePointsAtCheckout(r));
+  if (!pointsAt(repoRoot))
+    return { refreshed: false, skipped: "not a directory marketplace on this checkout" };
+  const run = deps.run ?? ((args) => {
+    const r = spawnSync4("claude", args, { stdio: "pipe", timeout: 120000 });
+    return r.status ?? 1;
+  });
+  const steps = pluginRegistrationSteps(repoRoot);
+  run(steps[0]);
+  if (run(steps[1]) !== 0)
+    return { refreshed: false, skipped: "marketplace add failed" };
+  if (run(steps[2]) !== 0)
+    return { refreshed: false, skipped: "plugin install failed" };
+  return { refreshed: true, from: cachedVersion };
+}
+var REPO_ROOT6, CACHE_REFRESH_LOCK = ".plugin-cache-refresh.lock";
+var init_plugin_cache_refresh = __esm(() => {
+  init_plugin_cache();
+  init_install();
+  REPO_ROOT6 = join15(import.meta.dir, "..", "..");
+});
+
+// src/cli/skill-refresh.ts
+import { existsSync as existsSync6, copyFileSync } from "fs";
+import { join as join16 } from "path";
+function resolveMemoSkillSource(base = import.meta.dir) {
+  return [
+    join16(base, "..", "..", "skills", "captain-memo", "SKILL.md"),
+    join16(base, "..", "portable", "captain-memo", "SKILL.md")
+  ].find((p) => existsSync6(p)) ?? null;
+}
+function refreshMemoSkills(source, home, deps = {}) {
+  const exists = deps.exists ?? existsSync6;
+  const copy = deps.copy ?? copyFileSync;
+  if (!exists(source))
+    return [];
+  const refreshed = [];
+  for (const rel of MEMO_SKILL_RELPATHS) {
+    const dest = join16(home, ...rel.split("/"));
+    if (!exists(dest))
+      continue;
+    try {
+      copy(source, dest);
+      refreshed.push(dest);
+    } catch {}
+  }
+  return refreshed;
+}
+var MEMO_SKILL_RELPATHS;
+var init_skill_refresh = __esm(() => {
+  MEMO_SKILL_RELPATHS = [
+    ".codex/skills/captain-memo/SKILL.md",
+    ".gemini/skills/captain-memo/SKILL.md",
+    ".cursor/rules/captain-memo.md",
+    ".config/opencode/skills/captain-memo/SKILL.md",
+    ".vibe/skills/captain-memo/SKILL.md",
+    ".kimi/skills/captain-memo/SKILL.md",
+    ".config/Code/User/prompts/captain-memo.instructions.md",
+    ".config/JetBrains/captain-memo.md"
+  ];
+});
+
+// src/hooks/pre-git.ts
+var exports_pre_git = {};
+__export(exports_pre_git, {
+  runPreGit: () => runPreGit
+});
+function parseGitOp(command) {
+  if (typeof command !== "string")
+    return null;
+  for (const seg of command.split(/&&|\|\||;|\|/)) {
+    const toks = seg.trim().split(/\s+/).filter(Boolean);
+    let i = 0;
+    while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i]))
+      i++;
+    if (toks[i] !== "git")
+      continue;
+    let j = i + 1;
+    while (j < toks.length && toks[j].startsWith("-")) {
+      const flag = toks[j];
+      j++;
+      if (flag === "-C" || flag === "-c")
+        j++;
+    }
+    const sub = toks[j];
+    if (sub && MUTATING.test(sub))
+      return sub;
+  }
+  return null;
+}
+async function runPreGit(payload) {
+  const op = parseGitOp(typeof payload.tool_input?.command === "string" ? payload.tool_input.command : "");
+  if (!op || !payload.cwd)
+    return null;
+  const root = detectRepoRootSync(payload.cwd);
+  if (!root || root.includes("/claude-1000/"))
+    return null;
+  const res = await workerFetch(`/worknote/repo-active?repo_root=${encodeURIComponent(root)}`, { method: "GET", timeoutMs: HOOK_TIMEOUT_MS2 });
+  if (!res.ok || !res.body?.holders)
+    return null;
+  const peers = res.body.holders.filter((h) => h.session_id !== payload.session_id);
+  if (peers.length === 0)
+    return null;
+  const who = peers.map((h) => `${(h.session_id ?? "").slice(0, 12)} (${h.agent ?? "?"})${h.branch ? ` on ${h.branch}` : ""}${h.is_dirty ? ", dirty" : ""}${h.stale ? `, ${staleNote(h)}` : ""}`).join(" ; ");
+  return `WORK-BOARD SHARED CHECKOUT: peer session(s) are using ${root} \u2014 ${who}. Running \`git ${op}\` here changes that shared working tree for them. Isolate instead: \`git worktree add ../<name> <branch>\` and work there. (advisory)`;
+}
+var MUTATING, HOOK_TIMEOUT_MS2;
+var init_pre_git = __esm(() => {
+  init_shared();
+  init_branch();
+  MUTATING = /^(checkout|switch|commit|reset|stash|rebase|merge|cherry-pick|clean|restore)$/;
+  HOOK_TIMEOUT_MS2 = Number(process.env.CAPTAIN_MEMO_PRE_TOOL_USE_TIMEOUT_MS ?? 1500);
+});
+
+// src/hooks/dispatcher.ts
+init_shared();
+init_paths();
+
+// src/hooks/user-prompt-submit.ts
+init_shared();
+init_paths();
+
+// src/worker/homework.ts
+var HOMEWORK_DONE_KEEP_MS = 7 * 24 * 3600000;
+function parseHomeworkPrompt(prompt2) {
+  const m = /^\s*(?:idea|todo|homework|later|\u0438\u0434\u0435\u044F|\u0437\u0430 \u043F\u043E\u0441\u043B\u0435)\s*[:\-\u2014]\s*(\S[\s\S]*)$/i.exec(String(prompt2));
+  return m ? m[1].trim() : null;
+}
+function homeworkFiledLine(it) {
+  return `\uD83D\uDCDD Filed as homework #${it.id} on this captain (not for now): ${it.text.split(`
+`)[0].slice(0, 160)} \u2014 todo_list() shows the list; the user may just want a short "noted".`;
+}
+
+// src/hooks/user-prompt-submit.ts
+init_worker_transition();
+var HOST_EXIT_MARGIN_MS = 750;
+function homeworkWaitMs(hostTimeoutMs, elapsedMs) {
+  if (hostTimeoutMs === undefined)
+    return 6000;
+  return Math.max(0, Math.min(6000, hostTimeoutMs - elapsedMs - HOST_EXIT_MARGIN_MS));
+}
+function parseOverridePrompt(prompt2, cwd) {
+  const m = /^\s*override\s*:\s*(\S[\s\S]*)$/i.exec(String(prompt2 ?? "").split(/\r?\n/)[0] ?? "");
+  if (!m)
+    return null;
+  const raw = m[1].split(/[\s,]+/).map((f) => f.replace(/^[`'"]+|[`'".]+$/g, "")).filter(Boolean);
+  const remote = (f) => /^(?:[^@\s:/]+@)?[^@\s:/]{2,}:/.test(f);
+  const local = absoluteClaimFiles(raw.filter((f) => !remote(f)), cwd ?? "").filter((f) => typeof f === "string");
+  const files = [...local, ...raw.filter(remote)];
+  return files.length ? files : null;
+}
+async function main(options = {}) {
+  let payload = {};
+  try {
+    payload = await readStdinJson();
+  } catch (err) {
+    logHookError("UserPromptSubmit", err);
+    return;
+  }
+  const prompt2 = payload.prompt ?? "";
+  const timeoutMs = Number(process.env[ENV_HOOK_TIMEOUT_MS] ?? DEFAULT_HOOK_TIMEOUT_MS);
+  const homework = parseHomeworkPrompt(prompt2);
+  if (homework) {
+    const filed = await workerFetch("/homework/add", { method: "POST", body: { text: homework, by: payload.session_id ?? "hook", project: resolveProjectId(payload.cwd) }, timeoutMs: homeworkWaitMs(options.hostTimeoutMs, performance.now()) });
+    const line = filed.ok && filed.body ? homeworkFiledLine(filed.body.item) + ` (${filed.body.open} open)` : '\uD83D\uDCDD The worker did not confirm filing this as homework in time \u2014 it may still have landed: todo_list() shows; if it is not there, say "noted" and todo_add it yourself.';
+    logWorkerFailure("UserPromptSubmit", "/homework/add", filed);
+    if (options.structuredContextJson)
+      writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: options.contextEventName ?? "UserPromptSubmit", additionalContext: line } }));
+    else {
+      writeStdout(line);
+      writeStdout(`
+
+`);
+    }
+    if (options.emitOriginalPrompt !== false)
+      writeStdout(prompt2);
+    return;
+  }
+  const overrideFiles = payload.session_id ? parseOverridePrompt(prompt2, payload.cwd) : null;
+  if (overrideFiles) {
+    const r = await workerFetch("/worknote/override", { method: "POST", body: { session_id: payload.session_id, files: overrideFiles }, timeoutMs: 2000 });
+    logWorkerFailure("UserPromptSubmit", "/worknote/override", r);
+    const line = r.ok && r.body ? `Override recorded for ${r.body.files.join(", ")} (30 min); ${r.body.holders.length ? `holder(s) ${r.body.holders.join(", ")} will see it on the work board` : "no live holder"}.` : "The worker did not confirm the override, so the work-board block still stands. Tell the user; they can retry.";
+    if (options.structuredContextJson)
+      writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: options.contextEventName ?? "UserPromptSubmit", additionalContext: line } }));
+    else {
+      writeStdout(line);
+      writeStdout(`
+
+`);
+    }
+    if (options.emitOriginalPrompt !== false)
+      writeStdout(prompt2);
+    return;
+  }
+  const result = await workerFetch("/inject/context", {
+    method: "POST",
+    body: {
+      prompt: prompt2,
+      top_k: 5,
+      session_id: payload.session_id,
+      project_id: resolveProjectId(payload.cwd)
+    },
+    timeoutMs
+  });
+  logWorkerFailure("UserPromptSubmit", "/inject/context", result);
+  const transition = result.ok ? null : readTransition();
+  if (transition) {
+    logHookError("UserPromptSubmit", new Error(`worker is ${transition.phase} \u2014 skipping the reclaim`));
+  }
+  if (!result.ok && process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL !== "1" && !transition) {
+    try {
+      await Promise.resolve().then(() => init_worker_heal_lock());
+      if (acquireHealLock()) {
+        try {
+          await Promise.resolve().then(() => init_worker_health_probe());
+          const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
+          const reachable = await probeHealthyWithRetries(() => probeHealthOnce(port, 1500), 2, 1000);
+          if (!reachable) {
+            await Promise.resolve().then(() => init_service_manager());
+            await Promise.resolve();
+            await restartWorker(getServiceManager(), "captain-memo-worker", { port });
+          }
+        } finally {
+          releaseHealLock();
+        }
+      }
+    } catch (err) {
+      logHookError("UserPromptSubmit", err);
+    }
+  }
+  if (result.ok && result.body && result.body.envelope) {
+    if (options.structuredContextJson) {
+      writeStdout(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: options.contextEventName ?? "UserPromptSubmit",
+          additionalContext: result.body.envelope
+        }
+      }));
+    } else {
+      writeStdout(result.body.envelope);
+      writeStdout(`
+
+`);
+    }
+  }
+  if (options.emitOriginalPrompt !== false)
+    writeStdout(prompt2);
+  if (result.ok && process.env.CAPTAIN_MEMO_AUTO_UPDATE === "1" && options.hostTimeoutMs === undefined) {
+    try {
+      await Promise.resolve().then(() => init_auto_update());
+      const out = await runAutoUpdatePass({ event: "UserPromptSubmit", networkTimeoutMs: 8000 });
+      if (out.kind === "updated")
+        logHookError("UserPromptSubmit", new Error(`auto-updated v${out.res.from} -> v${out.res.to ?? "?"}`));
+    } catch (err) {
+      logHookError("UserPromptSubmit", err);
+    }
+  }
+}
+if (isMainModule(import.meta)) {
+  try {
+    await main();
+  } catch (err) {
+    logHookError("UserPromptSubmit", err);
+    process.exit(0);
+  }
+}
+
+// src/hooks/session-start.ts
+init_shared();
+import { join as join17 } from "path";
+import { homedir as homedir9 } from "os";
+
+// src/hooks/local-articles.ts
+var LOCAL_ARTICLES = [
+  "## Captain Memo articles: you are one AI among several sessions on this machine",
+  "",
+  "FOUNDATION: THE WORK BOARD. Every session, every project, before anything else.",
+  "- LOOK FIRST: `work_active()` before your first edit, to see what other sessions hold.",
+  '- CLAIM BEFORE TOUCHING ANYTHING: `work_set("<what>", { topics: [1-5 tags], files: [paths] })`. List',
+  "  EVERY file you will write, append to or deploy, as ABSOLUTE paths.",
+  "- RE-CHECK `work_active` before writing a shared file, before commit/checkout/reset/stash/add, and before",
+  `  any deploy (scp, rsync). Never ship a copy built earlier, or "HEAD + my hunk" around another session's`,
+  "  work. Deploy only if the remote md5 equals what you last read.",
+  "- RESPECT A CLAIM: never edit or deploy over another session's claim. Stop and tell the user which",
+  "  session holds it, and let them decide. A LIVE Claude Code claim BLOCKS your edit and upload; only the",
+  "  user lifts it (`override: <file>`). Stale means no recent edit, not ended: it may only be reading.",
+  "- RELEASE with `work_clear` only once committed AND deployed; re-`work_set` after a long pause.",
+  "- ONE TREE PER SESSION: your own `git worktree add ../<n>`. Shared tree? `git add <paths>`, never -A.",
+  "- AUTO-CLAIM (Claude Code, Codex, Gemini) records the files you touch but INFERS the why, and",
+  "  can miss. State intent yourself with `work_set`. Elsewhere nothing claims for you.",
+  "Why: on 2026-09-30 two sessions in one checkout skipped these steps and each deployed over the other.",
+  "",
+  "1. SEARCH BEFORE YOU ACT. `search_all` first, grep second. `remember` what is non-obvious, with the WHY.",
+  "2. NEVER GUESS. Verify against memory, the repo's docs, the code path INCLUDING its call sites, and the",
+  '   live data. If you have not, say "I have not verified X".',
+  "3. COMMITTED IS NOT DEPLOYED. Before reporting done, check the RUNNING process started AFTER your edit.",
+  "   A service that predates your change is serving the old code.",
+  "4. ASK when intent is ambiguous; verification tells you how something works, never what is wanted.",
+  "   If mid-task discovery widens the scope, stop and report it before acting.",
+  '5. `idea:` / `todo:` FROM THE USER IS HOMEWORK, NOT A TASK SWITCH: say "noted" (`todo_add` if no hook did).',
+  "   `todo_list()` = what waits; `todo_claim(id)` before starting one, `todo_done(id, note)` after.",
+  "   DEFERRED SCOPE IS HOMEWORK: agreed to leave a piece for later? `todo_add` it in that turn, unasked,",
+  '   and say "filed as homework #N".',
+  "6. RUN WORK NEXT TO ITS DATA: tests and data scripts run on (or beside) the DB host, never over a WAN",
+  "   (~190 vs ~0.2 ms a query). Iterate on the tests a change touches; one full run at the end.",
+  "7. THE USER'S TIME IS THE COST. Independent work runs in parallel. Review a small change yourself, no",
+  "   build -> review -> fix chain. Over ~15 min? Say so first.",
+  "",
+  "Work-board and homework tools in full: the captain-memo skill (`skills/captain-memo/SKILL.md`)."
+].join(`
+`);
+
+// src/hooks/session-start.ts
+init_paths();
+init_version();
+init_self_update();
+
+// src/shared/whats-new.ts
+init_self_update();
+var NEWS_MAX = 5;
+function newsLines(items, max = NEWS_MAX) {
+  if (items.length === 0)
+    return [];
+  const multi = new Set(items.map((i) => i.version)).size > 1;
+  const lines = ["  What changed:", ...items.slice(0, max).map((i) => `  \u2022 ${i.text}${multi ? ` (${i.version})` : ""}`)];
+  if (items.length > max)
+    lines.push(`  \u2026 and ${items.length - max} more in CHANGELOG.md`);
+  return lines;
+}
+
+// src/hooks/session-start.ts
+init_auto_update();
 
 // src/shared/worker-health.ts
 async function ensureWorkerHealthy(deps) {
@@ -1807,14 +2002,8 @@ async function ensureWorkerHealthy(deps) {
 }
 
 // src/hooks/session-start.ts
+init_worker_transition();
 init_worker_heal_lock();
-function readPkgField(dir, field) {
-  try {
-    return JSON.parse(readFileSync9(join16(dir, "package.json"), "utf-8"))[field] ?? null;
-  } catch {
-    return null;
-  }
-}
 function fmtNum(n) {
   return n.toLocaleString("en-US");
 }
@@ -1931,96 +2120,19 @@ async function main2() {
   }
   let autoUpdateNotice = "";
   let updatedThisSession = false;
-  let wroteTransition = false;
   if (process.env.CAPTAIN_MEMO_AUTO_UPDATE === "1") {
-    const AUTO_UPDATE_LOCK = join16(DATA_DIR, ".auto-update.lock");
-    try {
-      const port = {
-        run: (argv, cwd, timeoutMs) => {
-          const r = Bun.spawnSync(argv, {
-            cwd,
-            stdout: "pipe",
-            stderr: "pipe",
-            timeout: timeoutMs ?? 20000,
-            env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oConnectTimeout=10" }
-          });
-          return { code: r.exitCode ?? 1, stdout: r.stdout.toString(), stderr: r.stderr.toString() };
-        },
-        readPackageVersion: (dir) => readPkgField(dir, "version"),
-        readPackageName: (dir) => readPkgField(dir, "name")
-      };
-      let fetchFailed = false;
-      const runGit = port.run;
-      port.run = (argv, cwd, timeoutMs) => {
-        const r = runGit(argv, cwd, timeoutMs);
-        if (argv[1] === "fetch" && r.code !== 0)
-          fetchFailed = true;
-        return r;
-      };
-      const intervalMs = updateCheckIntervalFromEnv(process.env.CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS);
-      try {
-        mkdirSync7(DATA_DIR, { recursive: true });
-      } catch {}
-      const stampPath = join16(DATA_DIR, ".last-update-check");
-      let lastCheck = null;
-      let stamp = { delayMs: null, failures: 0 };
-      try {
-        lastCheck = statSync5(stampPath).mtimeMs;
-        stamp = parseUpdateStamp(readFileSync9(stampPath, "utf-8"));
-      } catch {}
-      const writeStamp = (failures) => {
-        try {
-          writeFileSync7(stampPath, formatUpdateStamp(new Date, nextUpdateCheckDelayMs(intervalMs, failures), failures));
-        } catch {}
-      };
-      if (isUpdateCheckDue(lastCheck, Date.now(), stamp.delayMs ?? intervalMs) && acquireHealLock(AUTO_UPDATE_LOCK)) {
-        try {
-          writeStamp(stamp.failures + 1);
-          const top = port.run(["git", "rev-parse", "--show-toplevel"], import.meta.dir);
-          const installDir = top.code === 0 && top.stdout.trim() ? top.stdout.trim() : import.meta.dir;
-          const res = runAutoUpdate(port, installDir, VERSION, process.execPath);
-          writeStamp(fetchFailed ? stamp.failures + 1 : 0);
-          if (res?.ok) {
-            await Promise.resolve().then(() => init_service_manager());
-            const sm = getServiceManager();
-            const wport = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
-            wroteTransition = true;
-            markTransition({ phase: "updating", from: res.from, ...res.to ? { to: res.to } : {} });
-            await restartWorker(sm, "captain-memo-worker", { port: wport, graceful: true });
-            const healthy = await waitWorkerHealthy();
-            if (healthy) {
-              updatedThisSession = true;
-              if (res.to)
-                writeMarker(DATA_DIR, res.to);
-              autoUpdateNotice = formatAutoUpdateBanner(res.from, res.to ?? "?", res.installFailed, res.to ? await fetchNews(res.from, res.to) : []);
-            } else {
-              const rolled = res.priorSha ? rollbackTo(port, installDir, res.priorSha, process.execPath) : false;
-              markTransition({ phase: "updating", to: res.from });
-              await restartWorker(sm, "captain-memo-worker", { port: wport });
-              const backOnOld = await waitWorkerHealthy();
-              if (!backOnOld) {
-                clearTransition();
-                wroteTransition = false;
-              }
-              stats = await probeStats();
-              updatedThisSession = true;
-              autoUpdateNotice = formatRollbackBanner(res.from, res.to ?? "?", rolled);
-              logHookError("SessionStart", new Error(`auto-update to ${res.to} failed to boot; rolled back=${rolled}`));
-            }
-          } else if (res && !res.ok) {
-            autoUpdateNotice = formatAutoUpdateBlockedBanner(res.from, res.code, res.reason);
-            logHookError("SessionStart", new Error(`auto-update skipped: ${res.code} \u2014 ${res.reason}`));
-          }
-        } finally {
-          releaseHealLock(AUTO_UPDATE_LOCK);
-        }
-      }
-    } catch (err) {
-      if (wroteTransition) {
-        clearTransition();
-        wroteTransition = false;
-      }
-      logHookError("SessionStart", err);
+    const out = await runAutoUpdatePass({ event: "SessionStart", afterBoot: waitWorkerHealthy });
+    if (out.kind === "updated") {
+      updatedThisSession = true;
+      if (out.res.to)
+        writeMarker(DATA_DIR, out.res.to);
+      autoUpdateNotice = formatAutoUpdateBanner(out.res.from, out.res.to ?? "?", out.res.installFailed, out.res.to ? await fetchNews(out.res.from, out.res.to) : []);
+    } else if (out.kind === "rolled-back") {
+      stats = await probeStats();
+      updatedThisSession = true;
+      autoUpdateNotice = formatRollbackBanner(out.res.from, out.res.to ?? "?", out.rolled);
+    } else if (out.kind === "blocked") {
+      autoUpdateNotice = formatAutoUpdateBlockedBanner(out.res.from, out.res.code, out.res.reason);
     }
   }
   const selfHealOff = process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL === "1";
@@ -2072,7 +2184,7 @@ async function main2() {
   }
   try {
     await Promise.resolve().then(() => init_plugin_cache_refresh());
-    const lock = join16(DATA_DIR, CACHE_REFRESH_LOCK);
+    const lock = join17(DATA_DIR, CACHE_REFRESH_LOCK);
     if (acquireHealLock(lock)) {
       try {
         const r = refreshPluginCacheIfStale(VERSION);
@@ -2441,7 +2553,7 @@ function parseWrittenPaths(command, cwd, shell = "posix") {
 }
 
 // src/hooks/deploy-guard.ts
-import { resolve as resolve8, basename, dirname as dirname4, join as join17, relative } from "path";
+import { resolve as resolve8, basename, dirname as dirname4, join as join18, relative } from "path";
 import { createHash } from "crypto";
 import { homedir as homedir10 } from "os";
 import { existsSync as existsSync7, statSync as statSync6, readFileSync as readFileSync10, writeFileSync as writeFileSync8, mkdirSync as mkdirSync8 } from "fs";
@@ -2660,7 +2772,7 @@ function parseTransfers(command, cwd, isDir = defaultIsDir) {
               if (!r || !r.path || r.path.includes("*") || src.includes("$"))
                 continue;
               const destAbs = resolve8(dir, tilde(destTok));
-              const local = destTok.endsWith("/") || destTok === "." || isDir(destAbs) ? join17(destAbs, basename(r.path)) : destAbs;
+              const local = destTok.endsWith("/") || destTok === "." || isDir(destAbs) ? join18(destAbs, basename(r.path)) : destAbs;
               downloads.push({ local, userhost: r.userhost, path: r.path, sshArgs: [...sshArgs] });
             }
           }
@@ -2802,7 +2914,7 @@ function committedMd5s(file, remotePath, cwd) {
     if (rel.startsWith("..") && remotePath && cwd) {
       root = detectRepoRootSync(cwd);
       const parts = remotePath.split("/").filter(Boolean);
-      const i = root ? parts.findIndex((_, k) => existsSync7(join17(root, ...parts.slice(k)))) : -1;
+      const i = root ? parts.findIndex((_, k) => existsSync7(join18(root, ...parts.slice(k)))) : -1;
       rel = i >= 0 ? parts.slice(i).join("/") : "..";
     }
     if (!root || rel.startsWith(".."))
@@ -2841,7 +2953,7 @@ function committedMd5s(file, remotePath, cwd) {
   } catch {}
   return out;
 }
-var baseFile = (sid) => join17(process.env.CAPTAIN_MEMO_DATA_DIR ?? DATA_DIR, "deploy-base", `${sid.replace(/[^A-Za-z0-9_.-]/g, "_")}.json`);
+var baseFile = (sid) => join18(process.env.CAPTAIN_MEMO_DATA_DIR ?? DATA_DIR, "deploy-base", `${sid.replace(/[^A-Za-z0-9_.-]/g, "_")}.json`);
 function readBaselines(sid) {
   try {
     return JSON.parse(readFileSync10(baseFile(sid), "utf-8"));
@@ -3352,6 +3464,7 @@ if (isMainModule(import.meta)) {
 // src/hooks/stop.ts
 init_shared();
 init_paths();
+init_worker_transition();
 async function main5(options = {}) {
   let payload = {};
   try {
