@@ -79,7 +79,8 @@ test('macOS: codex and gemini are found through one ps snapshot, which is taken 
   expect(aiProcessPid(['codex'], 22, root, 'darwin', ps)).toBe(21);
   expect(aiProcessPid(['gemini'], 22, root, 'darwin', ps)).toBeUndefined();
   expect(calls).toBe(4);
-  expect(aiProcessPid(['codex'], 9022, root, 'darwin', () => null)).toBeUndefined();   // ps failed: no pid, as before
+  expect(aiProcessPid(['codex'], 24, root, 'darwin', () => null)).toBeUndefined();   // ps failed: no pid, as before
+  expect(aiProcessPid(['codex'], 24, root, 'darwin', ps)).toBe(21);                  // and the failure was not cached
 });
 
 test('macOS path against the real ps on this host: this test process finds itself', () => {

@@ -229,6 +229,8 @@ test("cat f | ssh h 'cat > p' and a leading < f are uploads; another producer be
   expect(parseTransfers("< a.php ssh root@h1 'cat > /srv/a.php'", '/r', noDir).uploads).toEqual(up);
   expect(parseTransfers("git show HEAD:a.php | ssh root@h1 'cat > /srv/a.php'", '/r', noDir)).toEqual({ uploads: [], downloads: [], unchecked: 1 });
   expect(parseTransfers("cat a.php b.php | ssh root@h1 'cat > /srv/a.php'", '/r', noDir).unchecked).toBe(1);
+  expect(parseTransfers("cat <<'EOF' | ssh root@h1 'cat > /etc/x.conf'\nhi\nEOF", '/r', noDir)).toEqual({ uploads: [], downloads: [], unchecked: 1 });   // a heredoc is no file
+  expect(parseTransfers("cat <a.php | ssh root@h1 'cat > /srv/a.php'", '/r', noDir).uploads).toEqual([]);
   expect(parseTransfers("cat a.php | ssh root@h1 'wc -l'", '/r', noDir)).toEqual({ uploads: [], downloads: [] });
   expect(parseTransfers("ssh root@h1 'cat > /srv/a.php' || cat a.php", '/r', noDir).uploads).toEqual([]);   // `||` is not a pipe
 });

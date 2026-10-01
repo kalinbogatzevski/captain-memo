@@ -27,9 +27,9 @@ const realPs: PsRunner = () => {
 // claim while the answer (its own ancestor) cannot change.
 const psCache = new Map<string, number | undefined>();
 
-function psWalk(agents: readonly string[], start: number, ps: PsRunner): number | undefined {
+function psWalk(agents: readonly string[], start: number, snapshot: string): number | undefined {
   const procs = new Map<number, { ppid: number; argv: string[] }>();
-  for (const line of (ps() ?? '').split('\n')) {
+  for (const line of snapshot.split('\n')) {
     const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
     // ponytail: arguments split on spaces, so an executable or script path that holds a space is not matched
     if (m) procs.set(Number(m[1]), { ppid: Number(m[2]), argv: m[3]!.trim().split(/\s+/) });
@@ -53,7 +53,11 @@ const name = (arg: string | undefined): string => (arg ? basename(arg).replace(/
 export function aiProcessPid(agents: readonly string[], start: number = process.ppid, root = '/proc', platform: string = process.platform, ps: PsRunner = realPs): number | undefined {
   if (platform === 'darwin') {
     const key = `${agents.join(',')}\0${start}`;
-    if (!psCache.has(key)) psCache.set(key, psWalk(agents, start, ps));
+    if (!psCache.has(key)) {
+      const snapshot = ps();
+      if (snapshot === null) return undefined;   // a failed ps is not cached: the next claim asks again
+      psCache.set(key, psWalk(agents, start, snapshot));
+    }
     return psCache.get(key);
   }
   if (platform !== 'linux') return undefined;   // ponytail: Windows has no /proc and no such ps; add a WMI walk if its claims need a pid

@@ -228,7 +228,8 @@ export function parseTransfers(command: string, cwd: string, isDir: (p: string) 
           if (up && piped) {
             const prev = segs[si - 1]!;
             const cat = cmdName(tokenize(prev.seg).map((t) => sub(t.replace(/["']/g, ''))));
-            const src = cat.name === 'cat' && cat.rest.length === 1 && !cat.rest[0]!.startsWith('-') ? cat.rest[0]! : '$';
+            // one plain file only: `cat <<EOF`, `cat < f` and `cat -n f` are other producers
+            const src = cat.name === 'cat' && cat.rest.length === 1 && !/^-|[<>]/.test(cat.rest[0]!) ? cat.rest[0]! : '$';
             const path = (up[1] ?? up[2])!;
             if (/[$*?{]/.test(src) || path.includes('$') || userhost.includes('$') || prev.dir === null) unchecked++;
             else uploads.push({ local: resolve(prev.dir, tilde(src)), userhost, path, sshArgs });
