@@ -956,7 +956,7 @@ var package_default;
 var init_package = __esm(() => {
   package_default = {
     name: "captain-memo",
-    version: "0.55.0",
+    version: "0.56.0",
     description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
     type: "module",
     private: true,
@@ -1764,6 +1764,19 @@ function homeworkFiledLine(it) {
   return `\uD83D\uDCDD Filed as homework #${it.id} on this captain (not for now): ${it.text.split(`
 `)[0].slice(0, 160)} \u2014 todo_list() shows the list; the user may just want a short "noted".`;
 }
+function isHomeworkDue(it, now) {
+  return !!it.due && !it.done_at && Date.parse(it.due) <= now;
+}
+function homeworkDueFirst(items, now) {
+  const due = items.filter((it) => isHomeworkDue(it, now)).sort((a, b) => Date.parse(a.due) - Date.parse(b.due));
+  return [...due, ...items.filter((it) => !isHomeworkDue(it, now))];
+}
+function homeworkDueParts(it, now) {
+  if (!it.due || it.done_at)
+    return ["", ""];
+  const at = new Date(it.due).toLocaleString("sv-SE").slice(0, 16);
+  return isHomeworkDue(it, now) ? ["\u23F0 ", ` (DUE since ${at})`] : ["", ` (due ${at})`];
+}
 
 // src/hooks/user-prompt-submit.ts
 init_worker_transition();
@@ -2039,8 +2052,12 @@ function formatBanner(stats, homework = []) {
   lines.push(`  Embedder   ${stats.embedder.model} @ ${host}`);
   lines.push(`  Retrieval  silent envelope on each prompt (top-5)`);
   if (homework.length > 0) {
-    const shown = homework.slice(0, 3).map((h) => `#${h.id} ${h.text.split(`
-`)[0].slice(0, 70)}${h.claimed_by ? ` (claimed by ${h.claimed_by})` : ""}`);
+    const now = Date.now();
+    const shown = homeworkDueFirst(homework, now).slice(0, 3).map((h) => {
+      const [mark, due] = homeworkDueParts(h, now);
+      return `${mark}#${h.id} ${h.text.split(`
+`)[0].slice(0, 70)}${due}${h.claimed_by ? ` (claimed by ${h.claimed_by})` : ""}`;
+    });
     lines.push(`  Homework   ${homework.length} open \u2014 todo_list() for all, todo_claim(id) before starting one`);
     for (const s of shown)
       lines.push(`             ${s}`);

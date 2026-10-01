@@ -7,6 +7,12 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.56.0] — 2026-10-01
+
+### Added
+
+- **Homework can carry a due time.** `todo_add` takes an optional `due`: an ISO 8601 date or date-time. A date-time without a zone is this host's local time, and a bare date is this host's midnight. A date that does not exist (`2026-02-30`) or free text such as `tomorrow` is refused with an error that says why, and a date already past is accepted. From then on the session-start banner in Claude Code lists the item first, with a clock mark and the time it fell due, the one due longest ago first. An item still ahead keeps its place and shows when it is due, and an item filed without a due time is listed as before. `todo_list` returns the time in UTC. It is a reminder: nothing starts by itself.
+
 ## [0.55.0] — 2026-10-01
 
 ### Fixed
