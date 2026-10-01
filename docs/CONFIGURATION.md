@@ -22,20 +22,24 @@ overriding.
 
 | Location | Purpose |
 |---|---|
-| `~/.config/captain-memo/worker.env` | The operator file. `KEY=value` per line, `#` comments. Read by the worker at startup. |
-| Process environment | Anything exported before launching the worker or CLI wins the same way. |
+| `~/.config/captain-memo/worker.env` | The operator file. `KEY=value` per line, `#` comments. Read at startup by the worker, its engine threads, the MCP server and `captain-memo config show`. The hooks never read it. |
+| Process environment | Anything set in the environment of the process wins over `worker.env`. The hooks read only this. |
 | `~/.config/captain-memo/worker.token` | The secret the worker's local HTTP API asks for. Created by the worker on first start, readable by you only. Not a setting: never edit or share it. Delete it and restart the worker to change it. |
 | `~/.captain-memo/` | Data, not config: the SQLite databases, vectors, and audit log. Move it with `CAPTAIN_MEMO_DATA_DIR`. |
 
-Changes take effect on worker restart:
+Changes to worker settings take effect on worker restart:
 
 ```bash
 captain-memo restart && captain-memo status
 ```
 
-Booleans are strings. `1`/`true` enable, `0` disables. Read the polarity carefully: some settings
-are ON unless you write `0`, others are OFF unless you write `1`. Numeric values that fail to
-parse fall back to the default rather than becoming `NaN`.
+**Settings read by the hooks.** The hooks are short-lived processes started by the AI tool, and they never read `worker.env`. The settings marked (hook) below, and the rows of the Hooks table (except `CAPTAIN_MEMO_HOOK_BUDGET_TOKENS`, which the worker reads, and `CAPTAIN_MEMO_HOOK_EVENT`, which is not a setting), come from the environment of that AI tool: for Claude Code, the `env` block of its `settings.json`, or exported before it starts. They take effect in the next session, not on a worker restart. The MCP server reads both `worker.env` and its own environment.
+
+Booleans are strings. To switch an OFF-by-default setting on, write exactly `1`: `true` and `yes` are
+not recognised, and the setting stays off. An ON-by-default setting stays on for any value except `0`, so
+`true` leaves it on. `CAPTAIN_MEMO_PROMOTE_ENABLE` also takes `on` and `shadow`. Read the polarity
+carefully: some settings are ON unless you write `0`, others are OFF unless you write `1`. Numeric values
+that fail to parse fall back to the default rather than becoming `NaN`.
 
 ## The kill switches
 
@@ -58,7 +62,8 @@ misbehaves and you want it to stop.
 | `CAPTAIN_MEMO_WORKNOTE_SEMANTIC=0` | Semantic matching for work-note collision detection | ON |
 | `CAPTAIN_MEMO_CAPTURE_CODEX=0` | Capturing Codex sessions (same for `_AGY`, `_GEMINI`, `_KIMI`, `_OPENCODE`) | ON |
 | `CAPTAIN_MEMO_SKIP_EMBED=1` | Embedding entirely (keyword search only) | OFF |
-| `CAPTAIN_MEMO_DISABLE_SELF_HEAL=1` | The session-start hook's self-repair | OFF |
+| `CAPTAIN_MEMO_DISABLE_SELF_HEAL=1` | The session-start hook's self-repair | OFF (hook) |
+| `CAPTAIN_MEMO_WORKBOARD_ENFORCE=0` | Blocking of an edit or upload over another session's live claim, and of an upload over a server copy that is not yours: both go back to warnings | ON (hook and MCP server) |
 
 Note the asymmetry in the last two rows: most switches are *off-by-writing-zero*, but
 `SKIP_EMBED` and `DISABLE_SELF_HEAL` are named negatively, so they are *on-by-writing-one*.
@@ -79,12 +84,12 @@ Everything lives under it: `observations.db`, `queue.db`, `pending_embed.db`, ve
 Give each worker its own port, data directory and project id:
 
 ```bash
-CAPTAIN_MEMO_WORKER_PORT=39889
+CAPTAIN_MEMO_WORKER_PORT=39890
 CAPTAIN_MEMO_DATA_DIR=/home/me/.captain-memo-experiment
 CAPTAIN_MEMO_PROJECT_ID=experiment
 ```
 
-They will not contend: each worker owns its own SQLite files.
+They will not contend: each worker owns its own SQLite files. Use 39890 rather than 39889: once a device is paired, a worker's gateway listens on its worker port + 1, which is 39889 for the first worker. The hooks and the MCP server find a worker by `CAPTAIN_MEMO_WORKER_PORT` in the environment of the AI tool, so start the AI sessions that should use this corpus with the same value.
 
 ### Use a different embedding provider
 
@@ -114,6 +119,8 @@ CAPTAIN_MEMO_SHOW_SAVINGS_AMOUNT=1    # show an absolute figure
 CAPTAIN_MEMO_HOOK_TIMEOUT_MS=4000
 CAPTAIN_MEMO_SESSION_START_TIMEOUT_MS=8000
 ```
+
+These are read by the hooks, so set them in the environment of the AI tool (for Claude Code, the `env` block of its `settings.json`), not in `worker.env`. They apply from the next session.
 
 Hooks fail open: a timeout costs you the injection for that turn, never the turn itself.
 
@@ -171,7 +178,7 @@ one recall re-floats it. Rows that were ever drilled into, or explicitly anchore
 | Setting | Default | Notes |
 |---|---|---|
 | `CAPTAIN_MEMO_WORKER_PORT` | `39888` | HTTP API port. |
-| `CAPTAIN_MEMO_GATEWAY_PORT` | see `gateway.ts` | Port for the remote-access gateway. |
+| `CAPTAIN_MEMO_GATEWAY_PORT` | worker port + 1 | Port for the remote-access gateway, which only listens once a device is paired. |
 | `CAPTAIN_MEMO_WORKER_THREADED` | OFF | `1` runs the engine on a worker thread. |
 | `CAPTAIN_MEMO_READER_POOL_SIZE` | `2` | Read replicas, clamped to 0-8. |
 | `CAPTAIN_MEMO_READER_ACQUIRE_MS` | `REQUEST_DEADLINE_MS - 500` | Wait for a free reader. |
@@ -179,12 +186,13 @@ one recall re-floats it. Rows that were ever drilled into, or explicitly anchore
 | `CAPTAIN_MEMO_ENGINE_STARTUP_MS` | `15000` | Grace period before the engine is called unhealthy. |
 | `CAPTAIN_MEMO_REINDEX_MS` | `1800000` | Deadline for long write operations. |
 | `CAPTAIN_MEMO_STATS_CACHE_MS` | `5000` | How long `/stats` is cached. |
-| `CAPTAIN_MEMO_QUEUE_RETENTION_DAYS` | `30` | Age at which processed queue rows are swept. |
-| `CAPTAIN_MEMO_AUTO_UPDATE` | OFF | `1` lets the session-start hook, and in Claude Code the prompt hook once a check is due, self-update. |
-| `CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS` | `3600000` (1h) | Minimum gap between update checks. Each check adds a random wait of up to 10 minutes, and each failed check in a row doubles the gap, up to 6 hours. |
-| `CAPTAIN_MEMO_DISABLE_SELF_HEAL` | OFF | `1` stops the hook repairing a broken install. |
+| `CAPTAIN_MEMO_QUEUE_RETENTION_DAYS` | `30` | Age at which processed queue rows are swept. `0` turns the sweep off. |
+| `CAPTAIN_MEMO_AUTO_UPDATE` | OFF | `1` lets the session-start hook, and in Claude Code the prompt hook once a check is due, self-update. Read by the hooks (hook). |
+| `CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS` | `3600000` (1h) | Minimum gap between update checks. Each check adds a random wait of up to 10 minutes, and each failed check in a row doubles the gap, up to 6 hours. Read by the hooks (hook). |
+| `CAPTAIN_MEMO_DISABLE_SELF_HEAL` | OFF | `1` stops the hook repairing a broken install. Read by the hooks (hook). |
 | `CAPTAIN_MEMO_ENABLE_TEST_ENDPOINTS` | OFF | `1` exposes `/test/*`. Never set in production. |
 | `CAPTAIN_MEMO_WORKER_AUTH` | `warn` | `enforce` refuses every call without the worker token. See below. |
+| `CAPTAIN_MEMO_REMEMBER_MS` | `60000` | Threaded worker only (`CAPTAIN_MEMO_WORKER_THREADED=1`): how long a `remember` write may take before the answer is "unconfirmed". |
 
 **Worker API authentication.** The worker listens on 127.0.0.1 only, but any program on the machine can
 reach that address. So every call except `GET /health` must carry the secret from
@@ -197,8 +205,10 @@ per route. `captain-memo doctor` lists the routes still called without a token i
 Restart those sessions. Once doctor shows none, set `CAPTAIN_MEMO_WORKER_AUTH=enforce` in worker.env and
 restart the worker. From then on a call with no token is refused too.
 
-To call the API yourself, send the header without putting the token on the command line, where other
-users can see it:
+Prefer `captain-memo stats --json` and the MCP tools: they send the token for you. Only where no such
+equivalent exists do you need to call the API yourself, and then the header is needed only when
+`CAPTAIN_MEMO_WORKER_AUTH=enforce` (in `warn` a call without it is still answered, and counted). Send it
+without putting the token on the command line, where other users can see it:
 
 ```bash
 { printf 'x-captain-memo-worker-token: '; cat ~/.config/captain-memo/worker.token; } \
@@ -249,14 +259,14 @@ Read by `services/embed/`, not by the worker. Set these where the service starts
 | `CAPTAIN_MEMO_SUMMARIZER_PROVIDER` | `claude-oauth` | Uses your existing Claude login, no API key. |
 | `CAPTAIN_MEMO_SUMMARIZER_MODEL` | provider-dependent | `claude-haiku-4-5` for `claude-oauth` / `anthropic` / `openai-compatible`; the alias `haiku` for `claude-code` (the CLI resolves it to the current release); the `default` sentinel — send no model, let the account choose — for `codex` and `agy`. |
 | `CAPTAIN_MEMO_SUMMARIZER_FALLBACKS` | provider-dependent | Tried in order on `model_not_found`. `claude-haiku-4-5-20251001,claude-sonnet-5` for the API providers; `default` for the three agent CLIs — the floor under any model you pin, so a retired name never leaves the summarizer with nothing to call. |
-| `CAPTAIN_MEMO_SUMMARIZER_TIMEOUT_MS` | `60000` | |
+| `CAPTAIN_MEMO_SUMMARIZER_TIMEOUT_MS` | `60000` (`120000` for `codex` and `agy`) | Per-call limit for `claude-oauth`, `claude-code`, `codex` and `agy`. The `anthropic` and `openai-compatible` providers do not read it. |
 
 ### Hooks
 
 | Setting | Default | Notes |
 |---|---|---|
-| `CAPTAIN_MEMO_HOOK_TIMEOUT_MS` | `1500` | Budget for the memory envelope on each prompt (`UserPromptSubmit`), and the `SessionStart` stats timeout when `CAPTAIN_MEMO_SESSION_START_TIMEOUT_MS` is unset. It does not govern homework capture: an `idea:` / `todo:` prompt waits a fixed 6 s for the worker to confirm the write. `PreToolUse`, `PostToolUse` and `PreCompact` have their own settings below. |
-| `CAPTAIN_MEMO_HOOK_BUDGET_TOKENS` | `4000` | Ceiling on injected context per turn. |
+| `CAPTAIN_MEMO_HOOK_TIMEOUT_MS` | `1500` | Budget for the memory envelope on each prompt (`UserPromptSubmit`), and the `SessionStart` stats timeout when `CAPTAIN_MEMO_SESSION_START_TIMEOUT_MS` is unset. It does not govern homework capture: an `idea:` / `todo:` prompt waits up to 6 s for the worker to confirm the write (less under Codex, Gemini and Kimi, whose hosts kill the hook at 5 s). `PreToolUse`, `PostToolUse` and `PreCompact` have their own settings below. |
+| `CAPTAIN_MEMO_HOOK_BUDGET_TOKENS` | `4000` | Ceiling on injected context per turn. Read by the worker, so `worker.env` works for this one. |
 | `CAPTAIN_MEMO_HOOK_DEBUG` | OFF | `1` logs hook decisions to stderr. |
 | `CAPTAIN_MEMO_HOOK_EVENT` | unset | Set by the dispatcher; not an operator setting. |
 | `CAPTAIN_MEMO_SESSION_START_TIMEOUT_MS` | `10000` | How long session-start waits for `/stats`. Unset, it falls back to `CAPTAIN_MEMO_HOOK_TIMEOUT_MS` when that is set, else 10 s. |
@@ -408,6 +418,7 @@ Anchored rows, and any row ever drilled into, are permanently exempt from ebbing
 | `CAPTAIN_MEMO_QM_SUPERSEDE_WINDOW` | `5000` | Cap on the version pairs the **supersede** sweep emits per run. The scan itself is whole-corpus — every live, not-yet-superseded row, grouped by parsed version — so this bounds the work that follows, not the read. `CAPTAIN_MEMO_QM_DEDUP_WINDOW` is still honoured as an alias: it paced both passes before dedup went cluster-local. |
 | `CAPTAIN_MEMO_QM_DEDUP_INTERVAL_MS` | `3600000` (1h) | Also paces the supersede sweep. |
 | `CAPTAIN_MEMO_QM_SLICE_MS` | `150` | Budget for one housekeeping chunk. |
+| `CAPTAIN_MEMO_QM_FORCED_TICK_MS` | `30000` | How often the passes run while `captain-memo consolidate --for` is forcing them. |
 | `CAPTAIN_MEMO_QM_SEMANTIC` | ON | Idle-time semantic consolidation: cosine as the FINDER, for same-session pairs. |
 | `CAPTAIN_MEMO_QM_SEMANTIC_COSINE` | `0.95` | Cosine at or above which two same-session observations are one event. |
 | `CAPTAIN_MEMO_QM_SEMANTIC_MIN_IDLE_S` | `1800` (30 min) | Quiet time required before a pass may start. |
@@ -416,14 +427,14 @@ Anchored rows, and any row ever drilled into, are permanently exempt from ebbing
 | `CAPTAIN_MEMO_QM_SEMANTIC_WINDOW` | `50000` | Rows the semantic finder scans. A safety cap, not a target: the eligible population is normally far smaller, and sharing dedup's old 5,000 made this pass find **zero** — duplicates are same-session, so both halves of a pair must land in the window together. |
 | `CAPTAIN_MEMO_QM_THEME` | ON | Idle-time theme building: cross-session clusters become one durable fact. Needs a summarizer. |
 | `CAPTAIN_MEMO_QM_THEME_COSINE` | `0.93` | Cluster membership. Looser than the fold threshold on purpose (see below). |
-| `CAPTAIN_MEMO_QM_THEME_MIN_MEMBERS` | `3` | Minimum observations for a theme. Two is a pair. |
+| `CAPTAIN_MEMO_QM_THEME_MIN_MEMBERS` | `2` | Minimum observations for a theme (a pair). |
 | `CAPTAIN_MEMO_QM_THEME_MAX_CLUSTERS` | `5` | Clusters judged per pass — each is one model call. |
 | `CAPTAIN_MEMO_QM_THEME_WINDOW` | `50000` | Rows the theme clusterer scans. Also a safety cap. On the old shared 5,000 the pass could only ever re-find clusters the judge had already declined, so it reported "0 considered" forever. |
 | `CAPTAIN_MEMO_QM_SUPERSEDE` | ON | Demotes an older version-fact when a newer one exists. |
 | `CAPTAIN_MEMO_QM_SUPERSEDE_COSINE` | `0.93` | Lower than dedup's on purpose: supersede applies a reversible 0.5x demotion, dedup archives. |
 
 The semantic pass is the one that runs only when the machine is idle: no ingest, no queued
-observations, no live co-session, and nothing surfaced or written for `MIN_IDLE_S`. It is a
+observations, and nothing surfaced or written for `MIN_IDLE_S`. It is a
 whole-corpus scan (~50 s measured on 124k rows) and competes for CPU, so a busy machine simply
 defers it. It exists because title-gated dedup could never see a fact restated in different
 words: on a live corpus, **zero** semantically-similar pairs reached the cosine confirm at any
@@ -451,7 +462,7 @@ worker. `captain-memo dedup --undo` and `captain-memo supersede undo` reverse th
 
 | Setting | Default | Notes |
 |---|---|---|
-| `CAPTAIN_MEMO_PROMOTE_ENABLE` | OFF | `1` lets a judge pass promote durable observations into curated memory. |
+| `CAPTAIN_MEMO_PROMOTE_ENABLE` | OFF | `1` (or `on`) lets a judge pass promote durable observations into curated memory. `shadow` runs the judge and records its verdicts but writes nothing (`captain-memo promote --shadow` runs the judge over your backlog from the CLI and writes nothing). |
 | `CAPTAIN_MEMO_PROMOTE_INTERVAL_MS` | `21600000` (6h) | |
 | `CAPTAIN_MEMO_PROMOTE_MAX_PER_RUN` | `5` | |
 
@@ -470,6 +481,7 @@ worker. `captain-memo dedup --undo` and `captain-memo supersede undo` reverse th
 |---|---|---|
 | `CAPTAIN_MEMO_WORKNOTE_SEMANTIC` | ON | Semantic overlap detection between work claims. |
 | `CAPTAIN_MEMO_WORKNOTE_SEMANTIC_THRESHOLD` | `0.80` | Similarity above which two claims are treated as colliding. |
+| `CAPTAIN_MEMO_WORKNOTE_STALE_MS` | `600000` (floor `60000`) | Silence after which a claim reads as stale. A stale claim only warns; a live one blocks (see `CAPTAIN_MEMO_WORKBOARD_ENFORCE`). |
 
 ### Diagnostics and development
 
@@ -491,7 +503,7 @@ the worker is right and something did not restart.
 
 ```bash
 captain-memo config          # resolved values the CLI sees
-curl -s localhost:39888/stats | jq '{tide, qm, supersede}'
+captain-memo stats --json | jq '{tide, qm, supersede}'
 ```
 
 The `tide`, `qm` and `supersede` blocks each report their own enabled flag, thresholds and last
