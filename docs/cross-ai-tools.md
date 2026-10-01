@@ -15,7 +15,7 @@ auto-injection need a hook or an on-disk transcript — neither of which a GUI c
 | **Claude Code** — desktop-app Code tab | Yes | Yes¹ | Yes¹ | install the plugin |
 | **Codex CLI** | Yes | Yes — native hooks when enabled, rollout fallback otherwise | Yes — native hooks | `captain-memo connect codex` |
 | **Gemini CLI** | Yes | Yes — native hooks when supported, transcript fallback otherwise | Yes — native hooks | `captain-memo connect gemini` |
-| **Kimi CLI** | Yes | Yes — native hooks on 1.28+, transcript fallback otherwise | Yes — native hooks on 1.28+ | `captain-memo connect kimi` |
+| **Kimi CLI** | Yes | Yes — native hooks on 1.28+, transcript fallback otherwise | No — as of Kimi CLI 1.52.0 a prompt hook's output does not reach the model | `captain-memo connect kimi` |
 | **Antigravity (`agy`)** | Yes | Yes — transcript capture | No | `captain-memo connect agy` |
 | **opencode** | Yes | Yes — transcript capture | No | `captain-memo connect opencode` |
 | **goose** | Yes | No | No | `captain-memo connect goose` (tools only; no skill is installed) |
@@ -280,8 +280,9 @@ Kimi CLI (Moonshot AI, Apache-2.0) keeps MCP servers in `~/.kimi/mcp.json` and p
 you've pulled. Foreign tables in your TOML are never touched, and re-running is idempotent (newly pulled
 models simply appear). Skill copied to `~/.kimi/skills/captain-memo/SKILL.md`.
 
-Kimi 1.28.0 and newer also receive a managed `[[hooks]]` block for automatic recall, immediate
-PostToolUse observation capture, and Stop flushing. Older Kimi releases keep the transcript reader;
+Kimi 1.28.0 and newer also receive a managed `[[hooks]]` block for immediate PostToolUse observation
+capture and Stop flushing. It includes a UserPromptSubmit hook too, but as of Kimi CLI 1.52.0 only a block
+decision from a prompt hook is read, so its recall output does not reach the model: Kimi recalls through the MCP tools. Older Kimi releases keep the transcript reader;
 re-running `connect kimi` after an upgrade adds the native path automatically.
 
 The managed block writes `max_context_size = 131072` for the models it manages (kimi compacts its
