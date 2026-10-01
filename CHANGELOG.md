@@ -7,6 +7,23 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.56.1] — 2026-10-02
+
+### Fixed
+
+- **The docs and skills catch up with 0.44.0 to 0.56.0.** The README, USAGE, CONFIGURATION, cross-ai-tools, native-lifecycle-capture and glossary pages now say what the code does:
+  - A live work claim blocks another session's edit or upload for Claude Code, Codex and Gemini (Codex and Gemini on Linux; the macOS lookup has not been run on a Mac; Windows only warns). A claim with no edit for 10 minutes only warns, `override: <file>` lasts 30 minutes, and `CAPTAIN_MEMO_WORKBOARD_ENFORCE=0` goes back to warnings. USAGE no longer says PreToolUse never blocks.
+  - The session-start working rules sent to Claude Code, Codex and Gemini are described in the README and USAGE.
+  - `captain-memo connect` installs five hooks for Codex (UserPromptSubmit, PostToolUse, PreToolUse, Stop, SessionStart) and for Gemini (BeforeAgent, AfterTool, BeforeTool, AfterAgent, SessionStart), and three for Kimi. goose and Claude Desktop are in the `connect <tool>` list, and every connectable tool is in the surface table.
+  - CONFIGURATION: only the exact value `1` turns an off-by-default flag on (`true` does nothing); the hooks never read `worker.env`, so the hook-side settings are marked and the recipes say to set them in the AI tool's environment; `CAPTAIN_MEMO_QM_THEME_MIN_MEMBERS` is 2; `CAPTAIN_MEMO_SUMMARIZER_TIMEOUT_MS` is 120000 for `codex` and `agy`; the gateway port is the worker port + 1; `CAPTAIN_MEMO_WORKBOARD_ENFORCE`, `CAPTAIN_MEMO_WORKNOTE_STALE_MS`, `CAPTAIN_MEMO_REMEMBER_MS` and `CAPTAIN_MEMO_QM_FORCED_TICK_MS` are listed, and `CAPTAIN_MEMO_PROMOTE_ENABLE` takes `on` and `shadow`.
+  - USAGE names the real embedder settings (`CAPTAIN_MEMO_EMBEDDER_*`) and the real chunk shape of a claude-mem migration (one bundled chunk per row).
+  - README: the update-check interval in the Windows block (hourly, plus the prompt-hook check), the worker secret for a plugin-only install, the macOS limit of the local sidecar and the 0.55.0 sidecar notes, the homework wait under Codex, Gemini and Kimi, and a link to every doc.
+- **The slash commands no longer call the worker with a token-less curl.** `/captain-memo:search`, `:recall`, `:observations` and `:stats` use the MCP tools (`search_all`, `get_full`, `stats`) and the CLI (`observation list`), which send the worker secret, so they also work with `CAPTAIN_MEMO_WORKER_AUTH=enforce`. Their examples are generic.
+- The portable captain-memo skill (and its plugin copy) says Codex and Gemini claims block on Linux and lists `remember`. The plugin and marketplace descriptions name the current tool set and the hosted-or-local embedder.
+- **Kimi CLI is documented as capture and tools only.** As of Kimi CLI 1.52.0 only a block decision from a prompt hook is read, so the recall envelope never reaches the model. The README, cross-ai-tools and native-lifecycle-capture pages said it did; they now say Kimi captures its sessions and reads memory through the MCP tools.
+- Removed two obsolete design specs from `docs/superpowers/specs/`; every remaining file under `docs/specs` and `docs/plans` is stamped as a historical design record.
+- Two code comments (`forget.ts` and the `/forget` route) now say a hand-deleted memory file de-indexes while the worker runs and the folder is watched. No behaviour changed.
+
 ## [0.56.0] — 2026-10-01
 
 ### Added
