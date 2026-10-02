@@ -15,7 +15,7 @@ Captain Memo is a Claude Code plugin — and a **cross-AI local intelligence lay
 > **Memory is only the beginning.** Captain Memo automatically synchronizes complete skill instructions, lists them for every connected AI, and maps runtime-specific plugins without copying commands, credentials, or executable configuration. An AI can learn a shared method locally, or discover that (for example) an image tool lives on Gemini and delegate the work there. [See how Virtual Skills & Capabilities work →](https://captain-memo.ispcq.com/skills.html)
 
 <p align="center">
-  <img src="docs/demo.gif" alt="Terminal recording: `captain-memo connect` wires six installed AI tools to one shared worker, then `captain-memo stats` shows four of them writing into the same local corpus" width="820">
+  <img src="docs/demo.gif" alt="Terminal recording: `captain-memo connect` wires six installed AI tools to one shared worker, then `captain-memo stats` shows four of them writing into the same local corpus (recorded against a sample corpus)" width="820">
 </p>
 
 <p align="center"><sub>One command wires every AI coding tool on the machine (JetBrains takes one paste in the IDE). They all read and write <b>one</b> local corpus.</sub></p>
