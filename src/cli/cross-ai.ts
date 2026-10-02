@@ -22,6 +22,7 @@ import { dirname, isAbsolute, join } from 'path';
 import { homedir } from 'os';
 import { spawnSync } from 'child_process';
 import { isMac, isWindows } from '../shared/platform.ts';
+import { vscodeUserDirFor } from '../shared/vscode-paths.ts';
 import { NATIVE_PROMPT_HOOK_TIMEOUT_S } from '../shared/paths.ts';
 import { compareSemver } from '../shared/self-update.ts';
 
@@ -1202,16 +1203,22 @@ const kimiAdapter: ToolAdapter = {
   },
 };
 
-// VS Code (Copilot agent mode) — MCP is GA. Auto-wire by merging ~/.config/Code/User/mcp.json (top-level
+/** VS Code's user folder on THIS machine (see shared/vscode-paths.ts for the per-OS paths and how far they are verified). */
+export function vscodeUserDir(home: string): string {
+  return vscodeUserDirFor(isWindows ? 'win32' : isMac ? 'darwin' : 'linux', home);
+}
+
+// VS Code (Copilot agent mode) — MCP is GA. Auto-wire by merging mcp.json in VS Code's user folder (top-level
 // `servers`, stdio). Skill best-effort to the user prompts folder as a *.instructions.md (read path unverified).
 const vscodeAdapter: ToolAdapter = {
   id: 'vscode',
   label: 'VS Code (Copilot)',
   detect({ home, run }) {
-    return cliOnPath(run, 'code') || existsSync(join(home, '.config', 'Code')) || existsSync(join(home, '.vscode'));
+    return cliOnPath(run, 'code') || existsSync(dirname(vscodeUserDir(home))) || existsSync(join(home, '.vscode'));
   },
   connect(ctx) {
-    const mcpJsonPath = join(ctx.home, '.config', 'Code', 'User', 'mcp.json');
+    const userDir = vscodeUserDir(ctx.home);
+    const mcpJsonPath = join(userDir, 'mcp.json');
     const serverPath = mcpServerPath(ctx.mcpCommand);
     let mcp: ConnectResult['mcp'] = 'failed';
     let detail: string | undefined;
@@ -1231,7 +1238,7 @@ const vscodeAdapter: ToolAdapter = {
     } catch (e) {
       detail = (e as Error).message;
     }
-    const skill = copySkill(ctx.skillSource, join(ctx.home, '.config', 'Code', 'User', 'prompts', 'captain-memo.instructions.md'));
+    const skill = copySkill(ctx.skillSource, join(userDir, 'prompts', 'captain-memo.instructions.md'));
     return withDetail({ tool: 'vscode', mcp, skill }, detail);
   },
 };

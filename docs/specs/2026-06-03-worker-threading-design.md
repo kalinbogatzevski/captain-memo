@@ -5,7 +5,6 @@
 - **Date:** 2026-06-03
 - **Target:** next release; lands behind a flag, default-off, then default-on once proven
 - **Status:** Approved design → implementation
-- **Author:** Kalin Bogatzevski (design assisted)
 - **Spec references:** `docs/specs/2026-05-31-worker-auto-recovery-design.md` (the recovery layer this correction makes largely unnecessary)
 
 ## 1. Summary

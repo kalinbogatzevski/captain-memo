@@ -7,6 +7,16 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.57.2] — 2026-10-02
+
+### Fixed
+
+- **`captain-memo connect vscode` writes where VS Code reads, on Windows and macOS.** It wrote `~/.config/Code/User/mcp.json` (and the skill under `prompts/`) on every OS, so on Windows and macOS it reported success after writing a file VS Code never reads. It now uses VS Code's user folder for the OS: `%APPDATA%\Code\User` on Windows, `~/Library/Application Support/Code/User` on macOS, `~/.config/Code/User` on Linux. The skill refresh looks in all three places. Only the Linux path has been seen on a real machine; the other two follow VS Code's documentation. A file an earlier version left at the Linux path on Windows or macOS is not read by VS Code and can be deleted. (#270)
+
+### Changed
+
+- Public tidy-up: the mascot prompt notes (`docs/LOGO_PROMPTS.md`), the README sign-off and the author lines of four older design specs are gone, and four old changelog lines no longer name a private build. (#270)
+
 ## [0.57.1] — 2026-10-02
 
 ### Fixed
@@ -499,8 +509,7 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 - **`top` panels scroll on a short terminal.** Only the observation table could scroll: the dashboard, AI-sources,
   token-flow and help panels were cut at the terminal height, with no way to see the rest. `j`/`k`, the arrows,
-  PgUp/PgDn and Home/End now scroll them, and a position line above the hint bar says where you are. (From the
-  federation line, where it shipped on 2026-09-18.)
+  PgUp/PgDn and Home/End now scroll them, and a position line above the hint bar says where you are.
 - **The dashboard hint bar fits the terminal.** At the width of a common terminal it wrapped, which cost a row and
   pushed the header off the top. It now drops its rarest keys first and always keeps `[?]help` and `[q]uit`; `?`
   still lists every key.
@@ -644,8 +653,7 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
   `📝 Filed as homework #N (not for now)` and answers "noted". Sessions file with `todo_add(text, topics, project)`,
   see the open list with `todo_list()` (also in the session-start banner), take one with `todo_claim(id)` (every AI
   session on this machine sees it as taken) and close it with `todo_done(id, note)`; done items stay listable a
-  week. Worker routes `/homework/add|list|claim|done`. Ported from the federation line (fed 0.61.x), where the open
-  list also reaches the fleet cockpit.
+  week. Worker routes `/homework/add|list|claim|done`.
 - **Topics on work claims.** `work_set` takes `topics`: 1–5 short kebab tags for what the work is *about*
   ("billing-rounding", "installer-windows"). The board flags two sessions on one topic whatever files they touch —
   `overlaps[]` rows carry `kind` (topics | files | semantic | repo) and what is shared, `work_active` adds
@@ -750,7 +758,7 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
   one. With nothing running beforehand there is no old instance to confuse, so a plain health answer
   still counts and a warming-up `/stats` does not block it. An unconfirmed restart is now reported
   as unconfirmed instead of as success. (Corrected 2026-09-18: this line used to promise a 30 s
-  window on Windows; that belongs to the federation line's detached relauncher — here the restart is
+  window on Windows; that belongs to a detached relauncher this build does not have — here the restart is
   synchronous on every platform and the window is 8 s.)
 
 
@@ -2721,7 +2729,7 @@ idle, and every single thing it does is reversible.
 ## [0.27.35] — 2026-07-29
 
 ### Fixed
-- **The vibe adapter and `mergeVibeMcpConfig` shipped with no tests.** Both are in this line, but their coverage existed only on the federation branch — so the TOML merge and the `connect vibe` path were untested here. Ported back (3 tests). A test that exists on one of two mirrored lines protects neither.
+- **The vibe adapter and `mergeVibeMcpConfig` shipped with no tests.** Both are in this line, but their coverage existed only on another branch — so the TOML merge and the `connect vibe` path were untested here. Ported back (3 tests). A test that exists on one of two mirrored lines protects neither.
 
 ## [0.27.34] — 2026-07-29
 

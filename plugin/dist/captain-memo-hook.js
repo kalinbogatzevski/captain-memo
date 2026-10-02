@@ -956,7 +956,7 @@ var package_default;
 var init_package = __esm(() => {
   package_default = {
     name: "captain-memo",
-    version: "0.57.1",
+    version: "0.57.2",
     description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
     type: "module",
     private: true,
@@ -1531,10 +1531,24 @@ var init_embedder_installer = __esm(() => {
   init_powershell();
 });
 
+// src/shared/vscode-paths.ts
+function vscodeUserDirSegments(os) {
+  if (os === "win32")
+    return ["AppData", "Roaming", "Code", "User"];
+  if (os === "darwin")
+    return ["Library", "Application Support", "Code", "User"];
+  return [".config", "Code", "User"];
+}
+var VSCODE_OSES;
+var init_vscode_paths = __esm(() => {
+  VSCODE_OSES = ["win32", "darwin", "linux"];
+});
+
 // src/cli/cross-ai.ts
 var PROBE_CLEAR, bunYaml, OPENCODE_LOCAL_PROVIDERS, OPENCODE_LOCAL_PROVIDER_KEYS;
 var init_cross_ai = __esm(() => {
   init_platform();
+  init_vscode_paths();
   init_paths();
   init_self_update();
   PROBE_CLEAR = process.stdout.isTTY === true ? "\r\x1B[2K" : "\r";
@@ -1669,7 +1683,7 @@ function refreshMemoSkills(source, home, deps = {}) {
   if (!exists(source))
     return [];
   const refreshed = [];
-  for (const rel of MEMO_SKILL_RELPATHS) {
+  for (const rel of [...MEMO_SKILL_RELPATHS, ...VSCODE_SKILL_RELPATHS]) {
     const dest = join16(home, ...rel.split("/"));
     if (!exists(dest))
       continue;
@@ -1680,8 +1694,9 @@ function refreshMemoSkills(source, home, deps = {}) {
   }
   return refreshed;
 }
-var MEMO_SKILL_RELPATHS;
+var MEMO_SKILL_RELPATHS, VSCODE_SKILL_RELPATHS;
 var init_skill_refresh = __esm(() => {
+  init_vscode_paths();
   MEMO_SKILL_RELPATHS = [
     ".codex/skills/captain-memo/SKILL.md",
     ".gemini/skills/captain-memo/SKILL.md",
@@ -1689,9 +1704,9 @@ var init_skill_refresh = __esm(() => {
     ".config/opencode/skills/captain-memo/SKILL.md",
     ".vibe/skills/captain-memo/SKILL.md",
     ".kimi/skills/captain-memo/SKILL.md",
-    ".config/Code/User/prompts/captain-memo.instructions.md",
     ".config/JetBrains/captain-memo.md"
   ];
+  VSCODE_SKILL_RELPATHS = VSCODE_OSES.map((os) => [...vscodeUserDirSegments(os), "prompts", "captain-memo.instructions.md"].join("/"));
 });
 
 // src/hooks/pre-git.ts

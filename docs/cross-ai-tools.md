@@ -307,11 +307,13 @@ Honest about capability, by design:
 
 ## VS Code (Copilot agent mode)
 
-VS Code's MCP support is GA and auto-wireable. `captain-memo connect vscode` merges
-`~/.config/Code/User/mcp.json` — note the top-level key is `servers`, not `mcpServers` like the other
-tools. Skill copied as `~/.config/Code/User/prompts/captain-memo.instructions.md`. On Linux that is
-VS Code's user config folder. `connect vscode` writes the same `~/.config/Code/User/` path on macOS and
-Windows too, and that has not been checked against where VS Code reads its user `mcp.json` there.
+VS Code's MCP support is GA and auto-wireable. `captain-memo connect vscode` merges `mcp.json` in VS Code's
+user folder — note the top-level key is `servers`, not `mcpServers` like the other tools. The skill is copied
+to `prompts/captain-memo.instructions.md` in the same folder. That folder is `~/.config/Code/User` on Linux,
+`~/Library/Application Support/Code/User` on macOS and `%APPDATA%\Code\User` on Windows, which is where
+VS Code's documentation puts its user settings. Only the Linux path has been seen on a real machine; the macOS
+and Windows ones follow the documentation. Before 0.57.2 `connect vscode` wrote the Linux path on every OS, so
+a file it left there on Windows or macOS is not read by VS Code and can be deleted.
 
 ## JetBrains (AI Assistant / Junie)
 

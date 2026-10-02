@@ -8,8 +8,9 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import {
   mergeOpencodeConfig, mergeVscodeMcpConfig, mergeVibeMcpConfig,
-  connectCrossAi, OPENCODE_AUTO_AGENT, type Runner,
+  connectCrossAi, vscodeUserDir, OPENCODE_AUTO_AGENT, type Runner,
 } from '../../src/cli/cross-ai.ts';
+import { vscodeUserDirFor } from '../../src/shared/vscode-paths.ts';
 
 const MCP_PATH = '/repo/plugin/dist/mcp-server.js';
 const noopRunner: Runner = () => ({ status: 1, stdout: '', stderr: '' });
@@ -71,11 +72,18 @@ test('connect only:[opencode] writes opencode.json (added; idempotent → presen
   expect(second[0]!.mcp).toBe('present');
 });
 
-test('connect only:[vscode] auto-writes ~/.config/Code/User/mcp.json (servers.captain-memo)', () => {
+test("VS Code's user folder follows the OS: Linux ~/.config, macOS Application Support, Windows AppData\\Roaming", () => {
+  expect(vscodeUserDirFor('linux', '/h')).toBe(join('/h', '.config', 'Code', 'User'));
+  expect(vscodeUserDirFor('darwin', '/h')).toBe(join('/h', 'Library', 'Application Support', 'Code', 'User'));
+  expect(vscodeUserDirFor('win32', '/h')).toBe(join('/h', 'AppData', 'Roaming', 'Code', 'User'));
+});
+
+test("connect only:[vscode] auto-writes mcp.json and the skill into this OS's VS Code user folder (servers.captain-memo)", () => {
   const r = connectCrossAi({ only: ['vscode'], mcpCommand: ['bun', MCP_PATH], skillSource, home, run: noopRunner })[0]!;
   expect(r.mcp).toBe('added');
-  const cfg = JSON.parse(readFileSync(join(home, '.config', 'Code', 'User', 'mcp.json'), 'utf-8'));
+  const cfg = JSON.parse(readFileSync(join(vscodeUserDir(home), 'mcp.json'), 'utf-8'));
   expect(cfg.servers['captain-memo']).toEqual({ type: 'stdio', command: 'bun', args: [MCP_PATH] });
+  expect(existsSync(join(vscodeUserDir(home), 'prompts', 'captain-memo.instructions.md'))).toBe(true);
 });
 
 test('connect only:[jetbrains] is assisted-manual: skipped + an AI Assistant instruction + a paste-ready snippet', () => {

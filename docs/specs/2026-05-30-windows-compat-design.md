@@ -5,7 +5,6 @@
 - **Date:** 2026-05-30
 - **Target version:** v0.2.0 (next minor from 0.1.16)
 - **Status:** Approved design → implementation
-- **Author:** Kalin Bogatzevski (design assisted)
 
 ## 1. Summary
 

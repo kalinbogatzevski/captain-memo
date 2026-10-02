@@ -4,7 +4,6 @@
 
 **Status:** Draft (pre-data; v0.1.12 widened the upstream signal — see "Update 2026-05-28")
 **Date:** 2026-05-27, revised 2026-05-28
-**Author:** Kalin Bogatzevski (drafted with Claude during brainstorming session)
 **Project home:** `~/projects/captain-memo/`
 
 ---

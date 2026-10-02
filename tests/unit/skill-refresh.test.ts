@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test';
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { refreshMemoSkills, resolveMemoSkillSource, MEMO_SKILL_RELPATHS } from '../../src/cli/skill-refresh.ts';
+import { refreshMemoSkills, resolveMemoSkillSource, MEMO_SKILL_RELPATHS, VSCODE_SKILL_RELPATHS } from '../../src/cli/skill-refresh.ts';
 
 const SRC = '/repo/skills/captain-memo/SKILL.md';
 const HOME = '/home/x';
@@ -75,4 +75,21 @@ test('the refresh list covers every captain-memo destination in cross-ai.ts', ()
   expect(found.size).toBeGreaterThan(0);
   const declared = new Set(MEMO_SKILL_RELPATHS);
   expect({ missing: [...found].filter((p) => !declared.has(p)), stale: [...declared].filter((p) => !found.has(p)) }).toEqual({ missing: [], stale: [] });
+  // VS Code's folder differs per OS, so the adapter builds it with vscodeUserDir() instead of a literal: it must stay that way, and
+  // the refresh covers every OS's location.
+  expect(src).toMatch(/copySkill\(\s*ctx\.skillSource\s*,\s*join\(\s*userDir\s*,\s*'prompts'\s*,\s*'captain-memo\.instructions\.md'/);
+  expect(src).toMatch(/const userDir = vscodeUserDir\(ctx\.home\)/);
+});
+
+test("VS Code's prompt copy is refreshed wherever this OS keeps it (Linux, macOS and Windows locations), and only if it exists", () => {
+  expect(VSCODE_SKILL_RELPATHS).toEqual([
+    'AppData/Roaming/Code/User/prompts/captain-memo.instructions.md',
+    'Library/Application Support/Code/User/prompts/captain-memo.instructions.md',
+    '.config/Code/User/prompts/captain-memo.instructions.md',
+  ]);
+  for (const rel of VSCODE_SKILL_RELPATHS) {
+    const fs = fakeFs([rel]);
+    expect(refreshMemoSkills(SRC, HOME, fs.deps)).toEqual([join(HOME, ...rel.split('/'))]);
+  }
+  expect(refreshMemoSkills(SRC, HOME, fakeFs([]).deps)).toEqual([]);
 });

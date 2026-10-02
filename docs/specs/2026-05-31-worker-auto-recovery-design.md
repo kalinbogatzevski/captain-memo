@@ -5,7 +5,6 @@
 - **Date:** 2026-05-31
 - **Target version:** v0.2.14 (next patch from 0.2.13)
 - **Status:** Approved design → implementation
-- **Author:** Kalin Bogatzevski (design assisted)
 
 ## 1. Summary
 

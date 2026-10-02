@@ -7,6 +7,7 @@
 // refresh-only, never create: a CLI that was never connected here gets no file.
 import { existsSync, copyFileSync } from 'fs';
 import { join } from 'path';
+import { VSCODE_OSES, vscodeUserDirSegments } from '../shared/vscode-paths.ts';
 
 /** Home-relative destinations the cross-AI adapters write the skill to. Duplicated from cross-ai.ts on
  *  purpose and locked to it by a test that parses the adapter source, so a new adapter without a refresh
@@ -18,9 +19,11 @@ export const MEMO_SKILL_RELPATHS: readonly string[] = [
   '.config/opencode/skills/captain-memo/SKILL.md',
   '.vibe/skills/captain-memo/SKILL.md',
   '.kimi/skills/captain-memo/SKILL.md',
-  '.config/Code/User/prompts/captain-memo.instructions.md',
   '.config/JetBrains/captain-memo.md',
 ];
+
+/** VS Code's prompts folder differs per OS, so every OS's location is a candidate: refresh-only skips the ones that do not exist. */
+export const VSCODE_SKILL_RELPATHS: readonly string[] = VSCODE_OSES.map((os) => [...vscodeUserDirSegments(os), 'prompts', 'captain-memo.instructions.md'].join('/'));
 
 /** The skill this install ships, or null. `base` is the running code's directory: src/cli (install-hooks
  *  mode) or plugin/dist (the hook bundle). A checkout has skills/ two levels up; a Claude Code plugin CACHE
@@ -44,7 +47,7 @@ export function refreshMemoSkills(source: string, home: string, deps: RefreshDep
   const copy = deps.copy ?? copyFileSync;
   if (!exists(source)) return [];                       // nothing to copy FROM (non-checkout install)
   const refreshed: string[] = [];
-  for (const rel of MEMO_SKILL_RELPATHS) {
+  for (const rel of [...MEMO_SKILL_RELPATHS, ...VSCODE_SKILL_RELPATHS]) {
     const dest = join(home, ...rel.split('/'));
     if (!exists(dest)) continue;                        // that AI was never connected here — do not create
     try { copy(source, dest); refreshed.push(dest); } catch { /* best-effort, per destination */ }
