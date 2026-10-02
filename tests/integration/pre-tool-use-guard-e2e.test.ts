@@ -129,7 +129,7 @@ test('(d) a shell edit with no nameable file claims no file (repo presence only)
   expect(d.files).toEqual([]);
   expect(d.repo_root?.replaceAll('\\', '/')).toBe(root.replaceAll('\\', '/'));   // git prints C:/..., join() C:\...
   // a whole-repo claim from an older captain-memo version
-  await fetch(`http://localhost:${port}/worknote/set`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session_id: 'sess-OLD', agent: 'claude', what: 'x', files: [`${root}/**`] }) });
+  await fetch(`http://localhost:${port}/worknote/set`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session_id: 'sess-OLD', agent: 'claude', what: 'x', files: [`${root.replaceAll('\\', '/')}/**`] }) });   // as an older version wrote it: git's forward-slash root
   const e = await edit('sess-E', join(root, 'hr/rpc.php'), 4_000_005);
   expect(JSON.stringify(e.json ?? {})).not.toContain('sess-OLD');
 });
