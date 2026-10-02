@@ -1,13 +1,14 @@
-// What the Windows ssh.cmd runs (see fake-ssh.ts): argv = --fake=<fail|run> | --fake-prints=<text>, then the ssh arguments.
+// The Windows ssh.exe (see fake-ssh.ts). Its mode is in fake-ssh.json beside it: "fail" | "run-locally" | { prints }.
 import { spawnSync } from 'child_process';
-import { resolve } from 'path';
+import { readFileSync } from 'fs';
+import { dirname, join, resolve } from 'path';
 
-const args = process.argv.slice(2);
-const mode = args.shift() ?? '';
-if (mode === '--fake=fail') process.exit(255);
-if (mode.startsWith('--fake-prints=')) { process.stdout.write(mode.slice('--fake-prints='.length) + '\n'); process.exit(0); }
+const how = JSON.parse(readFileSync(join(dirname(process.execPath), 'fake-ssh.json'), 'utf-8')) as 'fail' | 'run-locally' | { prints: string };
+if (how === 'fail') process.exit(255);
+if (typeof how === 'object') { process.stdout.write(how.prints + '\n'); process.exit(0); }
 
 // `ssh [opts] host cmd`: options (some with a value), then the host, then the command words.
+const args = process.argv.slice(2);
 while (args[0]?.startsWith('-')) args.splice(0, ['-o', '-p', '-i', '-J', '-F', '-l'].includes(args[0]) ? 2 : 1);
 args.shift();
 if (process.env.FAKE_SSH_FAIL) process.exit(255);
