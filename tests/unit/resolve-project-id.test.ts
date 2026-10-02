@@ -2,12 +2,13 @@ import { test, expect } from 'bun:test';
 import { mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { pathToFileURL } from 'url';
 
 // Runs in a child process: CONFIG_DIR is a module-load constant, and loadWorkerEnv mutates process.env.
 function projectFor(cwd: string, workerEnv: string, sessionEnv: Record<string, string> = {}): string {
   const dir = mkdtempSync(join(tmpdir(), 'cm-proj-'));
   writeFileSync(join(dir, 'worker.env'), workerEnv);
-  const src = join(import.meta.dir, '../../src');
+  const src = pathToFileURL(join(import.meta.dir, '../../src')).href;   // a file URL: a Windows path inside a JS string literal turns \a, \c into escapes
   const r = Bun.spawnSync(['bun', '-e',
     `const { loadWorkerEnv } = await import('${src}/shared/worker-env.ts');
      const { resolveProjectId } = await import('${src}/hooks/shared.ts');

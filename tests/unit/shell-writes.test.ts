@@ -184,12 +184,12 @@ test('a heredoc body is not scanned for redirects or targets — only the heredo
     "PY",
   ].join('\n');
   // The interpreter scan (scriptWrites) DOES read the python body: its literal open(..., 'w') is a real write.
-  expect(parse(cmd)).toEqual([...at('src/a.ts'), resolve('/tmp/py.txt')]);
+  expect(parse(cmd)).toEqual([...at('src/a.ts'), resolve(CWD, '/tmp/py.txt')]);
 });
 
 test('quoted code (python -c, node -e, bash -c) is not scanned for redirects', () => {
   // the `>` inside is not a redirect; the literal open(..., "w") is a write the interpreter scan names
-  expect(parse(`python3 -c 'import sys; print(sys.argv > 1); open("/tmp/x","w")' && echo ok`)).toEqual([resolve('/tmp/x')]);
+  expect(parse(`python3 -c 'import sys; print(sys.argv > 1); open("/tmp/x","w")' && echo ok`)).toEqual([resolve(CWD, '/tmp/x')]);
   expect(parse(`node -e "const f = () => { x > y }" > real-out.txt`)).toEqual(at('real-out.txt'));
 });
 
@@ -204,7 +204,7 @@ test('tokens that cannot be paths are dropped: braces, quotes, module specifiers
 });
 
 test('relative paths resolve against the directory the command cd\'d into, not the session cwd', () => {
-  expect(parse(`cd /tmp/scratch && echo x > out.txt && sed -i 's/a/b/' notes.md`)).toEqual(['/tmp/scratch/out.txt', '/tmp/scratch/notes.md'].map((p) => resolve(p)));
+  expect(parse(`cd /tmp/scratch && echo x > out.txt && sed -i 's/a/b/' notes.md`)).toEqual(['/tmp/scratch/out.txt', '/tmp/scratch/notes.md'].map((p) => resolve(CWD, p)));
   expect(parse(`cd sub; echo x > out.txt`)).toEqual(at('sub/out.txt'));
   expect(parse(`Set-Location sub2; Set-Content -Path out.txt -Value 1`, 'powershell')).toEqual(at('sub2/out.txt'));
   expect(parse(`cd "$SCRATCH" && echo x > out.txt`)).toEqual([coarseClaimFor(CWD)]);   // a cd we cannot resolve: the write is real, its place unknown

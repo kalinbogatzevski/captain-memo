@@ -2,8 +2,8 @@
 // Before an upload the hook reads the server copy's md5 and refuses when it is none of: the local file, a committed
 // version, a copy this session fetched or uploaded. No real host is contacted: a fake `ssh` on PATH runs md5sum locally.
 import { test, expect, beforeAll } from 'bun:test';
-import { mkdtempSync, writeFileSync, chmodSync, mkdirSync } from 'fs';
-import { join } from 'path';
+import { mkdtempSync, writeFileSync, chmodSync, mkdirSync, realpathSync } from 'fs';
+import { join, resolve, delimiter } from 'path';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import {
@@ -12,30 +12,34 @@ import {
 } from '../../src/hooks/deploy-guard.ts';
 
 const noDir = () => false;
+// A local path comes back through path.resolve: D:\r\a.php on Windows, so the expected value goes through it too. Remote paths stay POSIX.
+const L = (p: string) => resolve(p);
+// The fake ssh below is a #!/bin/bash script on a ':' PATH; on Windows the real ssh.exe would run and resolve the host.
+const sshTest = process.platform === 'win32' ? test.skip : test;
 
 test('scp: flags with values are skipped, the last positional is the destination, ssh args are carried', () => {
   const r = parseTransfers('scp -P 30043 -i /k/id -o StrictHostKeyChecking=no hr/functions.php root@deploy.example.com:/var/www/app/hr/functions.php', '/repo', noDir);
-  expect(r.uploads).toEqual([{ local: '/repo/hr/functions.php', userhost: 'root@deploy.example.com', path: '/var/www/app/hr/functions.php', sshArgs: ['-p', '30043', '-i', '/k/id', '-o', 'StrictHostKeyChecking=no'], orDir: true }]);
+  expect(r.uploads).toEqual([{ local: L('/repo/hr/functions.php'), userhost: 'root@deploy.example.com', path: '/var/www/app/hr/functions.php', sshArgs: ['-p', '30043', '-i', '/k/id', '-o', 'StrictHostKeyChecking=no'], orDir: true }]);
   expect(r.downloads).toEqual([]);
 });
 
 test('scp: several sources or a trailing slash land under the directory; -r with a directory is a dir claim', () => {
   expect(parseTransfers('scp a.php b.php root@h1:/srv/x/', '/r', noDir).uploads.map((u) => u.path)).toEqual(['/srv/x/a.php', '/srv/x/b.php']);
   expect(parseTransfers('scp a.php root@h1:/srv/x/', '/r', noDir).uploads[0]!.path).toBe('/srv/x/a.php');
-  const d = parseTransfers('scp -r mod root@h1:/srv/', '/r', (p) => p === '/r/mod').uploads[0]!;
-  expect(d).toMatchObject({ local: '/r/mod', path: '/srv/mod', dir: true });
+  const d = parseTransfers('scp -r mod root@h1:/srv/', '/r', (p) => p === L('/r/mod')).uploads[0]!;
+  expect(d).toMatchObject({ local: L('/r/mod'), path: '/srv/mod', dir: true });
 });
 
 test('rsync -e \'ssh -p 30043 -i k\' carries the port and key', () => {
   const u = parseTransfers("rsync -av -e 'ssh -p 30043 -i /k' a.php root@h1:/srv/a.php", '/r', noDir).uploads[0]!;
-  expect(u).toMatchObject({ local: '/r/a.php', userhost: 'root@h1', path: '/srv/a.php', sshArgs: ['-p', '30043', '-i', '/k'] });
+  expect(u).toMatchObject({ local: L('/r/a.php'), userhost: 'root@h1', path: '/srv/a.php', sshArgs: ['-p', '30043', '-i', '/k'] });
 });
 
 test("ssh h 'cat > p' < f is an upload; ssh h cat p > f and scp h:p f are downloads", () => {
-  expect(parseTransfers("ssh root@h1 'cat > /srv/a.php' < a.php", '/r', noDir).uploads).toEqual([{ local: '/r/a.php', userhost: 'root@h1', path: '/srv/a.php', sshArgs: [] }]);
-  expect(parseTransfers('ssh -p 22 root@h1 cat /srv/a.php > /tmp/a.live', '/r', noDir).downloads).toEqual([{ local: '/tmp/a.live', userhost: 'root@h1', path: '/srv/a.php', sshArgs: ['-p', '22'] }]);
-  expect(parseTransfers('scp root@h1:/srv/a.php /tmp/a.live', '/r', noDir).downloads[0]).toMatchObject({ local: '/tmp/a.live', path: '/srv/a.php' });
-  expect(parseTransfers('scp root@h1:/srv/a.php /tmp/', '/r', noDir).downloads[0]!.local).toBe('/tmp/a.php');
+  expect(parseTransfers("ssh root@h1 'cat > /srv/a.php' < a.php", '/r', noDir).uploads).toEqual([{ local: L('/r/a.php'), userhost: 'root@h1', path: '/srv/a.php', sshArgs: [] }]);
+  expect(parseTransfers('ssh -p 22 root@h1 cat /srv/a.php > /tmp/a.live', '/r', noDir).downloads).toEqual([{ local: L('/tmp/a.live'), userhost: 'root@h1', path: '/srv/a.php', sshArgs: ['-p', '22'] }]);
+  expect(parseTransfers('scp root@h1:/srv/a.php /tmp/a.live', '/r', noDir).downloads[0]).toMatchObject({ local: L('/tmp/a.live'), path: '/srv/a.php' });
+  expect(parseTransfers('scp root@h1:/srv/a.php /tmp/', '/r', noDir).downloads[0]!.local).toBe(L('/tmp/a.php'));
 });
 
 test('a Windows drive stays local; read-only commands and sftp yield nothing', () => {
@@ -83,8 +87,8 @@ const R = '/var/www/app';
 test('incident commands: same-line variables and for-loops resolve to the real targets', () => {
   const c1 = `cd /home/u/projects/app; S=${S}; R=${R}\nscp -q $S/hr_functions_deploy.php root@deploy.example.com:$R/core/modules/admin/hr/functions.php && scp -q core/modules/admin/hr/post_handlers/importflog_handler.php root@deploy.example.com:$R/core/modules/admin/hr/post_handlers/ && ssh -o BatchMode=yes root@deploy.example.com "cd $R && php -l core/modules/admin/hr/functions.php"`;
   expect(parseTransfers(c1, '/', noDir).uploads.map((u) => [u.local, remoteKey(u)])).toEqual([
-    [`${S}/hr_functions_deploy.php`, `root@deploy.example.com:${R}/core/modules/admin/hr/functions.php`],
-    ['/home/u/projects/app/core/modules/admin/hr/post_handlers/importflog_handler.php', `root@deploy.example.com:${R}/core/modules/admin/hr/post_handlers/importflog_handler.php`],
+    [L(`${S}/hr_functions_deploy.php`), `root@deploy.example.com:${R}/core/modules/admin/hr/functions.php`],
+    [L('/home/u/projects/app/core/modules/admin/hr/post_handlers/importflog_handler.php'), `root@deploy.example.com:${R}/core/modules/admin/hr/post_handlers/importflog_handler.php`],
   ]);
   const c2 = `cd /home/u/projects/app; S=${S}; R=${R}; H=$(git show HEAD:core/modules/admin/hr/rpc.php | md5sum | cut -c1-32)\nfor box in deploy2.example.com deploy.example.com; do cur=$(ssh -o BatchMode=yes root@$box "md5sum $R/core/modules/admin/hr/rpc.php" | cut -c1-32); if [ "$cur" = "$H" ]; then scp -q $S/hr_rpc_deploy.php root@$box:$R/core/modules/admin/hr/rpc.php && scp -q core/templates/admin/hr/history.html root@$box:$R/core/templates/admin/hr/ && echo ok; fi; done`;
   expect(parseTransfers(c2, '/', noDir).uploads.filter((u) => u.path.endsWith('rpc.php')).map(remoteKey)).toEqual([
@@ -103,13 +107,15 @@ test('incident commands: same-line variables and for-loops resolve to the real t
 // ── end to end over a fake ssh (runs md5sum locally, ignoring the host) ───────────────────────────────────────────
 let dir = '';
 beforeAll(() => {
-  dir = mkdtempSync(join(tmpdir(), 'deploy-guard-'));
+  dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'deploy-guard-')));   // .native: the long name git reports, not RUNNER~1
   const bin = join(dir, 'bin');
   mkdirSync(bin);
   // ssh [opts] host cmd: drop options and the host, run the command locally
-  writeFileSync(join(bin, 'ssh'), '#!/bin/bash\nwhile [[ "$1" == -* ]]; do case "$1" in -o|-p|-i|-J|-F|-l) shift 2;; *) shift;; esac; done\nshift\n[ -n "$FAKE_SSH_FAIL" ] && exit 255\nexec bash -c "$*"\n');
-  chmodSync(join(bin, 'ssh'), 0o755);
-  process.env.PATH = `${bin}:${process.env.PATH}`;
+  if (process.platform !== 'win32') {
+    writeFileSync(join(bin, 'ssh'), '#!/bin/bash\nwhile [[ "$1" == -* ]]; do case "$1" in -o|-p|-i|-J|-F|-l) shift 2;; *) shift;; esac; done\nshift\n[ -n "$FAKE_SSH_FAIL" ] && exit 255\nexec bash -c "$*"\n');
+    chmodSync(join(bin, 'ssh'), 0o755);
+    process.env.PATH = `${bin}${delimiter}${process.env.PATH}`;
+  }
   const repo = join(dir, 'repo');
   mkdirSync(join(repo, 'hr'), { recursive: true });
   const git = (...a: string[]) => spawnSync('git', ['-C', repo, ...a], { encoding: 'utf-8' });
@@ -124,7 +130,7 @@ test('committedMd5s reads HEAD (and the default branch) in one git cat-file', ()
   expect(m.get(md5Of('<?php // v0 committed\n'))).toBe('HEAD');
 });
 
-test('incident replay: A deployed uncommitted v1; B uploading HEAD + its hunk is denied; after fetching the live copy it is allowed', () => {
+sshTest('incident replay: A deployed uncommitted v1; B uploading HEAD + its hunk is denied; after fetching the live copy it is allowed', () => {
   const local = join(dir, 'repo/hr/functions.php');
   const server = join(dir, 'server/hr/functions.php');
   writeFileSync(server, '<?php // v1: A\'s uncommitted helpers\n');                  // A's deploy
@@ -146,7 +152,7 @@ test('incident replay: A deployed uncommitted v1; B uploading HEAD + its hunk is
   expect(checkUploads('B', up).nudges[0]).toContain('matched your last upload');
 });
 
-test('a new server file is allowed; an ssh failure fails open with a nudge; a target the override covers is not checked', () => {
+sshTest('a new server file is allowed; an ssh failure fails open with a nudge; a target the override covers is not checked', () => {
   const up = parseTransfers(`scp hr/functions.php root@h1:${join(dir, 'server/hr/new.php')}`, join(dir, 'repo'), noDir).uploads;
   expect(checkUploads('C', up).nudges[0]).toContain('is new');
   process.env.FAKE_SSH_FAIL = '1';
@@ -157,7 +163,7 @@ test('a new server file is allowed; an ssh failure fails open with a nudge; a ta
   expect(checkUploads('C', up, { skip: (k) => k === remoteKey(up[0]!) })).toEqual({ nudges: [] });
 });
 
-test('incident replay through variables: HEAD + hunk built in a scratchpad is denied over a peer\'s deploy, allowed over HEAD', () => {
+sshTest('incident replay through variables: HEAD + hunk built in a scratchpad is denied over a peer\'s deploy, allowed over HEAD', () => {
   const server = join(dir, 'server/hr/functions.php');
   const scratch = join(dir, 'scratch');
   mkdirSync(scratch, { recursive: true });
@@ -171,7 +177,7 @@ test('incident replay through variables: HEAD + hunk built in a scratchpad is de
   writeFileSync(join(dir, 'repo/hr/functions.php'), '<?php // v0 committed\n');
 });
 
-test('commit, then deploy: a server still on the file\'s previous committed version is replaced without a refusal', () => {
+sshTest('commit, then deploy: a server still on the file\'s previous committed version is replaced without a refusal', () => {
   const repo = join(dir, 'repo');
   const git = (...a: string[]) => spawnSync('git', ['-C', repo, ...a], { encoding: 'utf-8' });
   writeFileSync(join(repo, 'hr/functions.php'), '<?php // v2 committed\n');
@@ -192,9 +198,9 @@ test('loop-body assignments are never pinned to the first iteration; quotes insi
   // upload to "$f.deploytmp" then mv into place, with the quotes the shell needs
   const q = `cd /repo; f=core/hr/rpc.php; R=/var/www/app; for h in deploy2.example.com deploy.example.com; do scp -q "$f" root@$h:"$R/$f.deploytmp" && ssh root@$h "cd $R && php -l '$f.deploytmp' >/dev/null && mv -f '$f.deploytmp' '$f' && md5sum $f"; done`;
   expect(parseTransfers(q, '/', noDir).uploads.map((u) => [u.local, remoteKey(u)])).toEqual([
-    ['/repo/core/hr/rpc.php', `root@deploy2.example.com:/var/www/app/core/hr/rpc.php`], ['/repo/core/hr/rpc.php', `root@deploy.example.com:/var/www/app/core/hr/rpc.php`],
+    [L('/repo/core/hr/rpc.php'), `root@deploy2.example.com:/var/www/app/core/hr/rpc.php`], [L('/repo/core/hr/rpc.php'), `root@deploy.example.com:/var/www/app/core/hr/rpc.php`],
   ]);
-  expect(parseTransfers('S="/x/scratch"; scp -q $S/a.php root@h1:/srv/a.php', '/r', noDir).uploads[0]!.local).toBe('/x/scratch/a.php');
+  expect(parseTransfers('S="/x/scratch"; scp -q $S/a.php root@h1:/srv/a.php', '/r', noDir).uploads[0]!.local).toBe(L('/x/scratch/a.php'));
 });
 
 // #227: shapes the first parser reported as unchecked, or missed
@@ -203,7 +209,7 @@ test('a shell function runs where it is called, with its positional arguments; t
   expect(parseTransfers(def, '/r', noDir)).toEqual({ uploads: [], downloads: [] });
   const r = parseTransfers(`${def}; put h1 hr/a.php hr/a.php; put h2 /x/b.php hr/b.php`, '/r', noDir);
   expect(r.unchecked).toBeUndefined();
-  expect(r.uploads.map((u) => [u.local, remoteKey(u)])).toEqual([['/r/hr/a.php', 'root@h1:/srv/app/hr/a.php'], ['/x/b.php', 'root@h2:/srv/app/hr/b.php']]);
+  expect(r.uploads.map((u) => [u.local, remoteKey(u)])).toEqual([[L('/r/hr/a.php'), 'root@h1:/srv/app/hr/a.php'], [L('/x/b.php'), 'root@h2:/srv/app/hr/b.php']]);
   // `function put {`, a call inside a loop, and an argument the call does not give
   expect(parseTransfers('function put { scp $1 root@$2:/srv/$1; }\nfor h in h1 h2; do put a.php $h; done', '/r', noDir).uploads.map(remoteKey)).toEqual(['root@h1:/srv/a.php', 'root@h2:/srv/a.php']);
   expect(parseTransfers('put() { scp "$1" root@h1:"$2"; }; put a.php', '/r', noDir)).toEqual({ uploads: [], downloads: [], unchecked: 1 });
@@ -223,7 +229,7 @@ test('nested loops give every combination; a loop that has ended leaves its last
 });
 
 test("cat f | ssh h 'cat > p' and a leading < f are uploads; another producer before the pipe is unchecked", () => {
-  const up = [{ local: '/r/a.php', userhost: 'root@h1', path: '/srv/a.php', sshArgs: [] }];
+  const up = [{ local: L('/r/a.php'), userhost: 'root@h1', path: '/srv/a.php', sshArgs: [] }];
   expect(parseTransfers("cat a.php | ssh root@h1 'cat > /srv/a.php'", '/r', noDir).uploads).toEqual(up);
   expect(parseTransfers('cd sub && cat ../a.php | ssh root@h1 "sudo tee /srv/a.php >/dev/null"', '/r', noDir).uploads).toEqual(up);
   expect(parseTransfers("< a.php ssh root@h1 'cat > /srv/a.php'", '/r', noDir).uploads).toEqual(up);
@@ -235,7 +241,7 @@ test("cat f | ssh h 'cat > p' and a leading < f are uploads; another producer be
   expect(parseTransfers("ssh root@h1 'cat > /srv/a.php' || cat a.php", '/r', noDir).uploads).toEqual([]);   // `||` is not a pipe
 });
 
-test('scp f host:/dir with no trailing slash: when /dir is a directory the file inside it is what is checked', () => {
+sshTest('scp f host:/dir with no trailing slash: when /dir is a directory the file inside it is what is checked', () => {
   const srv = join(dir, 'server/hr');
   writeFileSync(join(srv, 'functions.php'), '<?php // peer\'s uncommitted deploy\n');
   writeFileSync(join(dir, 'repo/hr/functions.php'), '<?php // v2 committed\n// my hunk\n');

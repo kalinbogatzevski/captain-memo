@@ -1,4 +1,5 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test';
+import { resolve } from 'path';
 import { dispatchTool, resolveWorkBoardSessionId, absoluteClaimFiles, TOOLS } from '../../src/mcp-server.ts';
 
 // THE SELF-OVERLAP BUG. The PreToolUse auto-claim publishes under CLAUDE_CODE_SESSION_ID; minting an
@@ -85,7 +86,7 @@ test('dispatchTool — a worker error (e.g. 500) surfaces as an MCP error, not a
 // file were invisible to each other. Relative paths resolve against the session's repository root.
 test('work_set: relative files resolve against the repo root; absolute ones, and a cwd of /, pass through', () => {
   const root = require('node:child_process').execSync('git rev-parse --show-toplevel', { cwd: import.meta.dir, encoding: 'utf-8' }).trim();
-  expect(absoluteClaimFiles(['src/a.ts', 'docs/', '/abs/x.php', '**', '.'], `${root}/tests`)).toEqual([`${root}/src/a.ts`, `${root}/docs/`, '/abs/x.php', `${root}/**`, `${root}/**`]);
+  expect(absoluteClaimFiles(['src/a.ts', 'docs/', '/abs/x.php', '**', '.'], `${root}/tests`)).toEqual([resolve(root, 'src/a.ts'), `${resolve(root, 'docs')}/`, '/abs/x.php', resolve(root, '**'), resolve(root, '**')]);   // git prints D:/..., resolve() the native form
   expect(absoluteClaimFiles(['src/a.ts'], '/')).toEqual(['src/a.ts']);
 });
 
@@ -95,7 +96,7 @@ test('work_set dispatch sends absolute files to the worker', async () => {
   const root = require('node:child_process').execSync('git rev-parse --show-toplevel', { cwd: import.meta.dir, encoding: 'utf-8' }).trim();
   try {
     await dispatchTool('work_set', { what: 'x', files: ['src/mcp-server.ts'] }, { workerBase: `http://localhost:${srv.port}`, sessionId: 's', cwd: () => root });
-    expect(body.files).toEqual([`${root}/src/mcp-server.ts`]);
+    expect(body.files).toEqual([resolve(root, 'src/mcp-server.ts')]);
   } finally { srv.stop(); }
 });
 
