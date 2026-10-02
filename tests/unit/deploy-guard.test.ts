@@ -2,7 +2,7 @@
 // Before an upload the hook reads the server copy's md5 and refuses when it is none of: the local file, a committed
 // version, a copy this session fetched or uploaded. No real host is contacted: a fake `ssh` on PATH runs md5sum locally.
 import { test, expect, beforeAll } from 'bun:test';
-import { mkdtempSync, writeFileSync, chmodSync, mkdirSync, realpathSync } from 'fs';
+import { mkdtempSync, writeFileSync, mkdirSync, realpathSync } from 'fs';
 import { join, resolve, delimiter } from 'path';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
@@ -10,12 +10,13 @@ import {
   parseTransfers, decideDeploy, denyDeployText, deployNudge, parseMd5sumLines, md5Of, remoteKey, checkUploads,
   recordBaseline, readBaselines, recordFetchBaselines, committedMd5s, remoteMd5s, COMMITTED_DEPTH,
 } from '../../src/hooks/deploy-guard.ts';
+import { installFakeSsh } from '../support/fake-ssh.ts';
 
 const noDir = () => false;
 // A local path comes back through path.resolve: D:\r\a.php on Windows, so the expected value goes through it too. Remote paths stay POSIX.
 const L = (p: string) => resolve(p);
-// The fake ssh below is a #!/bin/bash script on a ':' PATH; on Windows the real ssh.exe would run and resolve the host.
-const sshTest = process.platform === 'win32' ? test.skip : test;
+// A path that goes INTO a shell command: forward slashes, since a backslash there is an escape (C:/x/y works in Git bash and Node).
+const P = (...s: string[]) => join(...s).replaceAll('\\', '/');
 
 test('scp: flags with values are skipped, the last positional is the destination, ssh args are carried', () => {
   const r = parseTransfers('scp -P 30043 -i /k/id -o StrictHostKeyChecking=no hr/functions.php root@deploy.example.com:/var/www/app/hr/functions.php', '/repo', noDir);
@@ -110,12 +111,8 @@ beforeAll(() => {
   dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'deploy-guard-')));   // .native: the long name git reports, not RUNNER~1
   const bin = join(dir, 'bin');
   mkdirSync(bin);
-  // ssh [opts] host cmd: drop options and the host, run the command locally
-  if (process.platform !== 'win32') {
-    writeFileSync(join(bin, 'ssh'), '#!/bin/bash\nwhile [[ "$1" == -* ]]; do case "$1" in -o|-p|-i|-J|-F|-l) shift 2;; *) shift;; esac; done\nshift\n[ -n "$FAKE_SSH_FAIL" ] && exit 255\nexec bash -c "$*"\n');
-    chmodSync(join(bin, 'ssh'), 0o755);
-    process.env.PATH = `${bin}${delimiter}${process.env.PATH}`;
-  }
+  installFakeSsh(bin, 'run-locally');   // ssh [opts] host cmd: drop the options and the host, run the command locally
+  process.env.PATH = `${bin}${delimiter}${process.env.PATH}`;
   const repo = join(dir, 'repo');
   mkdirSync(join(repo, 'hr'), { recursive: true });
   const git = (...a: string[]) => spawnSync('git', ['-C', repo, ...a], { encoding: 'utf-8' });
@@ -130,16 +127,16 @@ test('committedMd5s reads HEAD (and the default branch) in one git cat-file', ()
   expect(m.get(md5Of('<?php // v0 committed\n'))).toBe('HEAD');
 });
 
-sshTest('incident replay: A deployed uncommitted v1; B uploading HEAD + its hunk is denied; after fetching the live copy it is allowed', () => {
+test('incident replay: A deployed uncommitted v1; B uploading HEAD + its hunk is denied; after fetching the live copy it is allowed', () => {
   const local = join(dir, 'repo/hr/functions.php');
-  const server = join(dir, 'server/hr/functions.php');
+  const server = P(dir, 'server/hr/functions.php');
   writeFileSync(server, '<?php // v1: A\'s uncommitted helpers\n');                  // A's deploy
   writeFileSync(local, '<?php // v0 committed\n// B hunk\n');                          // B: HEAD + my hunk
   const up = parseTransfers(`scp hr/functions.php root@h1:${server}`, join(dir, 'repo'), noDir).uploads;
   const denied = checkUploads('B', up);
   expect(denied.deny).toContain(`DEPLOY BLOCKED: root@h1:${server}`);
   // B fetches the live copy (PostToolUse records it), merges, uploads
-  const live = join(dir, 'functions.php.live');
+  const live = P(dir, 'functions.php.live');
   writeFileSync(live, '<?php // v1: A\'s uncommitted helpers\n');
   recordFetchBaselines('B', `scp root@h1:${server} ${live}`, dir);
   writeFileSync(local, '<?php // v1: A\'s uncommitted helpers\n// B hunk\n');
@@ -152,23 +149,23 @@ sshTest('incident replay: A deployed uncommitted v1; B uploading HEAD + its hunk
   expect(checkUploads('B', up).nudges[0]).toContain('matched your last upload');
 });
 
-sshTest('a new server file is allowed; an ssh failure fails open with a nudge; a target the override covers is not checked', () => {
-  const up = parseTransfers(`scp hr/functions.php root@h1:${join(dir, 'server/hr/new.php')}`, join(dir, 'repo'), noDir).uploads;
+test('a new server file is allowed; an ssh failure fails open with a nudge; a target the override covers is not checked', () => {
+  const up = parseTransfers(`scp hr/functions.php root@h1:${P(dir, 'server/hr/new.php')}`, join(dir, 'repo'), noDir).uploads;
   expect(checkUploads('C', up).nudges[0]).toContain('is new');
   process.env.FAKE_SSH_FAIL = '1';
-  const r = checkUploads('C', parseTransfers(`scp hr/functions.php root@h1:${join(dir, 'server/hr/functions.php')}`, join(dir, 'repo'), noDir).uploads);
+  const r = checkUploads('C', parseTransfers(`scp hr/functions.php root@h1:${P(dir, 'server/hr/functions.php')}`, join(dir, 'repo'), noDir).uploads);
   delete process.env.FAKE_SSH_FAIL;
   expect(r.deny).toBeUndefined();
   expect(r.nudges[0]).toContain('could not be checked');
   expect(checkUploads('C', up, { skip: (k) => k === remoteKey(up[0]!) })).toEqual({ nudges: [] });
 });
 
-sshTest('incident replay through variables: HEAD + hunk built in a scratchpad is denied over a peer\'s deploy, allowed over HEAD', () => {
-  const server = join(dir, 'server/hr/functions.php');
-  const scratch = join(dir, 'scratch');
+test('incident replay through variables: HEAD + hunk built in a scratchpad is denied over a peer\'s deploy, allowed over HEAD', () => {
+  const server = P(dir, 'server/hr/functions.php');
+  const scratch = P(dir, 'scratch');
   mkdirSync(scratch, { recursive: true });
   writeFileSync(join(scratch, 'deploy.php'), '<?php // v0 committed\n// B hunk\n');
-  const cmd = `S=${scratch}; R=${join(dir, 'server')}\nscp -q $S/deploy.php root@h1:$R/hr/functions.php`;
+  const cmd = `S=${scratch}; R=${P(dir, 'server')}\nscp -q $S/deploy.php root@h1:$R/hr/functions.php`;
   const up = parseTransfers(cmd, join(dir, 'repo'), noDir).uploads;
   writeFileSync(server, '<?php // v0 committed\n');                    // live == HEAD: safe, and known through cwd's repo
   expect(checkUploads('B8', up, { cwd: join(dir, 'repo') }).nudges[0]).toContain('matched HEAD');
@@ -177,13 +174,13 @@ sshTest('incident replay through variables: HEAD + hunk built in a scratchpad is
   writeFileSync(join(dir, 'repo/hr/functions.php'), '<?php // v0 committed\n');
 });
 
-sshTest('commit, then deploy: a server still on the file\'s previous committed version is replaced without a refusal', () => {
+test('commit, then deploy: a server still on the file\'s previous committed version is replaced without a refusal', () => {
   const repo = join(dir, 'repo');
   const git = (...a: string[]) => spawnSync('git', ['-C', repo, ...a], { encoding: 'utf-8' });
   writeFileSync(join(repo, 'hr/functions.php'), '<?php // v2 committed\n');
   git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qam', 'v2');
   writeFileSync(join(dir, 'server/hr/functions.php'), '<?php // v0 committed\n');   // the server lags one commit
-  const up = parseTransfers(`scp hr/functions.php root@h1:${join(dir, 'server/hr/functions.php')}`, repo, noDir).uploads;
+  const up = parseTransfers(`scp hr/functions.php root@h1:${P(dir, 'server/hr/functions.php')}`, repo, noDir).uploads;
   const r = checkUploads('C2', up);
   expect(r.deny).toBeUndefined();
   expect(r.nudges[0]).toContain('matched a recent commit');
@@ -241,8 +238,8 @@ test("cat f | ssh h 'cat > p' and a leading < f are uploads; another producer be
   expect(parseTransfers("ssh root@h1 'cat > /srv/a.php' || cat a.php", '/r', noDir).uploads).toEqual([]);   // `||` is not a pipe
 });
 
-sshTest('scp f host:/dir with no trailing slash: when /dir is a directory the file inside it is what is checked', () => {
-  const srv = join(dir, 'server/hr');
+test('scp f host:/dir with no trailing slash: when /dir is a directory the file inside it is what is checked', () => {
+  const srv = P(dir, 'server/hr');
   writeFileSync(join(srv, 'functions.php'), '<?php // peer\'s uncommitted deploy\n');
   writeFileSync(join(dir, 'repo/hr/functions.php'), '<?php // v2 committed\n// my hunk\n');
   const up = parseTransfers(`scp hr/functions.php root@h1:${srv}`, join(dir, 'repo'), noDir).uploads;
@@ -254,8 +251,8 @@ sshTest('scp f host:/dir with no trailing slash: when /dir is a directory the fi
   const again = parseTransfers(`scp hr/functions.php root@h1:${srv}`, join(dir, 'repo'), noDir).uploads;
   expect(checkUploads('D1', again, { skip: (k) => k === `root@h1:${srv}/functions.php` })).toEqual({ nudges: [] });
   // a directory that does not hold the file yet: new; a plain file path is read as before, in the same single ssh
-  const fresh = parseTransfers(`scp hr/functions.php root@h1:${join(dir, 'server')}`, join(dir, 'repo'), noDir).uploads;
-  expect(checkUploads('D2', fresh).nudges[0]).toContain(`${join(dir, 'server')}/functions.php is new`);
+  const fresh = parseTransfers(`scp hr/functions.php root@h1:${P(dir, 'server')}`, join(dir, 'repo'), noDir).uploads;
+  expect(checkUploads('D2', fresh).nudges[0]).toContain(`${P(dir, 'server')}/functions.php is new`);
   const m = remoteMd5s('root@h1', [], [srv, `${srv}/functions.php`], 3000, [srv, `${srv}/functions.php`]);
   expect(m.get(srv)).toEqual({ kind: 'absent', dir: true });
   expect(m.get(`${srv}/functions.php`)).toEqual({ kind: 'md5', md5: md5Of('<?php // peer\'s uncommitted deploy\n') });

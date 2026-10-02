@@ -8,18 +8,17 @@
 // reaches Gemini as {decision, reason}. No real host is contacted: ssh on PATH is a stub (fails, or prints an md5).
 import { test, expect, beforeAll, afterAll, setSystemTime } from 'bun:test';
 import { join, delimiter } from 'path';
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, realpathSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, realpathSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import { spawn } from 'bun';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
+import { installFakeSsh } from '../support/fake-ssh.ts';
 
 const HOOK_BIN = join(import.meta.dir, '../../bin/captain-memo-hook.ts');
 let worker: WorkerHandle;
 let port = 0;
 let root = '';        // a real git checkout, standing in for the shared repo
-// ssh on PATH is a #!/bin/sh stub; on Windows the real ssh.exe would run, so the tests that need the stub's answer skip there.
-const sshTest = process.platform === 'win32' ? test.skip : test;
 let dataDir = '';
 let binDir = '';
 const FILE = () => join(root, 'hr/functions.php');
@@ -37,20 +36,25 @@ beforeAll(async () => {
   binDir = join(base, 'bin');
   mkdirSync(join(root, 'hr'), { recursive: true });
   mkdirSync(binDir);
-  writeFileSync(join(binDir, 'ssh'), '#!/bin/sh\nexit 255\n');
-  chmodSync(join(binDir, 'ssh'), 0o755);
+  installFakeSsh(binDir, 'fail');
   mkdirSync(join(base, 'bin-md5'));
-  writeFileSync(join(base, 'bin-md5', 'ssh'), '#!/bin/sh\necho "0123456789abcdef0123456789abcdef  /srv/functions.php"\n');
-  chmodSync(join(base, 'bin-md5', 'ssh'), 0o755);
+  installFakeSsh(join(base, 'bin-md5'), { prints: '0123456789abcdef0123456789abcdef  /srv/functions.php' });
   writeFileSync(FILE(), '<?php\n');
   spawnSync('git', ['-C', root, 'init', '-q']);
 });
 afterAll(async () => { setSystemTime(); await worker.stop(); });
 
+// The hook's environment. Windows inherits the variable as `Path`; a second `PATH` key might lose to it, so every spelling is dropped first.
+function hookEnv(extra: Record<string, string>) {
+  const base: Record<string, string | undefined> = { ...process.env };
+  for (const k of Object.keys(base)) if (k.toUpperCase() === 'PATH') delete base[k];
+  return { ...base, PATH: `${binDir}${delimiter}${process.env.PATH}`, CAPTAIN_MEMO_DATA_DIR: dataDir, CAPTAIN_MEMO_WORKER_PORT: String(port), CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1', ...extra };
+}
+
 async function hook(event: string, payload: unknown, env: Record<string, string> = {}) {
   const proc = spawn({
     cmd: ['bun', HOOK_BIN, event], stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
-    env: { ...process.env, PATH: `${binDir}${delimiter}${process.env.PATH}`, CAPTAIN_MEMO_DATA_DIR: dataDir, CAPTAIN_MEMO_WORKER_PORT: String(port), CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1', ...env },
+    env: hookEnv(env),
   });
   proc.stdin.write(JSON.stringify(payload));
   proc.stdin.end();
@@ -99,7 +103,7 @@ test('Codex apply_patch and Gemini write_file (relative path) claim the file and
   expect((await active('gem-B')).claims.find((c) => c.session_id === 'gem-B')?.files).toContain(FILE());
 });
 
-sshTest('a deploy refusal reaches Gemini as {decision, reason}: the server copy matches nothing this session knows', async () => {
+test('a deploy refusal reaches Gemini as {decision, reason}: the server copy matches nothing this session knows', async () => {
   writeFileSync(join(root, 'up.php'), '<?php // mine\n');
   const gm = await hook('GeminiBeforeTool', { session_id: 'gem-D', cwd: root, tool_name: 'run_shell_command', tool_input: { command: 'scp up.php root@deploy.example.com:/srv/functions.php' } },
     { PATH: `${binDir.replace(/bin$/, 'bin-md5')}${delimiter}${process.env.PATH}` });
@@ -157,7 +161,7 @@ test('the kill switch CAPTAIN_MEMO_WORKBOARD_ENFORCE=0 turns the block back into
   expect(r.json.hookSpecificOutput.additionalContext).toContain('WORK-BOARD OVERLAP');
 });
 
-sshTest('a deploy whose paths are in same-line shell variables and a for-loop is checked too', async () => {
+test('a deploy whose paths are in same-line shell variables and a for-loop is checked too', async () => {
   writeFileSync(join(root, 'up.php'), '<?php // mine\n');
   const gm = await hook('GeminiBeforeTool', { session_id: 'gem-V', cwd: root, tool_name: 'run_shell_command', tool_input: { command: 'S=.; R=/srv\nfor box in deploy.example.com; do scp -q $S/up.php root@$box:$R/functions.php; done' } },
     { PATH: `${binDir.replace(/bin$/, 'bin-md5')}${delimiter}${process.env.PATH}` });
@@ -173,11 +177,10 @@ test('two sessions writing the same /tmp scratch file never block each other', a
 });
 
 // #227: `scp f host:/dir` with no trailing slash, where /dir is a directory on the server: the file inside it is the target.
-sshTest('an upload into a server directory is claimed and reported under the file it lands on', async () => {
+test('an upload into a server directory is claimed and reported under the file it lands on', async () => {
   const bin = join(binDir, '..', 'bin-dir');
   mkdirSync(bin);
-  writeFileSync(join(bin, 'ssh'), '#!/bin/sh\necho "cm-is-dir /srv/app"\n');
-  chmodSync(join(bin, 'ssh'), 0o755);
+  installFakeSsh(bin, { prints: 'cm-is-dir /srv/app' });
   writeFileSync(join(root, 'up2.php'), '<?php // mine\n');
   const r = await hook('PreToolUse', { session_id: 'dir-A', cwd: root, tool_name: 'Bash', tool_input: { command: 'scp -q up2.php root@h9:/srv/app' } },
     { CLAUDE_PID: '5200001', PATH: `${bin}${delimiter}${process.env.PATH}` });
