@@ -22,7 +22,7 @@ const add = (s: ObservationsStore, title: string, session: string, at: number) =
 const draft = {
   title: 'update-status skill is available and callable',
   narrative: 'Confirmed across three sessions.',
-  facts: ['registered in erp-platform'], concepts: ['skills'],
+  facts: ['registered in acme-app'], concepts: ['skills'],
 };
 
 // The type checker caught this one: an earlier wiring pointed the theme pass at

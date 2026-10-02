@@ -1738,10 +1738,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         //
         // Passing opts.projectId therefore did not scope the evidence to the cluster's project, it
         // scoped it to recalls tagged 'default' — 16.4% of the audit log — and threw away the rest,
-        // INCLUDING every erp-platform (16.8%) and captain-memo-fed (3.9%) recall. Measured
+        // INCLUDING every recall of the two busiest real projects (16.8% and 3.9%). Measured
         // 2026-08-10: 20,321 co-occurrence pairs instead of 49,395, so clusters in the busiest
         // projects were scored on evidence that excluded their own project's recalls. Unfiltered:
-        // 18 clusters instead of 16, and the new ones are erp-platform's.
+        // 18 clusters instead of 16, and the new ones belonged to the busiest project.
         // docToObs from document paths, paged: the json_extract map in load.ts also mapped 12,797 claude-mem import
         // chunks (observation:<their id>:…) onto OUR observation of the same number, crediting their recalls to
         // unrelated rows.
@@ -2324,7 +2324,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 
   // work_set / work_clear act only on the CALLER's own session (`by`, sent by the MCP tools): the same id, or the same
   // AI process (`pid`, sent by the MCP tools, else the caller's stored claim's): a Claude /clear or resume changes the id,
-  // and a Codex or Gemini MCP server's id differs from its hook's. A claim with no pid (off Linux, or an older hook) stays
+  // and a Codex or Gemini MCP server's id differs from its hook's. A claim with no pid (Windows, or an older hook) stays
   // open to any caller, since nothing pairs it. Not auth: a raw HTTP caller can still send anything.
   const callersOwnSession = (by: string, sid: string, pid?: unknown): boolean => {
     if (by === sid) return true;
@@ -3822,7 +3822,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // started only when at least one device is paired. Localhost-only; the operator's own
   // reverse proxy is responsible for public exposure + TLS. One MCP session (server+transport)
   // per client connection, keyed by the transport-assigned mcp-session-id — mirrors
-  // captain-memo-fed's src/gateway/server.ts, the proven reference for this exact pattern.
+  // the federation gateway's server, the proven reference for this exact pattern.
   // See docs/superpowers/specs/2026-07-05-local-device-pairing-design.md.
   let gatewayServer: ReturnType<typeof Bun.serve> | undefined;
   const gatewaySessions = new Map<string, { server: Server; transport: WebStandardStreamableHTTPServerTransport }>();

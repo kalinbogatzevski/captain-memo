@@ -258,8 +258,8 @@ export function overlapsAgainst(mineFiles: string[], others: WorkNote[], exclude
 // another session's write to the same file; a stale one (no edit for STALE_AFTER_MS) only warns.
 // Both sides must carry a `pid`, the AI CLI process: Claude's hook sends CLAUDE_PID, a Codex or Gemini hook and MCP
 // server find theirs in /proc (aiProcessPid). Their hook and MCP claims run under different session ids; the shared pid
-// pairs them. ponytail: Linux only for Codex and Gemini; off Linux they send no pid and get claims and warnings, never
-// a deny.
+// pairs them. ponytail: Codex and Gemini find theirs on Linux (/proc) and macOS (ps, not yet run on a Mac); on Windows they send no pid and
+// get claims and warnings, never a deny.
 
 export interface GuardHolder { session_id: string; agent: string; what: string; age_s: number; files: string[] }
 export interface GuardCaller {

@@ -28,36 +28,36 @@ test('defaults match spec §8', () => {
 });
 
 test('projectSlugFromCwd — real observed dirs: slash→dash, case + digits preserved', () => {
-  expect(projectSlugFromCwd('/home/kalin/projects/captain-memo'))
-    .toBe('-home-kalin-projects-captain-memo');
-  expect(projectSlugFromCwd('/home/kalin/projects/123net-aelita'))
-    .toBe('-home-kalin-projects-123net-aelita');
-  expect(projectSlugFromCwd('/home/kalin/projects/ERP-UNIFIED-DOCS'))
-    .toBe('-home-kalin-projects-ERP-UNIFIED-DOCS');
+  expect(projectSlugFromCwd('/home/user/projects/captain-memo'))
+    .toBe('-home-user-projects-captain-memo');
+  expect(projectSlugFromCwd('/home/user/projects/acme-billing'))
+    .toBe('-home-user-projects-acme-billing');
+  expect(projectSlugFromCwd('/home/user/projects/ERP-UNIFIED-DOCS'))
+    .toBe('-home-user-projects-ERP-UNIFIED-DOCS');
 });
 
 test('projectSlugFromCwd — adjacent separators each map to a dash, no run-collapse', () => {
   // Real source path is a `.claude-worktrees` hidden dir: the `/.` run (slash + dot)
   // = two separators → '--'. A run-collapsing encoder would wrongly emit a single '-'.
-  expect(projectSlugFromCwd('/home/kalin/projects/erp-platform/.claude-worktrees-status-workflow-graph-editor'))
-    .toBe('-home-kalin-projects-erp-platform--claude-worktrees-status-workflow-graph-editor');
+  expect(projectSlugFromCwd('/home/user/projects/acme-app/.claude-worktrees-status-workflow-graph-editor'))
+    .toBe('-home-user-projects-acme-app--claude-worktrees-status-workflow-graph-editor');
 });
 
 test('projectSlugFromCwd — dots encoded to dash (Claude Code scheme)', () => {
-  expect(projectSlugFromCwd('/home/kalin/.config/captain-memo'))
-    .toBe('-home-kalin--config-captain-memo');
-  expect(projectSlugFromCwd('/home/kalin/projects/my.app.v2'))
-    .toBe('-home-kalin-projects-my-app-v2');
+  expect(projectSlugFromCwd('/home/user/.config/captain-memo'))
+    .toBe('-home-user--config-captain-memo');
+  expect(projectSlugFromCwd('/home/user/projects/my.app.v2'))
+    .toBe('-home-user-projects-my-app-v2');
 });
 
 test('projectSlugFromCwd — underscores encoded to dash (Claude Code scheme)', () => {
-  expect(projectSlugFromCwd('/home/kalin/projects/_archive/123net_erp'))
-    .toBe('-home-kalin-projects--archive-123net-erp');
+  expect(projectSlugFromCwd('/home/user/projects/_archive/acme_erp'))
+    .toBe('-home-user-projects--archive-acme-erp');
 });
 
 test('projectSlugFromCwd — trailing slash yields trailing dash', () => {
-  expect(projectSlugFromCwd('/home/kalin/projects/captain-memo/'))
-    .toBe('-home-kalin-projects-captain-memo-');
+  expect(projectSlugFromCwd('/home/user/projects/captain-memo/'))
+    .toBe('-home-user-projects-captain-memo-');
 });
 
 test('projectSlugFromCwd — leading slash root only', () => {

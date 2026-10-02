@@ -112,9 +112,9 @@ describe('findThemeClusters', () => {
   describe('scope', () => {
     test('never clusters across project_id', async () => {
       const rows = [
-        row(1, 'Fix the login redirect loop', 's1', 3, 'erp-platform'),
-        row(2, 'Fix the login redirect loop', 's2', 2, 'captain-hub'),
-        row(3, 'Fix the login redirect loop', 's3', 1, '123net_aelita'),
+        row(1, 'Fix the login redirect loop', 's1', 3, 'acme-app'),
+        row(2, 'Fix the login redirect loop', 's2', 2, 'acme-site'),
+        row(3, 'Fix the login redirect loop', 's3', 1, 'acme_billing'),
       ];
       expect(await findThemeClusters({
         ...base, rows, representativeVector: vecs({ 1: at(0), 2: at(1), 3: at(2) }),
@@ -134,15 +134,15 @@ describe('findThemeClusters', () => {
 
     test('a cluster reports the scope it is filed under', async () => {
       const rows = [
-        row(1, 'a', 's1', 3, 'erp-platform', 'master'),
-        row(2, 'b', 's2', 2, 'erp-platform', 'master'),
-        row(3, 'c', 's3', 1, 'erp-platform', 'master'),
+        row(1, 'a', 's1', 3, 'acme-app', 'master'),
+        row(2, 'b', 's2', 2, 'acme-app', 'master'),
+        row(3, 'c', 's3', 1, 'acme-app', 'master'),
       ];
       const cs = await findThemeClusters({
         ...base, rows, representativeVector: vecs({ 1: at(0), 2: at(2), 3: at(4) }),
       });
       expect(cs.length).toBe(1);
-      expect(cs[0]!.project_id).toBe('erp-platform');
+      expect(cs[0]!.project_id).toBe('acme-app');
       expect(cs[0]!.branch).toBe('master');
     });
 

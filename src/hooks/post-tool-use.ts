@@ -32,7 +32,7 @@ const HOOK_TIMEOUT_MS = Number(process.env.CAPTAIN_MEMO_POST_TOOL_USE_TIMEOUT_MS
  *
  *  That mattered beyond tidiness. "Did this change something, or only look at something?" is the
  *  strongest ingest-time signal for whether an observation is worth keeping, and it is what separates
- *  "Fixed the race in dream-stats" from "Located SendMessage tool in captain-hub". Losing it left no
+ *  "Fixed the race in dream-stats" from "Located SendMessage tool in acme-site". Losing it left no
  *  usable basis for that judgement at all. */
 const WRITING_TOOLS = new Set([
   'edit', 'write', 'multiedit', 'notebookedit', 'apply_patch',

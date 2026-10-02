@@ -196,12 +196,12 @@ export const DEFAULT_REMEMBER_DEDUP_THRESHOLD = 0.93;
  * directories under ~/.claude/projects/. Every NON-alphanumeric character
  * becomes '-', one-for-one (no trim, no dedupe of consecutive dashes); case,
  * digits, and existing dashes are preserved. Verified against real dirs:
- *   /home/kalin/projects/captain-memo  ->  -home-kalin-projects-captain-memo
- *   /home/kalin/projects/erp-platform/.claude-worktrees-x
- *                          ->  -home-kalin-projects-erp-platform--claude-worktrees-x
+ *   /home/user/projects/captain-memo  ->  -home-user-projects-captain-memo
+ *   /home/user/projects/acme-app/.claude-worktrees-x
+ *                          ->  -home-user-projects-acme-app--claude-worktrees-x
  * The double dash in the second case (the `/.` run) proves per-character
  * replacement, not run-collapse. '_' and '.' both map to '-' (e.g. the real
- * dir -home-kalin-projects-123net-aelita came from .../123net_aelita).
+ * dir -home-user-projects-acme-billing came from .../acme_billing).
  */
 export const ENV_CLAUDE_PROJECTS_DIR = 'CAPTAIN_MEMO_CLAUDE_PROJECTS_DIR';
 

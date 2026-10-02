@@ -20,7 +20,7 @@ const good = {
   theme: {
     title: 'update-status skill is available and callable',
     narrative: 'Confirmed across three sessions.',
-    facts: ['registered in erp-platform'],
+    facts: ['registered in acme-app'],
     concepts: ['skills'],
   },
 };
@@ -30,7 +30,7 @@ describe('buildThemeJudge', () => {
     const j = buildThemeJudge(reply(good) as never);
     const r = await j(cluster([1, 2, 3]));
     expect(r?.title).toBe('update-status skill is available and callable');
-    expect(r?.facts).toEqual(['registered in erp-platform']);
+    expect(r?.facts).toEqual(['registered in acme-app']);
   });
 
   test('never calls the model on an empty cluster', async () => {

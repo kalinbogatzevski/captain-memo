@@ -53,7 +53,7 @@ test('PostToolUse — enqueues a normalized RawObservationEvent', async () => {
   expect(ev.tool_name).toBe('Edit');
   expect(ev.session_id).toBe('ses_2026-05-07T12-00-00_abc123');
   expect(typeof ev.tool_input_summary).toBe('string');
-  expect(ev.files_modified).toContain('/home/kalin/projects/captain-memo/src/worker/index.ts');
+  expect(ev.files_modified).toContain('/home/user/projects/captain-memo/src/worker/index.ts');
 });
 
 test('PostToolUse — fire-and-forget on worker down', async () => {

@@ -374,7 +374,7 @@ test('setWorkNote stores topics; a note without them has none (untitled work); s
   expect(n.topics).toEqual(['fleet-keys', 'federation']);
   expect(JSON.parse(kv.map.get(WORKNOTE_PREFIX + 's1')!).topics).toEqual(['fleet-keys', 'federation']);
   expect(setWorkNote(kv, { session_id: 's2', what: 'editing 3 files' }, NOW).topics).toBeUndefined();
-  const fleet = sanitizeFleetNotes([{ session_id: 'f1', agent: 'codex', what: 'w', files: [], ts: NOW, ttl_s: 600, captain: 'DANTE', topics: ['Fleet-Keys', 7, 'x'] }], NOW);
+  const fleet = sanitizeFleetNotes([{ session_id: 'f1', agent: 'codex', what: 'w', files: [], ts: NOW, ttl_s: 600, captain: 'HARBOR', topics: ['Fleet-Keys', 7, 'x'] }], NOW);
   expect(fleet[0]!.topics).toEqual(['fleet-keys', 'x']);
 });
 
@@ -394,12 +394,12 @@ test('topicOverlapsAgainst: an exact tag shared with another live claim is a kin
 test('groupTopicContention: a topic held by two or more live sessions, fleet-wide, with the holders', () => {
   const notes: WorkNote[] = [
     { agent: 'claude', session_id: 'a', what: 'shim', files: [], ts: NOW, ttl_s: 600, topics: ['installer-windows', 'shim'] },
-    { agent: 'codex', session_id: 'b', what: 'ps1', files: [], ts: NOW, ttl_s: 600, captain: 'DANTE', topics: ['installer-windows'] },
+    { agent: 'codex', session_id: 'b', what: 'ps1', files: [], ts: NOW, ttl_s: 600, captain: 'HARBOR', topics: ['installer-windows'] },
     { agent: 'gemini', session_id: 'c', what: 'billing', files: [], ts: NOW, ttl_s: 600, topics: ['billing'] },
     { agent: 'claude', session_id: 'a', what: 'shim', files: [], ts: NOW, ttl_s: 600, topics: ['installer-windows'] },   // a duplicate row of the same session counts once
   ];
   const g = groupTopicContention(notes);
-  expect(g).toEqual([{ topic: 'installer-windows', holders: [{ agent: 'claude', session_id: 'a', what: 'shim' }, { agent: 'codex', session_id: 'b', captain: 'DANTE', what: 'ps1' }] }]);
+  expect(g).toEqual([{ topic: 'installer-windows', holders: [{ agent: 'claude', session_id: 'a', what: 'shim' }, { agent: 'codex', session_id: 'b', captain: 'HARBOR', what: 'ps1' }] }]);
 });
 
 // An auto-claim inherits the declared intent until the work_set's OWN deadline, whatever the edit heartbeat does.

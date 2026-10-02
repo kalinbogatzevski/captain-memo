@@ -53,13 +53,13 @@ function seedClaudeMem(dbPath: string): void {
   `);
   db.run(
     `INSERT INTO sdk_sessions(content_session_id, memory_session_id, project, started_at, started_at_epoch)
-     VALUES ('s1','m1','erp-platform','2026-05-01',1730000000)`,
+     VALUES ('s1','m1','acme-app','2026-05-01',1730000000)`,
   );
   db.run(
     `INSERT INTO observations(id, memory_session_id, project, type, title, narrative, facts,
                               concepts, files_read, files_modified, prompt_number,
                               created_at, created_at_epoch)
-     VALUES (1,'m1','erp-platform','discovery','Title','Narrative.',?, ?, ?, ?, 1,'',1730000001000)`,
+     VALUES (1,'m1','acme-app','discovery','Title','Narrative.',?, ?, ?, ?, 1,'',1730000001000)`,
     [
       JSON.stringify(['fact one', 'fact two']),
       JSON.stringify(['concept']),
@@ -71,7 +71,7 @@ function seedClaudeMem(dbPath: string): void {
     `INSERT INTO observations(id, memory_session_id, project, type, title, narrative, facts,
                               concepts, files_read, files_modified, prompt_number,
                               created_at, created_at_epoch)
-     VALUES (2,'m1','erp-platform','bugfix','T2','',?, ?, ?, ?, 2,'',1730000002000)`,
+     VALUES (2,'m1','acme-app','bugfix','T2','',?, ?, ?, ?, 2,'',1730000002000)`,
     [
       JSON.stringify(['only fact']),
       JSON.stringify([]),
@@ -83,7 +83,7 @@ function seedClaudeMem(dbPath: string): void {
     `INSERT INTO session_summaries(id, memory_session_id, project, request,
                                     investigated, learned, completed, next_steps, notes,
                                     prompt_number, created_at, created_at_epoch)
-     VALUES (10,'m1','erp-platform','req','inv','','done','next','',5,'',1730000005000)`,
+     VALUES (10,'m1','acme-app','req','inv','','done','next','',5,'',1730000005000)`,
   );
   db.close();
 }
@@ -107,7 +107,7 @@ test('runMigration — migrates all observations + summaries', async () => {
     embedder: fakeEmbedder,
     vector: fakeVector as any,
     collectionName: 'am_test',
-    projectId: 'erp-platform',
+    projectId: 'acme-app',
     sourceDbPath: claudeMemPath,
   };
   const result = await runMigration(deps, {});
@@ -123,7 +123,7 @@ test('runMigration — migrates all observations + summaries', async () => {
 test('runMigration — re-running is a no-op (idempotent)', async () => {
   const deps: MigrationDeps = {
     meta: store, embedder: fakeEmbedder, vector: fakeVector as any,
-    collectionName: 'am_test', projectId: 'erp-platform', sourceDbPath: claudeMemPath,
+    collectionName: 'am_test', projectId: 'acme-app', sourceDbPath: claudeMemPath,
   };
   await runMigration(deps, {});
   const second = await runMigration(deps, {});
@@ -136,7 +136,7 @@ test('runMigration — re-running is a no-op (idempotent)', async () => {
 test('runMigration — --limit caps total rows processed', async () => {
   const deps: MigrationDeps = {
     meta: store, embedder: fakeEmbedder, vector: fakeVector as any,
-    collectionName: 'am_test', projectId: 'erp-platform', sourceDbPath: claudeMemPath,
+    collectionName: 'am_test', projectId: 'acme-app', sourceDbPath: claudeMemPath,
   };
   const result = await runMigration(deps, { limit: 1 });
   expect(result.observations_migrated + result.summaries_migrated).toBe(1);
@@ -145,7 +145,7 @@ test('runMigration — --limit caps total rows processed', async () => {
 test('runMigration — --dry-run reports without writing', async () => {
   const deps: MigrationDeps = {
     meta: store, embedder: fakeEmbedder, vector: fakeVector as any,
-    collectionName: 'am_test', projectId: 'erp-platform', sourceDbPath: claudeMemPath,
+    collectionName: 'am_test', projectId: 'acme-app', sourceDbPath: claudeMemPath,
   };
   const result = await runMigration(deps, { dryRun: true });
   expect(result.observations_migrated).toBe(2);
@@ -166,7 +166,7 @@ test('runMigration — a re-run of an already written document deletes its old v
   };
   const deps: MigrationDeps = {
     meta: store, embedder: fakeEmbedder, vector: vector as any,
-    collectionName: 'am_test', projectId: 'erp-platform', sourceDbPath: claudeMemPath,
+    collectionName: 'am_test', projectId: 'acme-app', sourceDbPath: claudeMemPath,
   };
   await runMigration(deps, {});
   const firstIds = calls.flatMap(c => c.ids);
@@ -188,7 +188,7 @@ test('runMigration — an all-zero embedding is not stored and the row stays unm
     meta: store,
     embedder: { embed: async (texts: string[]) => texts.map(() => Array.from({ length: 8 }, () => 0)) },
     vector: { ...fakeVector, add: async () => { added++; } } as any,
-    collectionName: 'am_test', projectId: 'erp-platform', sourceDbPath: claudeMemPath,
+    collectionName: 'am_test', projectId: 'acme-app', sourceDbPath: claudeMemPath,
   };
   const result = await runMigration(deps, {});
   expect(result.errors).toBe(3);

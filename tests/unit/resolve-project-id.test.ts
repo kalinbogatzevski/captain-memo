@@ -17,9 +17,9 @@ function projectFor(cwd: string, workerEnv: string, sessionEnv: Record<string, s
 }
 
 test('worker.env CAPTAIN_MEMO_PROJECT_ID=default does not override the session cwd', () => {
-  expect(projectFor('/home/u/projects/erp-platform', 'CAPTAIN_MEMO_PROJECT_ID=default\n')).toBe('erp-platform');
+  expect(projectFor('/home/u/projects/acme-app', 'CAPTAIN_MEMO_PROJECT_ID=default\n')).toBe('acme-app');
 });
 
 test('a CAPTAIN_MEMO_PROJECT_ID set in the session environment still wins', () => {
-  expect(projectFor('/home/u/projects/erp-platform', 'CAPTAIN_MEMO_PROJECT_ID=default\n', { CAPTAIN_MEMO_PROJECT_ID: 'pinned' })).toBe('pinned');
+  expect(projectFor('/home/u/projects/acme-app', 'CAPTAIN_MEMO_PROJECT_ID=default\n', { CAPTAIN_MEMO_PROJECT_ID: 'pinned' })).toBe('pinned');
 });

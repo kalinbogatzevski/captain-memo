@@ -22,10 +22,10 @@ test('snapshot — fixture observation #1 produces a single bundled chunk (v0.1.
     .query('SELECT * FROM observations WHERE id = 1')
     .get() as ClaudeMemObservationRow;
   db.close();
-  const doc = transformObservation(row, 'erp-platform');
+  const doc = transformObservation(row, 'acme-app');
   expect(doc.chunks).toHaveLength(1);
   expect(doc.chunks[0]!.metadata.field_type).toBe('observation');
-  expect(doc.chunks[0]!.text).toContain('Looking at geomap.');
+  expect(doc.chunks[0]!.text).toContain('Looking at sitemap.');
   expect(doc.metadata.source_id).toBe(1);
 });
 
@@ -35,7 +35,7 @@ test('snapshot — fixture observation #4 (no narrative, no title) still bundles
     .query('SELECT * FROM observations WHERE id = 4')
     .get() as ClaudeMemObservationRow;
   db.close();
-  const doc = transformObservation(row, 'erp-platform');
+  const doc = transformObservation(row, 'acme-app');
   expect(doc.chunks).toHaveLength(1);
   // Fact-only content still lands in the bundled observation chunk
   expect(doc.chunks[0]!.metadata.field_type).toBe('observation');
@@ -47,7 +47,7 @@ test('snapshot — fixture summary #100 bundles non-empty fields into a single c
     .query('SELECT * FROM session_summaries WHERE id = 100')
     .get() as ClaudeMemSessionSummaryRow;
   db.close();
-  const doc = transformSessionSummary(row, 'erp-platform');
+  const doc = transformSessionSummary(row, 'acme-app');
   expect(doc.chunks).toHaveLength(1);
   expect(doc.chunks[0]!.metadata.field_type).toBe('session_summary');
   const text = doc.chunks[0]!.text;

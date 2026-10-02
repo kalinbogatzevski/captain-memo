@@ -107,7 +107,7 @@ describe('findSemanticGroups', () => {
     test('never groups across project_id, even within one session', async () => {
       const rows = [
         row(1, 'identical phrasing', 's1', 3, 'captain-memo'),
-        row(2, 'identical phrasing', 's1', 1, 'erp-platform'),
+        row(2, 'identical phrasing', 's1', 1, 'acme-app'),
       ];
       expect(await findSemanticGroups({
         rows, representativeVector: vecs({ 1: at(0), 2: at(1) }),

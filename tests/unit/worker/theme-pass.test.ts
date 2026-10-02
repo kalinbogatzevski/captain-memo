@@ -96,12 +96,12 @@ describe('runThemePass', () => {
   test('hands the writer the cluster scope, never a worker-wide default', async () => {
     const seen: Array<{ project_id: string; branch: string | null }> = [];
     const c = cluster([1, 2, 3]);
-    c.project_id = 'erp-platform'; c.branch = 'master';
+    c.project_id = 'acme-app'; c.branch = 'master';
     await runThemePass({
       ...base, clusters: async () => [c],
       createTheme: (_d, _ids, scope) => { seen.push(scope); return 1; },
     });
-    expect(seen).toEqual([{ project_id: 'erp-platform', branch: 'master' }]);
+    expect(seen).toEqual([{ project_id: 'acme-app', branch: 'master' }]);
   });
 
   // A scheduled run steps aside for ingest — it comes round again shortly and has nothing to

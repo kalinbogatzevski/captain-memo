@@ -956,7 +956,7 @@ var package_default;
 var init_package = __esm(() => {
   package_default = {
     name: "captain-memo",
-    version: "0.57.0",
+    version: "0.57.1",
     description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
     type: "module",
     private: true,
@@ -1926,7 +1926,7 @@ var LOCAL_ARTICLES = [
   "- LOOK FIRST: `work_active()` before your first edit, to see what other sessions hold.",
   '- CLAIM BEFORE TOUCHING ANYTHING: `work_set("<what>", { topics: [1-5 tags], files: [paths] })`; list EVERY file you will write, append to or deploy, as ABSOLUTE paths.',
   '- RE-CHECK `work_active` before writing a shared file, before commit/checkout/reset/stash/add, and before any deploy (scp, rsync): never ship an earlier build or "HEAD + my hunk" around another session\'s work; deploy only if the remote md5 equals what you last read.',
-  "- RESPECT A CLAIM: never edit or deploy over another session's claim. Stop and tell the user which session holds it, and let them decide. A LIVE Claude Code claim BLOCKS your edit and upload; only the user lifts it (`override: <file>`). Stale means no recent edit, not ended: it may only be reading.",
+  "- RESPECT A CLAIM: never edit or deploy over another session's claim. Stop and tell the user which session holds it, and let them decide. A LIVE claim (Claude Code, Codex or Gemini) BLOCKS your edit and upload; only the user lifts it (`override: <file>`). Stale means no recent edit, not ended: it may only be reading.",
   "- RELEASE with `work_clear` only once committed AND deployed; re-`work_set` after a long pause.",
   "- ONE TREE PER SESSION: your own `git worktree add ../<n>`; in a shared tree `git add <paths>`, never -A.",
   "- AUTO-CLAIM (Claude Code, Codex, Gemini) records touched files but INFERS the why and can miss: state intent yourself with `work_set`. Elsewhere nothing claims for you.",

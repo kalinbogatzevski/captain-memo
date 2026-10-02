@@ -31,12 +31,12 @@ test('remember description steers toward durable curated memory (not scratch)', 
 test('buildRememberRequest injects flat cwd from the given cwd', () => {
   const body = buildRememberRequest(
     { body: 'Use Bun, not Node, for this repo.', type: 'decision' },
-    '/home/kalin/projects/captain-memo',
+    '/home/user/projects/captain-memo',
   );
   expect(body).toEqual({
     body: 'Use Bun, not Node, for this repo.',
     type: 'decision',
-    cwd: '/home/kalin/projects/captain-memo',
+    cwd: '/home/user/projects/captain-memo',
   });
 });
 
@@ -90,7 +90,7 @@ test('dispatchRemember injects cwd, posts /remember, returns formatted created r
   };
   const out = await dispatchRemember(
     { body: 'Use Bun.', type: 'decision' },
-    { post, cwd: () => '/home/kalin/projects/captain-memo' },
+    { post, cwd: () => '/home/user/projects/captain-memo' },
   );
   expect(calls).toEqual([
     {
@@ -98,7 +98,7 @@ test('dispatchRemember injects cwd, posts /remember, returns formatted created r
       body: {
         body: 'Use Bun.',
         type: 'decision',
-        cwd: '/home/kalin/projects/captain-memo',
+        cwd: '/home/user/projects/captain-memo',
       },
     },
   ]);

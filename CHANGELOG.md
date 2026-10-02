@@ -7,6 +7,16 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.57.1] — 2026-10-02
+
+### Fixed
+
+- **The text a model reads about the work board matches what the guard does.** The `work_set` tool description said a Codex or Gemini claim "off Linux" only warns, and the session-start rules said only a Claude Code claim blocks. Since 0.51.1 and 0.54.0 a live Codex or Gemini claim blocks too, on Linux and macOS (the macOS lookup has not been run on a Mac yet); only Windows still warns, because no process id is found there. The description also said a crashed session "never blocks an area"; it now says the claim ends with the session's process or its 30-minute lease. (#268)
+
+### Changed
+
+- Personal paths, project names and session names were replaced with neutral examples in code comments, test fixtures and old changelog lines, and the claude-mem test fixture database was rebuilt from them. No behaviour changed. (#268)
+
 ## [0.57.0] — 2026-10-02
 
 ### Added
@@ -1277,7 +1287,7 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
   So the filter never scoped evidence to the cluster's project. It scoped it to recalls tagged
   `default` (16.4% of the audit log) and discarded everything else, **including every
-  `erp-platform` (16.8%) and `captain-memo-fed` (3.9%) recall** — clusters in the busiest projects
+  the two busiest projects' (16.8% and 3.9%) recall** — clusters in the busiest projects
   were scored on evidence that excluded their own project.
 
   | co-occurrence pairs | count |
@@ -1285,9 +1295,8 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
   | `projectId='default'` (before) | 20,321 |
   | unfiltered (after) | **49,395** |
 
-  On the live corpus: 18 clusters instead of 16, and the new candidates are `erp-platform`'s own
-  (FNB HTTP 425 handling, commission cycle scoping) plus `captain-memo-fed`'s SessionManager and
-  SendMessage work — exactly the projects the filter was suppressing.
+  On the live corpus: 18 clusters instead of 16, and the new candidates are the busiest projects' own
+  work — exactly the projects the filter was suppressing.
 
 ## [0.33.5] — 2026-08-10
 
@@ -2335,9 +2344,9 @@ idle, and every single thing it does is reversible.
   standing fact learned again in *different* sessions, weeks apart.
 
   ```
-  [2026-05-09] update-status skill available in erp-platform
+  [2026-05-09] update-status skill available in acme-app
   [2026-05-12] update-status skill command verified and available
-  [2026-07-21] Confirmed update-status skill availability in erp-platform
+  [2026-07-21] Confirmed update-status skill availability in acme-app
   ```
 
   Three separate learning events across 74 days. Folding one into another would claim a

@@ -42,7 +42,7 @@ function writeTranscript(sessionId: string, body: string): string {
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'cm-native-usage-'));
-  projectDir = join(root, '-home-kalin-projects-thing');
+  projectDir = join(root, '-home-user-projects-thing');
   mkdirSync(projectDir, { recursive: true });
   process.env.CAPTAIN_MEMO_TRANSCRIPTS_DIR = root;
   _resetNativeUsageCache();
@@ -285,12 +285,12 @@ test('a workflow sub-task agent reports its name and its owner', async () => {
   // cwd. They do record who they are (agentName, from `--resume <name>`) and who launched
   // them (bridgeSessionId), which is the only reliable way to group them.
   const line = (extra: Record<string, unknown>) => JSON.stringify({
-    type: 'assistant', cwd: '/home/kalin/projects/thing', ...extra,
+    type: 'assistant', cwd: '/home/user/projects/thing', ...extra,
     message: { role: 'assistant', usage: { input_tokens: 10, output_tokens: 2 } },
   }) + '\n';
-  writeTranscript(SID, line({ agentName: 'GEOMAP-REVAMP-V1', bridgeSessionId: 'cse_01ABC' }) + line({}));
+  writeTranscript(SID, line({ agentName: 'SITE-REVAMP-V1', bridgeSessionId: 'cse_01ABC' }) + line({}));
   const [s] = await readNativeSessionUsage();
-  expect(s!.agentName).toBe('GEOMAP-REVAMP-V1');
+  expect(s!.agentName).toBe('SITE-REVAMP-V1');
   expect(s!.ownerSession).toBe('cse_01ABC');
   expect(s!.input_tokens).toBe(20);            // both lines still counted
 });
@@ -433,14 +433,14 @@ test('a workflow agent is named by the workflow that ran it', async () => {
   writeFileSync(join(wf, 'agent-ad43ff7e.jsonl'), msg(370, 43));
   const scripts = join(projectDir, SID, 'workflows', 'scripts');
   mk(scripts, { recursive: true });
-  writeFileSync(join(scripts, 'geomap-netline-parity-wf_2eca1a5b-9d5.js'), '// the script\n');
+  writeFileSync(join(scripts, 'api-parity-check-wf_2eca1a5b-9d5.js'), '// the script\n');
 
   const agent = (await readNativeSessionUsage()).find(s => s.workflowId);
-  expect(agent!.workflowName).toBe('geomap-netline-parity');
+  expect(agent!.workflowName).toBe('api-parity-check');
 });
 
 test('a workflow reports what it is FOR, not just its name', async () => {
-  // Three members repeating "geomap-settings-ui-lock · <hex>" spend a whole row each saying
+  // Three members repeating "settings-ui-lock · <hex>" spend a whole row each saying
   // the same thing. The run's own description is the information a board actually lacks, and
   // the Workflow tool REQUIRES meta to be a pure literal, so it can be read without evaluating
   // anything. Per-agent labels are deliberately NOT taken: they exist only in the running
@@ -453,13 +453,13 @@ test('a workflow reports what it is FOR, not just its name', async () => {
   writeFileSync(join(wf, 'agent-a4985ecf.jsonl'), msg(405, 11));
   const scripts = join(projectDir, SID, 'workflows', 'scripts');
   mk(scripts, { recursive: true });
-  writeFileSync(join(scripts, 'geomap-settings-ui-lock-wf_7224dc7e-848.js'),
-    "export const meta = {\n  name: 'geomap-settings-ui-lock',\n"
+  writeFileSync(join(scripts, 'settings-ui-lock-wf_7224dc7e-848.js'),
+    "export const meta = {\n  name: 'settings-ui-lock',\n"
     + "  description: 'Admin UI for the four geo_filter_* tables, plus a system-row lock',\n"
     + "  phases: [\n    { title: 'Investigate', detail: 'x' },\n    { title: 'Verify', detail: 'y' },\n  ],\n}\n");
 
   const agent = (await readNativeSessionUsage()).find(s => s.workflowId);
-  expect(agent!.workflowName).toBe('geomap-settings-ui-lock');
+  expect(agent!.workflowName).toBe('settings-ui-lock');
   expect(agent!.workflowDescription).toBe('Admin UI for the four geo_filter_* tables, plus a system-row lock');
 });
 
@@ -490,7 +490,7 @@ test('a workflow script filed under a different PROJECT dir is still found', asy
   writeFileSync(join(wf, 'agent-a237ad11.jsonl'), msg(73, 4));
 
   // the script lands under a DIFFERENT project dir, same session id
-  const otherProject = join(root, '-home-kalin-somewhere-else');
+  const otherProject = join(root, '-home-user-somewhere-else');
   const scripts = join(otherProject, SID, 'workflows', 'scripts');
   mk(scripts, { recursive: true });
   writeFileSync(join(scripts, 'audit-second-pass-wf_70ad7cf8-268.js'),

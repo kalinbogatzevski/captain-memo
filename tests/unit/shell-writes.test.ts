@@ -111,7 +111,7 @@ test('shell keywords and wrappers do not hide the real command', () => {
   expect(parse('for f in *.ts; do sed -i "s/a/b/" "$f"; done')).toEqual([coarseClaimFor(CWD)]);
   expect(parse('if [ -f x ]; then sed -i s/a/b/ a.ts; fi')).toEqual(at('a.ts'));
   expect(parse('sudo sed -i s/a/b/ a.ts')).toEqual(at('a.ts'));
-  expect(parse('sudo -u kalin sed -i s/a/b/ a.ts')).toEqual(at('a.ts'));
+  expect(parse('sudo -u alice sed -i s/a/b/ a.ts')).toEqual(at('a.ts'));
   expect(parse('time sed -i s/a/b/ a.ts')).toEqual(at('a.ts'));
   expect(parse('find . -name "*.ts" | xargs sed -i s/a/b/')).toEqual([coarseClaimFor(CWD)]);
 });
@@ -167,7 +167,7 @@ test('no cwd → no claim (an unresolvable relative path is worse than none)', (
 });
 
 // ─── 2026-09-17 work board garbage: heredoc bodies, quoted code, code tokens, the wrong cwd ────────────
-// Observed claims: "/home/kalin/.config/captain-memo/{", ".../bun:test", ".../SummarizerTransport,",
+// Observed claims: "/home/user/.config/captain-memo/{", ".../bun:test", ".../SummarizerTransport,",
 // ".../.\/summarizer.ts" (tokens of TypeScript import lines inside a python heredoc), "C:\src\x\'", "…\<",
 // "…\2>&1)", and scratchpad files resolved under C:\src\ because the command had `cd`'d elsewhere.
 test('a heredoc body is not scanned for redirects or targets — only the heredoc\'s own target is claimed', () => {

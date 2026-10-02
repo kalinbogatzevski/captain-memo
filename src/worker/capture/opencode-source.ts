@@ -1,5 +1,5 @@
 // opencode CaptureSource — opencode persists ALL sessions in one SQLite db at
-// ~/.local/share/opencode/opencode.db (verified live on ae.123net.link):
+// ~/.local/share/opencode/opencode.db (verified live):
 //   session(id, project_id, directory, title, time_created, time_updated, time_archived)
 //   message(id, session_id, time_created, data)   data JSON: { role, agent, model }
 //   part(id, message_id, session_id, time_created, data)  data JSON: { type:'text', text }

@@ -5,7 +5,7 @@ import { UNSURFACED_OBSERVATION_FIELDS } from '../../../src/shared/types.ts';
 const observation = {
   id: 1234,
   session_id: 'sess-abc',
-  project_id: 'erp-platform',
+  project_id: 'acme-app',
   type: 'bugfix' as const,
   title: 'Fixed locked form-field display bug',
   narrative: 'The bug was caused by hardcoded fallback. Smart default fixed it.',
@@ -86,7 +86,7 @@ test('chunkSummary — 1 chunk per non-empty field (legacy summary chunker)', ()
   const summary = {
     id: 99,
     session_id: 'sess-abc',
-    project_id: 'erp-platform',
+    project_id: 'acme-app',
     request: 'Fix locked form fields',
     investigated: 'Traced the rendering path',
     learned: 'Hardcoded fallback is dangerous',

@@ -39,13 +39,13 @@ const obsHit = (over: Partial<EnvelopeHit> = {}): EnvelopeHit => ({
 
 test('formatEnvelope — empty hits emits empty-state envelope with hit_count=0', () => {
   const out = formatEnvelope({
-    project_id: 'erp-platform',
+    project_id: 'acme-app',
     budget_tokens: 4000,
     hits: [],
     degradation_flags: [],
   });
   expect(out.envelope).toContain('<memory-context');
-  expect(out.envelope).toContain('project="erp-platform"');
+  expect(out.envelope).toContain('project="acme-app"');
   expect(out.envelope).toContain('k="0"');
   expect(out.envelope).toContain('</memory-context>');
   expect(out.hit_count).toBe(0);

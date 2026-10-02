@@ -9,8 +9,8 @@ import {
 
 // The five real near-duplicate phrasings the summarizer produced for one fact.
 const T1 = 'update-status skill command verified and available';
-const T2 = 'update-status skill command available in erp-platform';
-const T3 = 'update-status skill command verified in erp-platform';
+const T2 = 'update-status skill command available in acme-app';
+const T3 = 'update-status skill command verified in acme-app';
 const T4 = 'update-status skill command is available';
 const T5 = 'update-status skill registered and callable';
 const UNRELATED = 'Split retrieval tracking by source';

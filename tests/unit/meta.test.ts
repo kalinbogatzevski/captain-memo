@@ -28,7 +28,7 @@ test('MetaStore — upsertDocument creates new document', () => {
   const id = store.upsertDocument({
     source_path: '/abs/path/foo.md',
     channel: 'memory',
-    project_id: 'erp-platform',
+    project_id: 'acme-app',
     sha: 'abc123',
     mtime_epoch: 1000,
     metadata: { description: 'test' },
@@ -45,7 +45,7 @@ test('MetaStore — upsertDocument updates existing document', () => {
   const id1 = store.upsertDocument({
     source_path: '/abs/path/foo.md',
     channel: 'memory',
-    project_id: 'erp-platform',
+    project_id: 'acme-app',
     sha: 'abc123',
     mtime_epoch: 1000,
     metadata: {},
@@ -53,7 +53,7 @@ test('MetaStore — upsertDocument updates existing document', () => {
   const id2 = store.upsertDocument({
     source_path: '/abs/path/foo.md',
     channel: 'memory',
-    project_id: 'erp-platform',
+    project_id: 'acme-app',
     sha: 'def456',
     mtime_epoch: 2000,
     metadata: {},
@@ -68,7 +68,7 @@ test('MetaStore — deleteDocument removes by source_path', () => {
   store.upsertDocument({
     source_path: '/abs/path/foo.md',
     channel: 'memory',
-    project_id: 'erp-platform',
+    project_id: 'acme-app',
     sha: 'abc',
     mtime_epoch: 1,
     metadata: {},
@@ -81,7 +81,7 @@ test('MetaStore — replaceChunksForDocument inserts chunks', () => {
   const docId = store.upsertDocument({
     source_path: '/abs/path/foo.md',
     channel: 'memory',
-    project_id: 'erp-platform',
+    project_id: 'acme-app',
     sha: 'abc',
     mtime_epoch: 1,
     metadata: {},
@@ -100,7 +100,7 @@ test('MetaStore — replaceChunksForDocument replaces all existing on rerun', ()
   const docId = store.upsertDocument({
     source_path: '/abs/path/foo.md',
     channel: 'memory',
-    project_id: 'erp-platform',
+    project_id: 'acme-app',
     sha: 'abc',
     mtime_epoch: 1,
     metadata: {},
@@ -120,7 +120,7 @@ test('MetaStore — searchKeyword via FTS5 returns ranked chunks', () => {
   const docId = store.upsertDocument({
     source_path: '/abs/path/foo.md',
     channel: 'memory',
-    project_id: 'erp-platform',
+    project_id: 'acme-app',
     sha: 'abc',
     mtime_epoch: 1,
     metadata: {},
@@ -176,7 +176,7 @@ test('MetaStore — searchKeyword still finds a distinctive term buried in a lon
   const docId = store.upsertDocument({
     source_path: '/abs/path/long.md',
     channel: 'memory',
-    project_id: 'erp-platform',
+    project_id: 'acme-app',
     sha: 'abc',
     mtime_epoch: 1,
     metadata: {},
@@ -196,7 +196,7 @@ test('MetaStore — getChunkById returns chunk + parent document', () => {
   const docId = store.upsertDocument({
     source_path: '/abs/path/foo.md',
     channel: 'memory',
-    project_id: 'erp-platform',
+    project_id: 'acme-app',
     sha: 'abc',
     mtime_epoch: 1,
     metadata: { description: 'doc-meta' },

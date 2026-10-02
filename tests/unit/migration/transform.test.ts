@@ -15,7 +15,7 @@ test('transformObservation — emits 1 bundled chunk per observation (v0.1.8)', 
   const doc: MigrationDocument = transformObservation({
     id: 42,
     memory_session_id: 'sess-abc',
-    project: '123net_erp',
+    project: 'acme_erp',
     text: null,
     type: 'discovery',
     title: 'Found a bug in cashbox',
@@ -29,10 +29,10 @@ test('transformObservation — emits 1 bundled chunk per observation (v0.1.8)', 
     discovery_tokens: 0,
     created_at: '2026-05-07T07:01:07Z',
     created_at_epoch: 1770566467173,
-  }, 'erp-platform');
+  }, 'acme-app');
 
   expect(doc.channel).toBe('observation');
-  expect(doc.project_id).toBe('erp-platform');
+  expect(doc.project_id).toBe('acme-app');
   expect(doc.source_path).toBe('claude-mem://observation/42');
   expect(doc.metadata.source_id).toBe(42);
   expect(doc.mtime_epoch).toBe(1770566467); // ms → s
@@ -62,7 +62,7 @@ test('transformObservation — observation with only facts (no narrative) still 
     title: 't', subtitle: null, facts: JSON.stringify(['only-fact']),
     narrative: '', concepts: null, files_read: null, files_modified: null,
     prompt_number: 0, discovery_tokens: 0, created_at: '', created_at_epoch: 1000,
-  }, 'erp-platform');
+  }, 'acme-app');
   expect(doc.chunks).toHaveLength(1);
   expect(doc.chunks[0]!.text).toContain('[bugfix] t');
   expect(doc.chunks[0]!.text).toContain('• only-fact');
@@ -74,7 +74,7 @@ test('transformObservation — invalid JSON in facts handled gracefully', () => 
     title: 't', subtitle: null, facts: 'not-valid-json',
     narrative: 'hello', concepts: null, files_read: null, files_modified: null,
     prompt_number: 0, discovery_tokens: 0, created_at: '', created_at_epoch: 1000,
-  }, 'erp-platform');
+  }, 'acme-app');
   expect(doc.chunks).toHaveLength(1);
   expect(doc.chunks[0]!.text).toContain('hello');
   expect(doc.chunks[0]!.metadata.fact_count).toBe(0);
@@ -82,7 +82,7 @@ test('transformObservation — invalid JSON in facts handled gracefully', () => 
 
 test('transformSessionSummary — bundles all non-empty fields into a single chunk', () => {
   const doc = transformSessionSummary({
-    id: 100, memory_session_id: 'sess-xyz', project: '123net_erp',
+    id: 100, memory_session_id: 'sess-xyz', project: 'acme_erp',
     request: 'Find the bug.',
     investigated: 'Read X.',
     learned: '',
@@ -92,7 +92,7 @@ test('transformSessionSummary — bundles all non-empty fields into a single chu
     notes: '',
     prompt_number: 12, discovery_tokens: 0,
     created_at: '', created_at_epoch: 1770566467000,
-  }, 'erp-platform');
+  }, 'acme-app');
 
   expect(doc.channel).toBe('observation');
   expect(doc.source_path).toBe('claude-mem://summary/100');
@@ -118,6 +118,6 @@ test('transformSessionSummary — all-empty produces zero chunks (skip case)', (
     files_read: null, files_edited: null,
     prompt_number: 0, discovery_tokens: 0,
     created_at: '', created_at_epoch: 1000,
-  }, 'erp-platform');
+  }, 'acme-app');
   expect(doc.chunks).toHaveLength(0);
 });

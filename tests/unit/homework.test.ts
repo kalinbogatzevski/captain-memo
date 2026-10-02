@@ -9,7 +9,7 @@ function makeKv() {
 
 test('homework: sequential ids, open → claimed → done lifecycle, done items listable a week then reaped', () => {
   const kv = makeKv();
-  const a = addHomework(kv, { text: 'cockpit: a comms thread per session', topics: ['Cockpit Board', 'comms', 'x'.repeat(50)], project: 'captain-hub', by: 'sess-1' }, 1_000);
+  const a = addHomework(kv, { text: 'cockpit: a comms thread per session', topics: ['Cockpit Board', 'comms', 'x'.repeat(50)], project: 'acme-site', by: 'sess-1' }, 1_000);
   const b = addHomework(kv, { text: 'todo list on the captain\nsecond line', by: 'hook' }, 2_000);
   expect([a.id, b.id]).toEqual(['1', '2']);
   expect(a.topics).toEqual(['cockpit-board', 'comms', 'x'.repeat(40)]);
@@ -37,9 +37,9 @@ test('homework: the capture prefix and the two lines the hooks inject', () => {
   const it = addHomework(kv, { text: 'captain keeps a todo list', topics: ['captain'] }, 1_000);
   expect(homeworkFiledLine(it)).toContain('Filed as homework #1');
   expect(homeworkStartLines([])).toBe('');
-  const lines = homeworkStartLines([it, claimHomework(kv, '1', 'erp-18')!]);
+  const lines = homeworkStartLines([it, claimHomework(kv, '1', 'app-18')!]);
   expect(lines).toContain('Open homework on this captain (2)');
-  expect(lines).toContain('(claimed by erp-18)');
+  expect(lines).toContain('(claimed by app-18)');
   expect(lines).toContain('#captain');
 });
 
@@ -86,13 +86,13 @@ test('due: an item filed without one is stored exactly as before, and a row stor
   const plain = addHomework(kv, { text: 'no due time', by: 'sess-1' }, 1_000);
   expect('due' in plain).toBe(false);
   expect(JSON.parse(kv.getKv('hw:00000001')!)).toEqual({ id: '1', text: 'no due time', topics: [], by: 'sess-1', created_at: 1_000 });
-  kv.setKv('hw:00000002', JSON.stringify({ id: '2', text: 'filed by 0.55', topics: ['old'], by: 'hook', created_at: 5, claimed_by: 'erp-18', claimed_at: 6 }));
+  kv.setKv('hw:00000002', JSON.stringify({ id: '2', text: 'filed by 0.55', topics: ['old'], by: 'hook', created_at: 5, claimed_by: 'app-18', claimed_at: 6 }));
   const items = listHomework(kv, {}, 2_000);
   expect(items.map((i) => i.id)).toEqual(['1', '2']);
   expect(homeworkStartLines(items, Date.parse('2026-10-01T00:00Z'))).toBe([
     '📝 Open homework on this captain (2): todo_list() for all; todo_claim(id) before you start one; todo_done(id, note) when it is.',
     '  #1 no due time',
-    '  #2 filed by 0.55 (claimed by erp-18) #old',
+    '  #2 filed by 0.55 (claimed by app-18) #old',
   ].join('\n'));
   expect(claimHomework(kv, '1', 'x', 3_000)).not.toHaveProperty('due');
 });
@@ -127,15 +127,15 @@ zoneTest('due: due items lead soonest first, the rest keep their order, labels a
 test('unclaim: you can hand back your own claim; not another session\'s, not an unclaimed item, not a closed or unknown one', () => {
   const kv = makeKv();
   addHomework(kv, { text: 'look at this', by: 'a' }, 1_000);
-  expect(unclaimHomework(kv, '1', 'erp-17')).toMatchObject({ error: 'not_claimed' });
-  claimHomework(kv, '1', 'erp-17', 2_000);
-  expect(unclaimHomework(kv, '1', 'erp-18')).toMatchObject({ error: 'not_yours' });
-  expect(getHomework(kv, '1')?.claimed_by).toBe('erp-17');                         // refused: still theirs
-  const r = unclaimHomework(kv, '#1', 'erp-17') as { item: NonNullable<ReturnType<typeof getHomework>> };
+  expect(unclaimHomework(kv, '1', 'app-17')).toMatchObject({ error: 'not_claimed' });
+  claimHomework(kv, '1', 'app-17', 2_000);
+  expect(unclaimHomework(kv, '1', 'app-18')).toMatchObject({ error: 'not_yours' });
+  expect(getHomework(kv, '1')?.claimed_by).toBe('app-17');                         // refused: still theirs
+  const r = unclaimHomework(kv, '#1', 'app-17') as { item: NonNullable<ReturnType<typeof getHomework>> };
   expect(r.item).not.toHaveProperty('claimed_by'); expect(r.item).not.toHaveProperty('claimed_at');
   expect(getHomework(kv, '1')).toEqual(r.item);                                     // persisted, not only on the returned object
-  expect(claimHomework(kv, '1', 'erp-18', 3_000)?.claimed_by).toBe('erp-18');      // free to take again
+  expect(claimHomework(kv, '1', 'app-18', 3_000)?.claimed_by).toBe('app-18');      // free to take again
   expect(unclaimHomework(kv, '99', 'x')).toMatchObject({ error: 'not_found' });
-  doneHomework(kv, '1', 'erp-18', 'ok', 4_000);
-  expect(unclaimHomework(kv, '1', 'erp-18')).toMatchObject({ error: 'not_found' }); // a closed item has no claim to hand back
+  doneHomework(kv, '1', 'app-18', 'ok', 4_000);
+  expect(unclaimHomework(kv, '1', 'app-18')).toMatchObject({ error: 'not_found' }); // a closed item has no claim to hand back
 });

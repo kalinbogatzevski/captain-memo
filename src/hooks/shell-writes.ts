@@ -72,12 +72,12 @@ const CMD_PREFIXES = new Set([
   'sudo', 'doas', 'env', 'xargs', 'nice', 'ionice',
 ]);
 
-/** Wrapper flags that consume the NEXT token (`sudo -u kalin`, `xargs -I {}`, `nice -n 5`). Only
+/** Wrapper flags that consume the NEXT token (`sudo -u alice`, `xargs -I {}`, `nice -n 5`). Only
  *  consulted while walking wrapper prefixes, never against the real command's own arguments. */
 const WRAPPER_VALUE_FLAGS = new Set(['-u', '-g', '-n', '-c', '-p', '-I', '-P', '-L', '-s']);
 
 /** Command name, ignoring leading `VAR=value` assignments, shell keywords/wrappers, and any directory
- *  prefix. Flags on a wrapper (`sudo -u kalin sed …`) are skipped too, so the real command surfaces. */
+ *  prefix. Flags on a wrapper (`sudo -u alice sed …`) are skipped too, so the real command surfaces. */
 export function cmdName(toks: string[]): { name: string; rest: string[] } {
   let i = 0;
   for (;;) {
@@ -90,7 +90,7 @@ export function cmdName(toks: string[]): { name: string; rest: string[] } {
     while (i < toks.length && toks[i]!.startsWith('-')) {                       // the wrapper's own flags
       const flag = toks[i]!;
       i++;
-      if (WRAPPER_VALUE_FLAGS.has(flag)) i++;   // …and its value (`sudo -u kalin`, `xargs -I {}`)
+      if (WRAPPER_VALUE_FLAGS.has(flag)) i++;   // …and its value (`sudo -u alice`, `xargs -I {}`)
     }
   }
   const raw = toks[i] ?? '';

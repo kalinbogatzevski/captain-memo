@@ -41,7 +41,7 @@ beforeEach(() => {
     embedder: fakeEmbedder,
     vector: fakeVectorStore as any,
     collectionName: 'test_col',
-    projectId: 'erp-platform',
+    projectId: 'acme-app',
   });
 });
 
@@ -120,7 +120,7 @@ test('IngestPipeline — with maxInputTokens=100, oversized memory file is split
     embedder: fakeEmbedder,
     vector: fakeVectorStore as any,
     collectionName: 'test_col',
-    projectId: 'erp-platform',
+    projectId: 'acme-app',
     maxInputTokens: 100,
   });
   const filePath = join(workDir, 'big-memory.md');
@@ -154,7 +154,7 @@ test('IngestPipeline — onIndexResult reports indexed then skipped on unchanged
     embedder: fakeEmbedder,
     vector: fakeVectorStore as any,
     collectionName: 'test_col',
-    projectId: 'erp-platform',
+    projectId: 'acme-app',
     onIndexResult: (r) => results.push(r),
   });
   const filePath = join(workDir, 'feedback_dedup.md');
@@ -192,7 +192,7 @@ test('IngestPipeline — refuses non-markdown, binary and oversized files, and d
   writeFileSync(binary, Buffer.concat([Buffer.from('# title\n'), Buffer.alloc(16)]));
   writeFileSync(huge, '# big\n' + 'word '.repeat(MAX_INDEX_FILE_BYTES / 5 + 1));
   // A row an older worker left behind for the cache file.
-  const docId = store.upsertDocument({ source_path: cache, channel: 'memory', project_id: 'erp-platform', sha: 'old', mtime_epoch: 1, metadata: {} });
+  const docId = store.upsertDocument({ source_path: cache, channel: 'memory', project_id: 'acme-app', sha: 'old', mtime_epoch: 1, metadata: {} });
   store.replaceChunksForDocument(docId, [{ chunk_id: 'memory:models_cache:old', text: 'x', sha: 'x', position: 0, metadata: {} }]);
 
   for (const f of [wal, cache, binary, huge]) await pipeline.indexFile(f, 'memory');

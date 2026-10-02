@@ -138,8 +138,8 @@ test('describeSessionOf walks the pinning child to its session, parens in comm a
   const session = (pid: number, entrypoint: string, name: string) =>
     writeFileSync(join(sessions, `${pid}.json`), JSON.stringify({ pid, entrypoint, name }));
 
-  stat(200, 'bun', 100); session(100, 'claude-desktop', 'erp-platform-04');
-  expect(describeSessionOf(200, sessions, proc)).toEqual({ entrypoint: 'claude-desktop', name: 'erp-platform-04' });
+  stat(200, 'bun', 100); session(100, 'claude-desktop', 'acme-app-04');
+  expect(describeSessionOf(200, sessions, proc)).toEqual({ entrypoint: 'claude-desktop', name: 'acme-app-04' });
 
   stat(201, 'bun (mcp) x', 101); session(101, 'sdk-cli', 'capcache');
   expect(describeSessionOf(201, sessions, proc)).toEqual({ entrypoint: 'sdk-cli', name: 'capcache' });

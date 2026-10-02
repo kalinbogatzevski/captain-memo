@@ -39,7 +39,7 @@ db.exec(`
 db.run(
   `INSERT INTO sdk_sessions(content_session_id, memory_session_id, project,
                             started_at, started_at_epoch, completed_at, completed_at_epoch, status)
-   VALUES ('content-1','mem-1','erp-platform','2026-05-01',1730000000,
+   VALUES ('content-1','mem-1','acme-app','2026-05-01',1730000000,
            '2026-05-01',1730003600,'completed')`,
 );
 
@@ -57,10 +57,10 @@ const obsCases: ObsCase[] = [
   {
     id: 1,
     type: 'discovery',
-    title: 'GeoMap audit start',
-    narrative: 'Looking at geomap.',
+    title: 'Sitemap audit start',
+    narrative: 'Looking at sitemap.',
     facts: ['Has 10 areas', 'Uses geo_* tables'],
-    files_read: ['geomap.php'],
+    files_read: ['sitemap.php'],
   },
   {
     id: 2,
@@ -98,7 +98,7 @@ for (const c of obsCases) {
     `INSERT INTO observations(id, memory_session_id, project, type, title, narrative,
                               facts, concepts, files_read, files_modified,
                               prompt_number, created_at, created_at_epoch)
-     VALUES (?, 'mem-1', 'erp-platform', ?, ?, ?, ?, ?, ?, ?, ?, '', ?)`,
+     VALUES (?, 'mem-1', 'acme-app', ?, ?, ?, ?, ?, ?, ?, ?, '', ?)`,
     [
       c.id,
       c.type,
@@ -118,7 +118,7 @@ db.run(
   `INSERT INTO session_summaries(id, memory_session_id, project, request, investigated,
                                   learned, completed, next_steps, notes,
                                   prompt_number, created_at, created_at_epoch)
-   VALUES (100,'mem-1','erp-platform','find bug','grepped','RTFM','fixed','deploy','',
+   VALUES (100,'mem-1','acme-app','find bug','grepped','RTFM','fixed','deploy','',
            10, '', 1730000099000)`,
 );
 db.close();

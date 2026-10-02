@@ -619,8 +619,8 @@ test('ObservationsStore — mergeDuplicateGroup sums member counts into survivor
 test('ObservationsStore — getRecallStats collapses near-duplicate titles, summing counts + variants', () => {
   const titles = [
     'update-status skill command verified and available',
-    'update-status skill command available in erp-platform',
-    'update-status skill command verified in erp-platform',
+    'update-status skill command available in acme-app',
+    'update-status skill command verified in acme-app',
     'update-status skill command is available',
     'update-status skill registered and callable',
   ];
@@ -730,7 +730,7 @@ test('queryRecall — limit/offset paginate while total reflects the full match 
 
 test('queryRecall — collapse=true folds near-duplicate titles and sums counts', () => {
   seedSurfaced(store, 'update-status skill command verified and available', 'discovery', 3, 0, 0, 100);
-  seedSurfaced(store, 'update-status skill command available in erp-platform', 'discovery', 3, 0, 0, 110);
+  seedSurfaced(store, 'update-status skill command available in acme-app', 'discovery', 3, 0, 0, 110);
   seedSurfaced(store, 'update-status skill command is available', 'discovery', 3, 0, 0, 120);
   seedSurfaced(store, 'totally different observation here', 'feature', 1, 0, 0, 130);
 

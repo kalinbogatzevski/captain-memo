@@ -58,7 +58,7 @@ export interface NativeSessionUsage {
    *  (<parent>/subagents/workflows/<wf_id>/agent-*.jsonl). Lets a UI group one workflow's
    *  fan-out together instead of scattering a dozen agents under their parent. */
   workflowId?: string | undefined;
-  /** The workflow's own name ("geomap-netline-parity"). A workflow's fan-out is dispatched
+  /** The workflow's own name ("api-parity-check"). A workflow's fan-out is dispatched
    *  by the Workflow tool rather than the Agent tool, so it has no dispatch record to name
    *  it — three of them rendered as anonymous hex while burning a million tokens between
    *  them. Absent when the script is not on disk; never borrowed from a sibling run. */
@@ -846,7 +846,7 @@ export interface NativeSessionRow {
   parent_session_id?: string;
   /** The workflow whose fan-out this agent belongs to, when the path says so. */
   workflow_id?: string;
-  /** That workflow's NAME, so the board can say "geomap-netline-parity" instead of listing
+  /** That workflow's NAME, so the board can say "api-parity-check" instead of listing
    *  its fan-out as anonymous hex ids. */
   workflow_name?: string;
   /** And what it is FOR, shown once on the workflow row instead of repeating the name on

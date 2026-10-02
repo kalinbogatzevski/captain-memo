@@ -43,7 +43,7 @@ test('deterministicFrontmatter — truncates an overlong first line for name', (
 
 test('slugify — lowercases, dashes non-alnum, trims edges, no doubles', () => {
   expect(slugify('  Use Bun, Not Node!! ')).toBe('use-bun-not-node');
-  expect(slugify('123net_aelita')).toBe('123net-aelita');
+  expect(slugify('acme_billing')).toBe('acme-billing');
 });
 
 test('prefixForType — maps known types, falls back to the type itself', () => {
@@ -63,9 +63,9 @@ test('resolveTargetDir — targetDirOverride wins', () => {
 
 test('resolveTargetDir — cwd -> ~/.claude/projects/<slug>/memory', () => {
   expect(resolveTargetDir(
-    { body: 'b', type: 'decision', projectContext: { cwd: '/home/kalin/projects/captain-memo' } },
+    { body: 'b', type: 'decision', projectContext: { cwd: '/home/user/projects/captain-memo' } },
     '/default/remember',
-  )).toBe(join(homedir(), '.claude', 'projects', '-home-kalin-projects-captain-memo', 'memory'));
+  )).toBe(join(homedir(), '.claude', 'projects', '-home-user-projects-captain-memo', 'memory'));
 });
 
 test('resolveTargetDir — no cwd -> rememberDir default', () => {

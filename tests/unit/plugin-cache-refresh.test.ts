@@ -7,7 +7,7 @@ import {
 } from '../../src/cli/plugin-cache-refresh.ts';
 import { pluginRegistrationSteps } from '../../src/cli/commands/install.ts';
 
-const REPO = '/home/u/projects/captain-memo-fed';
+const REPO = '/home/u/projects/captain-memo-checkout';
 
 /** Drive the refresh with no filesystem and no `claude` — the run log IS the assertion. */
 function harness(over: { cached?: string | null; pointsAt?: boolean; codes?: Record<string, number> } = {}) {
