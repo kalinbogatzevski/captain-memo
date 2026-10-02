@@ -43,29 +43,26 @@ test('homework: the capture prefix and the two lines the hooks inject', () => {
   expect(lines).toContain('#captain');
 });
 
-// Due times: a reminder on a homework item. The host zone is pinned per test, so a date-only value that wrongly meant
-// UTC midnight cannot pass just because the machine running the suite is on UTC.
-function inZone<T>(tz: string, fn: () => T): T {
-  const prev = process.env.TZ;
-  process.env.TZ = tz;
-  try { return fn(); } finally { if (prev === undefined) delete process.env.TZ; else process.env.TZ = prev; }
+// Due times: a reminder on a homework item. The host zone is pinned per assertion, so a date-only value that wrongly meant
+// UTC midnight cannot pass just because the machine running the suite is on UTC. The zone has to be set BEFORE the process
+// starts: switching process.env.TZ in a running process is honoured by some Bun builds and ignored by others (CI), so each
+// zone runs in a child. Not run on Windows, whose zone handling is not POSIX TZ.
+const HW = new URL('../../src/worker/homework.ts', import.meta.url).href;
+function inZone<T>(tz: string, body: string): T {
+  const src = `import * as hw from ${JSON.stringify(HW)}; const { parseDue, homeworkDueParts, homeworkStartLines } = hw; console.log(JSON.stringify((() => { ${body} })()));`;
+  const r = Bun.spawnSync([process.execPath, '-e', src], { env: { ...process.env, TZ: tz } });
+  if (r.exitCode !== 0) throw new Error(r.stderr.toString());
+  return JSON.parse(r.stdout.toString()) as T;
 }
+const zoneTest = process.platform === 'win32' ? test.skip : test;
 
-test('due: a date-only value is this host\'s midnight, a date-time without a zone is host-local, an explicit zone wins', () => {
-  inZone('Asia/Tokyo', () => {
-    expect(parseDue('2026-10-01')).toBe('2026-09-30T15:00:00.000Z');
-    expect(parseDue('2026-10-01T09:30')).toBe('2026-10-01T00:30:00.000Z');
-    expect(parseDue(' 2026-10-01T09:30:15 ')).toBe('2026-10-01T00:30:15.000Z');
-  });
-  inZone('America/Los_Angeles', () => {
-    expect(parseDue('2026-10-01')).toBe('2026-10-01T07:00:00.000Z');
-    expect(parseDue('2026-10-01T09:30')).toBe('2026-10-01T16:30:00.000Z');
-  });
-  inZone('Asia/Tokyo', () => {
-    expect(parseDue('2026-10-01T00:05+02:00')).toBe('2026-09-30T22:05:00.000Z');
-    expect(parseDue('2026-10-01T09:30Z')).toBe('2026-10-01T09:30:00.000Z');
-    expect(parseDue('2028-02-29')).toBe('2028-02-28T15:00:00.000Z');   // a leap day that exists
-  });
+zoneTest('due: a date-only value is this host\'s midnight, a date-time without a zone is host-local, an explicit zone wins', () => {
+  expect(inZone('Asia/Tokyo', `return [parseDue('2026-10-01'), parseDue('2026-10-01T09:30'), parseDue(' 2026-10-01T09:30:15 ')];`))
+    .toEqual(['2026-09-30T15:00:00.000Z', '2026-10-01T00:30:00.000Z', '2026-10-01T00:30:15.000Z']);
+  expect(inZone('America/Los_Angeles', `return [parseDue('2026-10-01'), parseDue('2026-10-01T09:30')];`))
+    .toEqual(['2026-10-01T07:00:00.000Z', '2026-10-01T16:30:00.000Z']);
+  expect(inZone('Asia/Tokyo', `return [parseDue('2026-10-01T00:05+02:00'), parseDue('2026-10-01T09:30Z'), parseDue('2028-02-29')];`))
+    .toEqual(['2026-09-30T22:05:00.000Z', '2026-10-01T09:30:00.000Z', '2028-02-28T15:00:00.000Z']);   // a leap day that exists
 });
 
 test('due: anything that is not an ISO date or date-time is refused, impossible dates included', () => {
@@ -100,7 +97,7 @@ test('due: an item filed without one is stored exactly as before, and a row stor
   expect(claimHomework(kv, '1', 'x', 3_000)).not.toHaveProperty('due');
 });
 
-test('due: due items lead soonest first, the rest keep their order, labels are in the host zone, a done item is never due', () => {
+zoneTest('due: due items lead soonest first, the rest keep their order, labels are in the host zone, a done item is never due', () => {
   const NOW = Date.parse('2026-10-02T00:00Z');
   const it = (id: string, extra: Partial<HomeworkItem> = {}): HomeworkItem => ({ id, text: `item ${id}`, topics: [], by: 'x', created_at: 1, ...extra });
   const items = [
@@ -113,13 +110,10 @@ test('due: due items lead soonest first, the rest keep their order, labels are i
   ];
   expect(homeworkDueFirst(items, NOW).map((i) => i.id)).toEqual(['4', '3', '1', '2', '5', '6']);
   expect(homeworkDueFirst(items, Date.parse('2026-09-01T00:00Z')).map((i) => i.id)).toEqual(['1', '2', '3', '4', '5', '6']);   // nothing due yet: order as given
-  inZone('Asia/Tokyo', () => {
-    expect(homeworkDueParts(items[2]!, NOW)).toEqual(['⏰ ', ' (DUE since 2026-10-01 19:00)']);
-    expect(homeworkDueParts(items[1]!, NOW)).toEqual(['', ' (due 2027-01-01 09:00)']);
-    expect(homeworkDueParts(items[0]!, NOW)).toEqual(['', '']);
-    const lines = homeworkStartLines(items, NOW).split('\n');
-    expect(lines.slice(1)).toEqual(['  ⏰ #4 item 4 (DUE since 2026-09-30 19:00)', '  ⏰ #3 item 3 (DUE since 2026-10-01 19:00)', '  #1 item 1', '  #2 item 2 (due 2027-01-01 09:00)', '  #5 item 5', '  #6 item 6 (due 2026-10-03 09:00)']);
-  });
+  const tokyo = inZone<{ parts: string[][]; lines: string[] }>('Asia/Tokyo',
+    `const items = ${JSON.stringify(items)}; const NOW = ${NOW}; return { parts: [homeworkDueParts(items[2], NOW), homeworkDueParts(items[1], NOW), homeworkDueParts(items[0], NOW)], lines: homeworkStartLines(items, NOW).split('\\n') };`);
+  expect(tokyo.parts).toEqual([['⏰ ', ' (DUE since 2026-10-01 19:00)'], ['', ' (due 2027-01-01 09:00)'], ['', '']]);
+  expect(tokyo.lines.slice(1)).toEqual(['  ⏰ #4 item 4 (DUE since 2026-09-30 19:00)', '  ⏰ #3 item 3 (DUE since 2026-10-01 19:00)', '  #1 item 1', '  #2 item 2 (due 2027-01-01 09:00)', '  #5 item 5', '  #6 item 6 (due 2026-10-03 09:00)']);
   const done = it('7', { due: '2020-01-01T00:00:00.000Z', done_at: 5 });
   expect(isHomeworkDue(done, NOW)).toBe(false);
   expect(homeworkDueParts(done, NOW)).toEqual(['', '']);
