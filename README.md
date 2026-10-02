@@ -414,6 +414,7 @@ These fire when the model decides retrieval would help your prompt — no slash 
 | `todo_add` | Homework: park an idea or a task for later (open → claimed → done), with an optional `due` time that makes it a reminder; `idea: …` / `todo: …` at the start of a prompt does the same through the hook |
 | `todo_list` | Homework: what is open (default), done (kept a week), or all |
 | `todo_claim` | Homework: mark an item taken; every session on this machine sees who has it (advisory: claiming again just changes the holder) |
+| `todo_unclaim` | Homework: hand back your own claim without closing the item (refused for another session's claim) |
 | `todo_done` | Homework: close an item with a one-line note |
 | `work_set` | Coordination board: publish/refresh "I'm working on X — topics, files"; returns overlapping claims by topic, files or meaning |
 | `work_active` | Coordination board: list live claims with their topics, which topics two sessions hold, and which claims overlap yours |
@@ -468,7 +469,7 @@ A date that does not exist (`2026-02-30`) or a phrase such as `tomorrow` is refu
 
 ¹ `connect` wires native hooks only where the CLI supports them (Codex with hooks enabled, Gemini with hook support, Kimi 1.28+); otherwise that CLI behaves like the next row. Codex runs them only after you approve them once in `/hooks`. `connect` registers the prompt hook with a 5 s timeout, so under Codex, Gemini and Kimi the hook waits for the worker only as long as that budget allows (up to 6 s in Claude Code). If the worker is slower, the model is told that filing was not confirmed and to check `todo_list()` before filing again.
 
-**Lifecycle.** Open, then claimed, then done. A claim marks the item taken: the banner shows `(claimed by …)` and `todo_list` returns who holds it. It is advisory, not a lock: claiming again just changes who holds it, and `todo_done` needs no claim first. Done items stay listable with `todo_list({status: 'done'})` for 7 days, then drop out the next time the list is read. There is no reopen, edit or delete. Text is capped at 2,000 characters, the done note at 500, topics at 5 lowercase-kebab tags of 40 characters. Numbers count up per captain and are never reused.
+**Lifecycle.** Open, then claimed, then done. A claim marks the item taken: the banner shows `(claimed by …)` and `todo_list` returns who holds it. It is advisory, not a lock: claiming again just changes who holds it, `todo_unclaim` hands your own claim back without closing the item (it refuses a claim another session holds), and `todo_done` needs no claim first. Done items stay listable with `todo_list({status: 'done'})` for 7 days, then drop out the next time the list is read. There is no reopen, edit or delete. Text is capped at 2,000 characters, the done note at 500, topics at 5 lowercase-kebab tags of 40 characters. Numbers count up per captain and are never reused.
 
 **Homework, memory or a work claim?**
 

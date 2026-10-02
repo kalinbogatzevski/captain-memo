@@ -89,5 +89,5 @@ open → claimed → done, visible to every AI session here.
   time). From then on Claude Code's session-start list shows it first, marked ⏰; `todo_list()` returns it with
   its due time (UTC). Nothing runs by itself.
 - `todo_list()` — what is open (Claude Code also lists it in the session banner). `todo_claim(id)` before you
-  start one, so other sessions see it is taken (advisory, not a lock); `todo_done(id, note)` when it is done.
+  start one, so other sessions see it is taken (advisory, not a lock); `todo_unclaim(id)` hands your claim back without closing it; `todo_done(id, note)` when it is done.
 - Not a memory (`remember` is for facts to recall) and not a work claim (`work_set` is what you do now).

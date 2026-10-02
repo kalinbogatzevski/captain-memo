@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { addHomework, listHomework, claimHomework, doneHomework, getHomework, parseHomeworkPrompt, homeworkFiledLine, homeworkStartLines, HOMEWORK_DONE_KEEP_MS } from '../../src/worker/homework.ts';
+import { addHomework, listHomework, claimHomework, unclaimHomework, doneHomework, getHomework, parseHomeworkPrompt, homeworkFiledLine, homeworkStartLines, HOMEWORK_DONE_KEEP_MS } from '../../src/worker/homework.ts';
 import { parseDue, isHomeworkDue, homeworkDueFirst, homeworkDueParts, type HomeworkItem } from '../../src/worker/homework.ts';
 
 function makeKv() {
@@ -57,11 +57,11 @@ function inZone<T>(tz: string, body: string): T {
 const zoneTest = process.platform === 'win32' ? test.skip : test;
 
 zoneTest('due: a date-only value is this host\'s midnight, a date-time without a zone is host-local, an explicit zone wins', () => {
-  expect(inZone('Asia/Tokyo', `return [parseDue('2026-10-01'), parseDue('2026-10-01T09:30'), parseDue(' 2026-10-01T09:30:15 ')];`))
+  expect(inZone<string[]>('Asia/Tokyo', `return [parseDue('2026-10-01'), parseDue('2026-10-01T09:30'), parseDue(' 2026-10-01T09:30:15 ')];`))
     .toEqual(['2026-09-30T15:00:00.000Z', '2026-10-01T00:30:00.000Z', '2026-10-01T00:30:15.000Z']);
-  expect(inZone('America/Los_Angeles', `return [parseDue('2026-10-01'), parseDue('2026-10-01T09:30')];`))
+  expect(inZone<string[]>('America/Los_Angeles', `return [parseDue('2026-10-01'), parseDue('2026-10-01T09:30')];`))
     .toEqual(['2026-10-01T07:00:00.000Z', '2026-10-01T16:30:00.000Z']);
-  expect(inZone('Asia/Tokyo', `return [parseDue('2026-10-01T00:05+02:00'), parseDue('2026-10-01T09:30Z'), parseDue('2028-02-29')];`))
+  expect(inZone<string[]>('Asia/Tokyo', `return [parseDue('2026-10-01T00:05+02:00'), parseDue('2026-10-01T09:30Z'), parseDue('2028-02-29')];`))
     .toEqual(['2026-09-30T22:05:00.000Z', '2026-10-01T09:30:00.000Z', '2028-02-28T15:00:00.000Z']);   // a leap day that exists
 });
 
@@ -122,4 +122,20 @@ zoneTest('due: due items lead soonest first, the rest keep their order, labels a
   addHomework(kv, { text: 'late and finished', due: '2020-01-01T00:00Z' }, 1_000);
   doneHomework(kv, '1', 'x', 'done', 2_000);
   expect(listHomework(kv, { status: 'open' }, 3_000)).toEqual([]);   // what the session-start list is fed from
+});
+
+test('unclaim: you can hand back your own claim; not another session\'s, not an unclaimed item, not a closed or unknown one', () => {
+  const kv = makeKv();
+  addHomework(kv, { text: 'look at this', by: 'a' }, 1_000);
+  expect(unclaimHomework(kv, '1', 'erp-17')).toMatchObject({ error: 'not_claimed' });
+  claimHomework(kv, '1', 'erp-17', 2_000);
+  expect(unclaimHomework(kv, '1', 'erp-18')).toMatchObject({ error: 'not_yours' });
+  expect(getHomework(kv, '1')?.claimed_by).toBe('erp-17');                         // refused: still theirs
+  const r = unclaimHomework(kv, '#1', 'erp-17') as { item: NonNullable<ReturnType<typeof getHomework>> };
+  expect(r.item).not.toHaveProperty('claimed_by'); expect(r.item).not.toHaveProperty('claimed_at');
+  expect(getHomework(kv, '1')).toEqual(r.item);                                     // persisted, not only on the returned object
+  expect(claimHomework(kv, '1', 'erp-18', 3_000)?.claimed_by).toBe('erp-18');      // free to take again
+  expect(unclaimHomework(kv, '99', 'x')).toMatchObject({ error: 'not_found' });
+  doneHomework(kv, '1', 'erp-18', 'ok', 4_000);
+  expect(unclaimHomework(kv, '1', 'erp-18')).toMatchObject({ error: 'not_found' }); // a closed item has no claim to hand back
 });

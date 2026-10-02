@@ -294,6 +294,11 @@ export const TOOLS = [
     inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'The item number, e.g. "12" or "#12".' } }, required: ['id'] },
   },
   {
+    name: 'todo_unclaim',
+    description: 'Hand back YOUR claim on a homework item without closing it: use it when you claimed an item only to look at it, or cannot do it now. todo_claim has no other undo and todo_done closes the item. Refused for an item another session holds, an item nobody holds.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'The item number, e.g. "12" or "#12".' } }, required: ['id'] },
+  },
+  {
     name: 'todo_done',
     description: 'Close a homework item, with a one-line note of what was done (or why it was dropped). Done items stay listable for a week.',
     inputSchema: { type: 'object', properties: { id: { type: 'string' }, note: { type: 'string' } }, required: ['id'] },
@@ -488,9 +493,9 @@ export async function dispatchTool(
         result = await res.json();
         break;
       }
-      case 'todo_claim': case 'todo_done': {
+      case 'todo_claim': case 'todo_unclaim': case 'todo_done': {
         const a = (args ?? {}) as { id?: string; note?: string };
-        result = await workerPost(workerBase, name === 'todo_claim' ? '/homework/claim' : '/homework/done', { id: String(a.id ?? '').replace(/^#/, ''), by: sessionId, ...(a.note ? { note: a.note } : {}) });
+        result = await workerPost(workerBase, name === 'todo_claim' ? '/homework/claim' : name === 'todo_unclaim' ? '/homework/unclaim' : '/homework/done', { id: String(a.id ?? '').replace(/^#/, ''), by: sessionId, ...(a.note ? { note: a.note } : {}) });
         break;
       }
       case 'work_active': {

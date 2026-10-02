@@ -45,7 +45,7 @@ import { runQmSupersedeSlice, applySupersedeDemotion } from './supersede.ts';
 import { setWorkNote, inheritDeclaredIntent, leaseSeconds, listLocalActive, clearWorkNote, decorateStaleness, overlapsAgainst, topicOverlapsAgainst, groupTopicContention, repoOverlapsAgainst, groupRepoContention, repoActiveHolders, guardContested, wholeRepo, pidAlive, setWorkOverride, getWorkOverride, getWorkNote, isStale, type SetWorkNoteInput, type GuardHolder } from './work-notes.ts';
 import { resolveRepoClaim } from './repo-claim.ts';
 import { warmWorknoteVecs, semanticOverlapPass, hasIntent, SEMANTIC_ENABLED, semanticStatus } from './worknote-semantic.ts';
-import { addHomework, listHomework, claimHomework, doneHomework, parseDue } from './homework.ts';
+import { addHomework, listHomework, claimHomework, unclaimHomework, doneHomework, parseDue } from './homework.ts';
 import { whatsNew } from '../shared/whats-new.ts';
 import { centroid } from '../shared/vector-math.ts';
 import { PendingEmbedQueue, embedIsolating, isPerInputEmbedError, PENDING_EMBED_MAX_ATTEMPTS } from './pending-embed-queue.ts';
@@ -2481,6 +2481,13 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         const item = url.pathname === '/homework/claim' ? claimHomework(meta, String(b.id), by, Date.now()) : doneHomework(meta, String(b.id), by, typeof b.note === 'string' ? b.note : undefined, Date.now());
         if (!item) return Response.json({ error: 'not_found', detail: `no open homework #${String(b.id)}` }, { status: 404 });
         return Response.json({ item, open: listHomework(meta, { status: 'open' }, Date.now()).length });
+      }
+      if (req.method === 'POST' && url.pathname === '/homework/unclaim') {
+        const b = (await req.json().catch(() => null)) as { id?: unknown; by?: unknown } | null;
+        if (!b || (typeof b.id !== 'string' && typeof b.id !== 'number')) return Response.json({ error: 'invalid_request', details: 'id required' }, { status: 400 });
+        const r = unclaimHomework(meta, String(b.id), typeof b.by === 'string' && b.by ? b.by : 'session');
+        if ('error' in r) return Response.json({ error: r.error, detail: r.detail }, { status: r.error === 'not_found' ? 404 : 409 });
+        return Response.json({ item: r.item, open: listHomework(meta, { status: 'open' }, Date.now()).length });
       }
       if (req.method === 'GET' && url.pathname === '/worknote/active') {
         const now = Date.now();

@@ -82,3 +82,16 @@ test('due: the route refuses a bad value with a clear message and files nothing'
   expect(after).toBe(before);
 }, 20_000);
 
+test('unclaim: the route hands back your own claim and refuses another session, an unclaimed item and an unknown one', async () => {
+  const id = ((await (await post('/homework/add', { text: 'look first', by: 'a' })).json()) as { item: { id: string } }).item.id;
+  expect((await post('/homework/unclaim', { id, by: 'erp-17' })).status).toBe(409);               // nobody holds it
+  await post('/homework/claim', { id, by: 'erp-17' });
+  const other = await post('/homework/unclaim', { id, by: 'erp-18' });
+  expect(other.status).toBe(409); expect(((await other.json()) as { error: string }).error).toBe('not_yours');
+  const ok = await (await post('/homework/unclaim', { id: '#' + id, by: 'erp-17' })).json() as { item: { claimed_by?: string } };
+  expect(ok.item.claimed_by).toBeUndefined();
+  const list = await (await fetch(base + '/homework/list?status=open')).json() as { items: Array<{ id: string; claimed_by?: string }> };
+  expect(list.items.find((i) => i.id === id)?.claimed_by).toBeUndefined();
+  expect((await post('/homework/unclaim', { id: '9999', by: 'x' })).status).toBe(404);
+  expect((await post('/homework/unclaim', { by: 'x' })).status).toBe(400);
+}, 20_000);

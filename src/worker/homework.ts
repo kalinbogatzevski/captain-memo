@@ -109,6 +109,21 @@ export function claimHomework(kv: InboxKv, id: string, by: string, now: number =
   return next;
 }
 
+export type UnclaimResult = { item: HomeworkItem } | { error: 'not_found' | 'not_claimed' | 'not_yours'; detail: string };
+
+/** Hand back YOUR claim without closing the item: todo_claim had no undo, so an item claimed only to look at it stayed
+ *  "claimed by X" for good. Refused when another session holds it, when nobody does. */
+export function unclaimHomework(kv: InboxKv, id: string, by: string): UnclaimResult {
+  const it = getHomework(kv, id);
+  if (!it || it.done_at) return { error: 'not_found', detail: `no open homework #${String(id).replace(/^#/, '')}` };
+  if (!it.claimed_by) return { error: 'not_claimed', detail: `#${it.id} is not claimed` };
+  if (it.claimed_by !== String(by).slice(0, 128)) return { error: 'not_yours', detail: `#${it.id} is claimed by ${it.claimed_by}, not by you: only that session can hand it back` };
+  const next: HomeworkItem = { ...it };
+  delete next.claimed_by; delete next.claimed_at;
+  kv.setKv(rowKey(it.id), JSON.stringify(next));
+  return { item: next };
+}
+
 /** Close an item, with an optional note of what was done (or why it was dropped). */
 export function doneHomework(kv: InboxKv, id: string, by: string, note?: string, now: number = Date.now()): HomeworkItem | null {
   const it = getHomework(kv, id);

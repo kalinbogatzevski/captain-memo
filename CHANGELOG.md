@@ -7,6 +7,12 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.57.0] — 2026-10-02
+
+### Added
+
+- **`todo_unclaim` hands back your own homework claim.** `todo_claim` only ever overwrote the holder and `todo_done` closes the item, so an item claimed just to look at it stayed "claimed by <session>" in every list for good. `todo_unclaim(id)` (worker route `POST /homework/unclaim`) clears the claim on an open item and returns it. It refuses a claim another session holds, an item nobody holds, and a closed or unknown item. (#278)
+
 ## [0.56.2] — 2026-10-02
 
 ### Fixed
