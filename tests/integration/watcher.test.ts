@@ -1,7 +1,7 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test';
 import { FileWatcher } from '../../src/worker/watcher.ts';
 import { writeFileSync, mkdtempSync, unlinkSync } from 'fs';
-import { join } from 'path';
+import { join, basename } from 'path';
 import { tmpdir } from 'os';
 import { rmWorkDir } from '../support/worker-temp.ts';
 
@@ -88,7 +88,7 @@ test('FileWatcher — a pattern with the wildcard inside the name matches only i
   writeFileSync(join(workDir, 'AGENTS.override.md'), 'new');
   await new Promise(r => setTimeout(r, 400));
 
-  expect([...new Set(events.map(e => e.path.split('/').pop()))].sort()).toEqual(['AGENTS.md', 'AGENTS.override.md']);
+  expect([...new Set(events.map(e => basename(e.path)))].sort()).toEqual(['AGENTS.md', 'AGENTS.override.md']);
 });
 
 test('FileWatcher — one pattern does not widen another directory', async () => {
@@ -105,5 +105,5 @@ test('FileWatcher — one pattern does not widen another directory', async () =>
   await new Promise(r => setTimeout(r, 300));
   rmWorkDir(other);
 
-  expect(events.map(e => e.path.split('/').pop()).sort()).toEqual(['SKILL.md', 'a.md']);
+  expect(events.map(e => basename(e.path)).sort()).toEqual(['SKILL.md', 'a.md']);
 });

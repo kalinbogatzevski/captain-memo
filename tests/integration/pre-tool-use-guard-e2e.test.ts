@@ -7,7 +7,7 @@
 // Plus Codex and Gemini: their claims warn but never block an edit (no pid, see guardContested), and a deploy refusal
 // reaches Gemini as {decision, reason}. No real host is contacted: ssh on PATH is a stub (fails, or prints an md5).
 import { test, expect, beforeAll, afterAll, setSystemTime } from 'bun:test';
-import { join } from 'path';
+import { join, delimiter } from 'path';
 import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, realpathSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
@@ -18,6 +18,8 @@ const HOOK_BIN = join(import.meta.dir, '../../bin/captain-memo-hook.ts');
 let worker: WorkerHandle;
 let port = 0;
 let root = '';        // a real git checkout, standing in for the shared repo
+// ssh on PATH is a #!/bin/sh stub; on Windows the real ssh.exe would run, so the tests that need the stub's answer skip there.
+const sshTest = process.platform === 'win32' ? test.skip : test;
 let dataDir = '';
 let binDir = '';
 const FILE = () => join(root, 'hr/functions.php');
@@ -29,7 +31,7 @@ beforeAll(async () => {
     vectorDbPath: ':memory:', embeddingDimension: 8, skipEmbed: true,
   });
   port = worker.port;
-  const base = realpathSync(mkdtempSync(join(tmpdir(), 'guard-e2e-')));
+  const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'guard-e2e-')));   // .native: the long name git reports, not RUNNER~1
   root = join(base, 'repo');
   dataDir = join(base, 'data');
   binDir = join(base, 'bin');
@@ -48,7 +50,7 @@ afterAll(async () => { setSystemTime(); await worker.stop(); });
 async function hook(event: string, payload: unknown, env: Record<string, string> = {}) {
   const proc = spawn({
     cmd: ['bun', HOOK_BIN, event], stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
-    env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, CAPTAIN_MEMO_DATA_DIR: dataDir, CAPTAIN_MEMO_WORKER_PORT: String(port), CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1', ...env },
+    env: { ...process.env, PATH: `${binDir}${delimiter}${process.env.PATH}`, CAPTAIN_MEMO_DATA_DIR: dataDir, CAPTAIN_MEMO_WORKER_PORT: String(port), CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1', ...env },
   });
   proc.stdin.write(JSON.stringify(payload));
   proc.stdin.end();
@@ -97,10 +99,10 @@ test('Codex apply_patch and Gemini write_file (relative path) claim the file and
   expect((await active('gem-B')).claims.find((c) => c.session_id === 'gem-B')?.files).toContain(FILE());
 });
 
-test('a deploy refusal reaches Gemini as {decision, reason}: the server copy matches nothing this session knows', async () => {
+sshTest('a deploy refusal reaches Gemini as {decision, reason}: the server copy matches nothing this session knows', async () => {
   writeFileSync(join(root, 'up.php'), '<?php // mine\n');
   const gm = await hook('GeminiBeforeTool', { session_id: 'gem-D', cwd: root, tool_name: 'run_shell_command', tool_input: { command: 'scp up.php root@deploy.example.com:/srv/functions.php' } },
-    { PATH: `${binDir.replace(/bin$/, 'bin-md5')}:${process.env.PATH}` });
+    { PATH: `${binDir.replace(/bin$/, 'bin-md5')}${delimiter}${process.env.PATH}` });
   expect(gm.json.decision).toBe('deny');
   expect(gm.json.reason).toStartWith('DEPLOY BLOCKED: root@deploy.example.com:/srv/functions.php on the server (md5 01234567)');
   expect(gm.json.hookSpecificOutput).toBeUndefined();
@@ -125,7 +127,7 @@ test('(d) a shell edit with no nameable file claims no file (repo presence only)
   await bash('sess-D', `for f in hr/*.php; do sed -i 's/a/b/' "$f"; done`, 4_000_004);
   const d = (await active('sess-D')).claims.find((c) => c.session_id === 'sess-D')!;
   expect(d.files).toEqual([]);
-  expect(d.repo_root).toBe(root);
+  expect(d.repo_root?.replaceAll('\\', '/')).toBe(root.replaceAll('\\', '/'));   // git prints C:/..., join() C:\...
   // a whole-repo claim from an older captain-memo version
   await fetch(`http://localhost:${port}/worknote/set`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session_id: 'sess-OLD', agent: 'claude', what: 'x', files: [`${root}/**`] }) });
   const e = await edit('sess-E', join(root, 'hr/rpc.php'), 4_000_005);
@@ -155,10 +157,10 @@ test('the kill switch CAPTAIN_MEMO_WORKBOARD_ENFORCE=0 turns the block back into
   expect(r.json.hookSpecificOutput.additionalContext).toContain('WORK-BOARD OVERLAP');
 });
 
-test('a deploy whose paths are in same-line shell variables and a for-loop is checked too', async () => {
+sshTest('a deploy whose paths are in same-line shell variables and a for-loop is checked too', async () => {
   writeFileSync(join(root, 'up.php'), '<?php // mine\n');
   const gm = await hook('GeminiBeforeTool', { session_id: 'gem-V', cwd: root, tool_name: 'run_shell_command', tool_input: { command: 'S=.; R=/srv\nfor box in deploy.example.com; do scp -q $S/up.php root@$box:$R/functions.php; done' } },
-    { PATH: `${binDir.replace(/bin$/, 'bin-md5')}:${process.env.PATH}` });
+    { PATH: `${binDir.replace(/bin$/, 'bin-md5')}${delimiter}${process.env.PATH}` });
   expect(gm.json.decision).toBe('deny');
   expect(gm.json.reason).toStartWith('DEPLOY BLOCKED: root@deploy.example.com:/srv/functions.php');
 });
@@ -171,14 +173,14 @@ test('two sessions writing the same /tmp scratch file never block each other', a
 });
 
 // #227: `scp f host:/dir` with no trailing slash, where /dir is a directory on the server: the file inside it is the target.
-test('an upload into a server directory is claimed and reported under the file it lands on', async () => {
+sshTest('an upload into a server directory is claimed and reported under the file it lands on', async () => {
   const bin = join(binDir, '..', 'bin-dir');
   mkdirSync(bin);
   writeFileSync(join(bin, 'ssh'), '#!/bin/sh\necho "cm-is-dir /srv/app"\n');
   chmodSync(join(bin, 'ssh'), 0o755);
   writeFileSync(join(root, 'up2.php'), '<?php // mine\n');
   const r = await hook('PreToolUse', { session_id: 'dir-A', cwd: root, tool_name: 'Bash', tool_input: { command: 'scp -q up2.php root@h9:/srv/app' } },
-    { CLAUDE_PID: '5200001', PATH: `${bin}:${process.env.PATH}` });
+    { CLAUDE_PID: '5200001', PATH: `${bin}${delimiter}${process.env.PATH}` });
   expect(r.json.hookSpecificOutput.additionalContext).toContain('server copy of /srv/app/up2.php is new');
   const files = (await active('dir-A')).claims.find((c) => c.session_id === 'dir-A')!.files;
   expect(files).toContain('root@h9:/srv/app/up2.php');
