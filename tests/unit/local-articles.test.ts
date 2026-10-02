@@ -20,7 +20,7 @@ test('the work-board Foundation opens the articles, before article 1', () => {
 
 test('the single-machine articles follow, in order', () => {
   const heads = ['1. SEARCH BEFORE YOU ACT', '2. NEVER GUESS', '3. COMMITTED IS NOT DEPLOYED', '4. ASK', '5. `idea:` / `todo:`',
-    '6. RUN WORK NEXT TO ITS DATA', "7. THE USER'S TIME IS THE COST"];
+    '6. TESTS ONLY WHEN ASKED', "7. THE USER'S TIME IS THE COST"];
   const at = heads.map((h) => LOCAL_ARTICLES.indexOf(h));
   expect(at.every((i) => i > 0)).toBe(true);
   expect([...at].sort((a, b) => a - b)).toEqual(at);
@@ -33,6 +33,6 @@ test('no fleet content: this is the OSS single-machine build', () => {
 });
 
 test('compact, and no em dashes', () => {
-  expect(LOCAL_ARTICLES.length).toBeLessThan(3200);   // once per session; fed's equivalent is 3632 chars
+  expect(LOCAL_ARTICLES.length).toBeLessThan(2950);   // once per session; 3200 -> 2950 on 2026-10-02 after the same rules were reworded tersely (3027 -> 2881)
   expect(LOCAL_ARTICLES).not.toContain('—');
 });

@@ -49,6 +49,7 @@ import { addHomework, listHomework, claimHomework, doneHomework, parseDue } from
 import { whatsNew } from '../shared/whats-new.ts';
 import { centroid } from '../shared/vector-math.ts';
 import { PendingEmbedQueue, embedIsolating, isPerInputEmbedError, PENDING_EMBED_MAX_ATTEMPTS } from './pending-embed-queue.ts';
+import { startEmbedderProbe } from './embedder-probe.ts';
 import { chunkObservation } from './chunkers/observation.ts';
 import { splitForEmbed } from './chunkers/safe-split.ts';
 import { EmbedderInputTooLarge, assertUsableEmbeddings } from './embedder.ts';
@@ -448,36 +449,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   const collectionName = `am_${opts.projectId}`;
   await vector.ensureCollection(collectionName);
 
-  // The embedder's actual output dim, measured by the boot probe below. Surfaced
-  // in /stats so `doctor` can compare it against the index dim (opts.embeddingDimension)
-  // and flag a mismatch — the trap that silently blocks every write.
+  // The embedder's actual output dim, measured by the boot probe (retried in the background when the embedder is not up
+  // yet). Surfaced in /stats so `doctor` can compare it against the index dim (opts.embeddingDimension) and flag a
+  // mismatch — the trap that silently blocks every write. Skipped in keyword-only mode.
   let probedEmbedderDim: number | null = null;
-
-  // Boot-time dim probe — catch the dim-mismatch trap (where vector store
-  // expects N but embedder returns M) BEFORE any chunk hits vector.add().
-  // Skip when the user opted into keyword-only mode.
-  if (!opts.skipEmbed) {
-    try {
-      const probe = await embedder.embed(['probe']);
-      const actualDim = probe[0]?.length ?? 0;
-      probedEmbedderDim = actualDim || null;
-      if (actualDim !== opts.embeddingDimension) {
-        console.error(
-          `[worker] DIM MISMATCH: the vector index is ${opts.embeddingDimension}-dim but the embedder returns ${actualDim}-dim. ` +
-          `Every write (remember) will fail and vector search silently falls back to keyword-only. ` +
-          `Fix: run \`captain-memo reindex --redim ${actualDim}\` — it rebuilds the index at the embedder's dimension ` +
-          `(re-embedding from observations.db). Setting CAPTAIN_MEMO_EMBEDDING_DIM alone will NOT fix an existing index. ` +
-          `Alternatively, switch back to a model that returns ${opts.embeddingDimension}-dim.`,
-        );
-      } else {
-        console.log(`[worker] embedder probe OK (dim=${actualDim})`);
-      }
-    } catch (err) {
-      console.error(`[worker] embedder probe failed at boot:`, (err as Error).message);
-      // Don't crash the worker — keyword search still works; vector half will
-      // log per-call errors via the new search.ts error visibility.
-    }
-  }
+  const embedderProbe = opts.skipEmbed ? null : await startEmbedderProbe({
+    embed: (t) => embedder.embed(t), indexDim: opts.embeddingDimension,
+    onDim: (d) => { probedEmbedderDim = d; }, log: console.log, error: console.error,
+  });
 
   const getChunk = async (id: string) => {
     const found = meta.getChunkById(id);
@@ -3790,6 +3769,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     if (forcedTimer) clearInterval(forcedTimer);
     if (promotionTimer) clearInterval(promotionTimer);
     if (pendingTickTimer) clearInterval(pendingTickTimer);
+    embedderProbe?.stop();
     // clearInterval cancels the SCHEDULE, not work already IN FLIGHT. Every background slice below is
     // async (they even yieldToLoop), so one that started before stop() keeps running and then writes its
     // result / audit row into a store we are about to close — "RangeError: Cannot use a closed database",

@@ -7,6 +7,16 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.56.2] — 2026-10-02
+
+### Fixed
+
+- **A worker that starts before its embedder no longer leaves the embedder unverified.** The worker probes the embedder once at boot to measure its vector dimension and catch a mismatch with the index. When the embedder was not up yet (for example a local Ollama that starts after the worker on a reboot) that single probe failed, and `/stats` and `captain-memo doctor` could not check the dimension for as long as the worker ran. The probe now retries in the background, after 5 s, 15 s, 45 s, 2 min and then every 5 min, at most 12 times (about an hour, one 1-token embed call each), logs the answer when it comes, and says so once if the embedder never answers.
+
+### Changed
+
+- **The working rules now say test suites run only when asked.** Item 6 of the working rules that Claude Code, Codex and Gemini sessions get at start used to tell a session to iterate on the tests its change touches and do one full run at the end. It now says: build the whole change first, check it by reading the diff and a syntax or type check, and run the test suites only when the user asks ("full review" or an explicit instruction), then once and never between steps, beside the database host. A session that skipped them says so in its report. The rules are also about 5% shorter with every instruction kept (no code span, quoted string, rule name or number was removed), and stay under 3 KB.
+
 ## [0.56.1] — 2026-10-02
 
 ### Fixed
