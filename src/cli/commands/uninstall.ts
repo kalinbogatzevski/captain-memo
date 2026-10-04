@@ -13,6 +13,7 @@ import { WORKER_ENV_PATH, CONFIG_DIR, DATA_DIR } from '../../shared/paths.ts';
 import { retireWorkerEnv } from '../../shared/worker-env.ts';
 import { getServiceManager } from '../../services/service-manager/index.ts';
 import { getEmbedderInstaller } from '../../services/embedder-installer/index.ts';
+import { markPluginRemoved } from '../plugin-cache-refresh.ts';
 
 const WORKER_UNIT = 'captain-memo-worker.service';
 const EMBED_UNIT = 'captain-memo-embed.service';
@@ -129,6 +130,8 @@ function removePlugin(): void {
   // Capture exit codes so we don't lie with `ok(...)` if both calls fail.
   const r1 = runAsUser('claude', ['plugin', 'uninstall', 'captain-memo@captain-memo']);
   const r2 = runAsUser('claude', ['plugin', 'marketplace', 'remove', 'captain-memo']);
+  // A worker that outlives this (Windows does not stop it first) would put the plugin back; the marker tells it not to.
+  markPluginRemoved();
 
   // Also clean up any leftover symlink from the older install method.
   const link = join(realHome(), '.claude', 'plugins', 'captain-memo');

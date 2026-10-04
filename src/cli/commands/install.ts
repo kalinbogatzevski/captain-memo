@@ -31,6 +31,7 @@ import { grantPluginToolPermissions } from './install-hooks.ts';
 import { getEmbedderInstaller } from '../../services/embedder-installer/index.ts';
 import { connectCrossAi, printConnectReport, PROBE_CLEAR } from '../cross-ai.ts';
 import { discoverMemoryGlobs, toolFromPath } from '../../shared/ai-memory-sources.ts';
+import { clearPluginRemoved } from '../plugin-cache-refresh.ts';
 
 const REPO_ROOT = resolve(import.meta.dir, '../../..');
 const WORKER_UNIT_NAME = 'captain-memo-worker.service';
@@ -990,6 +991,7 @@ export function pluginRegistrationSteps(repoRoot: string): string[][] {
 }
 
 function registerPlugin(mode: InstallMode): void {
+  clearPluginRemoved();   // the owner is installing the plugin on purpose: the worker's heal may look after it again
   // Run `claude plugin marketplace add <repo> && claude plugin install captain-memo@captain-memo`
   // — that's how Claude Code actually picks up the plugin (manifest, hooks,
   // MCP server, slash commands). The earlier symlink-into-~/.claude/plugins/

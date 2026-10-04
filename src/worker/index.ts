@@ -1210,6 +1210,45 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     orphanSweepTimer.unref?.();
   }
 
+  // PLUGIN HEAL: if Claude Code no longer has the Captain Memo plugin while its marketplace still points at THIS clone,
+  // install it again. An interrupted cache refresh used to leave exactly that behind: every new Claude session then
+  // started without the plugin's MCP server, hooks and skills. Done here because a hook cannot run once the plugin is
+  // gone and Claude Code stops a hook after 60 s. A tick reads two small JSON files and spawns nothing unless the plugin
+  // is missing. CAPTAIN_MEMO_PLUGIN_HEAL=0 turns it off.
+  let pluginHealTimer: ReturnType<typeof setInterval> | null = null;
+  let pluginHealFirst: ReturnType<typeof setTimeout> | null = null;
+  const healOff = opts.readOnly ? 'read-only worker' : process.env.NODE_ENV === 'test' ? 'test' : process.env.CAPTAIN_MEMO_PLUGIN_HEAL === '0' ? 'CAPTAIN_MEMO_PLUGIN_HEAL=0' : null;
+  const claudeForHeal = healOff ? null : (await import('../cli/plugin-cache-refresh.ts')).findClaudeBinary();
+  if (healOff && healOff !== 'test' && healOff !== 'read-only worker') console.log(`[plugin-heal] off (${healOff})`);
+  else if (!healOff && !claudeForHeal) console.log("[plugin-heal] off (claude was not found on this worker's PATH or in the usual install folders, so a missing plugin cannot be reinstalled)");
+  if (claudeForHeal) {
+    let healing = false;   // a hung `claude` must not stack one pending tick per interval
+    let warnedUnreadable = false;
+    const run = async (args: string[]): Promise<number> => {
+      try {
+        const proc = Bun.spawn([claudeForHeal, ...args], { stdout: 'ignore', stderr: 'ignore', env: { ...process.env } });
+        const killer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* already gone */ } }, 120_000);
+        try { return await proc.exited; } finally { clearTimeout(killer); }
+      } catch { return 1; }
+    };
+    const healTick = async (): Promise<void> => {
+      if (healing) return;
+      healing = true;
+      try {
+        const { healPluginRegistration } = await import('../cli/plugin-cache-refresh.ts');
+        const r = await healPluginRegistration(undefined, { run });
+        if (r.healed) console.warn('[plugin-heal] the Captain Memo plugin was missing from Claude Code and has been installed again');
+        else if (r.skipped?.startsWith('installed_plugins.json')) { if (!warnedUnreadable) { warnedUnreadable = true; console.warn('[plugin-heal] ' + r.skipped + '; plugin heal skipped'); } }
+        else if (r.skipped && !['installed', 'never installed here', 'removed on purpose', 'not a git checkout'].includes(r.skipped) && !r.skipped.startsWith('not a directory')) console.warn('[plugin-heal] ' + r.skipped);
+      } catch (e) { console.warn('[plugin-heal] failed: ' + (e as Error).message); }
+      finally { healing = false; }
+    };
+    pluginHealFirst = setTimeout(() => { void healTick(); }, 90_000);
+    pluginHealFirst.unref?.();
+    pluginHealTimer = setInterval(() => { void healTick(); }, 30 * 60_000);
+    pluginHealTimer.unref?.();
+  }
+
   // Cross-AI capture: on by default. Ingest FINISHED codex/agy sessions on this
   // host into the obs pipeline (they have no hooks; we read the transcripts they
   // persist to disk). First tick seeds a per-source cutoff so pre-existing history
@@ -3766,6 +3805,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     if (retentionFirstSweep) clearTimeout(retentionFirstSweep);
     if (orphanSweepTimer) clearInterval(orphanSweepTimer);
     if (orphanFirstSweep) clearTimeout(orphanFirstSweep);
+    if (pluginHealTimer) clearInterval(pluginHealTimer);
+    if (pluginHealFirst) clearTimeout(pluginHealFirst);
     orphanSweepStopping = true;
     if (tideSweepTimer) clearInterval(tideSweepTimer);
     if (ivfSweepTimer) clearTimeout(ivfSweepTimer);

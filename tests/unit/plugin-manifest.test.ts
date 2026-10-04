@@ -70,6 +70,19 @@ test('committed mcp-server bundle embeds the current version (no stale dist afte
   expectBundleHas(bundle, pkg.version, 'version in plugin/dist/mcp-server.js', 'the dist is STALE: run `bun run build:plugin`');
 });
 
+// The plugin/dist hook bundle is what a clone install RUNS, so a fix in the source reaches users only through it.
+// The SessionStart cache refresh must update the plugin in place; removing the marketplace uninstalls the plugin, and a
+// hook cut off between the remove and the install leaves a session start with no Captain Memo at all. Only the
+// interactive `captain-memo install` wizard may run the remove -> add -> install sequence, and it is not bundled
+// into the hook.
+test('committed hook bundle refreshes the plugin cache by UPDATING it, never by removing the marketplace', () => {
+  const bundle = readFileSync(join(ROOT, 'plugin/dist/captain-memo-hook.js'), 'utf-8');
+  expectBundleHas(bundle, 'plugin update did not move the cache', 'the update-only refresh', 'rebuild: `bun run build:plugin`');
+  expectBundleHas(bundle, '"update"', 'the `marketplace update` / `plugin update` calls', 'rebuild: `bun run build:plugin`');
+  expectBundleLacks(bundle, '"remove"', 'a `marketplace remove` argv', 'a hook that removes the marketplace uninstalls the plugin; if it is cut off the session has no Captain Memo');
+  expectBundleLacks(bundle, 'pluginRegistrationSteps', 'the install wizard\'s registration sequence', 'the hook must not pull in the wizard\'s remove/add/install steps');
+});
+
 // Guards the exact regression that silenced EVERY hook (commit 8295f08): the
 // dispatcher dynamic-imported handler SOURCES by a VARIABLE specifier
 // (`await import(target)`), which Bun cannot inline — so the committed bundle
