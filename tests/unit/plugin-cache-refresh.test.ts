@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -180,7 +180,25 @@ test('heal: a plugin found installed clears a stale removal marker', async () =>
   expect(cleared.n).toBe(1);
 });
 
-test('the removal marker: written by uninstall, seen by the heal, cleared by install', () => {
+/** Run `fn` as if the process were uid `uid` (the real getuid is restored even when fn throws). */
+function asUid<T>(uid: number, fn: () => T): T {
+  const p = process as { getuid?: (() => number) | undefined };
+  const real = p.getuid;
+  p.getuid = () => uid;
+  try { return fn(); } finally { p.getuid = real; }
+}
+
+test('the removal marker is never written as root (a symlink in the invoking user\'s data dir would be followed)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-marker-root-'));
+  const victim = join(dir, 'victim');
+  writeFileSync(victim, 'keep');
+  symlinkSync(victim, join(dir, PLUGIN_REMOVED_MARKER));
+  asUid(0, () => markPluginRemoved(dir));
+  expect(readFileSync(victim, 'utf8')).toBe('keep');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('the removal marker: written by uninstall, seen by the heal, cleared by install', () => asUid(1000, () => {
   const dir = mkdtempSync(join(tmpdir(), 'cm-marker-'));
   expect(pluginRemovedOnPurpose(dir)).toBe(false);
   markPluginRemoved(join(dir, 'not-yet-created'));                       // creates the data dir if it is missing
@@ -192,7 +210,7 @@ test('the removal marker: written by uninstall, seen by the heal, cleared by ins
   expect(pluginRemovedOnPurpose(dir)).toBe(false);
   clearPluginRemoved(dir);                                               // clearing twice is fine
   rmSync(dir, { recursive: true, force: true });
-});
+}));
 
 test('findClaudeBinary: PATH first, then the usual install folders, else null', () => {
   const home = mkdtempSync(join(tmpdir(), 'cm-claude-'));

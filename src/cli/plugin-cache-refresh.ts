@@ -69,6 +69,10 @@ export function marketplaceState(repoRoot: string, home: string = homedir()): Ma
 export const PLUGIN_REMOVED_MARKER = 'plugin-removed';
 export function pluginRemovedOnPurpose(dataDir: string = DATA_DIR): boolean { return existsSync(join(dataDir, PLUGIN_REMOVED_MARKER)); }
 export function markPluginRemoved(dataDir: string = DATA_DIR): void {
+  // Never as root: under `sudo captain-memo uninstall` the data dir can be the invoking user's, and a symlink they left
+  // at the marker's path would be followed with root's rights. The worker is already stopped there (only Windows, which
+  // has no root, keeps one running through an uninstall), so nothing needs the marker.
+  if (process.getuid && process.getuid() === 0) return;
   try { mkdirSync(dataDir, { recursive: true }); writeFileSync(join(dataDir, PLUGIN_REMOVED_MARKER), new Date().toISOString() + '\n'); } catch { /* best effort */ }
 }
 export function clearPluginRemoved(dataDir: string = DATA_DIR): void {
