@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "captain-memo",
-      "version": "0.57.2",
+      "version": "0.57.3",
       "source": "./plugin",
       "description": "Local memory layer shared by Claude Code, Codex, Gemini CLI and other AI coding tools. Injects relevant memory into your prompts, watches your memory files, captures session observations and keeps them indefinitely. Replaces claude-mem."
     }

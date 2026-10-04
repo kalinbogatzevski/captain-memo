@@ -956,7 +956,7 @@ var package_default;
 var init_package = __esm(() => {
   package_default = {
     name: "captain-memo",
-    version: "0.57.2",
+    version: "0.57.3",
     description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
     type: "module",
     private: true,
@@ -1476,59 +1476,70 @@ var init_plugin_cache = __esm(() => {
   INSTALLED_PLUGINS_PATH = join11(homedir5(), ".claude", "plugins", "installed_plugins.json");
 });
 
-// src/shared/ansi.ts
-var init_ansi = () => {};
-
-// src/cli/banner.ts
-var init_banner = __esm(() => {
-  init_ansi();
-});
-
-// src/shared/platform.ts
-var isWindows, isMac, isLinux;
-var init_platform = __esm(() => {
-  isWindows = process.platform === "win32";
-  isMac = process.platform === "darwin";
-  isLinux = process.platform === "linux";
-});
-
-// src/shared/sqlite-extensions.ts
-var MACOS_SQLITE_REMEDY;
-var init_sqlite_extensions = __esm(() => {
-  init_platform();
-  MACOS_SQLITE_REMEDY = `macOS ships SQLite without extension support, so the vector index cannot load.
-` + `  Fix:  brew install sqlite
-` + `  Then: captain-memo restart
-` + '  (Or install with the embedder set to "skip" for keyword-only retrieval, which needs no extension.)';
-});
-
-// src/shared/summarizer-login.ts
-var init_summarizer_login = () => {};
-
-// src/cli/commands/install-hooks.ts
-var init_install_hooks = () => {};
-
-// src/services/embedder-installer/bash.ts
-import { join as join12, resolve as resolve4 } from "path";
-var REPO_ROOT3, SCRIPT;
-var init_bash = __esm(() => {
-  REPO_ROOT3 = resolve4(import.meta.dir, "../../..");
-  SCRIPT = join12(REPO_ROOT3, "scripts/install-embedder.sh");
-});
-
-// src/services/embedder-installer/powershell.ts
-import { join as join13, resolve as resolve5 } from "path";
-var REPO_ROOT4, SCRIPT2;
-var init_powershell = __esm(() => {
-  REPO_ROOT4 = resolve5(import.meta.dir, "../../..");
-  SCRIPT2 = join13(REPO_ROOT4, "scripts/install-embedder.ps1");
-});
-
-// src/services/embedder-installer/index.ts
-var init_embedder_installer = __esm(() => {
-  init_platform();
-  init_bash();
-  init_powershell();
+// src/cli/plugin-cache-refresh.ts
+import { spawnSync as spawnSync4 } from "child_process";
+import { existsSync as existsSync6, mkdirSync as mkdirSync8, readFileSync as readFileSync9, readdirSync as readdirSync3, rmSync as rmSync4, writeFileSync as writeFileSync8 } from "fs";
+import { homedir as homedir6 } from "os";
+import { join as join12 } from "path";
+function marketplacePointsAtCheckout(repoRoot, home = homedir6()) {
+  return marketplaceState(repoRoot, home) === "ours";
+}
+function marketplaceState(repoRoot, home = homedir6()) {
+  try {
+    const file = join12(home, ".claude", "plugins", "known_marketplaces.json");
+    const parsed = JSON.parse(readFileSync9(file, "utf-8"));
+    const entry = parsed["captain-memo"];
+    if (!entry)
+      return "absent";
+    const src = entry.source;
+    return src?.source === "directory" && typeof src.path === "string" && normalizePath(src.path) === normalizePath(repoRoot) ? "ours" : "other";
+  } catch {
+    return "unknown";
+  }
+}
+function activeCachedVersion(home = homedir6(), runningVersion) {
+  const installed = readInstalledPaths(join12(home, ".claude", "plugins", "installed_plugins.json"));
+  if (installed === null)
+    return null;
+  let first = null;
+  for (const path of installed) {
+    const m = readPluginManifest(path);
+    if (m?.name !== "captain-memo")
+      continue;
+    if (runningVersion !== undefined && m.version === runningVersion)
+      return m.version;
+    first ??= m.version;
+  }
+  return first;
+}
+function needsCacheRefresh(cachedVersion, runningVersion) {
+  return cachedVersion !== null && cachedVersion !== runningVersion;
+}
+function refreshPluginCacheIfStale(runningVersion, repoRoot = REPO_ROOT3, deps = {}) {
+  const cachedVersion = deps.cachedVersion ?? (() => activeCachedVersion(undefined, runningVersion));
+  const before = cachedVersion();
+  if (!needsCacheRefresh(before, runningVersion))
+    return { refreshed: false, skipped: "cache is in step" };
+  const pointsAt = deps.pointsAtCheckout ?? ((r) => marketplacePointsAtCheckout(r));
+  if (!pointsAt(repoRoot))
+    return { refreshed: false, skipped: "not a directory marketplace on this checkout" };
+  const run = deps.run ?? ((args) => {
+    const r = spawnSync4("claude", args, { stdio: "pipe", timeout: 120000 });
+    return r.status ?? 1;
+  });
+  if (run(["plugin", "marketplace", "update", "captain-memo"]) !== 0)
+    return { refreshed: false, skipped: "marketplace update failed" };
+  if (run(["plugin", "update", "captain-memo@captain-memo"]) !== 0)
+    return { refreshed: false, skipped: "plugin update failed" };
+  if (needsCacheRefresh(cachedVersion(), runningVersion))
+    return { refreshed: false, skipped: "plugin update did not move the cache" };
+  return { refreshed: true, from: before };
+}
+var REPO_ROOT3, CACHE_REFRESH_LOCK = ".plugin-cache-refresh.lock";
+var init_plugin_cache_refresh = __esm(() => {
+  init_plugin_cache();
+  init_paths();
+  REPO_ROOT3 = join12(import.meta.dir, "..", "..");
 });
 
 // src/shared/vscode-paths.ts
@@ -1544,147 +1555,23 @@ var init_vscode_paths = __esm(() => {
   VSCODE_OSES = ["win32", "darwin", "linux"];
 });
 
-// src/cli/cross-ai.ts
-var PROBE_CLEAR, bunYaml, OPENCODE_LOCAL_PROVIDERS, OPENCODE_LOCAL_PROVIDER_KEYS;
-var init_cross_ai = __esm(() => {
-  init_platform();
-  init_vscode_paths();
-  init_paths();
-  init_self_update();
-  PROBE_CLEAR = process.stdout.isTTY === true ? "\r\x1B[2K" : "\r";
-  bunYaml = globalThis.Bun?.YAML;
-  OPENCODE_LOCAL_PROVIDERS = {
-    ollama: { name: "Ollama (local)", baseURL: "http://localhost:11434/v1" },
-    vllm: { name: "vLLM (local)", baseURL: "http://localhost:8000/v1" },
-    lmstudio: { name: "LM Studio (local)", baseURL: "http://127.0.0.1:1234/v1" }
-  };
-  OPENCODE_LOCAL_PROVIDER_KEYS = Object.keys(OPENCODE_LOCAL_PROVIDERS);
-});
-
-// src/shared/ai-memory-sources.ts
-import { homedir as homedir6 } from "os";
-var H;
-var init_ai_memory_sources = __esm(() => {
-  H = homedir6();
-});
-
-// src/cli/commands/install.ts
-import { dirname as dirname3, join as join14, resolve as resolve6 } from "path";
-import { homedir as homedir7 } from "os";
-function pluginRegistrationSteps(repoRoot) {
-  return [
-    ["plugin", "marketplace", "remove", "captain-memo", "--scope", "user"],
-    ["plugin", "marketplace", "add", repoRoot],
-    ["plugin", "install", "captain-memo@captain-memo"]
-  ];
-}
-var REPO_ROOT5, PLUGIN_LINK, MANAGED_ENV_KEYS;
-var init_install = __esm(() => {
-  init_banner();
-  init_platform();
-  init_sqlite_extensions();
-  init_paths();
-  init_worker_env();
-  init_summarizer_login();
-  init_service_manager();
-  init_install_hooks();
-  init_embedder_installer();
-  init_cross_ai();
-  init_ai_memory_sources();
-  REPO_ROOT5 = resolve6(import.meta.dir, "../../..");
-  PLUGIN_LINK = join14(homedir7(), ".claude", "plugins", "captain-memo");
-  MANAGED_ENV_KEYS = new Set([
-    "CAPTAIN_MEMO_DATA_DIR",
-    "CAPTAIN_MEMO_PROJECT_ID",
-    "CAPTAIN_MEMO_WORKER_PORT",
-    "CAPTAIN_MEMO_HOOK_TIMEOUT_MS",
-    "CAPTAIN_MEMO_SUMMARIZER_PROVIDER",
-    "CAPTAIN_MEMO_SUMMARIZER_MODEL",
-    "ANTHROPIC_API_KEY",
-    "CAPTAIN_MEMO_OPENAI_ENDPOINT",
-    "CAPTAIN_MEMO_OPENAI_API_KEY",
-    "CAPTAIN_MEMO_SKIP_EMBED",
-    "CAPTAIN_MEMO_EMBEDDER_ENDPOINT",
-    "CAPTAIN_MEMO_EMBEDDER_MODEL",
-    "CAPTAIN_MEMO_EMBEDDING_DIM",
-    "CAPTAIN_MEMO_EMBEDDER_API_KEY",
-    "CAPTAIN_MEMO_WATCH_MEMORY",
-    "CAPTAIN_MEMO_WATCH_SKILLS"
-  ]);
-});
-
-// src/cli/plugin-cache-refresh.ts
-import { spawnSync as spawnSync4 } from "child_process";
-import { readFileSync as readFileSync9 } from "fs";
-import { homedir as homedir8 } from "os";
-import { join as join15 } from "path";
-function marketplacePointsAtCheckout(repoRoot, home = homedir8()) {
-  try {
-    const file = join15(home, ".claude", "plugins", "known_marketplaces.json");
-    const parsed = JSON.parse(readFileSync9(file, "utf-8"));
-    const src = parsed["captain-memo"]?.source;
-    return src?.source === "directory" && typeof src.path === "string" && normalizePath(src.path) === normalizePath(repoRoot);
-  } catch {
-    return false;
-  }
-}
-function activeCachedVersion(home = homedir8()) {
-  const installed = readInstalledPaths(join15(home, ".claude", "plugins", "installed_plugins.json"));
-  if (installed === null)
-    return null;
-  for (const path of installed) {
-    const m = readPluginManifest(path);
-    if (m?.name === "captain-memo")
-      return m.version;
-  }
-  return null;
-}
-function needsCacheRefresh(cachedVersion, runningVersion) {
-  return cachedVersion !== null && cachedVersion !== runningVersion;
-}
-function refreshPluginCacheIfStale(runningVersion, repoRoot = REPO_ROOT6, deps = {}) {
-  const cachedVersion = (deps.cachedVersion ?? activeCachedVersion)();
-  if (!needsCacheRefresh(cachedVersion, runningVersion))
-    return { refreshed: false, skipped: "cache is in step" };
-  const pointsAt = deps.pointsAtCheckout ?? ((r) => marketplacePointsAtCheckout(r));
-  if (!pointsAt(repoRoot))
-    return { refreshed: false, skipped: "not a directory marketplace on this checkout" };
-  const run = deps.run ?? ((args) => {
-    const r = spawnSync4("claude", args, { stdio: "pipe", timeout: 120000 });
-    return r.status ?? 1;
-  });
-  const steps = pluginRegistrationSteps(repoRoot);
-  run(steps[0]);
-  if (run(steps[1]) !== 0)
-    return { refreshed: false, skipped: "marketplace add failed" };
-  if (run(steps[2]) !== 0)
-    return { refreshed: false, skipped: "plugin install failed" };
-  return { refreshed: true, from: cachedVersion };
-}
-var REPO_ROOT6, CACHE_REFRESH_LOCK = ".plugin-cache-refresh.lock";
-var init_plugin_cache_refresh = __esm(() => {
-  init_plugin_cache();
-  init_install();
-  REPO_ROOT6 = join15(import.meta.dir, "..", "..");
-});
-
 // src/cli/skill-refresh.ts
-import { existsSync as existsSync6, copyFileSync } from "fs";
-import { join as join16 } from "path";
+import { existsSync as existsSync7, copyFileSync } from "fs";
+import { join as join13 } from "path";
 function resolveMemoSkillSource(base = import.meta.dir) {
   return [
-    join16(base, "..", "..", "skills", "captain-memo", "SKILL.md"),
-    join16(base, "..", "portable", "captain-memo", "SKILL.md")
-  ].find((p) => existsSync6(p)) ?? null;
+    join13(base, "..", "..", "skills", "captain-memo", "SKILL.md"),
+    join13(base, "..", "portable", "captain-memo", "SKILL.md")
+  ].find((p) => existsSync7(p)) ?? null;
 }
 function refreshMemoSkills(source, home, deps = {}) {
-  const exists = deps.exists ?? existsSync6;
+  const exists = deps.exists ?? existsSync7;
   const copy = deps.copy ?? copyFileSync;
   if (!exists(source))
     return [];
   const refreshed = [];
   for (const rel of [...MEMO_SKILL_RELPATHS, ...VSCODE_SKILL_RELPATHS]) {
-    const dest = join16(home, ...rel.split("/"));
+    const dest = join13(home, ...rel.split("/"));
     if (!exists(dest))
       continue;
     try {
@@ -1771,8 +1658,8 @@ init_paths();
 
 // src/worker/homework.ts
 var HOMEWORK_DONE_KEEP_MS = 7 * 24 * 3600000;
-function parseHomeworkPrompt(prompt2) {
-  const m = /^\s*(?:idea|todo|homework|later|\u0438\u0434\u0435\u044F|\u0437\u0430 \u043F\u043E\u0441\u043B\u0435)\s*[:\-\u2014]\s*(\S[\s\S]*)$/i.exec(String(prompt2));
+function parseHomeworkPrompt(prompt) {
+  const m = /^\s*(?:idea|todo|homework|later|\u0438\u0434\u0435\u044F|\u0437\u0430 \u043F\u043E\u0441\u043B\u0435)\s*[:\-\u2014]\s*(\S[\s\S]*)$/i.exec(String(prompt));
   return m ? m[1].trim() : null;
 }
 function homeworkFiledLine(it) {
@@ -1801,8 +1688,8 @@ function homeworkWaitMs(hostTimeoutMs, elapsedMs) {
     return 6000;
   return Math.max(0, Math.min(6000, hostTimeoutMs - elapsedMs - HOST_EXIT_MARGIN_MS));
 }
-function parseOverridePrompt(prompt2, cwd) {
-  const m = /^\s*override\s*:\s*(\S[\s\S]*)$/i.exec(String(prompt2 ?? "").split(/\r?\n/)[0] ?? "");
+function parseOverridePrompt(prompt, cwd) {
+  const m = /^\s*override\s*:\s*(\S[\s\S]*)$/i.exec(String(prompt ?? "").split(/\r?\n/)[0] ?? "");
   if (!m)
     return null;
   const raw = m[1].split(/[\s,]+/).map((f) => f.replace(/^[`'"]+|[`'".]+$/g, "")).filter(Boolean);
@@ -1819,9 +1706,9 @@ async function main(options = {}) {
     logHookError("UserPromptSubmit", err);
     return;
   }
-  const prompt2 = payload.prompt ?? "";
+  const prompt = payload.prompt ?? "";
   const timeoutMs = Number(process.env[ENV_HOOK_TIMEOUT_MS] ?? DEFAULT_HOOK_TIMEOUT_MS);
-  const homework = parseHomeworkPrompt(prompt2);
+  const homework = parseHomeworkPrompt(prompt);
   if (homework) {
     const filed = await workerFetch("/homework/add", { method: "POST", body: { text: homework, by: payload.session_id ?? "hook", project: resolveProjectId(payload.cwd) }, timeoutMs: homeworkWaitMs(options.hostTimeoutMs, performance.now()) });
     const line = filed.ok && filed.body ? homeworkFiledLine(filed.body.item) + ` (${filed.body.open} open)` : '\uD83D\uDCDD The worker did not confirm filing this as homework in time \u2014 it may still have landed: todo_list() shows; if it is not there, say "noted" and todo_add it yourself.';
@@ -1835,10 +1722,10 @@ async function main(options = {}) {
 `);
     }
     if (options.emitOriginalPrompt !== false)
-      writeStdout(prompt2);
+      writeStdout(prompt);
     return;
   }
-  const overrideFiles = payload.session_id ? parseOverridePrompt(prompt2, payload.cwd) : null;
+  const overrideFiles = payload.session_id ? parseOverridePrompt(prompt, payload.cwd) : null;
   if (overrideFiles) {
     const r = await workerFetch("/worknote/override", { method: "POST", body: { session_id: payload.session_id, files: overrideFiles }, timeoutMs: 2000 });
     logWorkerFailure("UserPromptSubmit", "/worknote/override", r);
@@ -1852,13 +1739,13 @@ async function main(options = {}) {
 `);
     }
     if (options.emitOriginalPrompt !== false)
-      writeStdout(prompt2);
+      writeStdout(prompt);
     return;
   }
   const result = await workerFetch("/inject/context", {
     method: "POST",
     body: {
-      prompt: prompt2,
+      prompt,
       top_k: 5,
       session_id: payload.session_id,
       project_id: resolveProjectId(payload.cwd)
@@ -1907,7 +1794,7 @@ async function main(options = {}) {
     }
   }
   if (options.emitOriginalPrompt !== false)
-    writeStdout(prompt2);
+    writeStdout(prompt);
   if (result.ok && process.env.CAPTAIN_MEMO_AUTO_UPDATE === "1" && options.hostTimeoutMs === undefined) {
     try {
       await Promise.resolve().then(() => init_auto_update());
@@ -1930,8 +1817,8 @@ if (isMainModule(import.meta)) {
 
 // src/hooks/session-start.ts
 init_shared();
-import { join as join17 } from "path";
-import { homedir as homedir9 } from "os";
+import { join as join14 } from "path";
+import { homedir as homedir7 } from "os";
 
 // src/hooks/local-articles.ts
 var LOCAL_ARTICLES = [
@@ -2202,7 +2089,7 @@ async function main2() {
   }
   try {
     await Promise.resolve().then(() => init_plugin_cache_refresh());
-    const lock = join17(DATA_DIR, CACHE_REFRESH_LOCK);
+    const lock = join14(DATA_DIR, CACHE_REFRESH_LOCK);
     if (acquireHealLock(lock)) {
       try {
         const r = refreshPluginCacheIfStale(VERSION);
@@ -2222,7 +2109,7 @@ async function main2() {
     await Promise.resolve().then(() => init_skill_refresh());
     const memoSource = resolveMemoSkillSource();
     if (memoSource)
-      refreshMemoSkills(memoSource, homedir9());
+      refreshMemoSkills(memoSource, homedir7());
   } catch (err) {
     logHookError("SessionStart", err);
   }
@@ -2282,7 +2169,7 @@ async function fetchNews(from, to) {
 init_shared();
 
 // src/hooks/shell-writes.ts
-import { resolve as resolve7 } from "path";
+import { resolve as resolve4 } from "path";
 var MAX_SHELL_FILES = 25;
 function coarseClaimFor(cwd) {
   return `${cwd}/**`;
@@ -2483,7 +2370,7 @@ function splitSegments(command, cwd, shell = "posix") {
   for (const r of raw) {
     const cd = chdirTarget(r.seg);
     if (cd !== null) {
-      dir = cd === "" || dir === null ? null : resolve7(dir, norm(cd));
+      dir = cd === "" || dir === null ? null : resolve4(dir, norm(cd));
       continue;
     }
     out.push({ ...r, dir });
@@ -2506,7 +2393,7 @@ function scriptWrites(command, cwd) {
       const t = m[2] ?? "";
       if (NOT_A_FILE.test(t) || unresolvable(t) || t.includes("{") || notAPath(t))
         continue;
-      const abs = resolve7(cwd, t);
+      const abs = resolve4(cwd, t);
       if (!out.includes(abs))
         out.push(abs);
     }
@@ -2546,7 +2433,7 @@ function parseWrittenPaths(command, cwd, shell = "posix") {
         unresolved = true;
         continue;
       }
-      const abs = resolve7(d, norm(t));
+      const abs = resolve4(d, norm(t));
       if (seen.has(abs))
         continue;
       seen.add(abs);
@@ -2571,10 +2458,10 @@ function parseWrittenPaths(command, cwd, shell = "posix") {
 }
 
 // src/hooks/deploy-guard.ts
-import { resolve as resolve8, basename, dirname as dirname4, join as join18, relative } from "path";
+import { resolve as resolve5, basename, dirname as dirname3, join as join15, relative } from "path";
 import { createHash } from "crypto";
-import { homedir as homedir10 } from "os";
-import { existsSync as existsSync7, statSync as statSync6, readFileSync as readFileSync10, writeFileSync as writeFileSync8, mkdirSync as mkdirSync8 } from "fs";
+import { homedir as homedir8 } from "os";
+import { existsSync as existsSync8, statSync as statSync6, readFileSync as readFileSync10, writeFileSync as writeFileSync9, mkdirSync as mkdirSync9 } from "fs";
 import { spawnSync as spawnSync5 } from "child_process";
 init_paths();
 init_branch();
@@ -2616,7 +2503,7 @@ var RSYNC_VALUE_FLAGS = new Set([
 ]);
 var SSH_VALUE_FLAGS = new Set(["-p", "-i", "-o", "-J", "-F", "-l", "-L", "-R", "-D", "-b", "-c", "-E", "-e", "-m", "-O", "-Q", "-S", "-W", "-w", "-B"]);
 var SSH_PASS = new Set(["-p", "-i", "-o", "-J", "-F", "-l"]);
-var tilde = (p) => p === "~" || p.startsWith("~/") ? homedir10() + p.slice(1) : p;
+var tilde = (p) => p === "~" || p.startsWith("~/") ? homedir8() + p.slice(1) : p;
 function sshPassArgs(toks) {
   const out = [];
   for (let i = 0;i < toks.length; i++) {
@@ -2776,7 +2663,7 @@ function parseTransfers(command, cwd, isDir = defaultIsDir) {
                 unchecked++;
                 continue;
               }
-              const local = resolve8(dir, tilde(src));
+              const local = resolve5(dir, tilde(src));
               const isDirSrc = recursive && (isDir(local) || src.endsWith("/"));
               const intoDir = destTok.endsWith("/") || sources.length > 1 || dest.path === "" || name === "rsync" && isDirSrc && !src.endsWith("/");
               let path = intoDir ? dest.path === "" ? basename(local) : `${dest.path.replace(/\/+$/, "")}/${basename(local)}` : dest.path;
@@ -2789,8 +2676,8 @@ function parseTransfers(command, cwd, isDir = defaultIsDir) {
               const r = remoteSpec(src);
               if (!r || !r.path || r.path.includes("*") || src.includes("$"))
                 continue;
-              const destAbs = resolve8(dir, tilde(destTok));
-              const local = destTok.endsWith("/") || destTok === "." || isDir(destAbs) ? join18(destAbs, basename(r.path)) : destAbs;
+              const destAbs = resolve5(dir, tilde(destTok));
+              const local = destTok.endsWith("/") || destTok === "." || isDir(destAbs) ? join15(destAbs, basename(r.path)) : destAbs;
               downloads.push({ local, userhost: r.userhost, path: r.path, sshArgs: [...sshArgs] });
             }
           }
@@ -2825,7 +2712,7 @@ function parseTransfers(command, cwd, isDir = defaultIsDir) {
             if (src.includes("$") || path.includes("$") || userhost.includes("$"))
               unchecked++;
             else if (src)
-              uploads.push({ local: resolve8(dir, tilde(src)), userhost, path, sshArgs });
+              uploads.push({ local: resolve5(dir, tilde(src)), userhost, path, sshArgs });
             continue;
           }
           if (up && piped) {
@@ -2836,7 +2723,7 @@ function parseTransfers(command, cwd, isDir = defaultIsDir) {
             if (/[$*?{]/.test(src) || path.includes("$") || userhost.includes("$") || prev.dir === null)
               unchecked++;
             else
-              uploads.push({ local: resolve8(prev.dir, tilde(src)), userhost, path, sshArgs });
+              uploads.push({ local: resolve5(prev.dir, tilde(src)), userhost, path, sshArgs });
             continue;
           }
           const down = /^\s*cat\s+([^\s;|&<>'"]+)\s*$/.exec(remoteCmd);
@@ -2844,7 +2731,7 @@ function parseTransfers(command, cwd, isDir = defaultIsDir) {
           if (down && outRedirect) {
             const tok = sub(tokenize(seg.slice(outRedirect.index + outRedirect[0].length))[0] ?? "");
             if (tok && !tok.includes("$"))
-              downloads.push({ local: resolve8(dir, tilde(tok)), userhost, path: down[1], sshArgs });
+              downloads.push({ local: resolve5(dir, tilde(tok)), userhost, path: down[1], sshArgs });
           }
         }
       }
@@ -2927,12 +2814,12 @@ var COMMITTED_DEPTH = 9;
 function committedMd5s(file, remotePath, cwd) {
   const out = new Map;
   try {
-    let root = detectRepoRootSync(dirname4(file));
+    let root = detectRepoRootSync(dirname3(file));
     let rel = root ? relative(root, file).split("\\").join("/") : "..";
     if (rel.startsWith("..") && remotePath && cwd) {
       root = detectRepoRootSync(cwd);
       const parts = remotePath.split("/").filter(Boolean);
-      const i = root ? parts.findIndex((_, k) => existsSync7(join18(root, ...parts.slice(k)))) : -1;
+      const i = root ? parts.findIndex((_, k) => existsSync8(join15(root, ...parts.slice(k)))) : -1;
       rel = i >= 0 ? parts.slice(i).join("/") : "..";
     }
     if (!root || rel.startsWith(".."))
@@ -2971,7 +2858,7 @@ function committedMd5s(file, remotePath, cwd) {
   } catch {}
   return out;
 }
-var baseFile = (sid) => join18(process.env.CAPTAIN_MEMO_DATA_DIR ?? DATA_DIR, "deploy-base", `${sid.replace(/[^A-Za-z0-9_.-]/g, "_")}.json`);
+var baseFile = (sid) => join15(process.env.CAPTAIN_MEMO_DATA_DIR ?? DATA_DIR, "deploy-base", `${sid.replace(/[^A-Za-z0-9_.-]/g, "_")}.json`);
 function readBaselines(sid) {
   try {
     return JSON.parse(readFileSync10(baseFile(sid), "utf-8"));
@@ -2984,9 +2871,9 @@ function recordBaseline(sid, key, md5, how) {
     const b = readBaselines(sid);
     b[key] = [...(b[key] ?? []).filter((e) => e.md5 !== md5), { md5, how }].slice(-5);
     const f = baseFile(sid);
-    if (!existsSync7(dirname4(f)))
-      mkdirSync8(dirname4(f), { recursive: true });
-    writeFileSync8(f, JSON.stringify(b));
+    if (!existsSync8(dirname3(f)))
+      mkdirSync9(dirname3(f), { recursive: true });
+    writeFileSync9(f, JSON.stringify(b));
   } catch {}
 }
 var MAX_CHECKED = 5;
@@ -3290,13 +3177,13 @@ function aiProcessPid(agents, start = process.ppid, root = "/proc", platform = p
 }
 
 // src/hooks/pre-tool-use.ts
-import { resolve as resolve9, dirname as dirname5 } from "path";
+import { resolve as resolve6, dirname as dirname4 } from "path";
 var HOOK_TIMEOUT_MS3 = Number(process.env.CAPTAIN_MEMO_PRE_TOOL_USE_TIMEOUT_MS ?? 1500);
 var MAX_FILES = 25;
 var HOST_EXIT_MARGIN_MS2 = 750;
 var SHELL_TOOLS = { Bash: "posix", PowerShell: "powershell", run_shell_command: "posix" };
 var enforcing = () => process.env.CAPTAIN_MEMO_WORKBOARD_ENFORCE !== "0";
-var scratchPath = (p) => (/^\/(?:var\/)?tmp\//.test(p) || /\/claude-\d+\//.test(p)) && !detectRepoRootSync(dirname5(p));
+var scratchPath = (p) => (/^\/(?:var\/)?tmp\//.test(p) || /\/claude-\d+\//.test(p)) && !detectRepoRootSync(dirname4(p));
 async function publishClaim(sid, cwd, touched, o) {
   const project = resolveProjectId(cwd);
   const advisories = [];
@@ -3410,7 +3297,7 @@ async function main4(opts = {}) {
   const agent = opts.agent ?? "claude";
   const advisories = [];
   let deny;
-  const abs = (p) => cwd ? resolve9(cwd, p) : p;
+  const abs = (p) => cwd ? resolve6(cwd, p) : p;
   const claim = async (touched, extra = {}) => {
     try {
       const r = await publishClaim(sid, cwd, touched.filter((p) => !scratchPath(p)), { agent, ...extra, ...opts.hostTimeoutMs !== undefined ? { hostTimeoutMs: opts.hostTimeoutMs } : {} });

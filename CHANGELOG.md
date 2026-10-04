@@ -7,6 +7,13 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.57.3] — 2026-10-04
+
+### Fixed
+
+- **A new Claude Code session no longer starts without the Captain Memo plugin after an update.** On a local-clone install, the cache refresh that runs when a session starts used to remove the plugin's marketplace and install it again. Removing a marketplace uninstalls its plugins, and when that sequence was interrupted (Claude Code stops a session-start hook after 60 seconds) the machine was left with no plugin: every new session, in any folder, came up without Captain Memo's tools, hooks and skills, and nothing was logged. The refresh now only updates the plugin in place and never uninstalls it; if the update fails, the installed plugin stays as it was. GitHub-marketplace installs were never touched by this.
+- **A missing plugin is put back.** The worker checks at start and every 30 minutes that Claude Code still has the plugin, and installs it again when it is missing while the marketplace still points at this clone (or, if the marketplace entry went with it, when this is a git clone and the cache shows the plugin was installed here before). A removal through `captain-memo uninstall` is respected: it leaves a marker that `captain-memo install` clears. Removing the plugin by hand with `claude plugin …` while the worker runs is undone, so set `CAPTAIN_MEMO_PLUGIN_HEAL=0` if you want it to stay removed. The worker also finds `claude` in the usual install folders when its service PATH lacks it, and says in its log when it cannot.
+
 ## [0.57.2] — 2026-10-02
 
 ### Fixed
