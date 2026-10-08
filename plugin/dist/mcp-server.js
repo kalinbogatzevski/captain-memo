@@ -12384,16 +12384,7 @@ class Server extends Protocol {
     if (!methodSchema) {
       throw new Error("Schema is missing a method literal");
     }
-    let methodValue;
-    if (isZ4Schema(methodSchema)) {
-      const v4Schema = methodSchema;
-      const v4Def = v4Schema._zod?.def;
-      methodValue = v4Def?.value ?? v4Schema.value;
-    } else {
-      const v3Schema = methodSchema;
-      const legacyDef = v3Schema._def;
-      methodValue = legacyDef?.value ?? v3Schema.value;
-    }
+    const methodValue = getLiteralValue(methodSchema);
     if (typeof methodValue !== "string") {
       throw new Error("Schema method literal must be a string");
     }
@@ -12673,8 +12664,18 @@ class Server extends Protocol {
 import process2 from "process";
 
 // node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
+var STDIO_DEFAULT_MAX_BUFFER_SIZE = 10 * 1024 * 1024;
+
 class ReadBuffer {
+  constructor(options) {
+    this._maxBufferSize = options?.maxBufferSize ?? STDIO_DEFAULT_MAX_BUFFER_SIZE;
+  }
   append(chunk) {
+    const newSize = (this._buffer?.length ?? 0) + chunk.length;
+    if (newSize > this._maxBufferSize) {
+      this.clear();
+      throw new Error(`ReadBuffer exceeded maximum size of ${this._maxBufferSize} bytes`);
+    }
     this._buffer = this._buffer ? Buffer.concat([this._buffer, chunk]) : chunk;
   }
   readMessage() {
@@ -12704,18 +12705,23 @@ function serializeMessage(message) {
 
 // node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
 class StdioServerTransport {
-  constructor(_stdin = process2.stdin, _stdout = process2.stdout) {
+  constructor(_stdin = process2.stdin, _stdout = process2.stdout, options) {
     this._stdin = _stdin;
     this._stdout = _stdout;
-    this._readBuffer = new ReadBuffer;
     this._started = false;
     this._ondata = (chunk) => {
-      this._readBuffer.append(chunk);
-      this.processReadBuffer();
+      try {
+        this._readBuffer.append(chunk);
+        this.processReadBuffer();
+      } catch (error) {
+        this.onerror?.(error);
+        this.close().catch(() => {});
+      }
     };
     this._onerror = (error) => {
       this.onerror?.(error);
     };
+    this._readBuffer = new ReadBuffer({ maxBufferSize: options?.maxBufferSize });
   }
   async start() {
     if (this._started) {
