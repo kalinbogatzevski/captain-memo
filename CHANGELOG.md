@@ -7,6 +7,20 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.57.4] — 2026-10-08
+
+### Fixed
+
+- **A stuck retry queue can no longer spend millions of embedding tokens.** One captain's Voyage bill showed 7.29M tokens in 108 requests in a morning. The cause was 260 leftover chunks of another assistant's own database files, indexed as memory by the too-wide file watcher fixed in 0.54.0. They could never embed inside the 1.5 s timeout, so each batch was sent again three times per pass, every ten minutes, for ever (68,043 retries in all). The 0.54.0 fix stopped new indexing but nothing removed what was already in. Four changes close it:
+  - **A request that our own timeout cut off is not sent again.** The provider may still be working on it, and sending it again is how one slow batch became three billed ones.
+  - **Background indexing batches wait 15 seconds, not 1.5.** A search query keeps 1.5 s. The slowest call measured for a normal 128-chunk batch on a healthy hosted provider took 1.67 s. `CAPTAIN_MEMO_EMBEDDER_TIMEOUT_MS`, which was documented but read only by the migrator, now sets it for the worker.
+  - **Embedding pauses for 30 minutes after more than 500,000 tokens in an hour went to requests that never got an answer.** The retry queue stands still while it is paused and `captain-memo doctor` names the pause. `CAPTAIN_MEMO_EMBEDDER_WASTE_LIMIT_TOKENS` changes the limit; `0` turns the pause off. A queue row that timed out on 8 passes is parked and tried once a day.
+  - **Leftover non-markdown files leave on their own.** The retry queue drops rows for chunks of non-markdown memory files, or of text with a NUL byte, instead of sending them. The hourly sweep removes such documents, and `captain-memo doctor` warns while any remain (`captain-memo maintenance --apply` removes them at once).
+
+### Added
+
+- **`captain-memo stats` shows what the worker's embedder sent.** An "Embed tokens" line gives the tokens sent since the worker started and how many of them went to requests that never got an answer, and says when embedding is paused. The worker's `/stats` carries the same figures as `embedder_usage`.
+
 ## [0.57.3] — 2026-10-04
 
 ### Fixed
