@@ -7,6 +7,16 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.57.5] — 2026-10-08
+
+### Fixed
+
+- **`bun audit` is clean again.** Two advisories published today made the audit fail on an unchanged lockfile: the MCP SDK's OAuth client could send credentials to an authorization server chosen by the MCP server, and proxy-addr before 2.0.8 allowed IP spoofing. The MCP SDK moves to 1.31.0 and proxy-addr to 2.0.8. Captain Memo uses only the SDK's server side and never its OAuth client, so the first was not reachable here. Two behaviours change with the new SDK: a single stdio message over 10 MiB now closes the transport instead of being buffered without bound, and the HTTP gateway transport gets a 4 MiB request-body cap and a keep-alive comment every 15 seconds.
+
+### Added
+
+- **`captain-memo stats` counts the search engines' embeds too.** The threaded worker answers every search and inject query from a read-only reader engine, and each reader has an embedder of its own. The "Embed tokens" figure and `/stats` `embedder_usage` only showed the indexer's, so a prompt that was a very large paste spent provider tokens that no counter showed. They now add up the indexer and every reader, and `embedder_usage` gains `readers`, the number of reader engines in the total. Each reader reports when its figures change, at most every 5 seconds. The embedding pause is still per engine: when one engine pauses (the indexer or a single reader) the others keep embedding, and `stats` and `captain-memo doctor` say "in at least one engine" instead of implying that all embedding stopped.
+
 ## [0.57.4] — 2026-10-08
 
 ### Fixed
