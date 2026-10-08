@@ -16,7 +16,7 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { VectorStore, cosineFromL2 } from './vector-store.ts';
 import { HybridSearcher } from './search.ts';
-import { IngestPipeline } from './ingest.ts';
+import { IngestPipeline, isUnembeddableChunk } from './ingest.ts';
 import { writeMemory, type WriteMemoryDeps, type RememberInput } from './memory-writer.ts';
 import { discoverMemoryGlobs } from '../shared/ai-memory-sources.ts';
 import { FileWatcher } from './watcher.ts';
@@ -48,12 +48,12 @@ import { warmWorknoteVecs, semanticOverlapPass, hasIntent, SEMANTIC_ENABLED, sem
 import { addHomework, listHomework, claimHomework, unclaimHomework, doneHomework, parseDue } from './homework.ts';
 import { whatsNew } from '../shared/whats-new.ts';
 import { centroid } from '../shared/vector-math.ts';
-import { PendingEmbedQueue, embedIsolating, isPerInputEmbedError, PENDING_EMBED_MAX_ATTEMPTS } from './pending-embed-queue.ts';
+import { PendingEmbedQueue, embedIsolating, isPerInputEmbedError, shouldParkAfterTimeouts, PENDING_EMBED_MAX_ATTEMPTS } from './pending-embed-queue.ts';
 import { startEmbedderProbe } from './embedder-probe.ts';
 import { chunkObservation } from './chunkers/observation.ts';
 import { splitForEmbed } from './chunkers/safe-split.ts';
-import { EmbedderInputTooLarge, assertUsableEmbeddings } from './embedder.ts';
-import { sweepOrphanVectors, ORPHAN_SWEEP_PAUSE_MS } from './maintenance.ts';
+import { EmbedderInputTooLarge, EmbedderPaused, assertUsableEmbeddings } from './embedder.ts';
+import { sweepOrphanVectors, removeNonMarkdownMemoryDocuments, ORPHAN_SWEEP_PAUSE_MS } from './maintenance.ts';
 import { newChunkId } from '../shared/id.ts';
 import { sha256Hex } from '../shared/sha.ts';
 import { ORIGIN_AGENTS, UNKNOWN_ORIGIN_AGENT } from '../shared/origin-agent.ts';
@@ -431,12 +431,17 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       `re-chunk (1 chunk per obs, structural [type] prefix) and reclaim disk.`,
     );
   }
+  // Both knobs are optional: unset keeps the defaults in embedder.ts, which carry the numbers they were chosen from.
+  const embedTimeoutEnv = Number(process.env.CAPTAIN_MEMO_EMBEDDER_TIMEOUT_MS);
+  const wasteLimitEnv = process.env.CAPTAIN_MEMO_EMBEDDER_WASTE_LIMIT_TOKENS;
   const embedder = new Embedder({
     endpoint: opts.embedderEndpoint,
     model: opts.embedderModel,
     ...(opts.embedderApiKey !== undefined && { apiKey: opts.embedderApiKey }),
     ...(opts.embedderApiFormat !== undefined && { apiFormat: opts.embedderApiFormat }),
     maxInputTokens: opts.embedderMaxInputTokens ?? embedderMaxTokens(opts.embedderModel),
+    ...(embedTimeoutEnv > 0 && { patientTimeoutMs: embedTimeoutEnv }),
+    ...(wasteLimitEnv?.trim() && Number.isFinite(Number(wasteLimitEnv)) && Number(wasteLimitEnv) >= 0 && { wasteLimitTokens: Number(wasteLimitEnv) }),
   });
   const ivfConfig = loadIvfConfig(process.env);
   const vector = new VectorStore({
@@ -524,7 +529,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   async function timedEmbed(texts: string[]): Promise<number[][]> {
     const t0 = performance.now();
     try {
-      return assertUsableEmbeddings(await embedder.embed(texts));
+      return assertUsableEmbeddings(await embedder.embed(texts, 'document', { source: 'ingest', patient: true }));
     } finally {
       const ms = performance.now() - t0;
       const tokens = texts.reduce((n, t) => n + countTokens(t), 0);
@@ -1196,6 +1201,15 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         if (orphanSweepStopping) throw new Error('worker stopping');
         await new Promise(r => setTimeout(r, ORPHAN_SWEEP_PAUSE_MS));
       };
+      // The 2026-10-01 fix stopped a too-wide watcher indexing databases and logs as memory but kept what was already in:
+      // on one captain those chunks sat in the retry queue and cost 7.29M tokens (2026-10-08). Removed here, before
+      // the orphan sweep below clears their vectors. Same rule ingest refuses by (isMemoryFilePath).
+      // Measured 2026-10-08 on a 4,700-document store: 18 ms when there is nothing to remove (every hour), 178 ms once for
+      // 20 files / 3,000 chunks (what the affected captain carried), both synchronous on this thread.
+      try {
+        const junk = removeNonMarkdownMemoryDocuments(opts.metaDbPath, true);
+        if (junk.length > 0) console.log(`[maintenance] removed ${junk.length} indexed file(s) that are not markdown: ${junk.slice(0, 5).join(', ')}${junk.length > 5 ? ', ...' : ''}`);
+      } catch (err) { console.error('[maintenance] non-markdown cleanup failed: ' + (err as Error).message); }
       orphanSweepPromise = sweepOrphanVectors(opts.vectorDbPath, opts.metaDbPath, pause)
         .then(({ found, removed }) => {
           if (found > 0) console.log(`[vectors] orphan sweep: removed ${removed} of ${found} orphaned embedding(s)`);
@@ -1947,7 +1961,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         judge,
         writeMemory: (input) => writeMemory(input, {
           ingest,
-          embed: (texts) => embedder.embed(texts),
+          embed: (texts) => embedder.embed(texts, 'document', { source: 'remember' }),
           searchMemory,
           generate: transport,
           registerSelfWrite,
@@ -1978,6 +1992,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 
   async function processPendingEmbed(limit: number): Promise<{ retried: number; embedded: number }> {
     if (!pendingEmbed) return { retried: 0, embedded: 0 };
+    // Paused for wasted tokens: touch nothing, so no row loses an attempt for a request that was never sent.
+    if (embedder.pausedUntilMs()) return { retried: 0, embedded: 0 };
     const due = pendingEmbed.listDue(limit);
     if (due.length === 0) return { retried: 0, embedded: 0 };
 
@@ -1988,7 +2004,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     const texts: string[] = [];
     for (const row of due) {
       const lookup = meta.getChunkById(row.chunk_id);
-      if (!lookup) {
+      // Gone, or a chunk of a file ingest now refuses (see isUnembeddableChunk): drop the row, send nothing.
+      if (!lookup || isUnembeddableChunk(lookup.document.channel, lookup.document.source_path, lookup.chunk.text)) {
         staleIds.push(row.id);
         continue;
       }
@@ -2004,7 +2021,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     const splittable = (err: Error) => err instanceof EmbedderInputTooLarge || isPerInputEmbedError(err);
     const { embedded, failed } = await embedIsolating(
       liveRows,
-      async rows => assertUsableEmbeddings(await embedder.embed(rows.map(r => textOf.get(r.id)!))),
+      async rows => assertUsableEmbeddings(await embedder.embed(rows.map(r => textOf.get(r.id)!), 'document', { source: 'pending-retry', patient: true })),
       splittable,
     );
     // Re-check after the await: a chunk replaced while its embed was in flight must not get a vector
@@ -2019,6 +2036,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       pendingEmbed.markRetried(embedded.map(e => e.row.id), (err as Error).message);
     }
     for (const { row, error, alone } of failed) {
+      if (error instanceof EmbedderPaused) continue;   // paused mid-pass: never sent, so it costs the row nothing
       if (alone && error instanceof EmbedderInputTooLarge) {
         // Permanent: the stored chunk text won't change on retry. Pop it from the queue (FTS still
         // serves it; vector search misses) so it doesn't loop forever.
@@ -2034,6 +2052,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         console.error(
           `[pending-embed] parking chunk ${row.chunk_id} (${row.source_path}) after ${row.retries + 1} failed attempts: ` +
           `${error.message}. Keyword search still finds it; it is retried once a day.`,
+        );
+        pendingEmbed.park([row.id], error.message);
+      } else if (shouldParkAfterTimeouts(error, row.retries)) {
+        console.error(
+          `[pending-embed] parking chunk ${row.chunk_id} (${row.source_path}) after ${row.retries + 1} timed-out attempts. ` +
+          `Keyword search still finds it; it is retried once a day.`,
         );
         pendingEmbed.park([row.id], error.message);
       } else {
@@ -2479,7 +2503,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // Only meaningful claims (hasIntent) take part — generic placeholders carry no intent and would false-match.
         if (SEMANTIC_ENABLED && hasIntent(note)) {
           const peers = others.filter((o) => o.session_id !== note.session_id && hasIntent(o));
-          warmWorknoteVecs([note.what, ...peers.map((o) => o.what)], (t) => embedder.embed(t));
+          warmWorknoteVecs([note.what, ...peers.map((o) => o.what)], (t) => embedder.embed(t, 'document', { source: 'worknote' }));
           const fileSessions = new Set(overlaps.map((o) => o.session_id));
           overlaps.push(...semanticOverlapPass(note, peers, fileSessions));
         }
@@ -2774,6 +2798,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           },
           project_id: opts.projectId,
           embedder: { model: opts.embedderModel, endpoint: opts.embedderEndpoint, dim: probedEmbedderDim },
+          // This engine's own sends. Search-query embeds run in the reader engines, each with its own Embedder, and are not in here.
+          embedder_usage: embedder.usage(),
           vector_store: { dim: opts.embeddingDimension },
           disk: { bytes: diskBytes, path: DATA_DIR },
           efficiency,
@@ -3390,7 +3416,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 
         const deps: WriteMemoryDeps = {
           ingest,
-          embed: (texts) => embedder.embed(texts),
+          embed: (texts) => embedder.embed(texts, 'document', { source: 'remember' }),
           searchMemory,
           registerSelfWrite,
           rememberDir: process.env[ENV_REMEMBER_DIR] ?? DEFAULT_REMEMBER_DIR,
@@ -3452,7 +3478,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             : store.promotionCandidates({ limit, minRecall: min_recall })),
           judge: buildPromotionJudge(transport),
           writeMemory: (input) => writeMemory(input, {
-            ingest, embed: (texts) => embedder.embed(texts), searchMemory, registerSelfWrite,
+            ingest, embed: (texts) => embedder.embed(texts, 'document', { source: 'remember' }), searchMemory, registerSelfWrite,
             rememberDir: process.env[ENV_REMEMBER_DIR] ?? DEFAULT_REMEMBER_DIR,
             dedupThreshold: Number(process.env[ENV_REMEMBER_DEDUP_THRESHOLD]) || DEFAULT_REMEMBER_DEDUP_THRESHOLD,
             generate: transport,

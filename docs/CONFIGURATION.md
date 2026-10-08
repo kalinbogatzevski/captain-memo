@@ -229,7 +229,8 @@ What the token does not stop: any program running as you can read the file.
 | `CAPTAIN_MEMO_EMBEDDER_API_FORMAT` | `openai` | Request shape. |
 | `CAPTAIN_MEMO_EMBEDDER_PROVIDER` | unset | Recorded in backups so a restore knows the source. |
 | `CAPTAIN_MEMO_EMBEDDER_MAX_TOKENS` | provider-dependent | Truncation ceiling per input. |
-| `CAPTAIN_MEMO_EMBEDDER_TIMEOUT_MS` | provider-dependent | |
+| `CAPTAIN_MEMO_EMBEDDER_TIMEOUT_MS` | `15000` | Timeout for background indexing batches (ingest and the retry queue). A search query always keeps 1500 ms. Raise it on a slow link. |
+| `CAPTAIN_MEMO_EMBEDDER_WASTE_LIMIT_TOKENS` | `500000` | Tokens sent in requests that never got an answer, per hour, before embedding pauses for 30 minutes. `0` turns the pause off. |
 | `CAPTAIN_MEMO_EMBEDDING_DIM` | `2048` | Must match the model. Changing it needs a reindex. |
 | `CAPTAIN_MEMO_SKIP_EMBED` | OFF | `1` disables embedding; search degrades to keyword only. |
 | `CAPTAIN_MEMO_OPENAI_ENDPOINT` | `http://127.0.0.1:11434/v1` | Used for local model discovery. |

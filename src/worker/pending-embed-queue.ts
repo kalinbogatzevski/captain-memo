@@ -1,6 +1,7 @@
 import { Database } from 'bun:sqlite';
 import type { ChannelType } from '../shared/types.ts';
 import { computeBackoffMs } from './summarizer-backoff.ts';
+import { isTimeoutError } from './embedder.ts';
 
 // Per-row exponential backoff for failed embeds. The embedder (Voyage) can be
 // flaky/down (timeouts, truncated bodies); retrying every fixed 60s hammered it
@@ -34,6 +35,14 @@ export const PENDING_EMBED_MAX_ATTEMPTS = 8;
 /** A parked chunk is tried again once a day: a fixed embedder then clears it, and a chunk whose text is gone
  *  leaves the queue through the normal stale check. Until then doctor reports it. */
 export const PARKED_RETRY_SEC = 86_400;
+/** True when a row has now been cut off by our own timeout on PENDING_EMBED_MAX_ATTEMPTS passes. A timeout is not
+ *  a per-input error, so the batch is not split and the row never "fails alone", and it was retried every
+ *  10 minutes for ever, paying its tokens each time. Parked, it is tried once a day. `priorRetries` is the
+ *  row's count before this failure. */
+export function shouldParkAfterTimeouts(error: Error, priorRetries: number): boolean {
+  return isTimeoutError(error) && priorRetries + 1 >= PENDING_EMBED_MAX_ATTEMPTS;
+}
+
 /** Embed calls one tick may spend splitting a failed batch. One bad chunk in 25 takes about 10. */
 export const ISOLATE_MAX_CALLS = 12;
 

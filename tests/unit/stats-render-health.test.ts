@@ -72,3 +72,29 @@ test('a permanently-failing summarizer surfaces its last error even when not coo
   expect(out).toContain('last error');
   expect(out).toContain('HTTP 400');
 });
+
+// ---- embed spend line (2026-10-08) ----
+const EFF = {
+  corpus: { work_tokens: 0, stored_tokens: 0, ratio: null, saved_pct: null, coverage: { with_data: 0, total: 0 } },
+  embedder: { calls: 3, avg_latency_ms: 200, tokens_per_s: 500 },
+  dedup: { docs_seen: 1, skipped_unchanged: 1, skip_pct: 100 },
+};
+const USAGE = { since_epoch: 0, calls: 9, tokens: 1_200_000, wasted_tokens: 0, aborted: 0, window_wasted_tokens: 0,
+  waste_limit_tokens: 500_000, paused_until_epoch: null, by_source: {} };
+
+test('the efficiency block shows what the embedder sent, and how much of it was wasted', () => {
+  const ok = render({ efficiency: EFF, embedder_usage: USAGE });
+  expect(ok).toContain('Embed tokens');
+  expect(ok).toContain('0 wasted');
+  const bad = render({ efficiency: EFF, embedder_usage: { ...USAGE, wasted_tokens: 70_000, aborted: 2 } });
+  expect(bad).toContain('in unfinished requests');
+});
+
+test('a paused embedder says so on the stats page', () => {
+  const out = render({ efficiency: EFF, embedder_usage: { ...USAGE, paused_until_epoch: Math.floor(Date.now() / 1000) + 900 } });
+  expect(out).toContain('embedding paused');
+});
+
+test('an older worker with no usage field renders no spend line', () => {
+  expect(render({ efficiency: EFF })).not.toContain('Embed tokens');
+});

@@ -196,3 +196,16 @@ test('PendingEmbedQueue — an existing table without dead_at_epoch is migrated,
   expect(upgraded.failureState().parked).toBe(0);
   upgraded.close();
 });
+
+import { shouldParkAfterTimeouts, PENDING_EMBED_MAX_ATTEMPTS } from '../../src/worker/pending-embed-queue.ts';
+
+test('a row that keeps hitting our own timeout is parked after the last allowed attempt, not before', () => {
+  const abort = Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' });
+  expect(shouldParkAfterTimeouts(abort, PENDING_EMBED_MAX_ATTEMPTS - 2)).toBe(false);
+  expect(shouldParkAfterTimeouts(abort, PENDING_EMBED_MAX_ATTEMPTS - 1)).toBe(true);
+});
+
+test('only a timeout parks that way: an outage (5xx) or a throttle never does', () => {
+  expect(shouldParkAfterTimeouts(new Error('Embedder HTTP 503: down'), 500)).toBe(false);
+  expect(shouldParkAfterTimeouts(new Error('Embedder HTTP 429: slow down'), 500)).toBe(false);
+});

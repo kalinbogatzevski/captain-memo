@@ -13,6 +13,8 @@ import { getAppliedVersions } from '../../worker/migrations.ts';
 import { OBSERVATIONS_STORE_MIGRATIONS, ObservationsStore } from '../../worker/observations-store.ts';
 import { OBSERVATION_QUEUE_MIGRATIONS, ObservationQueue } from '../../worker/observation-queue.ts';
 import { PendingEmbedQueue } from '../../worker/pending-embed-queue.ts';
+import { removeNonMarkdownMemoryDocuments } from '../../worker/maintenance.ts';
+import type { EmbedUsage } from '../../worker/embedder.ts';
 import { getServiceManager } from '../../services/service-manager/index.ts';
 import { workerEnvPaths } from '../../shared/worker-env.ts';
 import {
@@ -22,6 +24,7 @@ import {
   ENV_PROMOTE_MAX_PER_RUN, DEFAULT_PROMOTE_MAX_PER_RUN,
   ENV_REMEMBER_DEDUP_THRESHOLD, DEFAULT_REMEMBER_DEDUP_THRESHOLD,
   DEFAULT_HOOK_TIMEOUT_MS,
+  META_DB_PATH,
 } from '../../shared/paths.ts';
 import { isWindows } from '../../shared/platform.ts';
 import { VERSION } from '../../shared/version.ts';
@@ -200,6 +203,23 @@ export function parkedEmbedCheck(name: string, host: string, parked: number, err
            remedy: 'nothing required — each is retried once a day. `grep "parking chunk" worker.log` names them.' };
 }
 
+/** Embedding is paused because too many tokens went to requests that never got an answer. null when it is not. */
+export function embedderSpendCheck(usage: Pick<EmbedUsage, 'paused_until_epoch' | 'window_wasted_tokens'> | null | undefined): Check | null {
+  if (!usage?.paused_until_epoch) return null;
+  const until = new Date(usage.paused_until_epoch * 1000).toTimeString().slice(0, 5);
+  return { name: 'embedder spend', status: 'WARN',
+           detail: `embedding paused until ${until}: ${usage.window_wasted_tokens.toLocaleString('en-US')} tokens went to requests that never got an answer in the last hour`,
+           remedy: 'nothing required, it resumes by itself. If it keeps coming back the link to the provider is too slow or down: raise CAPTAIN_MEMO_EMBEDDER_TIMEOUT_MS in worker.env, then captain-memo restart' };
+}
+
+/** Files indexed as memory that are not markdown: what a too-wide watcher (fixed 2026-10-01) left behind. */
+export function nonMarkdownMemoryCheck(paths: string[]): Check | null {
+  if (paths.length === 0) return null;
+  return { name: 'indexed non-markdown files', status: 'WARN',
+           detail: `${paths.length} file(s) indexed as memory are not markdown, e.g. ${paths[0]}. Their chunks cost embedding tokens and keep retrying`,
+           remedy: 'captain-memo maintenance --apply   (the worker also removes them within the hour)' };
+}
+
 export interface SidecarHealth { healthy?: boolean; model?: string; dim?: number; error?: string }
 
 /** The local sidecar's own /health. A sidecar whose model cannot load (the transformers / sentence-transformers
@@ -211,6 +231,16 @@ export function sidecarHealthVerdict(b: SidecarHealth): Check {
   return { name: 'embedder model', status: 'FAIL',
            detail: `local sidecar is running but could not load ${b.model ?? 'its model'}: ${why}`,
            remedy: 're-run `captain-memo install` and pick "local sidecar": it re-pins the sidecar\'s Python packages and checks the model loads before starting it' };
+}
+
+function checkEmbedderSpendAndJunk(): void {
+  const spend = embedderSpendCheck(lastStats?.embedder_usage as EmbedUsage | undefined);
+  if (spend) record(spend);
+  if (!existsSync(META_DB_PATH)) return;
+  try {
+    const junk = nonMarkdownMemoryCheck(removeNonMarkdownMemoryDocuments(META_DB_PATH, false));
+    if (junk) record(junk);
+  } catch { /* an unreadable meta db is reported by the checks that own it */ }
 }
 
 async function checkEmbedder(): Promise<void> {
@@ -1168,6 +1198,7 @@ export async function doctorCommand(_args: string[]): Promise<number> {
   // can only say "unverified".
   await checkWorker();
   await checkEmbedder();
+  checkEmbedderSpendAndJunk();
   await checkWorkerVersion();
   await checkWorkerAuth();
   await checkVectorDim();

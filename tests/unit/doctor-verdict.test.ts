@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { schemaDrift, migrationVerdict, workerVerdict, embedderVerdict, sidecarHealthVerdict, injectLatencyVerdict, INJECT_MIN_SAMPLES, captureSourceVerdict, summarizerVerdict } from '../../src/cli/commands/doctor.ts';
+import { embedderSpendCheck, nonMarkdownMemoryCheck, schemaDrift, migrationVerdict, workerVerdict, embedderVerdict, sidecarHealthVerdict, injectLatencyVerdict, INJECT_MIN_SAMPLES, captureSourceVerdict, summarizerVerdict } from '../../src/cli/commands/doctor.ts';
 
 // ---------------------------------------------------------------------------
 // schemaDrift — does the live DB actually HAVE what the migrations promise?
@@ -433,4 +433,22 @@ test('sidecarHealthVerdict keeps a runaway traceback to one short line', () => {
   const c = sidecarHealthVerdict({ healthy: false, model: 'm', error: `Boom\n${'x'.repeat(2000)}` });
   expect(c.detail).not.toContain('\n');
   expect(c.detail.length).toBeLessThan(300);
+});
+
+// ---- embedder spend pause and leftover non-markdown files (2026-10-08) ----
+test('doctor says nothing about spend while embedding runs, and names the pause and its way out when it does not', () => {
+  expect(embedderSpendCheck({ paused_until_epoch: null, window_wasted_tokens: 0 })).toBeNull();
+  expect(embedderSpendCheck(undefined)).toBeNull();
+  const c = embedderSpendCheck({ paused_until_epoch: Math.floor(Date.now() / 1000) + 600, window_wasted_tokens: 650_000 })!;
+  expect(c.status).toBe('WARN');
+  expect(c.detail).toContain('650,000');
+  expect(c.remedy).toContain('CAPTAIN_MEMO_EMBEDDER_TIMEOUT_MS');
+});
+
+test('doctor warns about non-markdown files indexed as memory and names the command', () => {
+  expect(nonMarkdownMemoryCheck([])).toBeNull();
+  const c = nonMarkdownMemoryCheck(['/home/x/.codex/auth.json', '/home/x/.codex/logs_2.sqlite'])!;
+  expect(c.status).toBe('WARN');
+  expect(c.detail).toContain('2 file(s)');
+  expect(c.remedy).toContain('captain-memo maintenance --apply');
 });

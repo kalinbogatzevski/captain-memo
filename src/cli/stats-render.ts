@@ -4,6 +4,7 @@ import {
 } from '../shared/ansi.ts';
 import { fmtBytes, fmtElapsed } from '../shared/format.ts';
 import type { EfficiencyReport } from '../worker/efficiency.ts';
+import type { EmbedUsage } from '../worker/embedder.ts';
 
 export interface StatsResponse {
   total_chunks: number;
@@ -48,6 +49,8 @@ export interface StatsResponse {
   embedder: { model: string; endpoint: string };
   disk?: { bytes: number; path: string };
   efficiency?: EfficiencyReport | undefined;
+  /** What the writer engine's embedder has sent since the worker started. Optional: older workers omit it. */
+  embedder_usage?: EmbedUsage | undefined;
   /** Provider-reported token spend on this machine: what the window cost, and what
    *  every transcript on disk has cost. Absent when no transcripts exist. */
   native_tokens?: {
@@ -335,7 +338,7 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
   const cols = splitColumnWidths(panelWidth, 3);
   const corpusBlock = renderCorpusBlock(stats, wide ? cols.left : panelWidth, wide);
   const efficiencyBlock = stats.efficiency
-    ? renderEfficiencyBlock(stats.efficiency, wide ? cols.right : panelWidth, wide)
+    ? renderEfficiencyBlock(stats.efficiency, wide ? cols.right : panelWidth, wide, stats.embedder_usage)
     : [];
 
   if (wide && efficiencyBlock.length > 0) {
@@ -965,7 +968,7 @@ function renderSourcesBlock(byOrigin: Record<string, number>, blockWidth: number
  *  `distilled` detail line now appears in BOTH modes because fmtCompact
  *  shrinks "19 057 556 tokens" to "19.0 M tok" which fits any column. */
 function renderEfficiencyBlock(
-  efficiency: EfficiencyReport, blockWidth: number, wide: boolean,
+  efficiency: EfficiencyReport, blockWidth: number, wide: boolean, usage?: EmbedUsage,
 ): string[] {
   const { corpus, embedder, dedup } = efficiency;
   const out: string[] = [];
@@ -987,6 +990,15 @@ function renderEfficiencyBlock(
     out.push(`   ${dim('Embedder'.padEnd(14))}` + (embedder.calls > 0
       ? `${cyanBold(String(embedder.calls))} calls ${dim('·')} ~${embedder.avg_latency_ms} ms ${dim('·')} ${fmtCount(embedder.tokens_per_s)} tok/s ${dim('since worker start')}`
       : dim('— no embeds since worker start')));
+    // What the provider may bill: every request sent, retries included, and the part of it that got no answer.
+    // The line above counts only indexing calls that finished.
+    if (usage && usage.calls > 0) {
+      const wasted = usage.wasted_tokens > 0 ? yellow(`${fmtCompact(usage.wasted_tokens)} in unfinished requests`) : dim('0 wasted');
+      out.push(`   ${dim('Embed tokens'.padEnd(14))}${cyanBold(fmtCompact(usage.tokens))} tok sent ${dim('·')} ${wasted} ${dim('since worker start')}`);
+    }
+    if (usage?.paused_until_epoch) {
+      out.push(`   ${' '.repeat(14)}${red('embedding paused')} ${dim(`until ${new Date(usage.paused_until_epoch * 1000).toTimeString().slice(0, 5)}`)}`);
+    }
     out.push(`   ${dim('Dedup'.padEnd(14))}` + (dedup.docs_seen > 0
       ? `${cyanBold(`${dedup.skip_pct}%`)}   ${dim(`${fmtCount(dedup.skipped_unchanged)} / ${fmtCount(dedup.docs_seen)} unchanged since worker start`)}`
       : dim('— no documents indexed since worker start')));

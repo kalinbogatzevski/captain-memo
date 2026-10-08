@@ -61,6 +61,14 @@ export function unindexableReason(filePath: string, channel: ChannelType, sizeBy
   return null;
 }
 
+/** A chunk that must never be sent to the embedder: it belongs to a file ingest now refuses (a database or log a
+ *  too-wide watcher once indexed as memory), or its text holds a NUL byte, which only binary content has. The
+ *  retry queue drops rows like these instead of re-sending them: on one captain 260 of them were retried 68,043
+ *  times and cost 7.29M tokens in a morning (2026-10-08). */
+export function isUnembeddableChunk(channel: ChannelType, sourcePath: string, text: string): boolean {
+  return (channel === 'memory' && !isMemoryFilePath(sourcePath)) || text.includes('\0');
+}
+
 export class IngestPipeline {
   private meta: MetaStore;
   private embedder: { embed: (texts: string[]) => Promise<number[][]> };
