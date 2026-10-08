@@ -14,6 +14,7 @@ import { classifyRoute } from './route-class.ts';
 import { InjectLatencyRing } from './inject-latency.ts';
 import { ReaderPool } from './reader-pool.ts';
 import { startWorker, buildWorkerOptionsFromEnv, type WorkerHandle } from './index.ts';
+import { mergeEmbedUsage, type EmbedUsage } from './embedder.ts';
 import { bootWorkerAuthGate } from '../shared/worker-auth.ts';
 
 // Pass the URL OBJECT, not its .href string: on Windows a "file:///C:/…/engine.ts" string is
@@ -129,6 +130,10 @@ export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
   const pool = new ReaderPool<number>(1);          // 1 in-flight per reader: one KNN scan at a time
   const readerChannels = new Map<number, ThreadChannel>();
   const readerWorkers = new Map<number, Worker>();
+  // The latest embedder counters each live reader posted ({kind:'embed_usage'}). A restarted reader gets a new token and
+  // starts from 0, so removeReader() drops the old slot: its earlier spend leaves the total (the provider's own
+  // dashboard is the record of what was billed; this is the live view).
+  const readerEmbedUsage = new Map<number, EmbedUsage>();
   let nextReaderToken = 0;
   // Readers that have been spawned and are not (yet) confirmed dead — i.e. booting OR ready. A read
   // waits for one of these to become pickable instead of spilling to the writer; it only spills when
@@ -222,6 +227,7 @@ export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
       pool.remove(token);
       readerChannels.delete(token);
       readerWorkers.delete(token);
+      readerEmbedUsage.delete(token);
       try { w.terminate(); } catch { /* ignore */ }
     };
     const onReaderDeath = (): void => {
@@ -240,7 +246,12 @@ export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
       post: (m) => w.postMessage(m),
       onMessage: (cb) => {
         w.onmessage = (e: MessageEvent) => {
-          const m = e.data as { kind?: string; ids?: number[] | string[]; source?: string; message?: string };
+          const m = e.data as { kind?: string; ids?: number[] | string[]; source?: string; message?: string; usage?: EmbedUsage };
+          if (m && m.kind === 'embed_usage') {
+            // This reader's embedder counters (engine-reader.ts, on change, at most every 5 s). Keep the newest per reader.
+            if (m.usage && typeof m.usage.tokens === 'number' && m.usage.by_source) readerEmbedUsage.set(token, m.usage);
+            return;
+          }
           if (m && m.kind === 'bump') {
             // Relay the reader's retrieval bump to the single writer (the only engine that writes).
             if (Array.isArray(m.ids) && m.ids.length > 0) engine?.postMessage({ kind: 'bump', ids: m.ids, source: m.source });
@@ -404,6 +415,8 @@ export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
         const body = await res.text();
         const parsed = JSON.parse(body) as Record<string, unknown>;
         parsed['inject_latency'] = injectLatency.stats();
+        // The writer reports its own Embedder; every search/inject query was embedded by a reader's. Add them up.
+        if (parsed['embedder_usage']) parsed['embedder_usage'] = mergeEmbedUsage(parsed['embedder_usage'] as EmbedUsage, [...readerEmbedUsage.values()]);
         parsed['worker_auth'] = authGate.report();
         return Response.json(parsed, { status: res.status });
       } catch {

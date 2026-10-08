@@ -244,6 +244,9 @@ export interface WorkerHandle {
    *  to the writer) AND invalidate /stats — a bare store.bumpRetrieval left the cached recall totals
    *  serving the pre-bump counts. Present exactly when `store` is. */
   bumpRetrieval?: (ids: number[], source: import('../shared/types.ts').RetrievalSource) => void;
+  /** This engine's embedder counters. Present in engine-thread (noServe) mode only: a reader engine reports them
+   *  to the thread that serves /stats, since its query embeds are not in the writer's. */
+  embedUsage?: () => import('./embedder.ts').EmbedUsage;
 }
 
 const SearchRequestSchema = z.object({
@@ -2798,7 +2801,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           },
           project_id: opts.projectId,
           embedder: { model: opts.embedderModel, endpoint: opts.embedderEndpoint, dim: probedEmbedderDim },
-          // This engine's own sends. Search-query embeds run in the reader engines, each with its own Embedder, and are not in here.
+          // This engine's own sends. In the threaded worker the reader engines run their own Embedders (every search
+          // and inject query is embedded there), and the main thread adds their counters to this on its way out
+          // (mergeEmbedUsage in threaded-main.ts). Standalone, there are no readers and this is all of it.
           embedder_usage: embedder.usage(),
           vector_store: { dim: opts.embeddingDimension },
           disk: { bytes: diskBytes, path: DATA_DIR },
@@ -3871,6 +3876,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       port: opts.port,
       handler,
       ...(obsStore ? { store: obsStore, bumpRetrieval: relayedBump } : {}),
+      embedUsage: () => embedder.usage(),
       stop: stopResources,
     };
   }

@@ -49,8 +49,9 @@ export interface StatsResponse {
   embedder: { model: string; endpoint: string };
   disk?: { bytes: number; path: string };
   efficiency?: EfficiencyReport | undefined;
-  /** What the writer engine's embedder has sent since the worker started. Optional: older workers omit it. */
-  embedder_usage?: EmbedUsage | undefined;
+  /** What the worker's embedders have sent since it started (the writer's plus, in the threaded worker, the reader engines'
+   *  that embed search and inject queries; `readers` = how many reader snapshots are in it). Optional: older workers omit it. */
+  embedder_usage?: (EmbedUsage & { readers?: number }) | undefined;
   /** Provider-reported token spend on this machine: what the window cost, and what
    *  every transcript on disk has cost. Absent when no transcripts exist. */
   native_tokens?: {
@@ -997,7 +998,7 @@ function renderEfficiencyBlock(
       out.push(`   ${dim('Embed tokens'.padEnd(14))}${cyanBold(fmtCompact(usage.tokens))} tok sent ${dim('·')} ${wasted} ${dim('since worker start')}`);
     }
     if (usage?.paused_until_epoch) {
-      out.push(`   ${' '.repeat(14)}${red('embedding paused')} ${dim(`until ${new Date(usage.paused_until_epoch * 1000).toTimeString().slice(0, 5)}`)}`);
+      out.push(`   ${' '.repeat(14)}${red('embedding paused')} ${dim(`until ${new Date(usage.paused_until_epoch * 1000).toTimeString().slice(0, 5)} in at least one engine`)}`);
     }
     out.push(`   ${dim('Dedup'.padEnd(14))}` + (dedup.docs_seen > 0
       ? `${cyanBold(`${dedup.skip_pct}%`)}   ${dim(`${fmtCount(dedup.skipped_unchanged)} / ${fmtCount(dedup.docs_seen)} unchanged since worker start`)}`

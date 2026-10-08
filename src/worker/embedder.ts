@@ -90,6 +90,73 @@ export interface EmbedUsage {
   by_source: Record<string, { calls: number; tokens: number }>;
 }
 
+/**
+ * The whole worker's embedder spend, as one EmbedUsage: this engine's own figures plus those of the reader
+ * engines, which each run an Embedder of their own and embed every search/inject query. Pure; `readers` are the
+ * latest snapshot of each live reader, none of the inputs is changed.
+ *
+ *  - calls, tokens, wasted_tokens, aborted, window_wasted_tokens and by_source add up. A reader that restarted
+ *    starts again from 0, so the total can step down; each reader's slot is simply its newest snapshot.
+ *  - since_epoch is the oldest start, paused_until_epoch the latest pause still running at `nowEpoch` (an
+ *    expired one reads null, as it does on a single Embedder), waste_limit_tokens the base engine's.
+ *  - `readers` is how many snapshots were added in, not how many readers exist: one that has sent nothing yet
+ *    (no query so far) has nothing to add.
+ *
+ * The waste PAUSE stays per engine: each Embedder pauses on its own hour of wasted tokens against its own limit,
+ * and a paused reader does not pause the writer's ingest or the other readers. So window_wasted_tokens here can
+ * add up past waste_limit_tokens without any one engine having paused, and paused_until_epoch means "at least one
+ * engine is paused", not "nothing is being embedded".
+ */
+export function mergeEmbedUsage(
+  base: EmbedUsage,
+  readers: readonly EmbedUsage[],
+  nowEpoch: number = Math.floor(Date.now() / 1000),
+): EmbedUsage & { readers: number } {
+  const by_source: EmbedUsage['by_source'] = {};
+  const out = { ...base, by_source, paused_until_epoch: null as number | null, readers: readers.length };
+  const addShared = (u: EmbedUsage): void => {
+    if (u.paused_until_epoch !== null && u.paused_until_epoch > nowEpoch) {
+      out.paused_until_epoch = Math.max(out.paused_until_epoch ?? 0, u.paused_until_epoch);
+    }
+    for (const [k, v] of Object.entries(u.by_source)) {
+      const s = (by_source[k] ??= { calls: 0, tokens: 0 });
+      s.calls += v.calls;
+      s.tokens += v.tokens;
+    }
+  };
+  addShared(base);
+  for (const u of readers) {
+    out.calls += u.calls;
+    out.tokens += u.tokens;
+    out.wasted_tokens += u.wasted_tokens;
+    out.aborted += u.aborted;
+    out.window_wasted_tokens += u.window_wasted_tokens;
+    out.since_epoch = Math.min(out.since_epoch, u.since_epoch);
+    addShared(u);
+  }
+  return out;
+}
+
+/**
+ * Tells `post` the snapshot from `getUsage` whenever it differs from the last one posted, and never before the
+ * first request has been sent. Call `tick()` on a timer: a quiet embedder costs one usage() and one comparison
+ * and posts nothing. The whole snapshot is compared, so a pause expiring or the waste window running down is
+ * noticed as well as new requests. Used by a reader engine to report to the thread that owns /stats.
+ */
+export function makeUsageReporter(getUsage: () => EmbedUsage, post: (u: EmbedUsage) => void): { tick: () => void } {
+  let last = '';
+  return {
+    tick() {
+      const u = getUsage();
+      if (u.calls === 0) return;
+      const sig = JSON.stringify(u);
+      if (sig === last) return;
+      last = sig;
+      post(u);
+    },
+  };
+}
+
 /** Per-call options. `patient` is for background work nobody waits on. */
 export interface EmbedCallOptions {
   source?: string;

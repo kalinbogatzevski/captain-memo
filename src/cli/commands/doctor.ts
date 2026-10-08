@@ -208,7 +208,7 @@ export function embedderSpendCheck(usage: Pick<EmbedUsage, 'paused_until_epoch' 
   if (!usage?.paused_until_epoch) return null;
   const until = new Date(usage.paused_until_epoch * 1000).toTimeString().slice(0, 5);
   return { name: 'embedder spend', status: 'WARN',
-           detail: `embedding paused until ${until}: ${usage.window_wasted_tokens.toLocaleString('en-US')} tokens went to requests that never got an answer in the last hour`,
+           detail: `embedding paused until ${until} in at least one of the worker's engines (the indexer and each search reader pause on their own): ${usage.window_wasted_tokens.toLocaleString('en-US')} tokens went to requests that never got an answer in the last hour`,
            remedy: 'nothing required, it resumes by itself. If it keeps coming back the link to the provider is too slow or down: raise CAPTAIN_MEMO_EMBEDDER_TIMEOUT_MS in worker.env, then captain-memo restart' };
 }
 
