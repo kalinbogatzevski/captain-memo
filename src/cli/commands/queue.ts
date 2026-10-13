@@ -13,13 +13,43 @@ import { existsSync } from 'fs';
  *  present on an earlier pending row; never touches anything in flight. */
 export async function queueCommand(args: string[]): Promise<number> {
   const sub = args[0];
-  if (sub !== 'dedupe') {
-    console.log('usage: captain-memo queue dedupe [--apply]');
-    console.log('  Removes re-enqueued duplicate observations left by the pre-0.27.44 capture bug.');
-    console.log('  Runs as a DRY RUN unless --apply is given.');
+  if (sub !== 'dedupe' && sub !== 'retry') {
+    console.log('usage: captain-memo queue <dedupe|retry> [--apply] [--limit N]');
+    console.log('  dedupe  Removes re-enqueued duplicate observations left by the pre-0.27.44 capture bug.');
+    console.log('  retry   Releases DEAD-LETTERED observations back to pending (e.g. rows that failed');
+    console.log('          while the summarizer had no credentials). The worker re-tries these on its');
+    console.log('          own once a provider comes back; this is the on-demand version.');
+    console.log('  Both run as a DRY RUN unless --apply is given.');
     return sub ? 2 : 0;
   }
   const apply = args.includes('--apply');
+
+  if (sub === 'retry') {
+    if (!existsSync(QUEUE_DB_PATH)) {
+      console.log(`no queue at ${QUEUE_DB_PATH} — nothing to do`);
+      return 0;
+    }
+    const li = args.indexOf('--limit');
+    const parsed = li >= 0 ? Number(args[li + 1]) : NaN;
+    // Each released row is a real model call, so an unbounded release on a large pile is a bill.
+    const limit = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 1000;
+    const q = new ObservationQueue(QUEUE_DB_PATH);
+    try {
+      const before = q.failedCount();
+      const r = q.retryFailed({ limit, dryRun: !apply });
+      console.log(`  dead-lettered       : ${before.toLocaleString()}`);
+      console.log(`  ${apply ? 'RELEASED' : 'would release'}      : ${r.revived.toLocaleString()}${before > limit ? `  (capped at --limit ${limit})` : ''}`);
+      if (apply) {
+        console.log(`  pending now         : ${q.pendingCount().toLocaleString()}`);
+        console.log(`  still dead-lettered : ${r.failedRemaining.toLocaleString()}`);
+      } else if (r.revived > 0) {
+        console.log('\n  Nothing was changed. Re-run with --apply to release them.');
+      }
+      return 0;
+    } finally {
+      q.close();
+    }
+  }
 
   if (!existsSync(QUEUE_DB_PATH)) {
     console.log(`no queue at ${QUEUE_DB_PATH} — nothing to do`);

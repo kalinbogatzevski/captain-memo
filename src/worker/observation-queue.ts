@@ -269,6 +269,39 @@ export class ObservationQueue {
       .run(...ids);
   }
 
+  /**
+   * Revive dead-lettered rows: 'failed' → 'pending', retry counter cleared.
+   *
+   * markPermanent is right to give up — a retry storm against an auth failure burns quota to no end —
+   * but giving up was the WHOLE story: nothing ever tried again, and the rows sat 'failed' forever. So a
+   * captain whose credentials lapsed for an afternoon lost every observation queued in that window,
+   * permanently and silently. Observed on one workstation: 37 rows dead-lettered while its OAuth token was
+   * stale, every one of which would summarise fine now.
+   *
+   * `dryRun` reports what WOULD move without touching anything, because "unlose my memory" deserves a
+   * look before it runs. `limit` bounds a revival on a corpus with a large dead-letter pile — each row
+   * is a real model call, so releasing 40,000 at once is a bill, not a repair.
+   *
+   * ponytail: revives ALL failed rows, not just the auth-shaped ones. last_error is free text from
+   * whatever threw, so classifying it here would be guesswork; a row that fails again just dead-letters
+   * again, which costs one call and is self-correcting. Filter by reason when a real case needs it.
+   */
+  retryFailed(opts: { limit?: number; dryRun?: boolean } = {}): { revived: number; failedRemaining: number } {
+    const limit = opts.limit ?? 1000;
+    const ids = (this.db
+      .query(`SELECT id FROM observation_queue WHERE status = 'failed' ORDER BY id ASC LIMIT ?`)
+      .all(limit) as Array<{ id: number }>).map(r => r.id);
+    if (ids.length > 0 && !opts.dryRun) {
+      const placeholders = ids.map(() => '?').join(',');
+      this.db
+        .query(`UPDATE observation_queue SET status = 'pending', retries = 0, last_error = NULL WHERE id IN (${placeholders})`)
+        .run(...ids);
+    }
+    // A live release has ALREADY left the count; a dry run has not, so only that path subtracts.
+    const failedRemaining = opts.dryRun ? this.failedCount() - ids.length : this.failedCount();
+    return { revived: ids.length, failedRemaining };
+  }
+
   pendingCount(): number {
     return (this.db
       .query(`SELECT COUNT(*) AS n FROM observation_queue WHERE status = 'pending'`)

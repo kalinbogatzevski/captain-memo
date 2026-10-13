@@ -387,6 +387,24 @@ async function probeHealthOnce(port, timeoutMs = 3000) {
     clearTimeout(t);
   }
 }
+async function probeWorkerAlive(port, timeoutMs = 3000, wedgedAfterMs = WORKER_WEDGED_AFTER_MS) {
+  const ctl = new AbortController;
+  const t = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/health`, { signal: ctl.signal });
+    const body = await r.json().catch(() => null);
+    if (r.ok)
+      return body?.healthy === true;
+    if (typeof body?.instance !== "number")
+      return false;
+    const stalledMs = Number(/unresponsive (\d+)ms/.exec(body.degraded ?? "")?.[1]);
+    return !(Number.isFinite(stalledMs) && stalledMs >= wedgedAfterMs);
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(t);
+  }
+}
 async function readWorkerInstance(port, timeoutMs = 3000) {
   const health = await readJson(port, "/health", timeoutMs, false);
   if (typeof health?.instance === "number" && Number.isFinite(health.instance))
@@ -418,6 +436,7 @@ async function probeHealthyWithRetries(probeOnce, attempts = 3, gapMs = 2000, sl
   }
   return false;
 }
+var WORKER_WEDGED_AFTER_MS = 120000;
 var init_worker_health_probe = __esm(() => {
   init_worker_auth();
 });
@@ -956,7 +975,7 @@ var package_default;
 var init_package = __esm(() => {
   package_default = {
     name: "captain-memo",
-    version: "0.57.5",
+    version: "0.57.6",
     description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
     type: "module",
     private: true,
@@ -1764,7 +1783,7 @@ async function main(options = {}) {
         try {
           await Promise.resolve().then(() => init_worker_health_probe());
           const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
-          const reachable = await probeHealthyWithRetries(() => probeHealthOnce(port, 1500), 2, 1000);
+          const reachable = await probeHealthyWithRetries(() => probeWorkerAlive(port, 1500), 2, 1000);
           if (!reachable) {
             await Promise.resolve().then(() => init_service_manager());
             await Promise.resolve();
@@ -1868,9 +1887,10 @@ function newsLines(items, max = NEWS_MAX) {
 init_auto_update();
 
 // src/shared/worker-health.ts
+init_self_update();
 async function ensureWorkerHealthy(deps) {
   const version = await deps.probeVersion();
-  if (version !== null && version === deps.diskVersion) {
+  if (version !== null && compareSemver(version, deps.diskVersion) >= 0) {
     return { action: "none", reason: "healthy" };
   }
   if (!deps.acquireLock()) {
@@ -1904,6 +1924,7 @@ async function ensureWorkerHealthy(deps) {
 
 // src/hooks/session-start.ts
 init_worker_transition();
+init_worker_health_probe();
 init_worker_heal_lock();
 function fmtNum(n) {
   return n.toLocaleString("en-US");
@@ -1958,9 +1979,17 @@ function formatBanner(stats, homework = []) {
   } else if (idx.status === "error") {
     lines.push(`  Indexing   error \u2014 ${idx.errors} files failed`);
   }
+  const summarizerDown = stats.summarizer?.enabled === false;
+  if (summarizerDown) {
+    const why = (stats.summarizer?.last_error ?? stats.summarizer?.demoted?.at(-1)?.reason ?? "no usable provider").replace(/\s+/g, " ").slice(0, 110);
+    lines.push(`  Summarizer DOWN \u2014 no observations are being captured`);
+    lines.push(`             ${why}`);
+    lines.push(`             fix the provider's login (e.g. \`claude login\`), then \`captain-memo restart\``);
+  }
   const o = stats.observations;
   if (o.queue_pending > 0 || o.queue_processing > 0) {
-    lines.push(`  Obs queue  pending=${o.queue_pending} processing=${o.queue_processing} (drains every 5s)`);
+    const drain = summarizerDown ? "stalled \u2014 summarizer down" : "drains every 5s";
+    lines.push(`  Obs queue  pending=${o.queue_pending} processing=${o.queue_processing} (${drain})`);
   }
   lines.push("");
   return lines.join(`
@@ -1998,6 +2027,18 @@ async function nativeMain() {
     await readStdinJson();
   } catch {}
   writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: LOCAL_ARTICLES } }));
+}
+function formatBusyBanner() {
+  return [
+    "",
+    "",
+    "\u2693 Captain Memo \u2014 active (stats snapshot slow to load)",
+    "\u2500".repeat(60),
+    "  Memory is live \u2014 the worker answered its health check; only the stats snapshot",
+    "  was slow this session. Search and observation capture work normally.",
+    ""
+  ].join(`
+`);
 }
 async function main2() {
   let payload = {};
@@ -2042,13 +2083,20 @@ async function main2() {
   }
   const selfHealOff = process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL === "1";
   let running = stats.ok && !!stats.body;
+  let aliveViaHealth = false;
+  if (!running) {
+    if (await probeWorkerAlive(Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT), 2000)) {
+      running = true;
+      aliveViaHealth = true;
+    }
+  }
   const transition = running ? null : readTransition();
   if (transition) {
     await waitWorkerHealthy(Number(process.env.CAPTAIN_MEMO_SESSION_START_TRANSITION_WAIT_MS ?? 20000));
     running = stats.ok && !!stats.body;
   }
   const inTransition = running ? null : transition;
-  const stale = !updatedThisSession && !transition && running && stats.body.version !== undefined && stats.body.version !== VERSION;
+  const stale = !updatedThisSession && !transition && running && !!stats.body && stats.body.version !== undefined && compareSemver(VERSION, stats.body.version) > 0;
   if (!selfHealOff && !inTransition && (!running || stale)) {
     try {
       await Promise.resolve().then(() => init_service_manager());
@@ -2129,6 +2177,12 @@ ${banner}` : banner;
       continue: true,
       ...articles,
       systemMessage: withNotice(formatBanner(stats.body, homework))
+    }));
+  } else if (aliveViaHealth) {
+    writeStdout(JSON.stringify({
+      continue: true,
+      ...articles,
+      systemMessage: withNotice(formatBusyBanner())
     }));
   } else if (inTransition) {
     const willAnnounce = markSessionDegraded(payload.session_id ?? "");

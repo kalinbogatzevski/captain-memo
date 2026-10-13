@@ -21,4 +21,14 @@ describe('systemd unit templates', () => {
       expect(unit).toContain('StartLimitIntervalSec=0');
     });
   }
+
+  // A unit WantedBy=default.target must never be ordered After= it: with any second user unit ordered
+  // after this one the graph closes a cycle and systemd silently deletes this unit's start job.
+  for (const rel of UNITS.filter((u) => u.endsWith('.user.service'))) {
+    test(`${rel} is not ordered After=default.target`, () => {
+      const unit = readFileSync(join(ROOT, rel), 'utf-8');
+      expect(unit).toContain('WantedBy=default.target');
+      expect(unit).not.toMatch(/^After=.*\bdefault\.target\b/m);
+    });
+  }
 });

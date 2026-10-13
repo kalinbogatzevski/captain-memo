@@ -75,17 +75,28 @@ function svcMode(name: string): 'user' | 'system' | null {
 // Cross-platform HTTP probe (replaces the old `curl` shell-out). Returns the
 // parsed JSON body on success; { ok:false } on connection refused / timeout /
 // non-2xx / unparseable body.
-async function fetchJson(url: string, timeoutMs = 3000): Promise<{ ok: boolean; body: unknown; status?: number }> {
+/** `why` names HOW it failed, and is the whole point: a doctor that says a route "failed" without saying whether
+ *  it timed out, returned 500, or refused the connection sends the reader to the wrong remedy (seen live: "healthy
+ *  but /stats failed", no reason, under a hint about DB migrations that were in fact fully applied). */
+async function fetchJson(url: string, timeoutMs = 3000): Promise<{ ok: boolean; body: unknown; status?: number; why?: string }> {
   try {
     // The worker token goes to the worker only, never to the embedder this also probes.
     const headers = url.startsWith(`http://127.0.0.1:${WORKER_PORT}/`) ? workerAuthHeaders() : {};
     const r = await fetch(url, { headers, signal: AbortSignal.timeout(timeoutMs) });
-    if (!r.ok) return { ok: false, body: null, status: r.status };
+    if (!r.ok) {
+      // Keep a snippet of the body: a 500 from the worker usually explains itself.
+      let snippet = '';
+      try { snippet = (await r.text()).trim().replace(/\s+/g, ' ').slice(0, 160); } catch { /* body unreadable */ }
+      return { ok: false, body: null, status: r.status, why: `HTTP ${r.status}${snippet ? ` — ${snippet}` : ''}` };
+    }
     const text = await r.text();
     try { return { ok: true, body: JSON.parse(text) }; }
-    catch { return { ok: false, body: text }; }
-  } catch {
-    return { ok: false, body: null };
+    catch { return { ok: false, body: text, why: 'response was not JSON' }; }
+  } catch (err) {
+    // AbortSignal.timeout throws a TimeoutError; everything else is a connect/reset. That is the difference
+    // between "the worker is slow/busy" and "nothing is listening".
+    const e = err as { name?: string; message?: string };
+    return { ok: false, body: null, why: e?.name === 'TimeoutError' ? `no answer within ${timeoutMs}ms` : (e?.message || 'connection failed') };
   }
 }
 
@@ -196,6 +207,34 @@ export function embedderVerdict(
            remedy: 'run doctor again in a minute; if it persists, check worker.log' };
 }
 
+/** How much of the corpus actually has a vector. embedderVerdict only looks at the retry queue and the last error, so a
+ *  run that finished WITH errors (a reindex that ended "indexed 115, errors 20394" on 2026-08-03) left both clear and
+ *  doctor said "queue clear" over a 99% unembedded corpus — found only by reading `ivf.vectors` out of /stats by hand.
+ *  Both numbers are already in /stats: `total_chunks` and `ivf.vectors`. A small gap is normal while ingest catches up,
+ *  so it only WARNs past 2% and FAILs past half; nothing is said during the first big index or on a tiny corpus. */
+export const EMBED_COVERAGE_WARN_GAP = 0.02;
+export const EMBED_COVERAGE_FAIL_GAP = 0.5;
+export const EMBED_COVERAGE_MIN_CHUNKS = 50;
+export function embedCoverageCheck(
+  s: { total_chunks?: unknown; vectors?: unknown; indexing?: unknown } | null | undefined,
+): Check | null {
+  const total = s?.total_chunks, vectors = s?.vectors;
+  if (typeof total !== 'number' || typeof vectors !== 'number' || !Number.isFinite(total) || !Number.isFinite(vectors)) return null;
+  if (total < EMBED_COVERAGE_MIN_CHUNKS || s?.indexing === 'indexing') return null;
+  const missing = Math.max(0, total - vectors);
+  const gap = missing / total;
+  if (gap <= EMBED_COVERAGE_WARN_GAP) return null;
+  const name = 'embedding coverage';
+  const fmt = (n: number) => n.toLocaleString('en-US');
+  const detail = `${fmt(missing)} of ${fmt(total)} chunks (${Math.round(gap * 100)}%) have no vector, so vector search covers only the rest`;
+  if (gap > EMBED_COVERAGE_FAIL_GAP) {
+    return { name, status: 'FAIL', detail,
+             remedy: 'captain-memo reindex --force   (a plain re-run skips rows that already errored once)' };
+  }
+  return { name, status: 'WARN', detail,
+           remedy: 'run doctor again in a few minutes — ingest may still be catching up. If it persists: captain-memo reindex --force' };
+}
+
 /** Chunks the embedder refused on their own, again and again. The rest of the queue is not waiting on them. */
 export function parkedEmbedCheck(name: string, host: string, parked: number, err: string): Check {
   return { name, status: 'WARN',
@@ -252,6 +291,13 @@ async function checkEmbedder(): Promise<void> {
   // The queue's state sits under `observations` in /stats. This read the top level, where it never was,
   // so the hosted check passed whatever the queue was doing.
   const queue = lastStats && ((lastStats.observations ?? {}) as NonNullable<Parameters<typeof embedderVerdict>[1]>);
+  // Coverage is about the corpus, not the backend: hosted and local sidecar alike can leave chunks without a vector.
+  const coverage = embedCoverageCheck(lastStats && {
+    total_chunks: lastStats.total_chunks,
+    vectors: (lastStats.ivf as { vectors?: unknown } | undefined)?.vectors,
+    indexing: (lastStats.indexing as { status?: unknown } | undefined)?.status,
+  });
+  if (coverage) record(coverage);
   if (!isLocal) {
     record(embedderVerdict(endpoint, queue));
     return;
@@ -331,7 +377,10 @@ async function checkWorker(): Promise<void> {
       observations?: { total?: number };
     };
     record(workerVerdict({
-      healthy: true, statsOk: s.ok, ...(b.error && { statsError: b.error }),
+      // Prefer the worker's own `error` (it explains itself best); fall back to HOW the call failed —
+      // timeout vs HTTP status vs refused connection. Without the fallback a mid-boot worker and a broken
+      // one printed the identical bare "healthy but /stats failed", under a remedy about DB migrations.
+      healthy: true, statsOk: s.ok, ...((b.error || s.why) && { statsError: b.error || s.why }),
       chunks: b.total_chunks, observations: b.observations?.total, project: b.project_id,
       ...(b.indexing && { indexing: b.indexing }),
     }));
@@ -519,9 +568,10 @@ export function summarizerVerdict(sm: {
       status: 'FAIL',
       detail:
         `STOPPED — the provider chain was exhausted at runtime. Demoted: ${demotedLine}. No observations ` +
-        `are being created and cross-AI capture is DISABLED. Demoted providers are never retried in a ` +
-        `running worker (deliberate — no flapping), so this stays dead until a restart re-walks the chain.`,
-      remedy: 'fix the provider(s) above (e.g. `claude login` for claude-oauth), then `captain-memo restart`',
+        `are being created and cross-AI capture is DISABLED. With nothing running there is no working provider ` +
+        `to protect from flapping, so the worker re-checks the whole chain every 10 minutes and recovers by ` +
+        `itself once a login is repaired.`,
+      remedy: 'fix the provider(s) above (e.g. `claude login` for claude-oauth): the worker picks it up within 10 minutes, or `captain-memo restart` retries at once',
     };
   }
   if (sm.enabled === false) {
@@ -531,6 +581,12 @@ export function summarizerVerdict(sm: {
       detail:
         `NOT running — provider '${sm.provider ?? '?'}' has no usable credentials, so the worker built no ` +
         `summarizer. No observations are being created and cross-AI capture is DISABLED. ` +
+        // The chain walk recorded WHY each provider was passed over — "token has expired" and "no token
+        // at all" want different fixes — and this line used to throw that away, leaving the reader to
+        // guess from generic prose. It was already in hand; print it.
+        (skipped.length > 0
+          ? `Chain walk: ${skipped.map(s => `${s.provider} (${s.reason})`).join('; ')}. `
+          : '') +
         (sm.provider === 'claude-oauth'
           ? 'The worker found no valid OAuth token at ~/.claude/.credentials.json (as IT resolves home — check the ' +
             'worker.log line). Fix: run `claude login`, then restart the worker; if it still fails, set ' +

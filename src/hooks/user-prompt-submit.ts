@@ -144,9 +144,11 @@ export async function main(options: UserPromptSubmitOptions = {}): Promise<void>
       const { acquireHealLock, releaseHealLock } = await import('../shared/worker-heal-lock.ts');
       if (acquireHealLock()) {
         try {
-          const { probeHealthOnce, probeHealthyWithRetries } = await import('../shared/worker-health-probe.ts');
+          const { probeWorkerAlive, probeHealthyWithRetries } = await import('../shared/worker-health-probe.ts');
           const port = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
-          const reachable = await probeHealthyWithRetries(() => probeHealthOnce(port, 1500), 2, 1000);
+          // probeWorkerAlive, not probeHealthOnce: /health now answers 503 while the writer thread is stalled (>5 s
+          // heartbeat), which is a busy worker, not a dead one (see its doc comment).
+          const reachable = await probeHealthyWithRetries(() => probeWorkerAlive(port, 1500), 2, 1000);
           if (!reachable) {
             const { getServiceManager } = await import('../services/service-manager/index.ts');
             const { restartWorker } = await import('../shared/worker-control.ts');

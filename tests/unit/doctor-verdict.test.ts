@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { embedderSpendCheck, nonMarkdownMemoryCheck, schemaDrift, migrationVerdict, workerVerdict, embedderVerdict, sidecarHealthVerdict, injectLatencyVerdict, INJECT_MIN_SAMPLES, captureSourceVerdict, summarizerVerdict } from '../../src/cli/commands/doctor.ts';
+import { embedderSpendCheck, nonMarkdownMemoryCheck, schemaDrift, migrationVerdict, workerVerdict, embedderVerdict, embedCoverageCheck, sidecarHealthVerdict, injectLatencyVerdict, INJECT_MIN_SAMPLES, captureSourceVerdict, summarizerVerdict } from '../../src/cli/commands/doctor.ts';
 
 // ---------------------------------------------------------------------------
 // schemaDrift — does the live DB actually HAVE what the migrations promise?
@@ -411,6 +411,49 @@ test('boot skips still WARN, and demotions + skips coexist', () => {
   expect(both.detail).toContain('PREFERRED provider(s) skipped');
 });
 
+// The reason must survive even when the worker never answers in JSON. One workstation printed the bare
+// ":39888 healthy but /stats failed" — no cause — under a remedy about DB migrations that were fully
+// applied. It was a worker still finishing boot, and the next run passed. A doctor that cannot tell
+// "still starting" from "broken" sends the reader to the wrong fix, which is worse than saying nothing.
+test('workerVerdict names HOW /stats failed, not just that it did', () => {
+  const timedOut = workerVerdict({ healthy: true, statsOk: false, statsError: 'no answer within 3000ms' });
+  expect(timedOut.status).toBe('FAIL');
+  expect(timedOut.detail).toContain('no answer within 3000ms');
+
+  const http500 = workerVerdict({ healthy: true, statsOk: false, statsError: 'HTTP 500 — writer thread down' });
+  expect(http500.detail).toContain('HTTP 500');
+  expect(http500.detail).toContain('writer thread down');
+
+  // The bare form is what we are moving AWAY from: still a FAIL, but it must stay legible when a
+  // caller genuinely has no reason to give.
+  const bare = workerVerdict({ healthy: true, statsOk: false });
+  expect(bare.status).toBe('FAIL');
+  expect(bare.detail).toContain('/stats failed');
+});
+
+// The chain walk records WHY each provider was passed over, and this branch printed none of it —
+// so that workstation's "no usable credentials" could not be told apart from "the token expired while
+// the laptop was off", which is the one that a restart alone fixes.
+test('summarizerVerdict prints WHICH provider was skipped and why', () => {
+  const c = summarizerVerdict({
+    provider: 'claude-oauth', enabled: false,
+    skipped: [
+      { provider: 'claude-oauth', reason: 'OAuth token has expired (run `claude login`)' },
+      { provider: 'codex', reason: 'not installed' },
+    ],
+  });
+  expect(c.status).toBe('FAIL');
+  expect(c.detail).toContain('OAuth token has expired');
+  expect(c.detail).toContain('codex (not installed)');
+});
+
+test('summarizerVerdict stays readable when the walk recorded nothing', () => {
+  const c = summarizerVerdict({ provider: 'claude-oauth', enabled: false });
+  expect(c.status).toBe('FAIL');
+  expect(c.detail).toContain('no usable credentials');
+  expect(c.detail).not.toContain('Chain walk');
+});
+
 // ---------------------------------------------------------------------------
 // sidecarHealthVerdict — a local sidecar whose model cannot load (transformers 5.x vs voyage-4-nano's code) used
 // to crash-loop and show up as "not running". It now stays up and says so in /health; doctor must name it.
@@ -451,4 +494,34 @@ test('doctor warns about non-markdown files indexed as memory and names the comm
   expect(c.status).toBe('WARN');
   expect(c.detail).toContain('2 file(s)');
   expect(c.remedy).toContain('captain-memo maintenance --apply');
+});
+
+// ---------------------------------------------------------------------------
+// embedCoverageCheck — 2026-08-03 an outside user's `reindex --redim` ended "indexed 115, errors 20394": 115 of
+// 20,540 chunks had a vector, the retry queue was empty and no error was current, so embedderVerdict said "queue
+// clear" and doctor said "All systems healthy". The gap was only visible as ivf.vectors vs total_chunks in /stats.
+// ---------------------------------------------------------------------------
+
+test('embedCoverageCheck FAILs when most of the corpus has no vector (the 115-of-20,540 case)', () => {
+  const c = embedCoverageCheck({ total_chunks: 20540, vectors: 115, indexing: 'ready' });
+  expect(c?.status).toBe('FAIL');
+  expect(c?.detail).toContain('20,425 of 20,540');
+  expect(c?.remedy).toContain('--force');
+});
+
+test('embedCoverageCheck WARNs on a gap past 2% and stays silent below it', () => {
+  expect(embedCoverageCheck({ total_chunks: 1000, vectors: 900, indexing: 'ready' })?.status).toBe('WARN');
+  expect(embedCoverageCheck({ total_chunks: 1000, vectors: 985, indexing: 'ready' })).toBeNull();   // 1.5%: ingest in flight
+  expect(embedCoverageCheck({ total_chunks: 40048, vectors: 40048, indexing: 'ready' })).toBeNull();
+});
+
+test('embedCoverageCheck says nothing during the first index, on a tiny corpus, or without the numbers', () => {
+  expect(embedCoverageCheck({ total_chunks: 5000, vectors: 10, indexing: 'indexing' })).toBeNull();
+  expect(embedCoverageCheck({ total_chunks: 20, vectors: 0, indexing: 'ready' })).toBeNull();
+  expect(embedCoverageCheck({ total_chunks: 5000, indexing: 'ready' })).toBeNull();   // an older worker without ivf.vectors
+  expect(embedCoverageCheck(null)).toBeNull();
+});
+
+test('embedCoverageCheck: vectors above total (a stale index) never reads as a gap', () => {
+  expect(embedCoverageCheck({ total_chunks: 100, vectors: 130, indexing: 'ready' })).toBeNull();
 });

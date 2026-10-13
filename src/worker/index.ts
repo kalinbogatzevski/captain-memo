@@ -216,6 +216,8 @@ export interface WorkerOptions {
    *  for a worker that cannot spawn co-sessions in the first place. */
   activeSessionCount?: () => number;
   observationTickMs?: number;
+  /** How often a worker with no summarizer re-walks the provider chain (default 10 min). A test seam. */
+  summarizerReprobeMs?: number;
   /** pending_embed retry tick (default 60 s). Tests shorten it. */
   pendingEmbedTickMs?: number;
   observationBatchSize?: number;
@@ -937,8 +939,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       summarize = null;
       activeTransport = null;
       console.error(
-        `[obs-batch] summarizer provider chain EXHAUSTED after demoting ${dying} — summarizer DISABLED `
-        + `until restart (a restart re-walks the whole chain): ${reason}`,
+        `[obs-batch] summarizer provider chain EXHAUSTED after demoting ${dying} — summarizer DISABLED, `
+        + `re-checking every ${Math.round((opts.summarizerReprobeMs ?? 600_000) / 60_000)} min (a restart re-walks it at once): ${reason}`,
       );
       invalidateStats();
       return false;
@@ -1123,7 +1125,11 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   }
 
   let tickTimer: ReturnType<typeof setInterval> | null = null;
-  if (!opts.readOnly && tickMs > 0 && obsQueue && obsStore && summarize) {
+  // NOT gated on `summarize`. It used to be, which meant a captain that booted with no usable provider
+  // never created the tick at all — so when credentials came back there was nothing left running to
+  // notice, and the queue stayed frozen until someone restarted the worker. processBatch already
+  // returns immediately on a null summarize, so an idle tick costs one null check every tickMs.
+  if (!opts.readOnly && tickMs > 0 && obsQueue && obsStore) {
     tickTimer = setInterval(() => {
       // Skip — not queue — if another invocation is in flight. setInterval
       // already calls us every tickMs; piling up missed ticks isn't useful.
@@ -1131,6 +1137,92 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       processBatchSerialized(batchSize)
         .catch(err => console.error('[obs-tick]', err));
     }, tickMs);
+  }
+
+  /** Rows released per pass. Each one is a real model call, so a captain sitting on a large dead-letter
+   *  pile must not fire the whole thing at once; the rest come back on the next boot or on demand. */
+  const DEAD_LETTER_RELEASE_LIMIT = 500;
+
+  /**
+   * Give dead-lettered observations another go, and say so.
+   *
+   * markPermanent gives up deliberately — retrying an auth failure forever burns quota — but giving up
+   * used to be permanent, so a credential that lapsed for an afternoon cost every observation queued in
+   * that window. Nothing ever released them again.
+   *
+   * Safe to run repeatedly: retryFailed clears the retry counter, so a row that fails for a REAL reason
+   * walks the normal markFailed ladder and dead-letters again after several attempts rather than
+   * looping. Boots are human-scale events, and the limit bounds each pass.
+   */
+  const releaseDeadLetters = (why: string): void => {
+    if (!obsQueue) return;
+    const r = obsQueue.retryFailed({ limit: DEAD_LETTER_RELEASE_LIMIT });
+    if (r.revived === 0) return;
+    console.error(`[obs-queue] released ${r.revived} dead-lettered observation(s) — ${why}`
+      + (r.failedRemaining > 0
+        ? ` (${r.failedRemaining} still failed — \`captain-memo queue retry --apply\` releases more)`
+        : ''));
+  };
+
+  // BOOT RELEASE — a summarizer that is working NOW makes every dead letter worth one more attempt.
+  //
+  // The re-probe below only fires for a captain that boots with NO provider, so it misses the ordinary
+  // case: an operator repairs the credential by hand, restarts, and the rows dead-lettered during the
+  // outage stay dead forever because the recovery path that frees them never runs. That is exactly what
+  // happened to one workstation — the 37 rows only came back because someone knew a CLI command existed,
+  // which is the same shape as a capability shipped switched off.
+  if (!opts.readOnly && obsQueue && obsStore && summarize) {
+    releaseDeadLetters('a summarizer is available at boot');
+  }
+
+  // SUMMARIZER RE-PROBE — a captain that boots with no usable provider recovers ON ITS OWN.
+  //
+  // Boot walks the provider chain once. If every entry skips (a laptop that was off long enough for its
+  // OAuth token to go stale is the ordinary case), the worker builds no summarizer, creates no
+  // observations, dead-letters the queue, and stays that way until a human restarts it — while the
+  // credential it needs may have been refreshed minutes later by the operator simply using the CLI.
+  // One workstation sat exactly there: 24,159 observations frozen, 37 rows dead-lettered, doctor FAILing,
+  // and the fix was a restart nobody knew to perform.
+  //
+  // This does NOT contradict the demotion anti-flap rule. That rule protects a WORKING provider from
+  // being displaced and re-promoted in a loop between two half-broken ones. Here there is no incumbent:
+  // `summarize` is null, so the only outcomes are "still nothing" (unchanged) or "a provider now works"
+  // (strictly better).
+  //
+  // ARMED ALWAYS, and it re-walks with NO exclusions. Two gaps the first version had, both found when an outside
+  // user lost 19.5 h of capture (2026-10-12, the fourth outage in two months):
+  //  - It was armed only when the worker BOOTED without a summarizer, and rebuildSummarizer was only wired when
+  //    boot HAD one, so the two could never both hold: in production this timer never existed. The case that
+  //    actually happens, a login revoked while the worker is running, ends in demoteProvider with summarize = null
+  //    and "DISABLED until restart"; nothing was left running to notice the repaired login.
+  //  - It passed the demoted providers as exclusions. That list protects a WORKING chain from flapping; once the
+  //    chain is exhausted it only keeps out the very provider whose login a person just repaired (Claude Code
+  //    rewrites its credentials file on login and on refresh). A login that is still bad is demoted again on its
+  //    first call, so a failed attempt costs one request per cycle, and the rows it dead-letters are released
+  //    again by the next recovery.
+  const REPROBE_EVERY_MS = 600_000;   // 10 min. Credentials return on human timescales; a probe reads files and may spawn, so this is not a hot path.
+  let reprobeTimer: ReturnType<typeof setInterval> | null = null;
+  if (!opts.readOnly && obsQueue && obsStore && opts.rebuildSummarizer) {
+    const reprobe = async (): Promise<void> => {
+      if (summarize) return;                       // working (or already recovered): one null check per cycle
+      const next = await opts.rebuildSummarizer!([])
+        .catch((err: unknown) => {
+          console.error(`[summarizer-reprobe] walk failed: ${(err as Error).message}`);
+          return null;
+        });
+      if (!next) return;                           // still nothing usable — quiet, this is the expected case
+      summarize = next.summarize;
+      activeTransport = next.transport;
+      activeProvider = next.provider;
+      for (const s of next.skips) {
+        if (!summarizerSkips.some(x => x.provider === s.provider)) summarizerSkips.push(s);
+      }
+      demoted.length = 0;                          // retired for a login that is usable again; a relapse re-adds it
+      console.error(`[summarizer-reprobe] provider ${next.provider} is usable again — summarizer RESTORED`);
+      releaseDeadLetters(`provider ${next.provider} is usable again`);
+      invalidateStats();
+    };
+    reprobeTimer = setInterval(() => { void reprobe(); }, opts.summarizerReprobeMs ?? REPROBE_EVERY_MS);
   }
 
   // QUEUE RETENTION — keeps the database bounded without anyone remembering to run anything.
@@ -3263,7 +3355,19 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
               try {
                 // deleteFile drops the document's vectors, then the document. Dropping only the document
                 // (as this did) orphaned every old vector on each forced pass: 97% of 26,818 orphans.
-                if (parsed.data.force) await ingest.deleteFile(file);
+                // Without --force an unchanged file is skipped by sha, which says nothing about its vectors: after a
+                // run that died part-way (a `--redim` rate-limited at 115 of 20,540, 2026-08-03) the documents are
+                // intact and the vectors are gone, so a plain re-run did nothing. Treat "a chunk has no vector" as
+                // not indexed, exactly like --force does for that one file.
+                let refresh = parsed.data.force;
+                if (!refresh) {
+                  const prev = meta.getDocument(file);
+                  if (prev) {
+                    const ids = meta.getChunksForDocument(prev.id).map(c => c.chunk_id);
+                    refresh = ids.length > 0 && vector.hasVectors(collectionName, ids).size < ids.length;
+                  }
+                }
+                if (refresh) await ingest.deleteFile(file);
                 const before = meta.getDocument(file);
                 await ingest.indexFile(file, source.channel);
                 const after = meta.getDocument(file);
@@ -3283,8 +3387,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // to ~50 obs/sec. With --force, we drop the old document (cascades
         // meta chunks + FTS), evict orphaned vectors, then re-build chunks.
         // Without --force, observations that already carry the current chunk
-        // shape (single chunk with field_type='observation') are skipped so
-        // the reindex is resumable after a crash or interrupt.
+        // shape (single chunk with field_type='observation') AND a vector are
+        // skipped so the reindex is resumable after a crash or interrupt.
         if (obsStore && (parsed.data.channel === 'observation' || parsed.data.channel === 'all')) {
           const OBS_REINDEX_BATCH = 32;
           let buffer: Observation[] = [];
@@ -3397,7 +3501,11 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
               const existing = meta.getDocument(`observation:${opts.projectId}:${obs.id}`);
               if (existing) {
                 const chunks = meta.getChunksForDocument(existing.id);
-                if (chunks.length === 1 && (chunks[0]!.metadata as Record<string, unknown>).field_type === 'observation') {
+                // ...and its vector is still there. A chunk row alone is not "indexed": `--redim` deletes the vector
+                // index and keeps the chunks, so a re-run after a partly failed redim skipped all 20,493 rows and
+                // reported success over a corpus that was 99% unembedded.
+                if (chunks.length === 1 && (chunks[0]!.metadata as Record<string, unknown>).field_type === 'observation'
+                    && vector.hasVectors(collectionName, [chunks[0]!.chunk_id]).size === 1) {
                   skipped++;
                   continue;
                 }
@@ -3831,6 +3939,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
 
   const stopResources = async () => {
     if (tickTimer) clearInterval(tickTimer);
+    if (reprobeTimer) clearInterval(reprobeTimer);
     if (captureTimer) clearInterval(captureTimer);
     if (retentionTimer) clearInterval(retentionTimer);
     if (retentionFirstSweep) clearTimeout(retentionFirstSweep);
@@ -4278,14 +4387,13 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
     observationTickMs,
     ...(summarize !== undefined && { summarize }),
     ...(summarizerTransport !== undefined && { summarizerTransport }),
-    // Only wired when boot actually produced a summarizer: with no provider at all there is nothing
-    // to fail OVER from, and the loud "summarizer disabled" above already covers that case.
-    ...(boot.built !== null && {
-      rebuildSummarizer: async (exclude: SummarizerProvider[]) => {
-        const r = await walkChain(exclude);
-        return r.built ? { ...r.built, skips: r.skips } : null;
-      },
-    }),
+    // Always wired. It was wired only when boot produced a summarizer ("nothing to fail over from"), which left a
+    // worker that boots without one, or loses its last one at runtime, with no way to walk the chain again: the
+    // re-probe in startWorker needs it. demoteProvider still needs a known current provider, so failover is unchanged.
+    rebuildSummarizer: async (exclude: SummarizerProvider[]) => {
+      const r = await walkChain(exclude);
+      return r.built ? { ...r.built, skips: r.skips } : null;
+    },
   };
 }
 

@@ -51,6 +51,7 @@
 //     would otherwise be indistinguishable from success.
 
 import { copyFileSync, existsSync, mkdirSync, rmSync, statSync, symlinkSync } from 'fs';
+import { killTree } from '../shared/kill-tree.ts';
 import { homedir } from 'os';
 import { join } from 'path';
 import { ACCOUNT_DEFAULT_MODEL, DATA_DIR } from '../shared/paths.ts';
@@ -168,7 +169,9 @@ export function createAgyTransport(opts: AgyTransportOptions = {}): SummarizerTr
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      try { proc.kill?.(); } catch { /* already exited */ }
+      // Tree kill: on win32 the CLI is usually a .cmd shim whose real child survives proc.kill() and keeps
+      // the pipes open, so the awaited stdout read below would never resolve and the queue would wedge.
+      if (!killTree(proc as { pid?: number })) { try { proc.kill?.(); } catch { /* already exited */ } }
     }, timeoutMs);
     const stdoutText = await new Response(proc.stdout).text();
     const stderrText = await new Response(proc.stderr).text();

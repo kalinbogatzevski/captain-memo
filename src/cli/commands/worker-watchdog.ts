@@ -16,7 +16,7 @@ import { runWorkerWatchdog } from '../../shared/worker-watchdog.ts';
 import { restartWorker } from '../../shared/worker-control.ts';
 import { acquireHealLock, releaseHealLock } from '../../shared/worker-heal-lock.ts';
 import { getServiceManager } from '../../services/service-manager/index.ts';
-import { probeHealthOnce, probeHealthyWithRetries } from '../../shared/worker-health-probe.ts';
+import { probeHealthOnce, probeHealthyWithRetries, probeWorkerAlive } from '../../shared/worker-health-probe.ts';
 import { readTransition } from '../../shared/worker-transition.ts';
 
 const WORKER = 'captain-memo-worker';
@@ -52,7 +52,8 @@ export async function workerWatchdogCommand(_args: string[]): Promise<number> {
     const outcome = await runWorkerWatchdog({
       // Confirm a real outage (3 spaced probes) before the destructive reclaim, so
       // a momentarily-busy worker is never killed — only a persistent zombie is.
-      probeHealthy: () => probeHealthyWithRetries(() => probeHealthOnce(port)),
+      // "Is it worth a reclaim", so alive-but-busy (a 503 while the writer is stalled) counts as healthy; see probeWorkerAlive.
+      probeHealthy: () => probeHealthyWithRetries(() => probeWorkerAlive(port)),
       acquireLock: () => acquireHealLock(),
       releaseLock: () => releaseHealLock(),
       // No graceful: a worker that failed /health won't answer /shutdown either.

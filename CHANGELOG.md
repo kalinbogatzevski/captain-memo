@@ -7,6 +7,48 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.57.6] — 2026-10-13
+
+### Fixed
+
+- **A summarizer that stops while the worker is running now comes back on its own.** A user's Claude login was revoked
+  mid-run; the provider chain emptied, the worker logged "summarizer DISABLED until restart", and 19.5 hours of capture
+  were lost although the login was repaired minutes later (the fourth such outage in two months). The re-check that was
+  meant to cover this was armed only for a worker that boots without a summarizer, and it excluded the provider whose
+  login had just been repaired, so in practice it never ran. Now, whenever there is no summarizer, the worker re-walks the
+  whole chain every 10 minutes and, once a provider works, releases the observations that were dead-lettered meanwhile
+  (up to 500 per recovery, and again at every boot). A login that is still bad costs one failed request per cycle.
+- **The session banner says when the summarizer is down.** It printed a healthy banner and "(drains every 5s)" over a
+  queue that could not drain. It now prints `Summarizer DOWN — no observations are being captured`, the reason and the fix.
+- **A busy worker is no longer restarted by a prompt or a session start.** `/health` answers 503 while the worker's writer
+  thread is stalled (its heartbeat is over 5 s old); on one captain's journal that was 186 stalls in five days, 26 of them
+  over 5 s, the longest 63.5 s, every one recovered by itself. The self-heal in the prompt and session-start hooks and the
+  manual `worker-watchdog` read that 503 as "down" and restarted a live worker, and the cold start stalled the writer
+  again. A 503 that carries the worker's `instance` now counts as alive unless the engine has reported itself stuck for
+  two minutes; a session start against a worker whose stats are slow shows "active (stats snapshot slow to load)".
+- **A session whose hook is older than the running worker no longer restarts it.** The plugin bundle is not rebuilt on
+  every release, so its baked version can trail the worker's; any difference counted as stale. Only a hook that is
+  strictly newer now replaces the worker.
+- **`doctor` notices a corpus that has no vectors.** A `reindex --redim` that ended "indexed 115, errors 20394" left the
+  retry queue empty and no current error, so doctor said "queue clear" over a corpus that was 99% unembedded. A new
+  `embedding coverage` check compares the vector count with the chunk count: WARN above 2% missing, FAIL above 50%.
+- **A plain `reindex` re-embeds rows whose vector is gone.** It skipped every row that still had its chunk rows, and
+  `--redim` deletes the vectors and keeps the chunks, so the documented re-run reported "skipped 20493, errors 0" over an
+  unembedded corpus; only `--force` worked. A row now counts as indexed only if its vector exists.
+- **`dedup` no longer folds records that differ only in a code.** The merge guard read `AF00034.001` as just `001`, which
+  two different records share, so it let them fold. Letters-and-digits codes (`AF00034.001`, `p95`, `v2`) are now read
+  whole. The dry run also says it matches on titles alone, without the embedding check the background sweep adds.
+- **The Linux user units no longer lose their start job after a reboot.** The worker and embedder units carried both
+  `After=default.target` and `WantedBy=default.target`, a cycle that systemd breaks by silently deleting the unit's start
+  job; one install stayed offline for two days.
+- **A summarizer CLI that hangs no longer wedges the queue on Windows.** On timeout only the shim was killed; its child kept
+  the pipes open and the awaited read never finished. The whole process tree is now killed.
+
+### Added
+
+- **`captain-memo queue retry`** releases dead-lettered observations back to pending (dry run unless `--apply`), for rows
+  that failed while the summarizer had no credentials. The worker now does the same by itself on recovery and at boot.
+
 ## [0.57.5] — 2026-10-08
 
 ### Fixed

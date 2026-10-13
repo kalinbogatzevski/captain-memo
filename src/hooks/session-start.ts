@@ -5,12 +5,13 @@ import { homeworkDueFirst, homeworkDueParts, type HomeworkItem } from '../worker
 import { LOCAL_ARTICLES } from './local-articles.ts';
 import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS, DEFAULT_WORKER_PORT, DATA_DIR } from '../shared/paths.ts';
 import { VERSION } from '../shared/version.ts';
-import { consumeUpgrade, formatUpgradeBanner, formatAutoUpdateBanner, formatAutoUpdateBlockedBanner, formatRollbackBanner, writeMarker } from '../shared/self-update.ts';
+import { consumeUpgrade, formatUpgradeBanner, formatAutoUpdateBanner, formatAutoUpdateBlockedBanner, formatRollbackBanner, writeMarker, compareSemver } from '../shared/self-update.ts';
 import { newsLines, type NewsItem } from '../shared/whats-new.ts';
 import { runAutoUpdatePass } from './auto-update.ts';
 import { ensureWorkerHealthy } from '../shared/worker-health.ts';
 import { readTransition, markSessionDegraded, type WorkerTransition } from '../shared/worker-transition.ts';
 import { restartWorker } from '../shared/worker-control.ts';
+import { probeWorkerAlive } from '../shared/worker-health-probe.ts';
 import { acquireHealLock, releaseHealLock } from '../shared/worker-heal-lock.ts';
 
 interface SessionStartPayload {
@@ -23,6 +24,8 @@ interface StatsResponse {
   total_chunks: number;
   by_channel: Record<string, number>;
   observations: { total: number; queue_pending: number; queue_processing: number };
+  // The worker's summarizer state. Optional: an older worker omits it and the banner then says nothing about it.
+  summarizer?: { enabled: boolean; demoted?: Array<{ provider: string; reason: string }>; last_error?: string | null };
   indexing: {
     status: 'idle' | 'indexing' | 'ready' | 'error';
     total: number;
@@ -95,9 +98,21 @@ function formatBanner(stats: StatsResponse, homework: HomeworkItem[] = []): stri
   } else if (idx.status === 'error') {
     lines.push(`  Indexing   error — ${idx.errors} files failed`);
   }
+  // A dead summarizer stops observation capture outright and, when the whole provider chain is gone, only a
+  // restart brings it back. This banner is the one surface an operator sees unprompted every session; during a
+  // 19.5 h outage (revoked OAuth token, reported 2026-10-13) it printed a healthy banner and "(drains every 5s)"
+  // over a queue that could not drain. Guard on `=== false` so a worker that does not report it changes nothing.
+  const summarizerDown = stats.summarizer?.enabled === false;
+  if (summarizerDown) {
+    const why = (stats.summarizer?.last_error ?? stats.summarizer?.demoted?.at(-1)?.reason ?? 'no usable provider').replace(/\s+/g, ' ').slice(0, 110);
+    lines.push(`  Summarizer DOWN — no observations are being captured`);
+    lines.push(`             ${why}`);
+    lines.push(`             fix the provider's login (e.g. \`claude login\`), then \`captain-memo restart\``);
+  }
   const o = stats.observations;
   if (o.queue_pending > 0 || o.queue_processing > 0) {
-    lines.push(`  Obs queue  pending=${o.queue_pending} processing=${o.queue_processing} (drains every 5s)`);
+    const drain = summarizerDown ? 'stalled — summarizer down' : 'drains every 5s';
+    lines.push(`  Obs queue  pending=${o.queue_pending} processing=${o.queue_processing} (${drain})`);
   }
 
   lines.push('');
@@ -151,6 +166,21 @@ function formatTransitionBanner(t: WorkerTransition, willAnnounce: boolean, now:
 export async function nativeMain(): Promise<void> {
   try { await readStdinJson(); } catch { /* payload unused; a bad one must not cost the articles */ }
   writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: LOCAL_ARTICLES } }));
+}
+
+// Shown when the worker is confirmed ALIVE via /health but the heavier /stats snapshot
+// was slow/unavailable this session. Memory is fully working — only the diagnostics
+// snapshot didn't load — so this must NOT read as "unreachable".
+function formatBusyBanner(): string {
+  return [
+    '',
+    '',
+    '⚓ Captain Memo — active (stats snapshot slow to load)',
+    '─'.repeat(60),
+    '  Memory is live — the worker answered its health check; only the stats snapshot',
+    '  was slow this session. Search and observation capture work normally.',
+    '',
+  ].join('\n');
 }
 
 export async function main(): Promise<void> {
@@ -226,6 +256,17 @@ export async function main(): Promise<void> {
   // below, never a thrown hook. Opt out with CAPTAIN_MEMO_DISABLE_SELF_HEAL=1.
   const selfHealOff = process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL === '1';
   let running = stats.ok && !!stats.body;
+  // A slow /stats is NOT a dead worker. /stats is heavy diagnostics (SQL aggregation + audit-log digest over a large
+  // corpus) and can take ~1s; the liveness signal is the instant main-thread /health. Before self-healing on a
+  // failed/slow /stats, ask whether the worker is alive: if it is, its engine is merely busy and it must NEVER be
+  // restarted, which surfaced to the user as "unreachable" flapping. probeWorkerAlive, not a strict healthy:true
+  // read: /health answers 503 while the writer thread is stalled (heartbeat older than 5 s) and a busy worker is
+  // alive; a strict read judged it down and restarted it, whose cold start stalls the writer again (field
+  // 2026-10-13: restarts at 10:45:03 and 10:53:29).
+  let aliveViaHealth = false;
+  if (!running) {
+    if (await probeWorkerAlive(Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT), 2000)) { running = true; aliveViaHealth = true; }
+  }
   // A worker that is BOOTING, or deliberately restarting onto a new version, is NOT a dead worker —
   // it left a breadcrumb before going quiet. Reclaiming on top of that hard-kills a worker seconds
   // from healthy and, on win32, races the updater's own detached relauncher for the port: that is how
@@ -248,7 +289,11 @@ export async function main(): Promise<void> {
   // before it. Bouncing it there stacks a restart + 15s health wait onto the 30s already spent and
   // can overrun the hook's 60s budget — which kills the banner outright, the exact "no banner, looks
   // broken" state this feature exists to remove. A genuinely stale worker is picked up next session.
-  const stale = !updatedThisSession && !transition && running && stats.body!.version !== undefined && stats.body!.version !== VERSION;
+  // Directional: stale ONLY when the hook's compiled VERSION is genuinely NEWER than the running worker (a real
+  // plugin update). A hook VERSION OLDER than the worker is the committed-dist-lag case (plugin/dist is not rebuilt on
+  // every bump, so a bundled hook's baked VERSION trails the live worker): the worker is already ahead, so a restart
+  // is a needless bounce. The old `!==` made every such session restart a current worker. compareSemver(a,b) > 0 ⇔ a > b.
+  const stale = !updatedThisSession && !transition && running && !!stats.body && stats.body.version !== undefined && compareSemver(VERSION, stats.body.version) > 0;
   if (!selfHealOff && !inTransition && (!running || stale)) {
     try {
       const { getServiceManager } = await import('../services/service-manager/index.ts');
@@ -365,6 +410,14 @@ export async function main(): Promise<void> {
       continue: true,
       ...articles,
       systemMessage: withNotice(formatBanner(stats.body, homework)),
+    }));
+  } else if (aliveViaHealth) {
+    // The worker answered its liveness probe (ALIVE) but /stats was slow/unavailable this once: memory is fine, only
+    // the stats snapshot didn't load. Say exactly that; never the alarming "unreachable".
+    writeStdout(JSON.stringify({
+      continue: true,
+      ...articles,
+      systemMessage: withNotice(formatBusyBanner()),
     }));
   } else if (inTransition) {
     // Unreachable, but the worker told us why before it went quiet: it is updating or still booting.

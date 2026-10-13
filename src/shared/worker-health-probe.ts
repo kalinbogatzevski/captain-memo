@@ -26,6 +26,42 @@ export async function probeHealthOnce(port: number, timeoutMs = 3000): Promise<b
   }
 }
 
+/** How long the engine may report itself unresponsive before a live process counts as wedged (ms).
+ *  /health is derived from the writer thread's heartbeat and answers 503 once that is >5 s old
+ *  (worker/health-heartbeat.ts), so a worker that is merely busy answers 503 too. Measured on this
+ *  captain's worker journal 2026-10-08..13: 186 writer stalls, 26 >=5 s, 7 >=20 s, 2 >=60 s, longest
+ *  63.5 s — all of them recovered by themselves. 120 s clears every one with 2x margin; a writer
+ *  stuck longer than that is a real wedge and is reclaimed as before. */
+export const WORKER_WEDGED_AFTER_MS = 120_000;
+
+/** True while a live worker answers GET /health, even with a 503: the process is up and says "not
+ *  now" (a stalled writer, the startup indexing burst). Only a process that does not answer, is not
+ *  a worker (no numeric `instance`), or has reported its engine unresponsive for >= `wedgedAfterMs`
+ *  reads false. This is the question a destructive reclaim should ask; probeHealthOnce asks the
+ *  stricter "is it serving right now", which a busy worker fails every few minutes — and each
+ *  restart re-opens the indexing burst, so that answer feeds itself (field 2026-10-13: the
+ *  UserPromptSubmit self-heal restarted a live worker at 10:45:03 and again at 10:53:29). */
+export async function probeWorkerAlive(
+  port: number,
+  timeoutMs = 3000,
+  wedgedAfterMs = WORKER_WEDGED_AFTER_MS,
+): Promise<boolean> {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/health`, { signal: ctl.signal });
+    const body = (await r.json().catch(() => null)) as { healthy?: boolean; degraded?: string; instance?: unknown } | null;
+    if (r.ok) return body?.healthy === true;
+    if (typeof body?.instance !== 'number') return false;   // an older worker, or not ours: cannot call it alive
+    const stalledMs = Number(/unresponsive (\d+)ms/.exec(body.degraded ?? '')?.[1]);
+    return !(Number.isFinite(stalledMs) && stalledMs >= wedgedAfterMs);
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 /** WHICH worker process is answering — `instance` from /health, else `worker.started_at_epoch` from /stats —
  *  or null when neither can be read (unreachable, or an old worker mid-embed so /stats is slow).
  *

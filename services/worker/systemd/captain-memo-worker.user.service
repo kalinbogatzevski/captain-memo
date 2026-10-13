@@ -1,6 +1,9 @@
 [Unit]
 Description=Captain Memo worker (user-level, HTTP search + observation pipeline)
-After=default.target
+# NO After=default.target here: the unit is WantedBy=default.target, and the two together
+# close an ordering cycle as soon as any other user unit is ordered after this one —
+# systemd breaks the cycle by DELETING this unit's start job, silently. That kept an install
+# offline for two days after a reboot (2026-08-28).
 StartLimitIntervalSec=0
 
 [Service]

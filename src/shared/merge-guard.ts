@@ -4,8 +4,8 @@
 // tokens but mean different (or opposite) things. Two veto rules, no I/O:
 //   1. Negation polarity — exactly ONE title asserts absence/failure.
 //   2. Identifier mismatch — both titles carry load-bearing identifiers
-//      (paths, numbers-with-units, #refs, ALL-CAPS / uppercase single-letter
-//      tags) and they share NONE.
+//      (paths, letters-and-digits codes, numbers-with-units, #refs, ALL-CAPS /
+//      uppercase single-letter tags) and they share NONE.
 // Title-only by design: the standalone `dedup` CLI has no vector DB; the
 // cosine-≥0.98 confirm rides with the Quartermaster (Release 2).
 //
@@ -56,6 +56,11 @@ function identifierSet(raw: string): Set<string> {
   // allow the merge, and any two versions share a "0" or a "1" — so the guard was inert on exactly
   // the titles it exists for, and ten distinct release events grouped as one duplicate cluster.
   const patterns: RegExp[] = [
+    // Letters-and-digits CODE, taken whole: AF00034.001, p95, k8s, CVE-2026-1234, abc1234. Without this the digits
+    // were read as bare numbers and the letters were not read at all: "AF00034.001" yielded only "001", so two
+    // titles about different records (AF00034.001 vs AF00020.001) SHARED an identifier and the guard let the fold
+    // through (field: an outside user's corpus of per-record titles, dry run proposed 105 groups).
+    /\b(?=[\w.-]*\d)(?=[\w.-]*[a-z])[a-z0-9]+(?:[.-][a-z0-9]+)*\b/gi,
     /\b[\w-]+(?:\/[\w-]+)*\.[a-z][a-z0-9]{1,4}\b/gi, // file.ext, a/b/c.ts, foo.json
     /#\d+\b/g,                                        // #123
     /\b\d+(?:\.\d+)+\b/g,                             // dotted version 1.2.3

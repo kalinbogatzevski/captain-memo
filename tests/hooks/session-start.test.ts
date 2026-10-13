@@ -1,6 +1,6 @@
 import { test, expect, beforeAll, afterAll } from 'bun:test';
 import { join } from 'path';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 
 // Each hook runs in a THROWAWAY data dir. These hooks write state (the .degraded-<session_id> flag,
@@ -22,6 +22,7 @@ const HOOK_PATH = join(import.meta.dir, '../../src/hooks/session-start.ts');
 
 let statsCalls = 0;
 let homeworkItems: unknown[] = [];
+let statsExtra: Record<string, unknown> = {};   // merged over the default /stats body, per test
 let server: ReturnType<typeof Bun.serve>;
 
 beforeAll(() => {
@@ -39,6 +40,7 @@ beforeAll(() => {
           project_id: 'test',
           embedder: { model: 'voyage-4-lite', endpoint: 'https://api.voyageai.com/v1/embeddings' },
           version: VERSION,
+          ...statsExtra,
         });
       }
       if (url.pathname === '/homework/list') return Response.json({ items: homeworkItems });
@@ -169,4 +171,113 @@ test('SessionStart — homework without due times is listed exactly as before, a
   try {
     expect((await homeworkLines()).hw).toEqual(['#1 item 1', '#2 item 2 (claimed by x)', '#3 item 3']);
   } finally { homeworkItems = []; }
+});
+
+// 2026-10-13, an outside user: the Claude OAuth token was revoked, the provider chain emptied, and for 19.5 h every
+// new session printed a healthy banner plus "(drains every 5s)" over a queue that could not drain.
+test('SessionStart — a dead summarizer is flagged, and the queue line stops claiming it drains', async () => {
+  statsExtra = {
+    observations: { total: 5, queue_pending: 228, queue_processing: 0 },
+    summarizer: {
+      enabled: false,
+      demoted: [{ provider: 'claude-oauth', reason: 'claude-oauth: HTTP 401 OAuth access token has been revoked.' }],
+      last_error: 'claude-oauth: HTTP 401: OAuth access token has been revoked.',
+    },
+  };
+  try {
+    const { stdout, exitCode } = await runHook();
+    expect(exitCode).toBe(0);
+    const banner = JSON.parse(stdout).systemMessage as string;
+    expect(banner).toContain('Summarizer DOWN');
+    expect(banner).toContain('OAuth access token has been revoked');
+    expect(banner).toContain('captain-memo restart');
+    expect(banner).toContain('pending=228');
+    expect(banner).toContain('stalled — summarizer down');
+    expect(banner).not.toContain('drains every 5s');
+  } finally { statsExtra = {}; }
+});
+
+test('SessionStart — a working summarizer keeps the banner exactly as before', async () => {
+  statsExtra = {
+    observations: { total: 5, queue_pending: 3, queue_processing: 1 },
+    summarizer: { enabled: true, demoted: [], last_error: null },
+  };
+  try {
+    const banner = JSON.parse((await runHook()).stdout).systemMessage as string;
+    expect(banner).not.toContain('Summarizer DOWN');
+    expect(banner).toContain('pending=3 processing=1 (drains every 5s)');
+  } finally { statsExtra = {}; }
+});
+
+test('SessionStart — a worker that does not report the summarizer changes nothing', async () => {
+  statsExtra = { observations: { total: 5, queue_pending: 2, queue_processing: 0 } };
+  try {
+    const banner = JSON.parse((await runHook()).stdout).systemMessage as string;
+    expect(banner).not.toContain('Summarizer DOWN');
+    expect(banner).toContain('(drains every 5s)');
+  } finally { statsExtra = {}; }
+});
+
+// 2026-10-13: /health is derived from the writer thread's heartbeat and answers 503 once that is >5 s old, so a worker
+// that is merely BUSY answered 503 too. SessionStart read that as down and restarted it (10:45:03 and 10:53:29 that day),
+// and every cold start stalls the writer again. A PATH-first fake `systemctl` records any restart attempt, so a
+// regression here cannot restart this machine's real worker.
+test('SessionStart — /health 503 from a stalled writer (it carries `instance`) is a BUSY worker: no restart, busy banner', async () => {
+  const bin = mkdtempSync(join(tmpdir(), 'cm-fake-systemctl-'));
+  const calls = join(bin, 'calls.log');
+  writeFileSync(join(bin, 'systemctl'), `#!/bin/sh\necho "$@" >> '${calls}'\nexit 0\n`);
+  chmodSync(join(bin, 'systemctl'), 0o755);
+  const srv = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const url = new URL(req.url);
+      if (url.pathname === '/health') {
+        return Response.json({ healthy: false, degraded: 'engine unresponsive 7312ms (on http /observation/enqueue)', instance: 4242 }, { status: 503 });
+      }
+      if (url.pathname === '/stats') return new Response('busy', { status: 503 });
+      return new Response('nf', { status: 404 });
+    },
+  });
+  try {
+    const { stdout, exitCode } = await runHook({
+      CAPTAIN_MEMO_WORKER_PORT: String(srv.port ?? 0),
+      CAPTAIN_MEMO_DISABLE_SELF_HEAL: '0',
+      PATH: `${bin}:${process.env.PATH ?? ''}`,
+    });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain('active (stats snapshot slow to load)');
+    expect(stdout).not.toContain('worker unreachable');
+    expect(existsSync(calls)).toBe(false);   // systemctl was never asked to restart anything
+  } finally {
+    srv.stop();
+    rmSync(bin, { recursive: true, force: true });
+  }
+});
+
+test('SessionStart — /stats fails but /health OK: shows "active (stats slow)", never "unreachable", no self-heal', async () => {
+  // A busy-but-ALIVE worker: /stats is unavailable/slow (503 here) while /health answers.
+  // The hook must consult /health, conclude the worker is alive, skip the self-heal restart,
+  // and show the non-alarming "active (stats snapshot slow to load)" banner — NOT "unreachable".
+  const srv = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const url = new URL(req.url);
+      if (url.pathname === '/health') return Response.json({ healthy: true });
+      if (url.pathname === '/stats') return new Response('busy', { status: 503 });
+      return new Response('nf', { status: 404 });
+    },
+  });
+  try {
+    // self-heal ENABLED (=0): if the /health gate were absent, the hook would try to restart
+    // (and the busy banner would never appear). Its appearance proves the /health short-circuit fired.
+    const { stdout, exitCode } = await runHook({
+      CAPTAIN_MEMO_WORKER_PORT: String(srv.port ?? 0),
+      CAPTAIN_MEMO_DISABLE_SELF_HEAL: '0',
+    });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain('active (stats snapshot slow to load)');
+    expect(stdout).not.toContain('worker unreachable');
+  } finally {
+    srv.stop();
+  }
 });

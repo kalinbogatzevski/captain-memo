@@ -90,9 +90,11 @@ describe('findSemanticGroups', () => {
 
   test('maxGroups caps the emitted work', async () => {
     const rows = [
-      row(1, 'a1', 's1', 2), row(2, 'a2', 's1', 1),
-      row(3, 'b1', 's2', 2), row(4, 'b2', 's2', 1),
-      row(5, 'c1', 's3', 2), row(6, 'c2', 's3', 1),
+      // Plain words, not 'a1'/'a2': a letters-and-digits token is an identifier to the merge guard, and two different
+      // ones (a1 vs a2) are rightly blocked from folding.
+      row(1, 'alpha restated', 's1', 2), row(2, 'alpha restating', 's1', 1),
+      row(3, 'beta restated', 's2', 2), row(4, 'beta restating', 's2', 1),
+      row(5, 'gamma restated', 's3', 2), row(6, 'gamma restating', 's3', 1),
     ];
     const vm = { 1: at(0), 2: at(2), 3: at(0), 4: at(2), 5: at(0), 6: at(2) };
     expect((await findSemanticGroups({ rows, representativeVector: vecs(vm), cosineThreshold: 0.95, maxGroups: 10 })).length).toBe(3);

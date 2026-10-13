@@ -32,6 +32,7 @@
 //                         from stdin" when stdin is an open pipe (i.e. the worker).
 
 import { promptForSubprocess, type SummarizerTransport, type SummarizerTransportArgs, type SummarizerTransportResult } from './summarizer.ts';
+import { killTree } from '../shared/kill-tree.ts';
 import { ACCOUNT_DEFAULT_MODEL } from '../shared/paths.ts';
 
 /**
@@ -135,7 +136,9 @@ export function createCodexTransport(opts: CodexTransportOptions = {}): Summariz
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      try { proc.kill?.(); } catch { /* already exited */ }
+      // Tree kill: on win32 the CLI is usually a .cmd shim whose real child survives proc.kill() and keeps
+      // the pipes open, so the awaited stdout read below would never resolve and the queue would wedge.
+      if (!killTree(proc as { pid?: number })) { try { proc.kill?.(); } catch { /* already exited */ } }
     }, timeoutMs);
     const stdoutText = await new Response(proc.stdout).text();
     const exitCode = await proc.exited;

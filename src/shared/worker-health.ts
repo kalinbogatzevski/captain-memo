@@ -2,6 +2,7 @@
 // worker". All side effects are injected (probe/start/restart/wait/lock) so the
 // policy is unit-testable without a real service manager or HTTP. Callers (the
 // hooks) wire the real implementations in.
+import { compareSemver } from './self-update.ts';
 
 export type WorkerHealthOutcome =
   | { action: 'none'; reason: 'healthy' }
@@ -29,8 +30,12 @@ export interface EnsureDeps {
 export async function ensureWorkerHealthy(deps: EnsureDeps): Promise<WorkerHealthOutcome> {
   const version = await deps.probeVersion();
 
-  // Reachable AND on the current version → nothing to do (the common case).
-  if (version !== null && version === deps.diskVersion) {
+  // Reachable AND current OR NEWER → nothing to do. A worker NEWER than the hook's compiled diskVersion is
+  // the committed-dist-lag case (plugin/dist isn't rebuilt on every version bump, so a bundled hook's baked
+  // VERSION trails the live worker): the worker is already ahead, so restarting it would be a needless bounce
+  // — and on win32 a SELF-KILL when a co-session's own child hook runs this against its parent worker. Only a
+  // STRICTLY OLDER worker is stale. compareSemver(a,b) >= 0 ⇔ a ≥ b.
+  if (version !== null && compareSemver(version, deps.diskVersion) >= 0) {
     return { action: 'none', reason: 'healthy' };
   }
 
@@ -47,7 +52,7 @@ export async function ensureWorkerHealthy(deps: EnsureDeps): Promise<WorkerHealt
       }
       return { action: 'started', reason: 'unreachable', healthy: await deps.waitHealthy() };
     }
-    // Reachable but version !== disk → stale code, graceful restart.
+    // Reachable but STRICTLY OLDER than disk (version < diskVersion) → stale code, graceful restart.
     try {
       await deps.restart();
     } catch (e) {

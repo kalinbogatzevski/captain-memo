@@ -39,6 +39,15 @@ test('stale → graceful restart', async () => {
   expect(d._calls).toEqual(['restart', 'release']);
 });
 
+test('worker NEWER than disk (committed-dist-lag) → no action, never restart', async () => {
+  // The misfire we fixed: a bundled hook whose baked diskVersion trails the live worker must NOT judge it
+  // stale and restart it (on win32 a co-session's own child hook did this and killed its parent worker).
+  const d = deps({ version: '0.12.7', diskVersion: '0.12.0' });
+  const out = await ensureWorkerHealthy(d);
+  expect(out.action).toBe('none');
+  expect(d._calls).toEqual([]);   // no restart — the worker is already current/newer than the hook
+});
+
 test('lock held by another session → skipped, no start/restart', async () => {
   const d = deps({ version: null, acquireLock: () => false });
   const out = await ensureWorkerHealthy(d);

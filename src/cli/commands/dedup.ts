@@ -171,6 +171,7 @@ function runDedup(
     `${cyan(String(groups.length))} group(s) · ${cyan(String(archivable))} observation(s) ${tense} archived`;
   if (!apply) {
     console.log(`${gold('▸')} ${corpusNote('would be')}.`);
+    console.log(dim('  Matched on title similarity alone (no embedding check, unlike the background sweep): read each group before applying.'));
     console.log(dim('  Re-run with --apply to perform the merge (observations.db is backed up first).'));
     return 0;
   }

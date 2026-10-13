@@ -140,3 +140,29 @@ describe('mergeBlocked', () => {
     });
   });
 });
+
+// An outside user's corpus names every record after a code (AF00034.001, AF00020.001). The guard read the digits as
+// bare numbers and the letters not at all: "AF00034.001" yielded only "001", which both titles carry, so a shared
+// "identifier" let `dedup --apply` fold two different records into one.
+describe('mergeBlocked — letters-and-digits codes are identifiers', () => {
+  test('two different record codes block the fold (the reported case)', () => {
+    expect(mergeBlocked(
+      'Inspected AF00034.001 route analysis record structure',
+      'Inspected AF00020.001 flow record from route analysis CSV',
+    )).toBe(true);
+  });
+  test('the same code on both sides still folds a plain rephrasing', () => {
+    expect(mergeBlocked(
+      'Inspected AF00034.001 route analysis record structure',
+      'Inspected AF00034.001 route analysis record layout',
+    )).toBe(false);
+  });
+  test('p95 vs p50, v2 vs v3: different codes are different facts', () => {
+    expect(mergeBlocked('p95 latency regressed after the index rebuild', 'p50 latency regressed after the index rebuild')).toBe(true);
+    expect(mergeBlocked('Updated config to v2 format', 'Updated config to v3 format')).toBe(true);
+  });
+  test('titles with no code are untouched', () => {
+    expect(mergeBlocked('Fixed the retry loop in the summarizer', 'Fixed the summarizer retry loop')).toBe(false);
+  });
+});
+

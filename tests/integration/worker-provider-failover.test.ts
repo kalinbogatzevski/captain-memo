@@ -152,7 +152,7 @@ test('2. chain exhausted → dead-letter, exactly as before failover existed', a
   expect(stats.summarizer.enabled).toBe(false);          // summarizer OFF → doctor FAILs
   expect(stats.summarizer.demoted.map(d => d.provider)).toEqual(['claude-oauth']);
 
-  // And it stays off: no cooldown-then-retry, no second chance without a restart.
+  // And it stays off for now: no immediate second chance (the re-probe, tests 6-8, only comes round every 10 min).
   await enqueue(port, 's2');
   const res = await fetch(`http://localhost:${port}/observation/flush`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
@@ -276,3 +276,89 @@ test('5. a NON-auth permanent (400) does not demote — only a run of DEMOTE_AFT
   expect(r3.observations_created).toBe(1);
   expect(queueRows().filter(row => row.status === 'done').length).toBe(1);
 });
+
+// ---------------------------------------------------------------------------
+// Re-probe. An outside user (2026-10-12) lost 19.5 h of capture: the OAuth token was revoked while the worker ran, the
+// chain emptied, "summarizer DISABLED until restart", and the credential Claude Code rewrote minutes later never reached
+// the worker. The re-probe that exists for a worker that boots without a summarizer was armed only in that boot case and
+// excluded the demoted providers, so it could not help here.
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+async function until(check: () => Promise<boolean>, ms = 4000): Promise<boolean> {
+  const end = Date.now() + ms;
+  while (Date.now() < end) { if (await check()) return true; await sleep(25); }
+  return false;
+}
+const summarizerStats = async (port: number) =>
+  (await (await fetch(`http://localhost:${port}/stats`)).json() as
+    { summarizer: { enabled: boolean; provider: string; demoted: Array<{ provider: string }> } }).summarizer;
+
+test('6. chain exhausted at RUNTIME → the re-probe restores a repaired provider and releases the dead letters', async () => {
+  const excludes: string[][] = [];
+  let repaired = false;
+  const port = await boot({
+    summarize: failWith(401, 'claude-oauth: HTTP 401: OAuth access token has been revoked'),
+    summarizerTransport: transportFor('a'),
+    summarizerProvider: 'claude-oauth',
+    summarizerReprobeMs: 40,
+    rebuildSummarizer: async (exclude) => {
+      excludes.push([...exclude]);
+      return repaired ? { summarize: ok, transport: transportFor('b'), provider: 'claude-oauth', skips: [] } : null;
+    },
+  });
+
+  await enqueue(port, 's1');
+  await flush(port, 's1');
+  expect(queueRows()).toEqual([{ status: 'failed', retries: 0 }]);
+  expect((await summarizerStats(port)).enabled).toBe(false);
+
+  // Still broken: the re-probe finds nothing, says nothing, and keeps trying.
+  await sleep(150);
+  expect((await summarizerStats(port)).enabled).toBe(false);
+
+  repaired = true;                                      // the person ran `claude login`; the credential is back
+  expect(await until(async () => (await summarizerStats(port)).enabled)).toBe(true);
+
+  // It asked with NO exclusions: the demoted list protects a working chain, not an empty one.
+  expect(excludes.slice(1).every(e => e.length === 0)).toBe(true);
+  const st = await summarizerStats(port);
+  expect(st.provider).toBe('claude-oauth');
+  expect(st.demoted).toEqual([]);                       // restored, no longer "retired"
+
+  // The row the outage dead-lettered is back in the queue and summarizes.
+  const r = await flush(port, 's1');
+  expect(r.observations_created).toBe(1);
+  expect(queueRows()).toEqual([{ status: 'done', retries: 0 }]);
+});
+
+test('7. a re-probe that finds nothing usable is quiet and leaves the summarizer off', async () => {
+  let calls = 0;
+  const port = await boot({
+    summarize: failWith(401, 'HTTP 401: unauthorized'),
+    summarizerTransport: transportFor('a'),
+    summarizerProvider: 'claude-oauth',
+    summarizerReprobeMs: 30,
+    rebuildSummarizer: async () => { calls++; return null; },
+  });
+  await enqueue(port, 's1');
+  await flush(port, 's1');
+  const before = calls;
+  await sleep(200);
+  expect(calls).toBeGreaterThan(before);                // it does keep looking
+  expect((await summarizerStats(port)).enabled).toBe(false);
+});
+
+test('8. a working summarizer is never re-walked', async () => {
+  let calls = 0;
+  const port = await boot({
+    summarize: ok,
+    summarizerTransport: transportFor('a'),
+    summarizerProvider: 'claude-oauth',
+    summarizerReprobeMs: 30,
+    rebuildSummarizer: async () => { calls++; return null; },
+  });
+  await sleep(200);
+  expect(calls).toBe(0);
+  expect((await summarizerStats(port)).enabled).toBe(true);
+});
+

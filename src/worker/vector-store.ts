@@ -515,6 +515,16 @@ export class VectorStore {
     return (this.db.query('SELECT MAX(rowid) AS m FROM vec_chunk_meta').get() as { m: number | null }).m;
   }
 
+  /** Which of `chunkIds` have a vector in `collection`. Reads vec_chunk_meta ONLY, by its primary key — never the
+   *  vec0 table (see countVectors for what that costs). Measured 2026-10-13 on the real 267,954-row store: 40 µs a hit,
+   *  14 µs a miss, so a 40,000-observation reindex pays about 1.6 s in total. */
+  hasVectors(collection: string, chunkIds: string[]): Set<string> {
+    const q = this.db.query(`SELECT 1 FROM vec_chunk_meta WHERE collection_name = ? AND chunk_id = ?`);
+    const present = new Set<string>();
+    for (const id of chunkIds) if (q.get(collection, id)) present.add(id);
+    return present;
+  }
+
   countVectors(collection: string): number {
     // Counted from the meta table ALONE. The joined form measured **114,711 ms** against the real
     // 143k-vector store versus 16 ms this way — and it ran once per sweep slice, on the writer
