@@ -377,6 +377,15 @@ const TIDE_ON: NonNullable<StatsResponse['tide']> = {
   max_stability_days: 142.4,
 };
 
+test('renderStats — Tiers line names the folded rows, and omits the figure when there are none', () => {
+  const withFolds = renderStats({ ...SAMPLE, tide: { ...TIDE_ON, folded: 4101 } }).map(stripAnsi).join('\n');
+  expect(withFolds).toMatch(/Tiers\s+10 591 active · 2 dormant · 0 archived · 4 101 folded/);
+  const none = renderStats({ ...SAMPLE, tide: { ...TIDE_ON, folded: 0 } }).map(stripAnsi).join('\n');
+  expect(none).not.toContain('folded');
+  const older = renderStats({ ...SAMPLE, tide: TIDE_ON }).map(stripAnsi).join('\n');   // a worker from before the field
+  expect(older).not.toContain('folded');
+});
+
 test('renderStats — Tide section (on) shows status, floor, strengthened, tiers, max stability', () => {
   const stats: StatsResponse = { ...SAMPLE, tide: TIDE_ON };
   const text = renderStats(stats).map(stripAnsi).join('\n');

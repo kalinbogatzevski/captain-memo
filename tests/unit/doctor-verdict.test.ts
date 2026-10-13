@@ -506,7 +506,11 @@ test('embedCoverageCheck FAILs when most of the corpus has no vector (the 115-of
   const c = embedCoverageCheck({ total_chunks: 20540, vectors: 115, indexing: 'ready' });
   expect(c?.status).toBe('FAIL');
   expect(c?.detail).toContain('20,425 of 20,540');
-  expect(c?.remedy).toContain('--force');
+  // A plain reindex re-embeds a chunk with no vector (reindex-vectorless.test.ts), so it is the remedy; --force is only
+  // named as the heavier option, never as the way past a "skip".
+  expect(c?.remedy).toContain('captain-memo reindex ');
+  expect(c?.remedy).not.toContain('errored once');
+  expect(embedCoverageCheck({ total_chunks: 1000, vectors: 900, indexing: 'ready' })?.remedy).not.toContain('--force');
 });
 
 test('embedCoverageCheck WARNs on a gap past 2% and stays silent below it', () => {

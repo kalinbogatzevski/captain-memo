@@ -134,6 +134,30 @@ describe('mergeBlocked', () => {
       )).toBe(false);
     });
 
+    // "v1.30" is a version too. The \b before the digit failed inside it, so rule 3 never saw it and the shared code
+    // AF00030 satisfied rule 2: a field user's corpus folded the v1.30 and v1.32 findings together.
+    test('blocks v-prefixed versions that differ even when a record code is shared', () => {
+      expect(mergeBlocked(
+        'v1.30 route analyzer causes regression in AF00030',
+        'v1.32 route analyzer causes regression in flow AF00030',
+      )).toBe(true);
+    });
+
+    test('a leading v does not make the same version a different one', () => {
+      expect(mergeBlocked(
+        'v1.30 route analyzer causes regression in AF00030',
+        'route analyzer 1.30 regression in AF00030',
+      )).toBe(false);
+      expect(mergeBlocked(
+        'v1.30 route analyzer causes regression in AF00030',
+        'V1.30 route analyzer regression found in AF00030',
+      )).toBe(false);
+    });
+
+    test('a word that merely ends in v is not read as a v-prefixed version', () => {
+      expect(mergeBlocked('Deployed dev1.2 to staging', 'Deployed dev1.2 to staging again')).toBe(false);
+    });
+
     // Only ONE side carries a version ⇒ rule 3 has nothing to compare; fall through to rule 2.
     test('does not fire when only one side carries a version', () => {
       expect(mergeBlocked('Deploy the calendar stylesheet', 'Deploy the calendar stylesheet v3.12')).toBe(false);

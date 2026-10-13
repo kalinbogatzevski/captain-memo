@@ -449,6 +449,9 @@ export interface TideStats {
   /** Lifecycle-tier breakdown. The MVP never leaves `active`; dormant/archived
    *  populate once Phase 2 (Tide tiering) lands. */
   by_state: { active: number; dormant: number; archived: number };
+  /** Rows folded into a survivor or a theme (`archived = 1`). Not live, so never counted in `by_state.active`;
+   *  `dormant` / `archived` are Tide's own states and may include some of them. */
+  folded: number;
   /** Observations pinned with `is_anchored = 1` — they never ebb. */
   anchored: number;
   /** Largest `stability_days` in the corpus (days), or null if none strengthened. */
@@ -636,6 +639,8 @@ function collapseTop(
 export class ObservationsStore {
   private db: Database;
   private tideConfig: TideConfig | null;
+  /** Folded rows Tide still calls active, with the counts it was derived at (see getTideStats). */
+  private foldedActive: { key: string; n: number } | null = null;
 
   constructor(path: string, opts?: { readonly?: boolean; tideConfig?: TideConfig }) {
     this.db = new Database(path, opts?.readonly ? { readonly: true } : undefined);
@@ -790,6 +795,20 @@ export class ObservationsStore {
       .all() as Array<{ s: string; n: number }>).map(r => [r.s, r.n]));
     const dormant = byState.get('dormant') ?? 0;
     const archived = byState.get('archived') ?? 0;
+    // A folded row (archived = 1) is not live whatever Tide says of it. Counting it as `active` is what let an outside
+    // user read "active 40722 · archived 0" as "nothing was ever folded" over 4,101 folds (2026-10-13). The folded count
+    // is idx_obs_archived alone: 0.7 ms on 252k rows. How many of them Tide still calls active needs each row's
+    // tide_state, a fetch from the fat table: 117 ms warm for 9,169 folded rows, growing with the folded count. So it is
+    // derived again only when a count that could move it has changed (folds and tier moves are rare next to the 5 s
+    // /stats poll), never per poll.
+    const folded = n('SELECT COUNT(*) AS n FROM observations WHERE archived = 1');
+    const foldedKey = `${folded}:${dormant}:${archived}`;
+    if (this.foldedActive?.key !== foldedKey) {
+      this.foldedActive = {
+        key: foldedKey,
+        n: folded === 0 ? 0 : n("SELECT COUNT(*) AS n FROM observations WHERE archived = 1 AND tide_state = 'active'"),
+      };
+    }
     const strengthened = n('SELECT COUNT(*) AS n FROM observations WHERE stability_days IS NOT NULL');
     const anchored = n('SELECT COUNT(*) AS n FROM observations WHERE is_anchored = 1');
     const maxRow = this.db
@@ -797,7 +816,8 @@ export class ObservationsStore {
       .get() as { m: number | null };
     return {
       strengthened,
-      by_state: { active: total - dormant - archived, dormant, archived },
+      by_state: { active: total - dormant - archived - this.foldedActive.n, dormant, archived },
+      folded,
       anchored,
       max_stability_days: typeof maxRow.m === 'number' ? maxRow.m : null,
     };

@@ -91,10 +91,13 @@ function identifierSet(raw: string): Set<string> {
  * Symmetric by construction: both rules are computed from per-title sets and
  * compared symmetrically.
  */
-/** Dotted versions in a title, e.g. "3.11 to 3.12" → {"3.11","3.12"}. */
+/** Dotted versions in a title, e.g. "3.11 to 3.12" → {"3.11","3.12"}. A leading "v" is read as part of the version
+ *  and dropped, so "v1.30" and "1.30" are the same one. Without it the \b before the digit failed inside "v1.30": the
+ *  version went unseen, rule 2 read it as an opaque code, and "v1.30 … AF00030" folded into "v1.32 … AF00030" on the
+ *  shared AF00030 (field: an outside user's corpus, 2026-10-13). */
 function versionSet(raw: string): Set<string> {
   const out = new Set<string>();
-  for (const m of raw.matchAll(/\b\d+(?:\.\d+)+\b/g)) out.add(m[0]);
+  for (const m of raw.matchAll(/\bv?(\d+(?:\.\d+)+)\b/gi)) out.add(m[1]!);
   return out;
 }
 

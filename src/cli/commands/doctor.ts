@@ -229,10 +229,10 @@ export function embedCoverageCheck(
   const detail = `${fmt(missing)} of ${fmt(total)} chunks (${Math.round(gap * 100)}%) have no vector, so vector search covers only the rest`;
   if (gap > EMBED_COVERAGE_FAIL_GAP) {
     return { name, status: 'FAIL', detail,
-             remedy: 'captain-memo reindex --force   (a plain re-run skips rows that already errored once)' };
+             remedy: 'captain-memo reindex   (re-embeds every chunk that has no vector; --force redoes all of them, including the ones that are fine)' };
   }
   return { name, status: 'WARN', detail,
-           remedy: 'run doctor again in a few minutes — ingest may still be catching up. If it persists: captain-memo reindex --force' };
+           remedy: 'run doctor again in a few minutes — ingest may still be catching up. If it persists: captain-memo reindex' };
 }
 
 /** Chunks the embedder refused on their own, again and again. The rest of the queue is not waiting on them. */

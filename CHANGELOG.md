@@ -7,6 +7,29 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.57.7] — 2026-10-13
+
+### Fixed
+
+- **`dedup` no longer folds `v1.30` into `v1.32`.** A leading `v` kept the version out of the guard's sight (its word
+  boundary failed between the `v` and the digit), so two findings about different releases that shared a record code such
+  as `AF00030` read as one and were folded. `v1.30` and `1.30` are now the same version, `v1.30` and `v1.32` are not.
+  Two titles that share a version and differ only in wording still fold; the guard cannot tell those apart.
+- **`stats` no longer lists folded rows as active.** The Tiers line counted every row as `active`, so a corpus with 4,101
+  folds read "active 40722 · archived 0" and looked as if nothing had ever been folded. `tide.by_state.active` now leaves
+  folded rows out, `tide.folded` and a `folded` figure on the Tiers line report them. `dormant` and `archived` stay
+  Tide's own states.
+- **`doctor`'s remedy for a corpus without vectors no longer sends you to `--force`.** After the 0.57.6 reindex fix a
+  plain `captain-memo reindex` re-embeds every chunk that has no vector; the old text still said a plain run skips them.
+  `--force` redoes all chunks, including the ones that are fine.
+
+### Notes
+
+- **Updating a git clone takes one more step.** `git pull`, `bun install` and `captain-memo restart` move the worker, but
+  Claude Code's hooks run from the plugin cache copy, which the next session start refreshes (only when the plugin was
+  installed from a directory marketplace on this checkout). Until then `doctor` warns `plugin cache version`. To refresh
+  it at once, run `captain-memo install --yes`.
+
 ## [0.57.6] — 2026-10-13
 
 ### Fixed

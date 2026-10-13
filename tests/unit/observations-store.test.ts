@@ -196,6 +196,25 @@ test('getTideStats — counts strengthened, tier breakdown, anchored, max stabil
   expect(s.max_stability_days).toBeCloseTo(40.0, 5);
 });
 
+test('getTideStats — folded rows are not counted active, and the figure follows the next fold', () => {
+  const ids = [1, 2, 3, 4, 5].map(() => store.insert({ ...tideBase }));
+  expect(store.getTideStats().folded).toBe(0);
+  const raw = new Database(join(workDir, 'observations.db'));
+  raw.run('UPDATE observations SET archived = 1 WHERE id IN (?, ?)', [ids[0]!, ids[1]!]);               // two folds, tide-active
+  raw.run("UPDATE observations SET archived = 1, tide_state = 'dormant' WHERE id = ?", [ids[2]!]);       // a fold Tide also demoted
+  raw.run("UPDATE observations SET tide_state = 'dormant' WHERE id = ?", [ids[3]!]);                      // dormant, still live
+
+  const s = store.getTideStats();
+  expect(s.folded).toBe(3);
+  expect(s.by_state).toEqual({ active: 1, dormant: 2, archived: 0 });   // only ids[4] is live and active
+
+  raw.run('UPDATE observations SET archived = 1 WHERE id = ?', [ids[4]!]);
+  const after = store.getTideStats();
+  expect(after.folded).toBe(4);
+  expect(after.by_state.active).toBe(0);
+  raw.close();
+});
+
 // ── tier persistence (Phase 2) ─────────────────────────────────────────────
 test('sunkAmong — returns dormant + archived ids, never active; empty → empty', () => {
   const a = store.insert({ ...tideBase });

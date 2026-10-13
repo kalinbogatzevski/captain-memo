@@ -94,6 +94,8 @@ export interface StatsResponse {
     relevance_floor: number;
     strengthened: number;
     by_state: { active: number; dormant: number; archived: number };
+    /** Rows folded into a survivor or theme, kept out of `active`. Absent from workers older than this field. */
+    folded?: number;
     anchored: number;
     max_stability_days: number | null;
   };
@@ -812,6 +814,9 @@ function renderTideBlock(
     + `${cyanBold(fmtCount(active))} ${dim('active')}`
     + ` ${dim('·')} ${cyanBold(fmtCount(dormant))} ${dim('dormant')}`
     + ` ${dim('·')} ${cyanBold(fmtCount(archived))} ${dim('archived')}`;
+  if (tide.folded) {
+    tiers += ` ${dim('·')} ${cyanBold(fmtCount(tide.folded))} ${dim('folded')}`;
+  }
   if (tide.anchored > 0) {
     tiers += ` ${dim('·')} ${cyanBold(fmtCount(tide.anchored))} ${dim('anchored')}`;
   }
