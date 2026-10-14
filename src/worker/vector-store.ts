@@ -107,6 +107,12 @@ CREATE TABLE IF NOT EXISTS vec_cluster_id_seq (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   next_id INTEGER NOT NULL
 );
+
+-- How many vectors the collection held when its centroids were last seeded (see bootstrapSize).
+CREATE TABLE IF NOT EXISTS vec_index_bootstrap (
+  collection_name TEXT PRIMARY KEY,
+  vectors INTEGER NOT NULL
+);
 `;
 const SEED_SEQ = `INSERT OR IGNORE INTO vec_cluster_id_seq (id, next_id) VALUES (1, 0);`;
 // A real persisted sequence, not "MAX(cluster_id) already committed to
@@ -580,9 +586,19 @@ export class VectorStore {
     return r.n + ':' + r.mx;
   }
 
+  /** How many vectors the collection held when its centroids were last seeded, or null when that was not recorded (an index
+   *  built before this existed: the caller reads it as K x targetPerCluster, the size a bootstrap would have chosen K for). */
+  bootstrapSize(collection: string): number | null {
+    try {
+      const r = this.db.query(`SELECT vectors FROM vec_index_bootstrap WHERE collection_name = ?`).get(collection) as { vectors: number } | null;
+      return r ? r.vectors : null;
+    } catch { return null; }   // a store opened read-only on a file that predates the table
+  }
+
   /** Replace the full centroid set for a collection. Does not touch other
-   *  collections' centroids. */
-  setCentroids(collection: string, centroids: Centroid[]): void {
+   *  collections' centroids. `bootstrapVectors` is passed by the bootstrap only (a seeding, not a drift update): it is
+   *  recorded in the same transaction, so the set and the size it was built for never disagree. */
+  setCentroids(collection: string, centroids: Centroid[], bootstrapVectors?: number): void {
     const del = this.db.query(`DELETE FROM vec_cluster_centroids WHERE collection_name = ?`);
     const ins = this.db.query(
       `INSERT INTO vec_cluster_centroids (collection_name, cluster_id, hit_count, centroid) VALUES (?, ?, ?, ?)`
@@ -592,6 +608,9 @@ export class VectorStore {
       for (const c of centroids) {
         const blob = new Uint8Array(new Float32Array(c.vector).buffer);
         ins.run(collection, c.clusterId, c.hitCount, blob);
+      }
+      if (bootstrapVectors !== undefined) {
+        this.db.query(`INSERT OR REPLACE INTO vec_index_bootstrap (collection_name, vectors) VALUES (?, ?)`).run(collection, bootstrapVectors);
       }
     });
     tx();

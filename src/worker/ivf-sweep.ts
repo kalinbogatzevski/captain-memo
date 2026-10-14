@@ -5,7 +5,7 @@
 // newly-unclustered chunks, OR rebalance one batch of already-clustered ones.
 // Never more than one of those per tick, so cost per call stays predictable.
 import {
-  targetClusterCount, seedCentroids, miniBatchUpdate, nearestInBatch, isZeroVector, UNCLUSTERED_CLUSTER,
+  targetClusterCount, outgrown, seedCentroids, miniBatchUpdate, nearestInBatch, isZeroVector, UNCLUSTERED_CLUSTER,
   type IvfConfig, type Centroid,
 } from './ivf.ts';
 
@@ -16,7 +16,12 @@ export interface IvfSweepDeps {
   migrateLegacyBatch: (limit: number) => number;
   countVectors: (collection: string) => number;
   getCentroids: (collection: string) => Centroid[];
-  setCentroids: (collection: string, centroids: Centroid[]) => void;
+  /** `bootstrapVectors` is passed by the bootstrap only: the corpus size this set was seeded for, kept so a later slice can
+   *  tell when the corpus has outgrown it (see bootstrapSize). */
+  setCentroids: (collection: string, centroids: Centroid[], bootstrapVectors?: number) => void;
+  /** The corpus size the current centroids were seeded for; null for an index built before that was recorded (then read as
+   *  K x targetPerCluster). Optional: absent, every index reads that way. */
+  bootstrapSize?: (collection: string) => number | null;
   allocateClusterIds: (collection: string, n: number) => number[];
   /** May be async: reading seeds by key is ~2 ms a row on a large store, so the real one yields to the event loop as it goes. */
   sampleAnyVectors: (collection: string, limit: number) => Array<{ chunkId: string; embedding: Float32Array }>
@@ -66,9 +71,9 @@ const EMPTY_RESULT: IvfSweepResult = { legacyMigrated: 0, bootstrapped: 0, assig
  *     config. See the plan's Global Constraints for the full incident.
  *  2. Nothing further, if clustering itself is disabled.
  *  3. Nothing, if the corpus is still below the clustering threshold.
- *  3b. Repair an index whose centroids include an all-zero one (see below):
- *     send one batch of its rows back to unclustered, and once none are left
- *     fall through to the bootstrap, which replaces the whole set.
+ *  3b. Repair an index whose centroids include an all-zero one, or that the corpus
+ *     has outgrown (see below): send one batch of its rows back to unclustered, and
+ *     once none are left fall through to the bootstrap, which replaces the whole set.
  *  4. Bootstrap centroids (once), if the corpus has crossed the threshold
  *     and no centroids exist yet.
  *  5. Assign one batch of newly-unclustered chunks to existing centroids.
@@ -102,7 +107,16 @@ export async function runIvfSweepSlice(deps: IvfSweepDeps): Promise<IvfSweepResu
   // MEASURED on a copy of the 272k-vector dev store (2026-10-14), 300 reset slices of 64 rows, flat from the first slice to
   // the last as the unclustered partition grew to 19,200: slice 110-150 ms p50, 240-400 ms p95, 460 ms max; the write
   // transaction (the lock) 41-48 ms p50, 146-273 ms p95, 314 ms max; about 6% of writer time at the 2 s build cadence.
-  const repairing = centroids.some(c => isZeroVector(c.vector));
+  //
+  // The same repair redoes an index the corpus has outgrown. The number of clusters was chosen once, at the bootstrap, and a store
+  // seeded at ~3,300 vectors kept 11 centroids at 40.9k (an average cluster of 3,700), where every dedup, semantic and theme pass
+  // takes its groups from cluster membership. Once the corpus is `regrowRatio` times the size the index was built for (outgrown)
+  // the bootstrap below runs again with the K the corpus has now. It costs two passes over every row and, until the unclustered
+  // partition drains, flat-scan queries, so the ratio keeps it to an index that has fallen far behind, and the size the last
+  // bootstrap recorded (not its seed count) is what is compared, so a bootstrap that found few usable seeds cannot trigger another.
+  const regrowing = centroids.length > 0 && outgrown(
+    deps.bootstrapSize?.(collection) ?? centroids.length * cfg.targetPerCluster, totalVectors, cfg);
+  const repairing = regrowing || centroids.some(c => isZeroVector(c.vector));
   const resetBatch = (): number => {
     const placed = deps.sampleClusteredVectors(collection, cfg.sweepBatch);
     if (placed.length > 0) {
@@ -134,7 +148,7 @@ export async function runIvfSweepSlice(deps: IvfSweepDeps): Promise<IvfSweepResu
       const n = resetBatch();
       if (n > 0) return { ...EMPTY_RESULT, reset: n };
     }
-    deps.setCentroids(collection, seeded);
+    deps.setCentroids(collection, seeded, totalVectors);
     return { ...EMPTY_RESULT, bootstrapped: seeded.length };
   }
 

@@ -46,6 +46,9 @@ export interface IvfConfig {
    *  update weight never drops below this even after many hits, so it keeps
    *  adapting instead of freezing solid once a cluster has seen a lot of data. */
   minLearningRate: number;
+  /** Rebuild the index once the corpus has grown to this many times the size it was built for (see `outgrown`).
+   *  0 never rebuilds. The count of clusters is otherwise chosen once, at the bootstrap. */
+  regrowRatio: number;
 }
 
 export const DEFAULT_IVF_CONFIG: IvfConfig = {
@@ -92,6 +95,22 @@ export const DEFAULT_IVF_CONFIG: IvfConfig = {
   sweepIntervalMs: 60_000,
   buildIntervalMs: 2_000,
   minLearningRate: 0.01,
+  // A rebuild sends every vector back to the unclustered partition and assigns it again, and until that drains a query scans
+  // the parked ones flat. So it is for an index that has fallen far behind, not one that has merely grown: at 3, clusters
+  // average 900+ vectors against the 300 aimed for, and the dev store (279,227 vectors, 477 centroids, 1.95x) is left alone
+  // until ~430k. 2 would rebuild it at ~286k, 7k vectors from now. Growth by 3x between rebuilds also keeps the total
+  // rebuilding work proportional to the corpus, not to its history.
+  // MEASURED on a copy of the dev store (2026-10-14, nice 19 on a box at load ~15, so slow and with fat tails), the rebuild
+  // the dev store would get if it crossed the ratio:
+  //   reset phase   4,363 slices of 64 rows: slice 126 ms p50 / 333 p95, write transaction 46 / 238 ms (451 max), ~6% of
+  //                 writer time at the 2 s build cadence -> 2.6 h
+  //   bootstrap     seed draw for k=931: 7.4 s (event loop stalled 1.3 s at most); replacing the 931 centroids: 1.35 s, once
+  //   assign phase  4,363 slices: 2.4 s p50 / 3.5 p95, of which rewriting all 931 centroids 636 ms and the row moves 107 ms
+  //                 (the 477-centroid rebalance tick pays 252-269 ms for the same rewrite) -> ~54% writer duty at 2 s, 5.3 h
+  //   search        a flat scan of the store 4.8 s p50 (12.6 max) against 1.0 s for the probe-16 query, so up to ~5x slower
+  //                 while the parked rows drain
+  // Not a cost the converged index ever pays, and the same assign phase a first build at that size already costs.
+  regrowRatio: 3,
 };
 
 /** Build an IvfConfig from a plain env record. Unparseable values fall back to
@@ -112,12 +131,20 @@ export function loadIvfConfig(env: Record<string, string | undefined>): IvfConfi
     sweepIntervalMs: num(env.CAPTAIN_MEMO_IVF_SWEEP_MS, D.sweepIntervalMs),
     buildIntervalMs: num(env.CAPTAIN_MEMO_IVF_BUILD_MS, D.buildIntervalMs),
     minLearningRate: num(env.CAPTAIN_MEMO_IVF_MIN_LEARNING_RATE, D.minLearningRate),
+    regrowRatio: num(env.CAPTAIN_MEMO_IVF_REGROW_RATIO, D.regrowRatio),
   };
 }
 
 /** How many clusters a collection of this size should have. Never less than 1. */
 export function targetClusterCount(vectorCount: number, cfg: IvfConfig): number {
   return Math.max(1, Math.round(vectorCount / cfg.targetPerCluster));
+}
+
+/** Has the corpus grown past what this index was built for, by `cfg.regrowRatio` times? `builtFor` is the vector count at
+ *  the bootstrap (the one the store recorded). Comparing sizes, not seed counts, is what makes a rebuild unable to repeat: a
+ *  bootstrap that found fewer usable seeds than it asked for still records the size it ran at. */
+export function outgrown(builtFor: number, vectorCount: number, cfg: IvfConfig): boolean {
+  return cfg.regrowRatio > 0 && builtFor > 0 && vectorCount >= cfg.regrowRatio * builtFor;
 }
 
 /** `cluster_id` of a chunk no query has placed yet: every query probes it, the sweep drains it. */
