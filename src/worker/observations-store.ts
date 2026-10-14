@@ -533,6 +533,46 @@ export interface QmRun extends QmRunInput {
   id: number;
 }
 
+/** A qm_runs row as SQLite returns it; `toQmRun` rehydrates it. Shared by every qm_runs reader. */
+const QM_RUN_COLS = 'id, job, started_at_epoch, finished_at_epoch, rows_scanned, merges, aborted_for_ingest, skipped_no_vector, errored';
+interface QmRunRow {
+  id: number; job: string; started_at_epoch: number; finished_at_epoch: number | null;
+  rows_scanned: number; merges: number; aborted_for_ingest: number;
+  skipped_no_vector: number; errored: number;
+}
+function toQmRun(r: QmRunRow): QmRun {
+  return {
+    id: r.id,
+    job: r.job,
+    startedAt: r.started_at_epoch,
+    finishedAt: typeof r.finished_at_epoch === 'number' ? r.finished_at_epoch : null,
+    rowsScanned: r.rows_scanned,
+    merges: r.merges,
+    skippedNoVector: r.skipped_no_vector,
+    abortedForIngest: r.aborted_for_ingest === 1,
+    errored: r.errored === 1,
+  };
+}
+
+/** What `selectMergeEvents` filters on. Every field present must match (AND). */
+export interface MergeSelector {
+  /** merge_events.member_id in this list. */
+  memberIds?: number[];
+  /** The merges one qm_runs row made (see selectMergeEvents for how a run maps to merges). */
+  runId?: number;
+  /** merged_at at or after this epoch (seconds). */
+  since?: number;
+  /** 'dedup' or 'semantic'. */
+  job?: string;
+}
+
+/** One merge_events row as `selectMergeEvents` returns it; `undone` is the raw 0/1 cell and
+ *  `member_title` is null when the member row no longer exists. */
+export interface MergeEventRow {
+  id: number; survivor_id: number; member_id: number; merged_at: number; job: string;
+  undone: number; member_title: string | null;
+}
+
 /** Narrow an unknown DB cell to a RetrievalSource. */
 function isRetrievalSource(v: unknown): v is RetrievalSource {
   return v === 'auto' || v === 'search' || v === 'drill';
@@ -1956,26 +1996,9 @@ export class ObservationsStore {
    *  reads exactly like a dedup sweep that found nothing. */
   latestQmRuns(n: number, job?: string): QmRun[] {
     const rows = this.db
-      .query(
-        `SELECT id, job, started_at_epoch, finished_at_epoch, rows_scanned, merges, aborted_for_ingest, skipped_no_vector, errored
-           FROM qm_runs ${job ? 'WHERE job = ?' : ''} ORDER BY id DESC LIMIT ?`,
-      )
-      .all(...(job ? [job, n] : [n])) as Array<{
-        id: number; job: string; started_at_epoch: number; finished_at_epoch: number | null;
-        rows_scanned: number; merges: number; aborted_for_ingest: number;
-        skipped_no_vector: number; errored: number;
-      }>;
-    return rows.map(r => ({
-      id: r.id,
-      job: r.job,
-      startedAt: r.started_at_epoch,
-      finishedAt: typeof r.finished_at_epoch === 'number' ? r.finished_at_epoch : null,
-      rowsScanned: r.rows_scanned,
-      merges: r.merges,
-      skippedNoVector: r.skipped_no_vector,
-      abortedForIngest: r.aborted_for_ingest === 1,
-      errored: r.errored === 1,
-    }));
+      .query(`SELECT ${QM_RUN_COLS} FROM qm_runs ${job ? 'WHERE job = ?' : ''} ORDER BY id DESC LIMIT ?`)
+      .all(...(job ? [job, n] : [n])) as QmRunRow[];
+    return rows.map(toQmRun);
   }
 
   /** Survivor ids with un-undone ledger rows — the set `dedup --undo` reverses. */
@@ -1987,26 +2010,79 @@ export class ObservationsStore {
   }
 
   /**
-   * Reverse every un-undone merge into `survivorId` using the append-only
-   * `merge_events` ledger (the reversal source of truth): subtract each member's
-   * recorded contributed counts back off the survivor, un-archive the members,
-   * clear the survivor's display-only theme_member_ids, and mark those ledger
-   * rows undone=1. No-op if there are no open ledger rows. Single transaction.
+   * Ledger rows (open AND already undone, so a caller can tell "never folded" from "already
+   * undone") matching ALL the given selectors, oldest first, each with its member's title.
+   *
+   * `runId` maps a qm_runs row to its merges by TIME WINDOW + job, not by a run_id column: the
+   * ledger has none, and none is needed. runQmDedupSlice stamps every merge of a run with ONE
+   * `atEpoch = deps.now()` taken on entry, and the worker captures `startedAt` just before calling
+   * it and `finishedAt` after it returns, so merged_at lies in [started, finished] for every run
+   * that recorded itself — including aborted and errored ones, whose partial folds stay in the
+   * ledger (verified at 0.57.8; src/worker/quartermaster.ts, src/worker/index.ts). Runs of one job
+   * are serial, so the only ambiguity is two runs sharing a boundary second; the NOT EXISTS hands
+   * that second to the LATER run (the one that had started by then). A fold from a worker that
+   * crashed before recording its run belongs to no run — `since` reaches it.
+   * Residual blind spot: a manual `dedup --apply` is job 'dedup' with no run row, so one that lands
+   * inside a worker dedup run's window is attributed to that run.
+   */
+  selectMergeEvents(sel: MergeSelector): MergeEventRow[] {
+    const where: string[] = [];
+    const args: Array<number | string> = [];
+    if (sel.memberIds) {
+      where.push(`e.member_id IN (${sel.memberIds.map(() => '?').join(',')})`);
+      args.push(...sel.memberIds);
+    }
+    if (sel.since !== undefined) { where.push('e.merged_at >= ?'); args.push(sel.since); }
+    if (sel.job) { where.push('e.job = ?'); args.push(sel.job); }
+    if (sel.runId !== undefined) {
+      where.push(`EXISTS (SELECT 1 FROM qm_runs r
+                           WHERE r.id = ? AND r.job = e.job
+                             AND e.merged_at BETWEEN r.started_at_epoch AND r.finished_at_epoch
+                             AND NOT EXISTS (SELECT 1 FROM qm_runs n
+                                              WHERE n.job = r.job AND n.id > r.id AND n.started_at_epoch <= e.merged_at))`);
+      args.push(sel.runId);
+    }
+    return this.db
+      .query(
+        `SELECT e.id, e.survivor_id, e.member_id, e.merged_at, e.job, e.undone, o.title AS member_title
+           FROM merge_events e LEFT JOIN observations o ON o.id = e.member_id
+          ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+          ORDER BY e.id ASC`,
+      )
+      .all(...args) as MergeEventRow[];
+  }
+
+  /**
+   * Reverse un-undone merges into `survivorId` using the append-only `merge_events`
+   * ledger (the reversal source of truth): subtract each member's recorded
+   * contributed counts back off the survivor, un-archive the members, and mark those
+   * ledger rows undone=1. No-op if there are no open ledger rows. Single transaction.
+   * Returns how many members it actually un-archived.
+   *
+   * Without `eventIds` it reverses EVERY open merge into the survivor and clears the
+   * display-only theme_member_ids. With `eventIds` it reverses only those ledger rows.
+   * If that leaves other merges into the survivor open (a PARTIAL reversal),
+   * theme_member_ids is rewritten to the members still folded, and last_surfaced_at is left
+   * alone: the ledger cannot say what recency the remaining members justify, and the
+   * survivor may have been surfaced since — only a full reversal restores the pre-merge value.
    *
    * Reading the ledger (not theme_member_ids) makes nested merges into one hot
    * survivor fully reversible — a second merge's row never overwrites the first.
    */
-  unmergeDuplicateGroup(survivorId: number): void {
-    const events = this.db
+  unmergeDuplicateGroup(survivorId: number, eventIds?: number[]): number {
+    const open = this.db
       .query(
-        `SELECT member_id, summed_auto, summed_search, summed_drill, merged_at, survivor_prev_surfaced_at
+        `SELECT id, member_id, summed_auto, summed_search, summed_drill, merged_at, survivor_prev_surfaced_at
            FROM merge_events WHERE survivor_id = ? AND undone = 0`,
       )
       .all(survivorId) as Array<{
-        member_id: number; summed_auto: number; summed_search: number; summed_drill: number;
+        id: number; member_id: number; summed_auto: number; summed_search: number; summed_drill: number;
         merged_at: number; survivor_prev_surfaced_at: number | null;
       }>;
-    if (events.length === 0) return;
+    const picked = eventIds ? new Set(eventIds) : null;
+    const events = picked ? open.filter(e => picked.has(e.id)) : open;
+    if (events.length === 0) return 0;
+    const remaining = picked ? open.filter(e => !picked.has(e.id)) : [];
 
     let a = 0, s = 0, d = 0;
     for (const e of events) { a += e.summed_auto; s += e.summed_search; d += e.summed_drill; }
@@ -2019,29 +2095,50 @@ export class ObservationsStore {
     const earliest = events.reduce((min, e) => (e.merged_at < min.merged_at ? e : min), events[0]!);
     const restoreSurfacedAt = earliest.survivor_prev_surfaced_at;
 
-    const tx = this.db.transaction(() => {
+    const tx = this.db.transaction((): number => {
       this.db
         .query(
           `UPDATE observations
               SET from_auto = from_auto - ?, from_search = from_search - ?, from_drill = from_drill - ?,
-                  theme_member_ids = NULL,
-                  last_surfaced_at = ?
+                  theme_member_ids = ?,
+                  last_surfaced_at = CASE WHEN ? = 1 THEN last_surfaced_at ELSE ? END
             WHERE id = ?`,
         )
-        .run(a, s, d, restoreSurfacedAt, survivorId);
+        .run(a, s, d, remaining.length ? JSON.stringify(remaining.map(e => e.member_id)) : null,
+          remaining.length ? 1 : 0, restoreSurfacedAt, survivorId);
       // Scope the resurrection to members actually folded into THIS survivor —
       // defends against any future caller that folds a member into two survivors.
-      this.db
+      const { changes } = this.db
         .query(
           `UPDATE observations SET archived = 0, archived_into_theme_id = NULL
             WHERE id IN (${placeholders}) AND archived_into_theme_id = ?`,
         )
         .run(...memberIds, survivorId);
+      // By id, not "every open row of the survivor": only what was reversed above is closed, so a
+      // merge the worker commits between our read and this write is never marked undone unreversed.
       this.db
-        .query('UPDATE merge_events SET undone = 1 WHERE survivor_id = ? AND undone = 0')
-        .run(survivorId);
+        .query(`UPDATE merge_events SET undone = 1 WHERE id IN (${events.map(() => '?').join(',')})`)
+        .run(...events.map(e => e.id));
+      return changes;
     });
-    tx();
+    return tx();
+  }
+
+  /** One persisted qm_runs row by id, or null. */
+  qmRunById(id: number): QmRun | null {
+    const row = this.db
+      .query(`SELECT ${QM_RUN_COLS} FROM qm_runs WHERE id = ?`)
+      .get(id) as QmRunRow | undefined;
+    return row ? toQmRun(row) : null;
+  }
+
+  /** The n most-recent dedup/semantic runs that folded something (merges > 0) — the runs
+   *  `dedup --undo --run` can target. Supersede and theme runs never write the ledger. */
+  foldRuns(n: number): QmRun[] {
+    const rows = this.db
+      .query(`SELECT ${QM_RUN_COLS} FROM qm_runs WHERE job IN ('dedup', 'semantic') AND merges > 0 ORDER BY id DESC LIMIT ?`)
+      .all(n) as QmRunRow[];
+    return rows.map(toQmRun);
   }
 
   /**
