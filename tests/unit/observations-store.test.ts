@@ -845,6 +845,32 @@ test('unmergeDuplicateGroup — restores NULL last_surfaced_at when survivor was
   expect(store.findById(s)!.last_surfaced_at).toBeNull();  // restored to NULL, not coerced to 777 or 0
 });
 
+// #668 — a partial undo that removes the survivor's EARLIEST open fold hands that fold's recorded
+// pre-merge recency to the earliest one left, so a later full undo restores the true original.
+test('unmergeDuplicateGroup — removing the earliest fold carries its pre-merge last_surfaced_at to the next', () => {
+  const s = seedSurfaced(store, 'survivor row', 'feature', 1, 0, 0, 100);
+  const m1 = seedSurfaced(store, 'first dup', 'feature', 1, 0, 0, 300);
+  const m2 = seedSurfaced(store, 'second dup', 'feature', 1, 0, 0, 400);
+  store.mergeDuplicateGroup(s, [m1], 1000);                       // prev 100, survivor -> 300
+  store.mergeDuplicateGroup(s, [m2], 2000);                       // prev 300, survivor -> 400
+  const first = store.selectMergeEvents({ memberIds: [m1] })[0]!.id;
+  store.unmergeDuplicateGroup(s, [first]);
+  expect(store.findById(s)!.last_surfaced_at).toBe(400);          // partial: left alone
+  store.unmergeDuplicateGroup(s);
+  expect(store.findById(s)!.last_surfaced_at).toBe(100);          // not 300
+});
+
+test('unmergeDuplicateGroup — a never-surfaced survivor stays NULL through the carry-forward', () => {
+  const s = mkObs(store, 'never surfaced survivor');
+  const m1 = seedSurfaced(store, 'first dup', 'feature', 1, 0, 0, 777);
+  const m2 = seedSurfaced(store, 'second dup', 'feature', 1, 0, 0, 888);
+  store.mergeDuplicateGroup(s, [m1], 1000);
+  store.mergeDuplicateGroup(s, [m2], 2000);
+  store.unmergeDuplicateGroup(s, [store.selectMergeEvents({ memberIds: [m1] })[0]!.id]);
+  store.unmergeDuplicateGroup(s);
+  expect(store.findById(s)!.last_surfaced_at).toBeNull();         // not 777
+});
+
 test('mergedSurvivorIds — lists rows that have folded-in members (for --undo all)', () => {
   const s = seedSurfaced(store, 'survivor', 'feature', 5, 0, 0, 100);
   const m = seedSurfaced(store, 'member', 'feature', 3, 0, 0, 110);

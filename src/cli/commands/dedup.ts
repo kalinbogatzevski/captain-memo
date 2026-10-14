@@ -71,8 +71,8 @@ Notes:
     PRINTS what it will undo, then does it, like plain --undo: there is no confirmation prompt.
     An id or run that matches nothing exits 1 and changes nothing; repeating an undo is a no-op.
   - A survivor's last-surfaced time goes back to its pre-fold value only when ONE command undoes
-    every open fold into it. A partial undo leaves it as it is, so if the survivor's earliest folds
-    were undone first, a later full undo restores the time the next fold recorded: slightly newer.
+    every open fold into it; a partial undo leaves it as it is. The value restored is the original
+    one even when the survivor's earliest folds were undone first.
   - A run is matched to its merges by the time it ran and its job. A merge from a worker that
     stopped before recording its run belongs to no run: reach it with --member or --since.
 `;
@@ -262,14 +262,15 @@ function runSelectiveUndo(store: ObservationsStore, json: boolean, sel: MergeSel
 
 /** `--runs`: the dedup/semantic runs that folded something, newest first, and how much of each is still folded. */
 function listFoldRuns(store: ObservationsStore, json: boolean): number {
-  const runs = store.foldRuns(10).map(run => ({
-    run,
-    stillFolded: store.selectMergeEvents({ runId: run.id }).filter(e => e.undone === 0).length,
-  }));
+  // An errored run records merges: 0 whatever it folded before it threw, so its count comes from the ledger.
+  const runs = store.foldRuns(10).map(run => {
+    const events = store.selectMergeEvents({ runId: run.id });
+    return { run, folded: run.merges > 0 ? run.merges : events.length, stillFolded: events.filter(e => e.undone === 0).length };
+  });
   if (json) {
-    console.log(JSON.stringify(runs.map(({ run, stillFolded }) => ({
+    console.log(JSON.stringify(runs.map(({ run, folded, stillFolded }) => ({
       id: run.id, job: run.job, started_at: run.startedAt, finished_at: run.finishedAt,
-      folded: run.merges, still_folded: stillFolded,
+      folded, still_folded: stillFolded, errored: run.errored,
     }))));
     return 0;
   }
@@ -278,10 +279,11 @@ function listFoldRuns(store: ObservationsStore, json: boolean): number {
     return 0;
   }
   console.log(`${cyanBold('captain-memo dedup --runs')} ${dim('· most recent runs that folded something')}`);
-  for (const { run, stillFolded } of runs) {
+  for (const { run, folded, stillFolded } of runs) {
     const when = new Date(run.startedAt * 1000).toISOString().slice(0, 16).replace('T', ' ');
     console.log(`  ${cyan(`#${run.id}`.padEnd(7))} ${run.job.padEnd(9)} ${dim(`${when} UTC`)}  `
-      + `${cyanBold(String(run.merges))} folded ${dim(`· ${stillFolded} still folded`)}`);
+      + `${cyanBold(String(folded))} folded ${dim(`· ${stillFolded} still folded`)}`
+      + (run.errored ? dim(' · errored after folding') : ''));
   }
   console.log(dim('  Undo one run: captain-memo dedup --undo --run <id>'));
   return 0;

@@ -316,3 +316,42 @@ test('--runs lists the runs that folded something, newest first, with what is st
   expect(h.out).toContain('0 still folded');
   expect(h.out).toContain('dedup --undo --run <id>');
 });
+
+// #668 — a survivor's earliest folds undone first used to leave a later FULL undo restoring the time the
+// NEXT fold recorded (it already included the removed members' surfacing): S1 came back at 920, not 500.
+test('undoing a survivor\'s EARLIEST folds first, then the rest, still restores its true pre-merge recency', async () => {
+  await cli(['--undo', '--run', '1']);                        // S1: M1,M2 (earliest); S2: M3 (earliest)
+  await cli(['--undo']);                                      // everything left
+  const p = peek();
+  expect(p.openMembers).toEqual([]);
+  expect(p.surfaced(S1)).toBe(S1_SURFACED);                   // not 920, the time M2 had pushed it to
+  expect(p.surfaced(S2)).toBe(S2_SURFACED);                   // two remaining rows share merged_at 3000: not 930
+});
+
+test('the carry-forward chains: peeling the earliest fold off twice still restores the original recency', async () => {
+  await cli(['--undo', '--member', String(m(1)), String(m(2))]);
+  await cli(['--undo', '--member', String(m(4))]);            // M4 was the earliest left; M7 inherits its value
+  expect(peek().surfaced(S1)).toBe(970);                      // partial: untouched
+  await cli(['--undo']);
+  expect(peek().surfaced(S1)).toBe(S1_SURFACED);
+});
+
+// #668 — a pass that throws records merges: 0, but the folds it made before throwing are in the ledger.
+test('--runs lists an errored run that folded before it threw, from the ledger; an errored run that folded nothing stays out', async () => {
+  const store = new ObservationsStore(dbPath);
+  const s = seed(store, 'survivor three', 1, 500);
+  const x = seed(store, 'member nine restated', 1, 910);
+  store.mergeDuplicateGroup(s, [x], 9000, 'semantic');
+  store.recordQmRun({ job: 'semantic', startedAt: 9000, finishedAt: 9010, rowsScanned: 0, merges: 0, skippedNoVector: 0, abortedForIngest: false, errored: true });
+  store.recordQmRun({ job: 'semantic', startedAt: 9100, finishedAt: 9110, rowsScanned: 0, merges: 0, skippedNoVector: 0, abortedForIngest: false, errored: true });
+  store.close();
+
+  const runs = JSON.parse((await cli(['--runs', '--json'])).out) as Array<{ id: number; folded: number; still_folded: number; errored: boolean }>;
+  expect(runs.map(r => r.id)).toEqual([5, 4, 3, 2, 1]);       // run 6 (errored, folded nothing) is absent
+  expect(runs[0]).toMatchObject({ folded: 1, still_folded: 1, errored: true });
+  expect(runs[1]).toMatchObject({ errored: false });
+  expect((await cli(['--runs'])).out).toContain('errored');
+  // --run reaches it as it always did, and undoes exactly that fold.
+  expect((await cli(['--undo', '--run', '5'])).code).toBe(0);
+  expect(peek().openMembers).toEqual([m(1), m(2), m(3), m(4), m(5), m(6), m(7)]);
+});

@@ -2065,9 +2065,10 @@ export class ObservationsStore {
    * theme_member_ids is rewritten to the members still folded, and last_surfaced_at is left
    * alone: the ledger cannot say what recency the remaining members justify, and the
    * survivor may have been surfaced since. A full reversal restores the EARLIEST OPEN row's
-   * recorded value, which is the true pre-merge one only while that row is still the survivor's
-   * earliest fold: after a partial undo removed earlier folds it is the time the next fold
-   * recorded (slightly newer). Carrying the removed row's value forward would close that.
+   * recorded value (earliest = oldest merged_at, then lowest id). When the rows removed include
+   * that earliest one, its recorded value is copied onto the earliest row LEFT in the same
+   * transaction: every later row recorded the survivor's recency after the removed folds had
+   * advanced it, so without the copy a later full undo came back slightly newer than the original.
    *
    * Reading the ledger (not theme_member_ids) makes nested merges into one hot
    * survivor fully reversible — a second merge's row never overwrites the first.
@@ -2076,7 +2077,7 @@ export class ObservationsStore {
     const open = this.db
       .query(
         `SELECT id, member_id, summed_auto, summed_search, summed_drill, merged_at, survivor_prev_surfaced_at
-           FROM merge_events WHERE survivor_id = ? AND undone = 0`,
+           FROM merge_events WHERE survivor_id = ? AND undone = 0 ORDER BY merged_at, id`,
       )
       .all(survivorId) as Array<{
         id: number; member_id: number; summed_auto: number; summed_search: number; summed_drill: number;
@@ -2094,9 +2095,12 @@ export class ObservationsStore {
 
     // The earliest of the open merges holds the survivor's true pre-merge
     // last_surfaced_at (later merges recorded the already-advanced value). NULL is
-    // a valid stored value (never surfaced) and must be restored as NULL.
-    const earliest = events.reduce((min, e) => (e.merged_at < min.merged_at ? e : min), events[0]!);
+    // a valid stored value (never surfaced) and must be restored as NULL. Both lists keep the
+    // query's (merged_at, id) order, so index 0 is the earliest.
+    const earliest = events[0]!;
     const restoreSurfacedAt = earliest.survivor_prev_surfaced_at;
+    // Removing the earliest open fold while others stay: the next one must inherit its value (#668).
+    const carryTo = remaining.length > 0 && earliest.id === open[0]!.id ? remaining[0]! : null;
 
     const tx = this.db.transaction((): number => {
       this.db
@@ -2117,6 +2121,11 @@ export class ObservationsStore {
             WHERE id IN (${placeholders}) AND archived_into_theme_id = ?`,
         )
         .run(...memberIds, survivorId);
+      if (carryTo) {
+        this.db
+          .query('UPDATE merge_events SET survivor_prev_surfaced_at = ? WHERE id = ?')
+          .run(restoreSurfacedAt, carryTo.id);
+      }
       // By id, not "every open row of the survivor": only what was reversed above is closed, so a
       // merge the worker commits between our read and this write is never marked undone unreversed.
       this.db
@@ -2135,13 +2144,22 @@ export class ObservationsStore {
     return row ? toQmRun(row) : null;
   }
 
-  /** The n most-recent dedup/semantic runs that folded something (merges > 0) — the runs
-   *  `dedup --undo --run` can target. Supersede and theme runs never write the ledger. */
+  /** The n most-recent dedup/semantic runs that folded something — the runs `dedup --undo --run` can
+   *  target. Supersede and theme runs never write the ledger. A run that threw records merges: 0 even
+   *  though the folds it made first are in the ledger, so an errored run counts when the ledger holds
+   *  a fold in its window (an errored run that folded nothing stays out, or a pass that fails on every
+   *  tick would fill the list with empty rows). */
   foldRuns(n: number): QmRun[] {
     const rows = this.db
-      .query(`SELECT ${QM_RUN_COLS} FROM qm_runs WHERE job IN ('dedup', 'semantic') AND merges > 0 ORDER BY id DESC LIMIT ?`)
-      .all(n) as QmRunRow[];
-    return rows.map(toQmRun);
+      .query(`SELECT ${QM_RUN_COLS} FROM qm_runs WHERE job IN ('dedup', 'semantic') AND (merges > 0 OR errored = 1) ORDER BY id DESC`)
+      .all() as QmRunRow[];
+    const out: QmRun[] = [];
+    for (const row of rows) {
+      const run = toQmRun(row);
+      if (run.merges > 0 || this.selectMergeEvents({ runId: run.id }).length > 0) out.push(run);
+      if (out.length === n) break;
+    }
+    return out;
   }
 
   /**
