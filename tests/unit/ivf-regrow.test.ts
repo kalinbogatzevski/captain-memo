@@ -36,10 +36,27 @@ test('outgrown — compares the corpus with the size the index was built for, an
 });
 
 test('loadIvfConfig — CAPTAIN_MEMO_IVF_REGROW_RATIO overrides, 0 included', () => {
-  expect(loadIvfConfig({}).regrowRatio).toBe(3);
+  expect(loadIvfConfig({}).regrowRatio).toBe(0);                                  // off unless asked for
   expect(loadIvfConfig({ CAPTAIN_MEMO_IVF_REGROW_RATIO: '5' }).regrowRatio).toBe(5);
-  expect(loadIvfConfig({ CAPTAIN_MEMO_IVF_REGROW_RATIO: '0' }).regrowRatio).toBe(0);
-  expect(loadIvfConfig({ CAPTAIN_MEMO_IVF_REGROW_RATIO: 'x' }).regrowRatio).toBe(3);
+  expect(loadIvfConfig({ CAPTAIN_MEMO_IVF_REGROW_RATIO: '3' }).regrowRatio).toBe(3);
+  expect(loadIvfConfig({ CAPTAIN_MEMO_IVF_REGROW_RATIO: 'x' }).regrowRatio).toBe(0);
+});
+
+test('regrow — the shipped default never rebuilds, recorded size or not, however far behind; =3 turns it on', async () => {
+  // A rebuild makes every search 4.8-9.3 s for hours and the memory hook waits 1.5 s, so it is opt-in. That also means no
+  // existing store is rebuilt by the update, including one with no recorded size whose K x targetPerCluster reads 3x low.
+  const shipped = { ...loadIvfConfig({}), enabled: true, minCorpusSize: 10, targetPerCluster: 10 };
+  const optedIn = { ...loadIvfConfig({ CAPTAIN_MEMO_IVF_REGROW_RATIO: '3' }), enabled: true, minCorpusSize: 10, targetPerCluster: 10 };
+  const reset = async (c: typeof cfg, n: number, recorded: number | null): Promise<number> => (await runIvfSweepSlice(baseDeps({
+    cfg: c, countVectors: () => n, getCentroids: () => TWO, bootstrapSize: () => recorded,
+    sampleClusteredVectors: () => [{ chunkId: 'a', embedding: Float32Array.from([1, 0, 0, 0]), clusterId: 1 }],
+  }))).reset;
+  expect(await reset(shipped, 20, 20)).toBe(0);              // healthy
+  expect(await reset(shipped, 60, 20)).toBe(0);              // 3x: would rebuild if it were on
+  expect(await reset(shipped, 1_000_000, 20)).toBe(0);       // far behind
+  expect(await reset(shipped, 1_000_000, null)).toBe(0);     // no recorded size: K x 10 = 20
+  expect(await reset(optedIn, 60, 20)).toBe(1);
+  expect(await reset(optedIn, 60, null)).toBe(1);
 });
 
 test('regrow — an index built for 20 vectors that now holds 60 sends a batch back to unclustered, and replaces nothing yet', async () => {

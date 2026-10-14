@@ -47,7 +47,8 @@ export interface IvfConfig {
    *  adapting instead of freezing solid once a cluster has seen a lot of data. */
   minLearningRate: number;
   /** Rebuild the index once the corpus has grown to this many times the size it was built for (see `outgrown`).
-   *  0 never rebuilds. The count of clusters is otherwise chosen once, at the bootstrap. */
+   *  0 (the default) never rebuilds; 3 is the setting that was measured. The count of clusters is otherwise chosen once, at
+   *  the bootstrap. */
   regrowRatio: number;
 }
 
@@ -95,8 +96,11 @@ export const DEFAULT_IVF_CONFIG: IvfConfig = {
   sweepIntervalMs: 60_000,
   buildIntervalMs: 2_000,
   minLearningRate: 0.01,
-  // A rebuild sends every vector back to the unclustered partition and assigns it again, and until that drains a query scans
-  // the parked ones flat. So it is for an index that has fallen far behind, not one that has merely grown: at 3, clusters
+  // OFF by default. A rebuild sends every vector back to the unclustered partition and assigns it again, and until that drains
+  // a query scans the parked ones flat: 4.8-9.3 s a search on a 279k store, for ~11 h. The UserPromptSubmit hook waits
+  // DEFAULT_HOOK_TIMEOUT_MS = 1500 ms (CAPTAIN_MEMO_HOOK_TIMEOUT_MS), so for that long every prompt's memory injection on
+  // that store would time out. Opt in with CAPTAIN_MEMO_IVF_REGROW_RATIO=3 when that is accepted or the hook timeout raised.
+  // It is for an index that has fallen far behind, not one that has merely grown: at 3, clusters
   // average 900+ vectors against the 300 aimed for, and the dev store (279,227 vectors, 477 centroids, 1.95x) is left alone
   // until ~430k. 2 would rebuild it at ~286k, 7k vectors from now. Growth by 3x between rebuilds also keeps the total
   // rebuilding work proportional to the corpus, not to its history.
@@ -110,7 +114,7 @@ export const DEFAULT_IVF_CONFIG: IvfConfig = {
   //   search        a flat scan of the store 4.8-9.3 s p50 against 1.0-1.4 s for the probe-16 query, so 4.7-6.4x slower
   //                 while the parked rows drain; ~11 h in all for 279k vectors, ~17 h at 430k
   // Not a cost the converged index ever pays, and the same assign phase a first build at that size already costs.
-  regrowRatio: 3,
+  regrowRatio: 0,
 };
 
 /** A build slice is followed by at least this many slice-times of quiet, so the writer is busy at most 1/(1+3) = 25% of the
