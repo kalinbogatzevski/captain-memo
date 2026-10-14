@@ -1,11 +1,14 @@
 // src/shared/merge-guard.ts
 //
 // Pure predicate guarding the dedup grouper from folding rows that share many
-// tokens but mean different (or opposite) things. Two veto rules, no I/O:
+// tokens but mean different (or opposite) things. Four veto rules, no I/O:
 //   1. Negation polarity — exactly ONE title asserts absence/failure.
 //   2. Identifier mismatch — both titles carry load-bearing identifiers
 //      (paths, letters-and-digits codes, numbers-with-units, #refs, ALL-CAPS /
 //      uppercase single-letter tags) and they share NONE.
+//   3. Version mismatch — both titles name dotted versions and not the same ones.
+//   4. Number mismatch — both titles state numbers and EACH states one the other
+//      does not (312 checks vs 517 checks).
 // Title-only by design: the standalone `dedup` CLI has no vector DB; the
 // cosine-≥0.98 confirm rides with the Quartermaster (Release 2).
 //
@@ -46,8 +49,12 @@ function hasNegation(norm: string): boolean {
 //
 // Order matters only for de-dup of the SAME substring across patterns — the
 // final set comparison is order-independent.
-function identifierSet(raw: string): Set<string> {
+function identifierSet(raw: string): { ids: Set<string>; nums: Set<string> } {
   const out = new Set<string>();
+  // The numbers among them, for rule 4: digits only, so `#123`, `123` and `0123` are one number and
+  // `30s` is 30. Collected here, in the same pass, because only here is it known which pattern matched
+  // — a code like `3d` or a version's components must not be read as numbers.
+  const nums = new Set<string>();
   // Ordered most-specific first. Each pattern BLANKS the spans it consumes before the next runs,
   // so a broad pattern can never re-match inside a specific one's territory.
   //
@@ -55,27 +62,28 @@ function identifierSet(raw: string): Set<string> {
   // 0, 10 and 1 alongside the version itself. Rule 2 treats ONE shared identifier as grounds to
   // allow the merge, and any two versions share a "0" or a "1" — so the guard was inert on exactly
   // the titles it exists for, and ten distinct release events grouped as one duplicate cluster.
-  const patterns: RegExp[] = [
+  const patterns: Array<{ re: RegExp; num?: true }> = [
     // Letters-and-digits CODE, taken whole: AF00034.001, p95, k8s, CVE-2026-1234, abc1234. Without this the digits
     // were read as bare numbers and the letters were not read at all: "AF00034.001" yielded only "001", so two
     // titles about different records (AF00034.001 vs AF00020.001) SHARED an identifier and the guard let the fold
     // through (field: an outside user's corpus of per-record titles, dry run proposed 105 groups).
-    /\b(?=[\w.-]*\d)(?=[\w.-]*[a-z])[a-z0-9]+(?:[.-][a-z0-9]+)*\b/gi,
-    /\b[\w-]+(?:\/[\w-]+)*\.[a-z][a-z0-9]{1,4}\b/gi, // file.ext, a/b/c.ts, foo.json
-    /#\d+\b/g,                                        // #123
-    /\b\d+(?:\.\d+)+\b/g,                             // dotted version 1.2.3
-    /\b\d+\s?(?:[a-z]{1,3}|%)\b/gi,                   // number+unit: 30s, 80%, 5ms
-    /\b\d+\b/g,                                       // bare number: 5, 200
-    /\b[A-Z]{2,}\b/g,                                 // ALL-CAPS entity: API, DINX
-    /\b[A-Z]\b/g,                                     // uppercase single-letter tag: tenant A
+    { re: /\b(?=[\w.-]*\d)(?=[\w.-]*[a-z])[a-z0-9]+(?:[.-][a-z0-9]+)*\b/gi },
+    { re: /\b[\w-]+(?:\/[\w-]+)*\.[a-z][a-z0-9]{1,4}\b/gi }, // file.ext, a/b/c.ts, foo.json
+    { re: /#\d+\b/g, num: true },                       // #123
+    { re: /\b\d+(?:\.\d+)+\b/g },                       // dotted version 1.2.3
+    { re: /\b\d+\s?(?:[a-z]{1,3}|%)\b/gi, num: true },  // number+unit: 30s, 80%, 5ms
+    { re: /\b\d+\b/g, num: true },                      // bare number: 5, 200
+    { re: /\b[A-Z]{2,}\b/g },                            // ALL-CAPS entity: API, DINX
+    { re: /\b[A-Z]\b/g },                                // uppercase single-letter tag: tenant A
   ];
   // split('') gives UTF-16 code units, which is the same unit RegExp match indices use — so a
   // title carrying an emoji cannot shift the blanking off by one.
   let rest = raw;
-  for (const re of patterns) {
+  for (const { re, num } of patterns) {
     const spans: Array<[number, number]> = [];
     for (const m of rest.matchAll(re)) {
       out.add(m[0].toLowerCase());
+      if (num) nums.add(/\d+/.exec(m[0])![0].replace(/^0+(?=\d)/, ''));
       spans.push([m.index, m.index + m[0].length]);
     }
     if (spans.length === 0) continue;
@@ -83,7 +91,7 @@ function identifierSet(raw: string): Set<string> {
     for (const [start, end] of spans) for (let i = start; i < end; i++) chars[i] = ' ';
     rest = chars.join('');
   }
-  return out;
+  return { ids: out, nums };
 }
 
 /**
@@ -121,9 +129,21 @@ export function mergeBlocked(titleA: string, titleB: string): boolean {
     for (const v of va) if (!vb.has(v)) return true;
   }
 
+  const { ids: ia, nums: xa } = identifierSet(titleA);
+  const { ids: ib, nums: xb } = identifierSet(titleB);
+
+  // Rule 4 — both sides state numbers and each states one the other does not: 312 checks against 517
+  // checks are two measurements, not one fact worded twice. Before rule 2 for the same reason as rule 3:
+  // rule 2 lets ANY single shared identifier through, and here an ALL-CAPS word (TUI) was enough to fold
+  // them (field: an outside user's corpus, 2026-10-14). "Each side has a number the other lacks" rather
+  // than "the sets differ": when one side merely adds a number ("257 tests" / "257 tests, 0 failures")
+  // it is the same fact with more detail, and that must still fold. Measured on a live corpus's 9,085
+  // folds: a plain set-difference blocked 25 more folds than this, and about 20 of those 25 were that
+  // rewording. Versions are rule 3's; letters-and-digits codes are rule 2's; neither is read here.
+  if (xa.size > 0 && xb.size > 0
+    && [...xa].some(n => !xb.has(n)) && [...xb].some(n => !xa.has(n))) return true;
+
   // Rule 2 — both sides carry identifiers, but they overlap in none.
-  const ia = identifierSet(titleA);
-  const ib = identifierSet(titleB);
   if (ia.size > 0 && ib.size > 0) {
     for (const x of ia) if (ib.has(x)) return false; // shared identifier ⇒ not blocked by rule 2
     return true; // both have identifiers, zero shared ⇒ block

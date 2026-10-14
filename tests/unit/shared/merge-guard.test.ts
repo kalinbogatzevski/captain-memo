@@ -190,3 +190,67 @@ describe('mergeBlocked — letters-and-digits codes are identifiers', () => {
   });
 });
 
+
+// An outside user's corpus folded two test-suite results that differ only in the count: "312/312 checks" and
+// "517 checks". Both carried the ALL-CAPS word TUI, and rule 2 reads ONE shared identifier as permission to merge, so
+// the numbers were never compared. Each title pair below shares an ALL-CAPS anchor (CLI, GLAB) on purpose: with it rule 2
+// allows the pair, so only rule 4 can decide.
+describe('mergeBlocked — differing numbers (rule 4)', () => {
+  test('two counts of the same kind of result block the fold (the reported shape)', () => {
+    const a = 'Full CLI test suite passes: 312/312 checks across six workflows';
+    const b = 'Complete test suite passes: 517 checks across all CLI and core flows';
+    expect(mergeBlocked(a, b)).toBe(true);
+    expect(mergeBlocked(b, a)).toBe(true);
+  });
+
+  test('the same number worded two ways still folds', () => {
+    expect(mergeBlocked(
+      'CLI suite passes: 394 tests across 20 files',
+      'CLI suite: all 394 tests pass across 20 files',
+    )).toBe(false);
+  });
+
+  // One side only adds a detail number: the same fact, not a second one.
+  test('a number one side adds does not block (257 tests / 257 tests, 0 errors)', () => {
+    expect(mergeBlocked('CLI suite passes all 257 tests', 'CLI suite passes 257 tests, 0 errors')).toBe(false);
+  });
+
+  test('numbers on only one side are nothing to compare', () => {
+    expect(mergeBlocked('CLI suite passes: 312 checks', 'CLI suite passes all its checks')).toBe(false);
+  });
+
+  test('titles with no numbers are untouched', () => {
+    expect(mergeBlocked('CLI test suite passes across all workflows', 'Full CLI test suite passes in every workflow')).toBe(false);
+  });
+
+  // Each side has a number the other lacks even though they overlap: 2->4 and 4->8 are two different bumps.
+  // "2 to" is also read as a number+unit span by identifierSet, so the digits have to be taken from the span.
+  test('overlapping but neither-contains-the-other sets block, including a number+unit span', () => {
+    expect(mergeBlocked('Raised CLI workers from 2 to 4', 'Raised CLI workers from 4 to 8')).toBe(true);
+  });
+
+  test('a number with a unit counts: 80% vs 95%', () => {
+    expect(mergeBlocked('CLI coverage reached 80% on the exporter', 'CLI coverage reached 95% on the exporter')).toBe(true);
+  });
+
+  // "#123", "123" and "0123" are one number; only rule 4 is under test, the ALL-CAPS anchor lets rule 2 through.
+  test('#123, 123 and 0123 are the same number', () => {
+    const t = (n: string) => `Fixed GLAB issue ${n} in the exporter`;
+    expect(mergeBlocked(t('#123'), t('123'))).toBe(false);
+    expect(mergeBlocked(t('#123'), t('0123'))).toBe(false);
+    expect(mergeBlocked(t('123'), t('0123'))).toBe(false);
+    expect(mergeBlocked(t('#123'), t('#124'))).toBe(true);
+  });
+
+  // "30 s" is read as a number+unit span, "30 seconds" as a bare number: the digits are what is compared.
+  test('30 s and 30 seconds are the same number', () => {
+    expect(mergeBlocked('CLI exporter timeout set to 30 s', 'CLI exporter timeout set to 30 seconds')).toBe(false);
+  });
+
+  // Versions stay rule 3's: the dotted version's components are not numbers here, and a version bump that
+  // differs only in its version is blocked by rule 3 as before.
+  test('a dotted version is not read as numbers; the same version still folds', () => {
+    expect(mergeBlocked('Bumped CLI exporter to 3.12 after 4 retries', 'Bumped CLI exporter to v3.12 after 4 retries')).toBe(false);
+    expect(mergeBlocked('Bumped CLI exporter to 3.12', 'Bumped CLI exporter to 3.13')).toBe(true);
+  });
+});
