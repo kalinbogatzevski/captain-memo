@@ -359,8 +359,8 @@ test('ObservationsStore — schema_versions records all migrations after constru
   const db = new Database(join(workDir, 'observations.db'), { readonly: true });
   const rows = getAppliedVersions(db);
   db.close();
-  expect(rows).toHaveLength(25);
-  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]);
+  expect(rows).toHaveLength(26);
+  expect(rows.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]);
   expect(rows.map(r => r.name)).toEqual([
     'add_branch',
     'add_work_tokens',
@@ -387,6 +387,7 @@ test('ObservationsStore — schema_versions records all migrations after constru
     'add_promotion_declines_and_shadow',
     'add_idle_pass_indexes',
     'add_tide_sweep_and_stored_null_indexes',
+    'add_refold_blocks',
   ]);
   store = new ObservationsStore(join(workDir, 'observations.db'));
 });
@@ -869,6 +870,24 @@ test('unmergeDuplicateGroup — a never-surfaced survivor stays NULL through the
   store.unmergeDuplicateGroup(s, [store.selectMergeEvents({ memberIds: [m1] })[0]!.id]);
   store.unmergeDuplicateGroup(s);
   expect(store.findById(s)!.last_surfaced_at).toBeNull();         // not 777
+});
+
+// #667 — the snapshot the finders ask "was this fold undone?" of: both orders, and nothing else.
+test('refoldBlockedPredicate — true for an undone pair in either order, false for any other pair and for no markers', () => {
+  const s = seedSurfaced(store, 'survivor row', 'feature', 5, 0, 0, 100);
+  const m = seedSurfaced(store, 'member row', 'feature', 3, 0, 0, 110);
+  const other = seedSurfaced(store, 'other row', 'feature', 1, 0, 0, 120);
+  expect(store.refoldBlockedPredicate()(s, m)).toBe(false);          // nothing undone yet
+  store.mergeDuplicateGroup(s, [m, other], 1000);
+  store.unmergeDuplicateGroup(s, [store.selectMergeEvents({ memberIds: [m] })[0]!.id]);
+  const blocked = store.refoldBlockedPredicate();
+  expect(blocked(s, m)).toBe(true);
+  expect(blocked(m, s)).toBe(true);
+  expect(blocked(s, other)).toBe(false);                             // folded and not undone
+  expect(blocked(m, other)).toBe(false);
+  expect(store.mergeDuplicateGroup(m, [s], 2000)).toBe(0);           // the swapped roles are refused too
+  store.clearRefoldBlocks();
+  expect(store.refoldBlockedPredicate()(s, m)).toBe(false);
 });
 
 test('mergedSurvivorIds — lists rows that have folded-in members (for --undo all)', () => {

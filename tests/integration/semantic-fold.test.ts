@@ -42,6 +42,7 @@ async function runSemantic(
       representativeVector: (id) => vecs[id] ?? null,
       cosineThreshold: DEFAULT_QM_CONFIG.semanticCosineThreshold,
       maxGroups: DEFAULT_QM_CONFIG.semanticMaxGroups,
+      refoldBlocked: s.refoldBlockedPredicate(),            // as the worker wires it: a snapshot taken per pass
     }),
     representativeVector: (id) => vecs[id] ?? null,
     memberIsProtected: (id) => s.isProtected(id),
@@ -129,6 +130,26 @@ describe('semantic fold, end to end', () => {
     s.unmergeDuplicateGroup(a);
     const rowB = db.db.query('SELECT archived FROM observations WHERE id = ?').all(b) as Array<{ archived: number }>;
     expect(rowB[0]!.archived).toBe(0);                    // restored
+    s.close(); rmSync(dir, { recursive: true, force: true });
+  });
+
+  // The tester's case: another `consolidate --semantic --backlog` folded the members they had just undone.
+  test('an undone semantic fold is not folded again, and no group is proposed for it; allowing it brings it back', async () => {
+    const { s, dir } = store();
+    const a = add(s, 'the surviving phrasing', 's1', 100);
+    const b = add(s, 'the folded phrasing', 's1', 140);
+    s.bumpRetrieval([a], 'auto'); s.bumpRetrieval([a], 'auto'); s.bumpRetrieval([b], 'auto');
+    const vecs = { [a]: at(0), [b]: at(3) };
+    expect((await runSemantic(s, vecs)).merges).toBe(1);
+    s.unmergeDuplicateGroup(a);
+
+    const again = await runSemantic(s, vecs);
+    expect(again.merges).toBe(0);
+    expect(again.scanned).toBe(0);                        // the finder never emitted the group: no slot spent on it
+    expect(s.findById(b)!.archived).toBe(false);
+
+    expect(s.clearRefoldBlocks([b])).toBe(1);
+    expect((await runSemantic(s, vecs)).merges).toBe(1);
     s.close(); rmSync(dir, { recursive: true, force: true });
   });
 });

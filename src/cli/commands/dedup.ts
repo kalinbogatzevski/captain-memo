@@ -10,6 +10,8 @@
 //     survivor (reversible: --undo, or flip archived=0). No hard deletes.
 //   - --undo reverses every prior dedup merge. With a selector (--member, --run, --since,
 //     --job) it reverses only the merges that selector names; --runs lists the runs to pick from.
+//   - An UNDONE fold is remembered: --undo marks each (survivor, member) pair it reverses and no pass folds
+//     that pair again (--allow-refold takes the mark away).
 //   - PROTECTED rows (drilled into, or anchored) are never folded — the same
 //     gate runQmDedupSlice applies. This was missing, so the manual command was
 //     more destructive than the automatic sweep it exists to supplement.
@@ -38,6 +40,7 @@ Usage:
   captain-memo dedup [--apply] [--threshold N] [--json]
   captain-memo dedup --undo [<selector>...] [--json]
   captain-memo dedup --runs [--json]
+  captain-memo dedup --allow-refold [--member ID...] [--json]
 
 Options:
   (default)         Dry-run: show the merge groups, change nothing.
@@ -50,6 +53,8 @@ Options:
                     (2026-10-14T09:30:00Z; with no offset it is your local time, a bare date is UTC).
   --job NAME        Restrict to 'dedup' or 'semantic' folds. Alone, undoes every fold of that job.
   --runs            List the 10 most recent runs that folded something (read-only).
+  --allow-refold    Let folds you undid be folded again: remove their never-re-fold markers (the ones
+                    involving the --member ids, or every one when none is named). Takes nothing else.
   --threshold N     Title-similarity threshold 0..1 (default ${DEFAULT_SIMILARITY_THRESHOLD}).
                     Lower = more aggressive merging. Review the dry-run first.
   --json            Machine-readable output.
@@ -73,6 +78,9 @@ Notes:
   - A survivor's last-surfaced time goes back to its pre-fold value only when ONE command undoes
     every open fold into it; a partial undo leaves it as it is. The value restored is the original
     one even when the survivor's earliest folds were undone first.
+  - An undone fold is remembered. --undo marks every (survivor, member) pair it reverses, and neither
+    this command nor the background sweeps (dedup, semantic, consolidate --semantic) fold that pair
+    again, whichever of the two rows would lead. --allow-refold removes the mark.
   - A run is matched to its merges by the time it ran and its job. A merge from a worker that
     stopped before recording its run belongs to no run: reach it with --member or --since.
 `;
@@ -87,6 +95,7 @@ export async function dedupCommand(args: string[]): Promise<number> {
   let json = false;
   let threshold = DEFAULT_SIMILARITY_THRESHOLD;
   let listRuns = false;
+  let allowRefold = false;
   const sel: MergeSelector = {};
 
   for (let i = 0; i < args.length; i++) {
@@ -97,6 +106,7 @@ export async function dedupCommand(args: string[]): Promise<number> {
       case '--json':      json = true; break;
       case '--threshold': threshold = parseFloat(args[++i] ?? ''); break;
       case '--runs':      listRuns = true; break;
+      case '--allow-refold': allowRefold = true; break;
       case '--member': {
         const ids: number[] = [];
         while (/^\d+(,\d+)*$/.test(args[i + 1] ?? '')) ids.push(...args[++i]!.split(',').map(Number));
@@ -141,6 +151,10 @@ export async function dedupCommand(args: string[]): Promise<number> {
     return 2;
   }
   const selective = Object.keys(sel).length > 0;
+  if (allowRefold && (undo || apply || listRuns || sel.runId !== undefined || sel.since !== undefined || sel.job)) {
+    console.error('--allow-refold takes only --member (and --json); use it on its own');
+    return 2;
+  }
   if (listRuns && (selective || undo || apply)) {
     console.error('--runs only lists; use it on its own');
     return 2;
@@ -157,6 +171,7 @@ export async function dedupCommand(args: string[]): Promise<number> {
   }
   const store = new ObservationsStore(obsPath);
   try {
+    if (allowRefold) return runAllowRefold(store, json, sel.memberIds);
     if (listRuns) return listFoldRuns(store, json);
     if (selective) return runSelectiveUndo(store, json, sel);
     if (undo) return runUndo(store, json);
@@ -175,7 +190,23 @@ function runUndo(store: ObservationsStore, json: boolean): number {
     console.log(dim('No prior merges to undo.'));
   } else {
     console.log(`${green('✓')} Reversed ${cyanBold(String(survivors.length))} merge(s); members un-archived.`);
+    console.log(dim(REFOLD_NOTE));
   }
+  return 0;
+}
+
+const REFOLD_NOTE = '  These pairs will not be folded again. To allow it: captain-memo dedup --allow-refold [--member ID...]';
+
+/** `--allow-refold`: take the never-re-fold markers away, for the named ids or all of them. */
+function runAllowRefold(store: ObservationsStore, json: boolean, ids: number[] | undefined): number {
+  const cleared = store.clearRefoldBlocks(ids);
+  if (ids && cleared === 0) {
+    console.error(`captain-memo dedup: no never-re-fold marker involves observation id(s) ${ids.join(', ')}. Nothing was changed.`);
+    return 1;
+  }
+  if (json) console.log(JSON.stringify({ cleared }));
+  else if (cleared === 0) console.log(dim('No never-re-fold markers to clear.'));
+  else console.log(`${green('✓')} Cleared ${cyanBold(String(cleared))} never-re-fold marker(s); ${ids ? 'those pairs' : 'every undone pair'} may be folded again.`);
   return 0;
 }
 
@@ -257,6 +288,7 @@ function runSelectiveUndo(store: ObservationsStore, json: boolean, sel: MergeSel
   if (unarchived < open.length) {
     console.log(dim(`  ${open.length - unarchived} member(s) were no longer folded into that survivor and were left as they are.`));
   }
+  console.log(dim(REFOLD_NOTE));
   return 0;
 }
 
@@ -295,9 +327,11 @@ function runDedup(
   // A drilled-into or anchored row is protected from automatic folding — runQmDedupSlice skips it
   // outright ("a protected memory is never archived automatically"). This command bypassed that
   // gate entirely, which made the MANUAL tool more destructive than the background sweep. Filtered
-  // here rather than at apply-time so the dry-run never promises a fold that will not happen.
+  // here rather than at apply-time so the dry-run never promises a fold that will not happen. Same for a pair
+  // whose fold was undone: mergeDuplicateGroup would refuse it, so the dry-run does not list it.
+  const refolded = store.refoldBlockedPredicate();
   const groups = store.findDuplicateGroups(threshold)
-    .map(g => ({ ...g, members: g.members.filter(m => !store.isProtected(m.id)) }))
+    .map(g => ({ ...g, members: g.members.filter(m => !store.isProtected(m.id) && !refolded(g.survivor.id, m.id)) }))
     .filter(g => g.members.length > 0);
   const archivable = groups.reduce((n, g) => n + g.members.length, 0);
 

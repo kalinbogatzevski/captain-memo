@@ -385,6 +385,31 @@ export const OBSERVATIONS_STORE_MIGRATIONS: Migration[] = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_obs_stored_null ON observations(id) WHERE stored_tokens IS NULL');
     },
   },
+  {
+    // v26 — an UNDONE fold is remembered. merge_events only says "this fold was undone"; nothing stopped the next
+    // dedup / `consolidate --semantic --backlog` finding the same two rows and folding them again (a tester's three
+    // wrong folds were the first real case). `dedup --undo` writes one row here per
+    // (survivor, member) pair it reverses, and every folding path skips a pair found here, whichever of the two
+    // rows would lead (see refoldBlockedPartners). New table only: no existing table or row is touched.
+    //
+    // Backfill: a fold undone BEFORE this release has undone=1 in the ledger and no marker. Marked here, in the
+    // same transaction as the table. INSERT OR IGNORE on the pair keeps a second run a no-op.
+    version: 26,
+    name: 'add_refold_blocks',
+    up: (db) => {
+      db.exec(`CREATE TABLE IF NOT EXISTS refold_blocks (
+        survivor_id INTEGER NOT NULL,
+        member_id   INTEGER NOT NULL,
+        marked_at   INTEGER NOT NULL,
+        PRIMARY KEY (survivor_id, member_id)
+      ) WITHOUT ROWID`);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_refold_blocks_member ON refold_blocks(member_id)');
+      db.query(
+        `INSERT OR IGNORE INTO refold_blocks (survivor_id, member_id, marked_at)
+         SELECT DISTINCT survivor_id, member_id, ? FROM merge_events WHERE undone = 1`,
+      ).run(Math.floor(Date.now() / 1000));
+    },
+  },
 ];
 
 export type NewObservation = Omit<
@@ -1409,6 +1434,8 @@ export class ObservationsStore {
    * Runs in a single transaction so a crash mid-merge can't leave counts summed
    * but members un-archived (or vice-versa).
    *
+   * A member whose pair with the survivor was undone (refold_blocks) is not folded either.
+   *
    * Returns the number of members it ACTUALLY archived (after the cross-scope
    * eligibility filter) — so the auto-dedup slice can tally an honest merge count
    * instead of over-reporting members the filter silently dropped. 0 on every
@@ -1437,8 +1464,13 @@ export class ObservationsStore {
           from_auto: number; from_search: number; from_drill: number;
           last_surfaced_at: number | null;
         }>;
-      const eligible = eligibleRows.filter(m => m.project_id === survivor.project_id
+      const inScope = eligibleRows.filter(m => m.project_id === survivor.project_id
         && (m.branch ?? '') === (survivor.branch ?? ''));
+      // A pair the user undid stays undone, whoever proposed it (dedup, semantic, any caller): the finders skip it
+      // too, but THIS is the one place every fold passes through, so it cannot be bypassed. Measured on the dev
+      // corpus copy (9,075 markers, load ~34): 69-122 us a group against 6-11 ms for the whole fold, 1-2%.
+      const marked = this.refoldBlockedPartners(survivorId, inScope.map(m => m.id));
+      const eligible = marked.size > 0 ? inScope.filter(m => !marked.has(m.id)) : inScope;
       if (eligible.length === 0) return 0;
       const ids = eligible.map(m => m.id);
       const placeholders = ids.map(() => '?').join(',');
@@ -2070,6 +2102,8 @@ export class ObservationsStore {
    * transaction: every later row recorded the survivor's recency after the removed folds had
    * advanced it, so without the copy a later full undo came back slightly newer than the original.
    *
+   * Every reversed pair is also written to refold_blocks, so the same two rows are not folded again.
+   *
    * Reading the ledger (not theme_member_ids) makes nested merges into one hot
    * survivor fully reversible — a second merge's row never overwrites the first.
    */
@@ -2126,6 +2160,10 @@ export class ObservationsStore {
           .query('UPDATE merge_events SET survivor_prev_surfaced_at = ? WHERE id = ?')
           .run(restoreSurfacedAt, carryTo.id);
       }
+      // Remember each reversed pair, in this tx so "undone" and "marked" cannot part ways.
+      const mark = this.db.query('INSERT OR IGNORE INTO refold_blocks (survivor_id, member_id, marked_at) VALUES (?, ?, ?)');
+      const markedAt = Math.floor(Date.now() / 1000);
+      for (const e of events) mark.run(survivorId, e.member_id, markedAt);
       // By id, not "every open row of the survivor": only what was reversed above is closed, so a
       // merge the worker commits between our read and this write is never marked undone unreversed.
       this.db
@@ -2134,6 +2172,51 @@ export class ObservationsStore {
       return changes;
     });
     return tx();
+  }
+
+  /**
+   * The ids among `others` that `id` may not be folded with because the user undid that fold. Either order:
+   * after an undo the counts change, so the two rows can swap who would lead the group, and a marker that
+   * held only one way would let the same pair back in the other way.
+   */
+  private refoldBlockedPartners(id: number, others: number[]): Set<number> {
+    if (others.length === 0) return new Set();
+    const ph = others.map(() => '?').join(',');
+    const rows = this.db
+      .query(
+        `SELECT member_id AS other FROM refold_blocks WHERE survivor_id = ? AND member_id IN (${ph})
+         UNION
+         SELECT survivor_id FROM refold_blocks WHERE member_id = ? AND survivor_id IN (${ph})`,
+      )
+      .all(id, ...others, id, ...others) as Array<{ other: number }>;
+    return new Set(rows.map(r => r.other));
+  }
+
+  /**
+   * "Was folding these two rows undone?" (either order) as a predicate for a finder's pass: ONE read of the
+   * table now, then a Set lookup per pair. Measured on a copy of the dev corpus with every one of its 9,085 folds
+   * undone (9,075 distinct pairs), load average ~34 so read these as upper bounds: a query per pair cost 32-43 us
+   * a call even with no marker at all, ~3% of a cluster walk's 23k title-passed pairs, on the engine thread. The
+   * snapshot is one read per pass (28-105 ms for 9,075 markers; free for none, it returns a constant) and ~4 us a
+   * pair. A marker written after the snapshot (the CLI's `--undo` runs in another process) is still caught where
+   * it matters: mergeDuplicateGroup reads the table itself.
+   */
+  refoldBlockedPredicate(): (a: number, b: number) => boolean {
+    const rows = this.db.query('SELECT survivor_id, member_id FROM refold_blocks').all() as Array<{ survivor_id: number; member_id: number }>;
+    if (rows.length === 0) return () => false;
+    const key = (a: number, b: number): string => (a < b ? `${a}:${b}` : `${b}:${a}`);
+    const pairs = new Set(rows.map(r => key(r.survivor_id, r.member_id)));
+    return (a, b) => pairs.has(key(a, b));
+  }
+
+  /** Allow undone folds to be folded again: delete the markers involving `ids` (either side), or all of
+   *  them without `ids`. Returns how many it deleted. */
+  clearRefoldBlocks(ids?: number[]): number {
+    if (!ids) return this.db.query('DELETE FROM refold_blocks').run().changes;
+    const ph = ids.map(() => '?').join(',');
+    return this.db
+      .query(`DELETE FROM refold_blocks WHERE survivor_id IN (${ph}) OR member_id IN (${ph})`)
+      .run(...ids, ...ids).changes;
   }
 
   /** One persisted qm_runs row by id, or null. */

@@ -51,6 +51,9 @@ export interface SemanticGroupDeps {
   maxGroups: number;
   /** Title-pair veto. Defaults to the shared merge guard; injectable for tests. */
   blocked?: (titleA: string, titleB: string) => boolean;
+  /** True for a pair whose fold the user undid: never proposed again. Skipped here so such groups do not spend
+   *  `maxGroups` slots (and a "scanned, 0 folded" pass) on folds that cannot happen; the store refuses them anyway. */
+  refoldBlocked?: (survivorId: number, memberId: number) => boolean;
   /**
    * Breathe. Runs on the ENGINE thread. Measured on the live 135k corpus with the 5,000-row
    * window: 1,942 ms resolving vectors + 869 ms over 192,306 pairs, uninterrupted — and it shares
@@ -143,6 +146,7 @@ export async function findSemanticGroups(deps: SemanticGroupDeps): Promise<Dupli
         if (!cv) continue;                                  // fail-closed
         if (cosine(sv, cv) < deps.cosineThreshold) continue;
         if (isBlocked(survivor.title, cand.title)) continue;
+        if (deps.refoldBlocked?.(survivor.id, cand.id)) continue;
         members.push(cand);
       }
       if (members.length === 0) continue;

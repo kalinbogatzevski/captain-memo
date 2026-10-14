@@ -1622,6 +1622,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           cosineThreshold: qmConfig.dedupCosineThreshold,
           titleThreshold: qmConfig.dedupTitleThreshold,
           maxGroups: 100_000,
+          refoldBlocked: qmStore.refoldBlockedPredicate(),
           yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
           // An abort inside candidates() must be RECORDED, or the run says "0 scanned" and that
           // is indistinguishable from a clean corpus — the recurring bug of this release series.
@@ -1792,6 +1793,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           // fifteen times over. The scan is the expensive half; folding is cheap writes with a
           // yield between each. So a sweep keeps what it finds.
           maxGroups: sweeping ? 100_000 : qmConfig.semanticMaxGroups,
+          refoldBlocked: semStore.refoldBlockedPredicate(),
         }),
         representativeVector: repVec,
         memberIsProtected: (id) => semStore.isProtected(id),

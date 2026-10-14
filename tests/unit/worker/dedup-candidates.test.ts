@@ -36,6 +36,18 @@ describe('findDedupGroupsByCluster', () => {
     expect(g[0]!.members.map(m => m.id)).toEqual([2]);
   });
 
+  // A pair the user undid is never proposed again, but the rest of the cluster still folds.
+  test('skips a pair the caller marks as never to re-fold, and keeps the others', async () => {
+    const C = 'worker restart uses force stop to clean zombie processes';
+    const g = await findDedupGroupsByCluster({
+      ...base, rows: [row(1, A, 5), row(2, B, 2), row(3, C, 1)], clusters: [[1, 2, 3]],
+      representativeVector: vecs({ 1: at(0), 2: at(1), 3: at(2) }),
+      refoldBlocked: (s, m) => s === 1 && m === 2,
+    });
+    expect(g.length).toBe(1);
+    expect(g[0]!.members.map(m => m.id)).toEqual([3]);
+  });
+
   test('ignores ids that are not in the candidate rows', async () => {
     // Cluster membership is raw index data; it names chunks for archived or out-of-scope rows too.
     const g = await findDedupGroupsByCluster({

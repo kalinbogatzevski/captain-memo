@@ -56,6 +56,9 @@ export interface DedupClusterDeps {
   maxGroups: number;
   /** Title-pair veto. Defaults to the shared merge guard; injectable for tests. */
   blocked?: (titleA: string, titleB: string) => boolean;
+  /** True for a pair whose fold the user undid: never proposed again (the store refuses it too). Asked only
+   *  of pairs that already passed the title gate and the merge guard, before any vector is read. */
+  refoldBlocked?: (survivorId: number, memberId: number) => boolean;
   /** Breathe: this runs on the engine thread. */
   yieldToLoop?: () => Promise<void>;
   /** Ingest preempts housekeeping, as everywhere else. Checked at each breath. */
@@ -135,6 +138,7 @@ export async function findDedupGroupsByCluster(deps: DedupClusterDeps): Promise<
         if (cand.project_id !== survivor.project_id || cand.branch !== survivor.branch) continue;
         if (jaccard(tokensOf(survivor), tokensOf(cand)) < deps.titleThreshold) continue;
         if (isBlocked(survivor.title, cand.title)) continue;
+        if (deps.refoldBlocked?.(survivor.id, cand.id)) continue;
         if (sv === undefined) sv = vecOf(survivor.id);
         if (!sv) break;                             // fail-closed: no survivor vector, no group
         const cv = vecOf(cand.id);
