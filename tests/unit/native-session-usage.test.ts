@@ -720,6 +720,111 @@ test('a wide scan still drops the accumulator of a transcript it no longer finds
   expect(s!.input_tokens).toBe(222);                          // a fresh accumulator, not the pruned one's 111
 });
 
+test('the read offset counts the bytes read, so a stray invalid UTF-8 byte cannot push it past the file', async () => {
+  // The offset used to be the byte length of the DECODED string, and an invalid byte decodes to U+FFFD, three bytes long:
+  // the offset ran two bytes past the end of what had been read and the next append lost its first two bytes for good (the
+  // line then failed to parse). Valid multi-byte text (Cyrillic, an emoji) must keep counting exactly.
+  const p = join(projectDir, `${SID}.jsonl`);
+  writeFileSync(p, Buffer.concat([
+    Buffer.from(JSON.stringify({ type: 'user', text: 'Здравей, свят 🚀' }) + '\n'),
+    Buffer.from('{"type":"user","text":"bad byte: '), Buffer.from([0xff]), Buffer.from('"}\n'),
+    Buffer.from(msg(100, 10)),
+  ]));
+  await readNativeSessionUsage();
+  appendFileSync(p, msg(7, 3));
+  const [s] = await readNativeSessionUsage();
+  expect(s!.input_tokens).toBe(107);                          // the appended message was read from its first byte
+  expect(s!.output_tokens).toBe(13);
+});
+
+test('each field the scan reads is picked up from a line that carries no usage', async () => {
+  // digest() parses only lines that hold a key it acts on. The tests above put these fields on lines that also carry
+  // usage, which would stay green if the key list forgot one; here every field sits on a line of its own.
+  const only = (o: Record<string, unknown>) => JSON.stringify({ type: 'user', ...o }) + '\n';
+  const SID2 = '0b6f1c2e-5a7d-4e38-9c41-7d2a8e5f3b60';
+  const CWD = '/home/user/projects/thing';
+  writeTranscript(SID, only({ cwd: CWD }) + only({ entrypoint: 'sdk-cli' }) + only({ agentName: 'NAMED' })
+    + only({ bridgeSessionId: 'cse_9' }) + only({ teamName: 'session-0a1b2c3d' }) + only({ type: 'agent-setting', agentSetting: 'general-purpose' })
+    + msg(5, 1));
+  writeTranscript(SID2, only({ customTitle: 'TITLED' }) + msg(5, 1));
+
+  const rows = await readNativeSessionUsage();
+  const s = rows.find(r => r.session_id === SID)!;
+  expect(s.cwd).toBe(CWD);
+  expect(s.entrypoint).toBe('sdk-cli');
+  expect(s.agentName).toBe('NAMED');
+  expect(s.ownerSession).toBe('cse_9');
+  expect(s.teamName).toBe('session-0a1b2c3d');
+  expect(s.agentSetting).toBe('general-purpose');
+  expect(rows.find(r => r.session_id === SID2)!.agentName).toBe('TITLED');
+});
+
+test('the byte-level line filter reads a synthetic set exactly as the string-based digest did', async () => {
+  // DIFFERENTIAL. The expected rows below were produced by the module as it stood BEFORE digest() learned to skip lines
+  // (run on this very file set, at this fixed clock) and frozen here. The set is built to be hostile to a key filter: key
+  // names inside an escaped string and as bare VALUES, wrong types, a malformed line that names usage, first-wins fields
+  // repeated (the first must still win) and arriving late on lines of their own, an agentSetting key without the
+  // agent-setting type, an incomplete dispatch, streamed partial usage, records with no id, a message outside the window,
+  // one 1.2 MB line of multi-byte text that crosses the 1 MB read piece, and a write in flight with no newline.
+  const T = Date.UTC(2026, 9, 14, 12, 0, 0);
+  const stamp = (minAgo: number) => new Date(T - minAgo * 60_000).toISOString();
+  const rec = (o: Record<string, unknown>) => JSON.stringify(o) + '\n';
+  const use = (id: string | undefined, i: number, o: number, minAgo = 10, extra: Record<string, unknown> = {}) => rec({
+    type: 'assistant', timestamp: stamp(minAgo),
+    message: { ...(id ? { id } : {}), role: 'assistant', content: [{ type: 'text', text: 'x' }],
+      usage: { input_tokens: i, output_tokens: o, cache_creation_input_tokens: 3, cache_read_input_tokens: 5 } },
+    ...extra,
+  });
+  const put = (p: string, body: string) => { writeFileSync(p, body); utimesSync(p, T / 1000, T / 1000); };
+  const A = '46ab9cc1-777d-4179-ba55-609de944146c', B = '0b6f1c2e-5a7d-4e38-9c41-7d2a8e5f3b60';
+  put(join(projectDir, `${A}.jsonl`),
+    '\n'
+    + rec({ type: 'user', message: { role: 'user', content: 'he said "usage", "cwd" and "agentName" in a sentence' } })
+    + rec({ type: 'usage', note: 'cwd' }) + rec({ type: 'cwd', agentName: 7 })
+    + use('m1', 100, 10) + use('m1', 100, 25) + use('m1', 100, 25)
+    + rec({ type: 'assistant', message: { id: 'm2', role: 'assistant', content: [{ type: 'thinking', thinking: 'hm' }] } })
+    + use('m2', 200, 20) + use(undefined, 7, 1) + use(undefined, 7, 1)
+    + '{"message":{"usage":{"input_tokens":50,"output_tokens"\n'
+    + rec({ cwd: '/first/cwd' }) + rec({ cwd: '/second/cwd' }) + rec({ entrypoint: 'sdk-cli' }) + rec({ entrypoint: 'cli' })
+    + rec({ agentName: 'A-NAME', customTitle: 'A-TITLE' }) + rec({ bridgeSessionId: 'cse_1' })
+    + rec({ type: 'agent-setting', agentSetting: 'general-purpose', teamName: 'session-deadbeef' })
+    + rec({ toolUseResult: { agentId: 'cafe01', description: 'Dispatched QA' } })
+    + rec({ toolUseResult: { agentId: 'cafe02' } }) + rec({ toolUseResult: { agentId: 'cafe03', description: 42 } })
+    + use('m3', 300, 30, 50)
+    + rec({ type: 'user', message: { role: 'user', content: 'Здравей, свят 🚀 '.repeat(40_000) } })
+    + use('m4', 400, 40, 5, { cwd: '/ignored/third' })
+    + '{"type":"assistant","message":{"usage":{"input_tokens":999');
+  put(join(projectDir, `${B}.jsonl`),
+    rec({ type: 'user', agentSetting: 'not-an-agent' }) + rec({ customTitle: 'B-TITLE' }) + rec({ agentName: 'B-LATER' }) + use('b1', 1, 2));
+  const sub = join(projectDir, A, 'subagents');
+  mkdirSync(sub, { recursive: true });
+  put(join(sub, 'agent-cafe01.jsonl'), rec({ cwd: '/agent/cwd' }) + use('a1', 11, 2));
+  put(join(sub, 'agent-cafe02.jsonl'), rec({ agentName: 'AGENT-OWN' }) + use('a2', 12, 3));
+
+  const cfg = mkdtempSync(join(tmpdir(), 'cm-native-cfg-'));   // teamLeadSession() reads CLAUDE_CONFIG_DIR/teams
+  const prev = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = cfg;
+  try {
+    const rows = await readNativeSessionUsage(30 * MIN, T + MIN, undefined, { includeFinished: true });
+    rows.sort((a, b) => (a.session_id < b.session_id ? -1 : 1));
+    const at = 1791979200000;   // T: the mtime every file was given
+    expect(rows).toEqual([
+      { session_id: B, window_fresh_tokens: 4, window_output_tokens: 2, window_cache_read_tokens: 5, input_tokens: 1, output_tokens: 2,
+        cache_creation_tokens: 3, cache_read_tokens: 5, last_activity_epoch_ms: at, agentName: 'B-TITLE' },
+      { session_id: A, window_fresh_tokens: 729, window_output_tokens: 87, window_cache_read_tokens: 25, input_tokens: 1014, output_tokens: 117,
+        cache_creation_tokens: 18, cache_read_tokens: 30, last_activity_epoch_ms: at, cwd: '/first/cwd', agentName: 'A-NAME',
+        ownerSession: 'cse_1', entrypoint: 'sdk-cli', agentSetting: 'general-purpose', teamName: 'session-deadbeef' },
+      { session_id: 'agent-cafe01', window_fresh_tokens: 14, window_output_tokens: 2, window_cache_read_tokens: 5, input_tokens: 11, output_tokens: 2,
+        cache_creation_tokens: 3, cache_read_tokens: 5, last_activity_epoch_ms: at, parentSessionId: A, cwd: '/agent/cwd', agentName: 'Dispatched QA' },
+      { session_id: 'agent-cafe02', window_fresh_tokens: 15, window_output_tokens: 3, window_cache_read_tokens: 5, input_tokens: 12, output_tokens: 3,
+        cache_creation_tokens: 3, cache_read_tokens: 5, last_activity_epoch_ms: at, parentSessionId: A, agentName: 'AGENT-OWN' },
+    ]);
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev;
+    rmSync(cfg, { recursive: true, force: true });
+  }
+});
+
 test('a SECOND workflow in the same session is still named', async () => {
   // The cache is keyed on sessionId but holds "the wf ids that existed the first time this
   // session was scanned". A session runs many workflows — ten in one session on this host — so

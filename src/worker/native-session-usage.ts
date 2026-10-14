@@ -210,14 +210,43 @@ function n(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0;
 }
 
-/** Parse the complete lines in `chunk`, returning bytes consumed. A trailing partial
- *  line (a write in flight) is left for the next call, which re-reads it whole. */
-function digest(chunk: string, t: Totals): number {
-  const lastNl = chunk.lastIndexOf('\n');
-  if (lastNl < 0) return 0;
-  const complete = chunk.slice(0, lastNl + 1);
-  for (const raw of complete.split('\n')) {
-    if (!raw.trim()) continue;
+/** The only keys whose presence on a line lets digest() change anything. A line with none of them is not parsed, and not
+ *  even decoded: they are most of a transcript's bytes (tool results, prompts, attachments). In a 189 MB sample of this
+ *  host's transcripts (71 sessions, 156 transcripts) the lines that carry "usage" are 22.1% of the bytes.
+ *  MEASURED, cold wide scan of that sample, CPU seconds before -> after, two runs each: 13.2 and 13.2 -> 5.1 and 4.7;
+ *  the 156 rows are byte-identical (cmp) in all four runs.
+ *  ponytail: this assumes the keys are written as plain `"key"`, as JSON.stringify writes them; a key spelled with
+ *  \u escapes would be missed. Claude Code never writes one. */
+const K_USAGE = Buffer.from('"usage"'), K_DISPATCH = Buffer.from('"toolUseResult"'), K_CWD = Buffer.from('"cwd"');
+const K_NAME = Buffer.from('"agentName"'), K_TITLE = Buffer.from('"customTitle"'), K_ENTRY = Buffer.from('"entrypoint"');
+const K_SETTING = Buffer.from('"agentSetting"'), K_TEAM = Buffer.from('"teamName"'), K_BRIDGE = Buffer.from('"bridgeSessionId"');
+const K_AGENTID = Buffer.from('"agentId"'), K_DESC = Buffer.from('"description"');
+
+/** Could this line change `t`? The first-wins fields only matter while they are still unset. */
+function mayChange(line: Buffer, t: Totals): boolean {
+  return line.includes(K_USAGE) || (line.includes(K_DISPATCH) && line.includes(K_AGENTID) && line.includes(K_DESC))
+    || (t.cwd === undefined && line.includes(K_CWD))
+    || (t.agentName === undefined && (line.includes(K_NAME) || line.includes(K_TITLE)))
+    || (t.entrypoint === undefined && line.includes(K_ENTRY))
+    || (t.agentSetting === undefined && line.includes(K_SETTING))
+    || (t.teamName === undefined && line.includes(K_TEAM))
+    || (t.ownerSession === undefined && line.includes(K_BRIDGE));
+}
+
+/** Parse the complete lines in `buf`, returning bytes consumed. A trailing partial
+ *  line (a write in flight) is left for the next call, which re-reads it whole.
+ *  The count comes from the BYTES: a newline never occurs inside a multi-byte UTF-8 sequence, and counting the
+ *  decoded string instead (Buffer.byteLength) was a measurable share of a cold scan and, on a stray invalid byte, an
+ *  offset ahead of the real position, which skips the start of the next line for good. */
+function digest(buf: Buffer, t: Totals): number {
+  const end = buf.lastIndexOf(10);
+  if (end < 0) return 0;
+  for (let pos = 0; pos <= end;) {
+    const nl = buf.indexOf(10, pos);
+    const bytes = buf.subarray(pos, nl);
+    pos = nl + 1;
+    if (!mayChange(bytes, t)) continue;
+    const raw = bytes.toString('utf8');
     let line: TranscriptLine;
     try {
       line = JSON.parse(raw) as TranscriptLine;
@@ -326,7 +355,7 @@ function digest(chunk: string, t: Totals): number {
       b.cacheRead += crTok;
     }
   }
-  return Buffer.byteLength(complete, 'utf8');
+  return end + 1;
 }
 
 /** Root of Claude Code's per-project transcript directories. Overridable for tests. */
@@ -399,7 +428,7 @@ async function accumulate(
           const buf = Buffer.allocUnsafe(len);
           const { bytesRead } = await fh.read(buf, 0, len, pos);
           if (bytesRead === 0) break;
-          const used = digest(buf.toString('utf8', 0, bytesRead), t);
+          const used = digest(buf.subarray(0, bytesRead), t);
           if (used === 0) {
             if (pos + bytesRead >= size) break;   // only a line still being written: next poll
             want *= 2;                            // one line longer than the piece: widen for it
