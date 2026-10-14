@@ -2064,7 +2064,10 @@ export class ObservationsStore {
    * If that leaves other merges into the survivor open (a PARTIAL reversal),
    * theme_member_ids is rewritten to the members still folded, and last_surfaced_at is left
    * alone: the ledger cannot say what recency the remaining members justify, and the
-   * survivor may have been surfaced since — only a full reversal restores the pre-merge value.
+   * survivor may have been surfaced since. A full reversal restores the EARLIEST OPEN row's
+   * recorded value, which is the true pre-merge one only while that row is still the survivor's
+   * earliest fold: after a partial undo removed earlier folds it is the time the next fold
+   * recorded (slightly newer). Carrying the removed row's value forward would close that.
    *
    * Reading the ledger (not theme_member_ids) makes nested merges into one hot
    * survivor fully reversible — a second merge's row never overwrites the first.

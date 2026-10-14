@@ -70,8 +70,9 @@ Notes:
   - A selector implies --undo and may be combined with the others (all must match). It
     PRINTS what it will undo, then does it, like plain --undo: there is no confirmation prompt.
     An id or run that matches nothing exits 1 and changes nothing; repeating an undo is a no-op.
-  - A partial undo leaves the survivor's last-surfaced time as it is (the ledger cannot say what
-    the members still folded in justify); undoing everything folded into a survivor restores it.
+  - A survivor's last-surfaced time goes back to its pre-fold value only when ONE command undoes
+    every open fold into it. A partial undo leaves it as it is, so if the survivor's earliest folds
+    were undone first, a later full undo restores the time the next fold recorded: slightly newer.
   - A run is matched to its merges by the time it ran and its job. A merge from a worker that
     stopped before recording its run belongs to no run: reach it with --member or --since.
 `;
