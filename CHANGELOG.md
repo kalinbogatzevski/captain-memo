@@ -7,6 +7,38 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.57.9] — 2026-10-14
+
+### Added
+
+- **`captain-memo dedup --undo` can reverse part of a fold.** A tester's `consolidate --semantic --backlog` made 1,340 folds,
+  3 of them wrong, and `--undo` could only reverse all of them or none. A selector now names what to reverse (alone it implies
+  `--undo`): `--member ID...` (the ids the fold archived), `--run N` (an id from the new read-only `dedup --runs`),
+  `--since EPOCH|ISO` with an optional `--job dedup|semantic`; selectors combine (all must match). It prints the count and the
+  first ten ids and titles, then reverses through the same per-event path as plain `--undo`, with no prompt. An id or run
+  that matches nothing exits 1 and changes nothing; repeating an undo is a no-op. Plain `--undo` is unchanged. A run is
+  matched to its merges by when it ran and its job, so a fold from a worker that stopped before recording its run is reached
+  with `--member` or `--since`.
+
+### Fixed
+
+- **The merge guard no longer folds two observations whose titles each state a number the other lacks.** A tester's pair
+  "312 tests" and "517 tests" folded because both titles shared "TUI": one shared identifier is enough to allow a merge, and
+  the numbers were never compared. A fold is now blocked when both titles state numbers and each has at least one the other
+  does not (digits normalised; version numbers and codes are left to the existing version rule). Rewordings that keep the same
+  numbers ("394 tests" / "394 tests") and "257 tests / 257 tests, 0 failures" still fold. Measured against one corpus's 9,085
+  existing folds, the rule would have blocked 91 (1.0%): about 66 of them different things, 23 a test-suite count that had
+  grown (the reported shape), 2 wrong (a clock time such as `14:56`).
+
+### Notes
+
+- An undone fold is not remembered: a later `consolidate --semantic --backlog` run can fold the same pair again, unless the
+  new number rule now blocks it.
+- After a partial undo, undoing every remaining fold into a survivor restores the last-surfaced time that the next fold
+  recorded (slightly newer than the original); only one command that undoes every open fold into it restores the exact
+  pre-fold time.
+- No worker restart is needed for the CLI. The worker picks up the guard on its next restart (it folds with the old rule until then).
+
 ## [0.57.8] — 2026-10-14
 
 ### Fixed
