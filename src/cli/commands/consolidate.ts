@@ -133,7 +133,14 @@ export async function consolidateCommand(args: string[]): Promise<number> {
     console.error(`${red('✗')} ${res.status} ${body.slice(0, 200)}`);
     return 1;
   }
-  const data = await res.json() as ConsolidateResponse;
+  const data = await res.json() as ConsolidateResponse & { status?: string };
+  // 202 write_in_flight: the thread proxy stopped waiting, the writer did not. No started/busy lists come back,
+  // so reading them crashed; say what is known instead.
+  if (data.status === 'write_in_flight') {
+    console.error(`${gold('▸')} UNCONFIRMED, not failed: the worker did not confirm within its deadline, but the request was not cancelled.`);
+    console.error(dim('  Do not re-run yet; check `captain-memo stats` for the pass.'));
+    return 2;
+  }
   const runs = data.started.length > 0
     ? await awaitRuns(port, data.started, data.before ?? {})
     : {};

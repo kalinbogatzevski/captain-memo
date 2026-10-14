@@ -8,7 +8,7 @@ import {
 import { fileSha256, vectorsCompatible, type BackupManifest, type EmbedderIdentity } from './manifest.ts';
 import { resolveDataDir, resolveConfigDir } from './create.ts';
 import { getServiceManager } from '../service-manager/index.ts';
-import { workerPost, workerGetOptional } from '../../cli/client.ts';
+import { workerPost, workerGetOptional, WorkerCallError } from '../../cli/client.ts';
 import { DEFAULT_WORKER_PORT } from '../../shared/paths.ts';
 
 const WORKER_SERVICE = 'captain-memo-worker';
@@ -136,7 +136,7 @@ export async function restoreBackup(archivePath: string, opts: RestoreOptions = 
       await sm.start(WORKER_SERVICE);
       if (vectorsRebuilt) {
         try { await workerPost('/reindex', { channel: 'all', force: true }); reindexStarted = true; }
-        catch { reindexStarted = false; }
+        catch (e) { reindexStarted = e instanceof WorkerCallError && e.kind === 'unconfirmed'; }   // unconfirmed = still running
       }
     }
 

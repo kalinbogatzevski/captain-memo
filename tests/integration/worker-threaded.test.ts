@@ -59,29 +59,43 @@ test('threaded worker: /health stays fast while the engine is blocked 5s', async
 
 // A thread_rpc_timeout abandons MAIN's wait; it does NOT cancel the writer. For /remember that is "unconfirmed",
 // not "failed": a flat 503 sent a caller into a retry and BOTH copies landed (field 2026-08-08). Other paths
-// that time out keep their 503.
-test('threaded worker: a /remember that outlives main\'s wait answers 202 write_in_flight; other timeouts stay 503', async () => {
+// that time out keep their 503. /reindex, /promote/slice and /consolidate are the same kind of write: each answers 202
+// with a hint naming its own check.
+test('threaded worker: a /remember, /reindex, /promote/slice or /consolidate that outlives main\'s wait answers 202 write_in_flight; other timeouts stay 503', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'cm-thr-inflight-')); dirs.push(dir);
   const port = await freePort();
   const proc = Bun.spawn(['bun', WORKER], {
     env: { ...process.env, CAPTAIN_MEMO_WORKER_THREADED: '1', CAPTAIN_MEMO_ENABLE_TEST_ENDPOINTS: '1',
       CAPTAIN_MEMO_SKIP_EMBED: '1', CAPTAIN_MEMO_SUMMARIZER_PROVIDER: 'anthropic', ANTHROPIC_API_KEY: '',
       CAPTAIN_MEMO_DATA_DIR: dir, CAPTAIN_MEMO_CONFIG_DIR: dir, CAPTAIN_MEMO_WORKER_PORT: String(port),
-      CAPTAIN_MEMO_REMEMBER_MS: '1000', CAPTAIN_MEMO_ENGINE_REQUEST_MS: '1000' },
+      CAPTAIN_MEMO_REMEMBER_MS: '1000', CAPTAIN_MEMO_REINDEX_MS: '1000', CAPTAIN_MEMO_ENGINE_REQUEST_MS: '1000' },
     stdout: 'ignore', stderr: 'pipe',
   });
   procs.push(proc);
   const base = `http://localhost:${port}`;
   await waitHealthy(base, proc, tailOf(proc.stderr));
 
-  const block = fetch(`${base}/test/block?ms=4000`);   // pins the WRITER past both 1s deadlines
+  const block = fetch(`${base}/test/block?ms=4000`);   // pins the WRITER past every 1s deadline
   await Bun.sleep(200);
-  const r = await fetch(`${base}/remember`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ body: 'in flight', type: 'feedback', cwd: dir }),
+  const post = (path: string, body: unknown) => fetch(`${base}${path}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   });
+  // Concurrent: each waits its own 1s deadline while the writer is pinned.
+  const [r, reindex, slice, consolidate] = await Promise.all([
+    post('/remember', { body: 'in flight', type: 'feedback', cwd: dir }),
+    post('/reindex', { channel: 'memory', force: false }),
+    post('/promote/slice', { mode: 'shadow', limit: 1 }),
+    post('/consolidate?pass=semantic', {}),
+  ]);
   expect(r.status).toBe(202);
   expect(((await r.json()) as { status?: string }).status).toBe('write_in_flight');
+  for (const [res, hint] of [[reindex, /no progress readout/], [slice, /promote --report/], [consolidate, /Housekeeping/]] as const) {
+    expect(res.status).toBe(202);
+    const body = await res.json() as { status?: string; hint?: string };
+    expect(body.status).toBe('write_in_flight');
+    expect(body.hint).toMatch(hint);                  // its own check, not a memory search
+    expect(body.hint).not.toMatch(/search_memory/);
+  }
   const b = await block;                               // /test/block is not in the set: its timeout is still a 503
   expect(b.status).toBe(503);
   expect(await b.text()).toContain('thread_rpc_timeout');

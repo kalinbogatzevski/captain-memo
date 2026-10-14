@@ -16,6 +16,7 @@ import { ReaderPool } from './reader-pool.ts';
 import { startWorker, buildWorkerOptionsFromEnv, type WorkerHandle } from './index.ts';
 import { mergeEmbedUsage, type EmbedUsage } from './embedder.ts';
 import { bootWorkerAuthGate } from '../shared/worker-auth.ts';
+import { IN_FLIGHT_ON_TIMEOUT, inFlightHint } from '../shared/worker-deadlines.ts';
 
 // Pass the URL OBJECT, not its .href string: on Windows a "file:///C:/…/engine.ts" string is
 // not reliably resolved by `new Worker(string)` across bun versions, whereas the URL object is
@@ -34,14 +35,7 @@ const LONG_WRITE_DEADLINE_MS = Number(process.env.CAPTAIN_MEMO_REINDEX_MS ?? 30 
 // /consolidate joins /reindex here because a forced pass is a whole-corpus scan (~50s measured)
 // plus, for themes, a model call per cluster.
 const LONG_WRITE_PATHS = new Set(['/reindex', '/consolidate']);
-// Paths whose work SURVIVES main abandoning its wait — the writer runs on and finishes them. A timeout on
-// one of these is "unconfirmed", not "failed", and forwardToWriter answers 202 rather than 503.
-// WRITES ONLY, deliberately: a timed-out READ is safe to retry, so collapsing it into "probably worked"
-// would lose information rather than add it.
-// ponytail: /remember only. /reindex, /promote/slice and /consolidate survive a timeout the same way, but their
-// CLI callers (reindex.ts, upgrade.ts, promote.ts) read any 2xx body as a finished result and would print
-// "complete" with undefined counts. Add each one here together with its caller's write_in_flight arm.
-const IN_FLIGHT_ON_TIMEOUT = new Set(['/remember']);
+// The paths whose work survives a timeout here (IN_FLIGHT_ON_TIMEOUT) and their hints: shared/worker-deadlines.ts.
 // /remember does an LLM frontmatter `generate`, a semantic dedup search AND a chunk-embed pass before
 // it returns — none of which fit the 10s default on a real corpus, and it was never given a ceiling
 // of its own. MEASURED on this captain (149k chunks, external Voyage embedder), wall-clock at the
@@ -339,8 +333,10 @@ export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
       if (msg === 'thread_rpc_timeout' && IN_FLIGHT_ON_TIMEOUT.has(new URL(wire.url).pathname)) {
         return Response.json({
           status: 'write_in_flight',
-          detail: 'The engine did not confirm within the deadline, but it was NOT cancelled: this write has most likely completed.',
-          hint: 'Do NOT retry: a retry is how you get two copies. Verify with search_memory in a few seconds instead.',
+          // Path-neutral: /reindex answers this after a 30 min wait with the pass still running, and the MCP reindex
+          // tool hands the body to the model as is (the /remember callers word their own verdict). The hint is per path.
+          detail: 'The engine did not confirm within the deadline, but it was NOT cancelled: it may still be running, or may already have finished.',
+          hint: inFlightHint(wire.url),
         }, { status: 202 });
       }
       return Response.json({ error: msg }, { status: 503 });

@@ -1,7 +1,10 @@
 import { DEFAULT_WORKER_PORT } from '../shared/paths.ts';
 import { workerAuthHeaders } from '../shared/worker-auth.ts';
+import { WorkerCallError } from '../shared/worker-call.ts';
+import { inFlightHint } from '../shared/worker-deadlines.ts';
 
 const BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
+export { WorkerCallError };
 
 export async function workerGet(path: string): Promise<unknown> {
   const res = await fetch(`${BASE}${path}`, { headers: workerAuthHeaders() });
@@ -16,7 +19,14 @@ export async function workerPost(path: string, body: unknown): Promise<unknown> 
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`${path} → ${res.status}: ${await res.text()}`);
-  return res.json();
+  const j = await res.json() as { status?: unknown } | null;
+  // 202 write_in_flight (threaded-main forwardToWriter): main stopped waiting, the writer did not. One 'unconfirmed'
+  // verdict for every caller, instead of each reading a body with no counts as a finished result ("Reindex complete"
+  // with undefined counts, or `upgrade` going on to VACUUM a worker that is still re-embedding).
+  if (res.status === 202 && j?.status === 'write_in_flight') {
+    throw new WorkerCallError('unconfirmed', path, `worker ${path} did not confirm within its deadline: UNCONFIRMED, not failed. It was not cancelled and may still be running. ${inFlightHint(path)}`, 202);
+  }
+  return j;
 }
 
 /** Like workerGet but returns null instead of throwing when the endpoint is

@@ -11,7 +11,7 @@
 // It loops ONE-SLICE-PER-REQUEST rather than holding a single long RPC: progress is visible, Ctrl-C
 // loses nothing (the ledger records exactly how far it got), and no request outlives its deadline.
 
-import { workerPost } from '../client.ts';
+import { workerPost, WorkerCallError } from '../client.ts';
 
 export interface PromoteArgs {
   shadow: boolean;
@@ -93,6 +93,12 @@ export async function promoteCommand(args: string[]): Promise<number> {
         mode: 'shadow', limit: opts.limit, min_recall: opts.minRecall, re_judge: opts.reJudge,
       }) as SliceResult;
     } catch (err) {
+      // Still running in the writer: another slice now could judge the same unstamped rows twice.
+      if (err instanceof WorkerCallError && err.kind === 'unconfirmed') {
+        console.error(`  slice ${s}: ${err.message}`);
+        console.error('  Stopping here so the next slice does not judge the same rows again.');
+        return 2;
+      }
       console.error(`  slice ${s}: request failed — ${err instanceof Error ? err.message : String(err)}`);
       return 1;
     }

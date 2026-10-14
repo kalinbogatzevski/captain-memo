@@ -1,5 +1,5 @@
 import { readFileSync } from 'fs';
-import { workerPost } from '../client.ts';
+import { workerPost, WorkerCallError } from '../client.ts';
 
 export interface RememberArgs {
   type: string;
@@ -85,7 +85,6 @@ interface RememberResult {
   doc_id?: string;
   reason?: string;
   near_duplicate?: NearDuplicate;
-  status?: 'write_in_flight';   // the worker's 202: main stopped waiting, the writer did not stop writing
 }
 
 export async function rememberCommand(args: string[]): Promise<number> {
@@ -122,17 +121,17 @@ export async function rememberCommand(args: string[]): Promise<number> {
   try {
     result = await workerPost('/remember', payload) as RememberResult;
   } catch (err) {
+    // Unconfirmed, NOT failed (the worker's 202 write_in_flight, which workerPost raises): exit 1 here is what invites
+    // the retry that writes the memory twice.
+    if (err instanceof WorkerCallError && err.kind === 'unconfirmed') {
+      console.log('Memory write UNCONFIRMED (not failed): the engine did not answer within the deadline, but it was not cancelled and has most likely completed.');
+      console.log('Do NOT retry: a retry is how you end up with two copies. Wait a few seconds and search for it instead.');
+      return 0;
+    }
     console.error(`remember failed: ${err instanceof Error ? err.message : String(err)}`);
     return 1;
   }
 
-  // Unconfirmed, NOT failed: a 202 carries no `ok`, so it would otherwise print "remember failed" (exit 1) about a
-  // write that most likely landed, and a retry on that exit code is how a memory gets written twice.
-  if (result.status === 'write_in_flight') {
-    console.log('Memory write UNCONFIRMED (not failed): the engine did not answer within the deadline, but it was not cancelled and has most likely completed.');
-    console.log('Do NOT retry: a retry is how you end up with two copies. Wait a few seconds and search for it instead.');
-    return 0;
-  }
   if (!result.ok) {
     console.error(`remember failed: ${result.reason ?? '(no reason given)'}`);
     return 1;

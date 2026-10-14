@@ -35,6 +35,7 @@ import { gatewayCommand } from './commands/gateway.ts';
 import { evalCommand } from './commands/eval.ts';
 import { printBanner } from './banner.ts';
 import { VERSION } from '../shared/version.ts';
+import { WorkerCallError } from '../shared/worker-call.ts';
 
 const HELP = `captain-memo — local memory layer for Claude Code
 
@@ -94,6 +95,11 @@ Examples:
  *  the start hint instead of a raw stack trace. Returns the process exit code. */
 function reportCliError(err: unknown): number {
   const msg = err instanceof Error ? err.message : String(err);
+  if (err instanceof WorkerCallError && err.kind === 'unconfirmed') {
+    // A non-idempotent write the worker may still be finishing: say so, never "failed" — a retry would double it.
+    console.error(msg);
+    return 2;
+  }
   if (/ECONNREFUSED|Unable to connect|Connection refused|fetch failed|failed to connect/i.test(msg)) {
     console.error('captain-memo worker is not reachable.');
     console.error('  Start it with:  bun run worker:start   (or `captain-memo install` to set it up)');
