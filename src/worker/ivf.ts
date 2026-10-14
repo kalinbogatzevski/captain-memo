@@ -176,6 +176,35 @@ export function hasDirection(v: ArrayLike<number>): boolean {
   return nonZero;
 }
 
+/** The groups the dedup finder walks, as observation ids: chunk ids grouped by cluster (VectorStore.clusterMembership) mapped
+ *  through `obsByChunk`, because a row's meaning is spread over its chunks and any of them may carry the cluster. A group of
+ *  fewer than two observations is dropped.
+ *
+ *  Two partitions are not clusters. Parked vectors have no direction, so every pair among them is cosine 0. Unclustered ones
+ *  are rows no centroid has placed yet; the finder walks EVERY pair of a group (84M pairs took 28.5 s), and that partition is
+ *  the whole corpus at the start of a build and again at the end of a rebuild's reset phase, so as one group it is N^2/2
+ *  pairs on the engine thread, hourly. Once the collection has centroids (`indexed`) those rows are left out until the
+ *  sweep places them. Without centroids (below minCorpusSize, or IVF switched off) the unclustered partition is the only
+ *  grouping there is and is kept. */
+export function observationGroups(
+  membership: ReadonlyMap<number, readonly string[]>,
+  obsByChunk: ReadonlyMap<string, number>,
+  indexed: boolean,
+): number[][] {
+  const out: number[][] = [];
+  for (const [clusterId, chunkIds] of membership) {
+    if (clusterId === PARKED_CLUSTER) continue;
+    if (clusterId === UNCLUSTERED_CLUSTER && indexed) continue;
+    const ids = new Set<number>();
+    for (const cid of chunkIds) {
+      const id = obsByChunk.get(cid);
+      if (id !== undefined) ids.add(id);
+    }
+    if (ids.size > 1) out.push([...ids]);
+  }
+  return out;
+}
+
 export interface Centroid {
   clusterId: number;
   vector: number[];

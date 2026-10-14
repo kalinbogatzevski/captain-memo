@@ -28,7 +28,7 @@ import type { RecallQuery, RecallView, RecallSort } from './observations-store.t
 import { loadTideConfig, computeBuoyancy, tideMultiplier } from './tide.ts';
 import { runTideSweepSlice } from './tide-sweep.ts';
 import { runIvfSweepSlice } from './ivf-sweep.ts';
-import { loadIvfConfig, defaultSample, PARKED_CLUSTER } from './ivf.ts';
+import { loadIvfConfig, defaultSample, observationGroups } from './ivf.ts';
 import { loadQmConfig } from './qm.ts';
 import { loadPromotionConfig } from './promotion-config.ts';
 import { runPromotionSlice, type PromotionDeps } from './promotion.ts';
@@ -1587,20 +1587,11 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
    */
   const clusterObservationIds = async (yieldToLoop: () => Promise<void>): Promise<number[][]> => {
     const obsByChunk = await meta.observationIdsByChunk(yieldToLoop);
-    const out: number[][] = [];
-    for (const [clusterId, chunkIds] of await vector.clusterMembership(collectionName, yieldToLoop)) {
-      if (clusterId === PARKED_CLUSTER) continue;   // vectors with no direction: every pair among them is cosine 0
-      const ids = new Set<number>();
-      for (const cid of chunkIds) {
-        const id = obsByChunk.get(cid);
-        if (id !== undefined) ids.add(id);
-      }
-      if (ids.size > 1) out.push([...ids]);
-    }
-    return out;
+    return observationGroups(
+      await vector.clusterMembership(collectionName, yieldToLoop), obsByChunk, vector.getCentroids(collectionName).length > 0);
   };
 
-  // Quartermaster auto-dedup (opt-in, OFF by default). Sibling of the tide sweep:
+  // Quartermaster auto-dedup (on by default; CAPTAIN_MEMO_QM_DEDUP=0 or CAPTAIN_MEMO_QM_ENABLED=0 switches it off). Sibling of the tide sweep:
   // each slice pulls a bounded candidate window of near-dup observations, confirms
   // each fold behind a cosine ≥ threshold check against the survivor's centroid
   // vector (fail-closed when a vector is missing), folds the members, and yields
