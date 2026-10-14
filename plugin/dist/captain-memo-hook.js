@@ -975,7 +975,7 @@ var package_default;
 var init_package = __esm(() => {
   package_default = {
     name: "captain-memo",
-    version: "0.57.10",
+    version: "0.57.11",
     description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
     type: "module",
     private: true,
@@ -1698,6 +1698,17 @@ function homeworkDueParts(it, now) {
   const at = new Date(it.due).toLocaleString("sv-SE").slice(0, 16);
   return isHomeworkDue(it, now) ? ["\u23F0 ", ` (DUE since ${at})`] : ["", ` (due ${at})`];
 }
+function homeworkStartLines(items, now = Date.now()) {
+  if (items.length === 0)
+    return "";
+  const head = homeworkDueFirst(items, now).slice(0, 6).map((it) => {
+    const [mark, due] = homeworkDueParts(it, now);
+    return `  ${mark}#${it.id} ${it.text.split(`
+`)[0].slice(0, 100)}${due}${it.claimed_by ? ` (claimed by ${it.claimed_by})` : ""}${it.topics.length ? ` #${it.topics.join(" #")}` : ""}`;
+  });
+  return [`\uD83D\uDCDD Open homework on this captain (${items.length}): todo_list() for all; todo_claim(id) before you start one; todo_done(id, note) when it is.`, ...head, ...items.length > 6 ? [`  \u2026 ${items.length - 6} more`] : []].join(`
+`);
+}
 
 // src/hooks/user-prompt-submit.ts
 init_worker_transition();
@@ -2031,7 +2042,15 @@ async function nativeMain() {
   try {
     await readStdinJson();
   } catch {}
-  writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: LOCAL_ARTICLES } }));
+  let homework = "";
+  try {
+    const hw = await workerFetch("/homework/list?status=open", { method: "GET", timeoutMs: 1500 });
+    if (hw.ok && hw.body)
+      homework = homeworkStartLines(hw.body.items);
+  } catch {}
+  writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: [LOCAL_ARTICLES, homework].filter(Boolean).join(`
+
+`) } }));
 }
 function formatBusyBanner() {
   return [

@@ -7,6 +7,69 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.57.11] — 2026-10-15
+
+### Added
+
+- **`captain-memo dedup --refold-blocks [--member ID...] [--json]` lists the pairs an undo marked as never to be folded
+  again.** It shows both ids, when each pair was marked and both titles (newest first, ten shown, `--json` prints all). Until
+  now only `--allow-refold` touched these marks and it could only delete them, so there was no way to see why a fold was
+  not happening. `--member` shows only the marks involving those ids, which are the ones `--allow-refold --member` would
+  clear. Read-only; `--allow-refold` is still the only way to lift a mark.
+- **Codex and Gemini sessions now start with the open homework**, as Claude Code's session banner already did. Before, their
+  start-of-session hook sent only the fixed articles, so those sessions never learned what was waiting. It is one read of
+  the worker bounded at 1.5 s; a worker that is down or slow leaves the articles exactly as they were.
+- **`CAPTAIN_MEMO_IVF_REGROW_RATIO` rebuilds a vector index the corpus has outgrown (off by default; set it to `3` to turn it
+  on).** The index keeps the cluster count it was built with, so a corpus that has since grown several times over ends up
+  with clusters far too big. With the setting on, an index that has reached that many times the size it was built for is
+  rebuilt with the cluster count the corpus needs now. Search stays complete but is slower while the rows are re-placed
+  (4.8-9.3 s against 1.0-1.4 s on a 279,000-vector store, for about eleven hours), and the per-prompt memory hook waits
+  only 1.5 s, so the memory injection on that store times out meanwhile. That is why it is off: turn it on only if you
+  accept that or have raised `CAPTAIN_MEMO_HOOK_TIMEOUT_MS`.
+
+### Fixed
+
+- **A timed-out `/reindex`, `/promote/slice` or `/consolidate` is reported as unconfirmed (exit 2), not failed.** When the
+  threaded worker stopped waiting for one of these, the work carried on, but the CLI was told it had failed (exit 1), and a
+  retry then started a second re-embed or pass beside the first. It now says the call is unconfirmed, what to check
+  (each path has its own hint) and not to retry. `promote` stops after the unconfirmed slice and `restore` counts a
+  timed-out reindex as started. `/remember` already behaved this way.
+- **The index rebalance walks the whole corpus instead of re-reading the same 64 rows.** Each minute it took the first 64
+  vectors every time, so the rest of the corpus was never re-checked and vectors that no longer sit in their nearest cluster
+  stayed where they were. It now advances through the corpus 64 a minute (about three days for a lap on a large store), and
+  cluster centres take a gentler pull from rows they already hold.
+- **Dedup no longer compares every not-yet-placed vector against every other while the vector index is being built or
+  rebuilt.** It waits until they have a cluster. This was an hourly cost on a large store during a build, and the 0.57.8
+  repair had the same exposure at smaller scale.
+- **The theme pass logs `[qm-theme] co-retrieval load FAILED` when it cannot load its evidence.** A failed load scored every
+  cluster 0, rejected them all and reported "0 considered", the same line a clean corpus prints, so the cause was invisible.
+- **The worker no longer pins a CPU core re-reading every Claude Code transcript.** The token totals it reports (the
+  all-time figure on `/stats` and in `captain-memo top`) are rebuilt in the background every few minutes; a slow rebuild
+  used to be thrown away by the next stats request and started over, and it parsed every line of every transcript. It now
+  keeps its work until the rebuild finishes and skips lines that carry no token data (about 2.7x less CPU on a cold read
+  of a 189 MB sample). A stray invalid byte in a transcript can no longer make the worker skip the start of the next line
+  that is appended to it.
+
+### Changed
+
+- **The index sweep rewrites only the cluster centres it moved each pass**, instead of all of them: 3.9 ms against 196 ms per
+  rebalance pass at 477 clusters, and 6.6 ms against 510 ms per build pass at 931. This shortens the time the worker holds
+  the database write lock.
+- **The index build waits three slice-times between slices when a slice is slow** (many clusters, a busy machine), so the
+  writer is busy at most a quarter of the time; the 2 s interval still applies to fast slices. A first build of a large
+  store takes longer on a slow box, never shorter.
+
+### Notes
+
+- New additive table `vec_index_bootstrap` (the corpus size an index was built for), created when the store opens; no
+  existing table or row is touched.
+- Restart the worker after the update (the sweep, the dedup guard, the rebuild setting and the transcript-total rebuild
+  run in the worker). Open a new Codex or Gemini session to see the homework at its start.
+- After each worker restart one rebuild of the transcript totals still runs (minutes of one core on a large transcript
+  folder); it no longer repeats.
+- Only the threaded worker (`CAPTAIN_MEMO_WORKER_THREADED=1`, off by default) can answer "unconfirmed", because only it
+  stops waiting while the work carries on.
+
 ## [0.57.10] — 2026-10-14
 
 ### Added
