@@ -7,6 +7,52 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.57.10] — 2026-10-14
+
+### Added
+
+- **An undone fold is remembered, so no pass folds the same pair again.** After `captain-memo dedup --undo` (every form:
+  plain, `--member`, `--run`, `--since`), the same two rows are no longer folded by `dedup --apply`, the dedup sweep, the
+  semantic pass or `consolidate --semantic --backlog`. Before, the next `--backlog` run could fold the pair again: a tester's
+  three wrongly merged observations were the first real case. The database upgrade (schema v26: one new table,
+  `refold_blocks`; no existing table or row is touched) also marks every fold that had already been undone.
+  `captain-memo dedup --allow-refold [--member ID...]` lifts the marks. A pair is marked, not a row: two rows that each fold
+  into a third are not stopped.
+- **`CAPTAIN_MEMO_EMBED_REDACT=1` redacts credential-shaped values from the text sent to a hosted embedder (off by
+  default).** Vendor tokens, `password=...`, a URL password, a bearer or JWT and a PEM key are replaced by a placeholder in
+  the copy that is sent; the stored chunk, the keyword index and local search keep the original text. A loopback endpoint
+  (the sidecar, a local Ollama) sends nothing out and is left alone; an endpoint that does not parse, or a LAN one, counts as
+  hosted. It sits inside `Embedder.embed`, so ingest, the retry queue, `remember`, queries and the migrator all pass through
+  it, before the token count. Measured over 20,000 real observation texts: 77 µs a text (p99 248 µs), about 10 ms for a
+  128-text batch whose request takes 1.3-1.7 s. With the setting absent the request is byte-identical. Chunks that differ
+  only inside a redacted value are sent as the same text.
+- **`CAPTAIN_MEMO_GREETING` prints one line first in the session-start banner (unset by default).** Unset, the banner is what it
+  was. Put it in `worker.env`: the hooks never read that file, so the worker passes it on through `/stats`; the AI tool's own
+  environment wins over it. One line, control characters replaced by a space, at most 80 characters. The version stays on
+  its own line below.
+
+### Fixed
+
+- **A clock time such as `14:56` is no longer read as two numbers by the merge guard.** 0.57.9's number rule blocked two
+  messages about the same event a minute apart. On one corpus this lets 5 of the 9,085 existing folds through that
+  0.57.9 would block (231 blocked become 226); all 5 are same-event pairs. Dates (`2026-07-05` against `2026-07-06`) still
+  count as numbers on purpose: ignoring them would have unblocked different-day pairs.
+- **A full undo after a partial one restores the survivor's original last-surfaced time.** 0.57.9 restored a slightly later
+  one when the survivor's earliest folds had been undone first. Survivors that an earlier partial undo already left behind
+  are not repaired.
+- **`dedup --runs` lists a run that errored after folding some groups** (marked "errored after folding"); `--run ID` reached it
+  before.
+
+### Notes
+
+- Plain `captain-memo dedup --undo` marks too. Someone who used a full undo as a reset will see nothing fold again until
+  `dedup --allow-refold`.
+- Not changed: differing letters-and-digits codes (`p95` against `p99`) still fold when the titles share an ALL-CAPS word;
+  measured on one corpus, the narrow rule that would block them adds 9 blocks (7 right, 2 arguable) and the broad one 36
+  (mostly wrong), so neither shipped.
+- Restart the worker after the update (the migration runs when the store opens, the guard and the sweeps run in the worker);
+  the hook change (greeting) needs the plugin refresh `captain-memo install --yes` does.
+
 ## [0.57.9] — 2026-10-14
 
 ### Added

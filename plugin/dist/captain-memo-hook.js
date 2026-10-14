@@ -975,7 +975,7 @@ var package_default;
 var init_package = __esm(() => {
   package_default = {
     name: "captain-memo",
-    version: "0.57.9",
+    version: "0.57.10",
     description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
     type: "module",
     private: true,
@@ -1941,12 +1941,17 @@ function fmtBytes(bytes) {
   }
   return `${size.toFixed(size >= 100 ? 0 : 1)} ${units[i]}`;
 }
+function sanitizeGreeting(raw) {
+  return typeof raw === "string" ? [...raw.replace(/[\p{Cc}\u2028\u2029]+/gu, " ").trim()].slice(0, 80).join("").trim() : "";
+}
 function formatBanner(stats, homework = []) {
   const ver = stats.version ? ` v${stats.version}` : "";
   const ed = stats.edition === "federation" ? " (Federation)" : stats.edition === "oss" ? " (OSS)" : "";
+  const greeting = sanitizeGreeting(process.env.CAPTAIN_MEMO_GREETING ?? stats.greeting);
   const lines = [
     "",
     "",
+    ...greeting ? [greeting] : [],
     `\u2693 Captain Memo${ver}${ed}`,
     "\u2500".repeat(60)
   ];
