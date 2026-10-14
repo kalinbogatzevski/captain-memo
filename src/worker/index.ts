@@ -1525,6 +1525,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         getCentroids: (coll) => vector.getCentroids(coll),
         setCentroids: (coll, centroids, bootstrapVectors) => vector.setCentroids(coll, centroids, bootstrapVectors),
         bootstrapSize: (coll) => vector.bootstrapSize(coll),
+        updateCentroids: (coll, changed) => vector.updateCentroids(coll, changed),
         allocateClusterIds: (coll, n) => vector.allocateClusterIds(coll, n),
         sampleAnyVectors: (coll, limit) => vector.sampleAnyVectors(coll, limit),
         sampleClusteredVectors: (coll, limit) => vector.sampleClusteredVectors(coll, limit),

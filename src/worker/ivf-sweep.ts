@@ -22,6 +22,8 @@ export interface IvfSweepDeps {
   /** The corpus size the current centroids were seeded for; null for an index built before that was recorded (then read as
    *  K x targetPerCluster). Optional: absent, every index reads that way. */
   bootstrapSize?: (collection: string) => number | null;
+  /** Write back just the centroids a slice moved. Optional: absent, every slice replaces the whole set with setCentroids. */
+  updateCentroids?: (collection: string, changed: Centroid[]) => void;
   allocateClusterIds: (collection: string, n: number) => number[];
   /** May be async: reading seeds by key is ~2 ms a row on a large store, so the real one yields to the event loop as it goes. */
   sampleAnyVectors: (collection: string, limit: number) => Array<{ chunkId: string; embedding: Float32Array }>
@@ -154,6 +156,14 @@ export async function runIvfSweepSlice(deps: IvfSweepDeps): Promise<IvfSweepResu
 
   await deps.yieldToLoop();
 
+  // A slice moves at most sweepBatch centroids of K, and miniBatchUpdate hands every other one back as the same object, so
+  // only those are written: rewriting all K every slice was 510 ms p50 of a 1.6 s assign slice at 931 centroids, 6.6 ms this way.
+  const saveCentroids = (updated: Centroid[]): void => {
+    if (!deps.updateCentroids) return deps.setCentroids(collection, updated);
+    const moved = updated.filter((c, i) => c !== centroids[i]);
+    if (moved.length > 0) deps.updateCentroids(collection, moved);
+  };
+
   const unclustered = deps.getUnclusteredChunks(collection, cfg.sweepBatch);
   if (unclustered.length > 0) {
     const items = unclustered.map(u => ({ id: u.chunkId, vector: u.embedding }));
@@ -164,7 +174,7 @@ export async function runIvfSweepSlice(deps: IvfSweepDeps): Promise<IvfSweepResu
     deps.reassignClusterBatch(assignments.map(a => ({
       chunkId: a.id, embedding: byId.get(a.id)!, clusterId: a.clusterId,
     })));
-    deps.setCentroids(collection, updated);
+    saveCentroids(updated);
     return { ...EMPTY_RESULT, assigned: assignments.length };
   }
 
@@ -183,6 +193,6 @@ export async function runIvfSweepSlice(deps: IvfSweepDeps): Promise<IvfSweepResu
   deps.reassignClusterBatch(changed.map(a => ({
     chunkId: a.id, embedding: embeddingById.get(a.id)!, clusterId: a.clusterId,
   })));
-  deps.setCentroids(collection, updated);
+  saveCentroids(updated);
   return { ...EMPTY_RESULT, rebalanced: changed.length };
 }

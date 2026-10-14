@@ -622,6 +622,32 @@ export class VectorStore {
     });
   }
 
+  /** Write back centroids whose vector or hit_count moved, leaving every other row of the set as it is. setCentroids replaces the
+   *  whole set, which a slice that moved at most sweepBatch of K centroids does not need: one UPDATE each, in one transaction.
+   *  A cluster id the set does not hold is not created. The cached set is updated to match, rounded to float32 as a re-read
+   *  would return it.
+   *
+   *  MEASURED on a copy of the dev store (2026-10-14, nice 19, box at load 8-13), next to a full rewrite of the same set timed in
+   *  the same slice: rebalance slices (477 centroids), 7 centroids moved per slice (max 18): 3.9 ms p50 / 11.7 p95 against
+   *  196 ms p50 / 423 p95; assign slices (931 centroids), 11 moved (max 28): 6.6 ms p50 / 35 max against 510 ms p50 / 1.5 s p95.
+   *  The 477-centroid rewrite had been 252-269 ms p50 in the earlier runs. */
+  updateCentroids(collection: string, changed: Centroid[]): void {
+    if (changed.length === 0) return;
+    const current = this.getCentroids(collection);
+    const upd = this.db.query(`UPDATE vec_cluster_centroids SET hit_count = ?, centroid = ? WHERE collection_name = ? AND cluster_id = ?`);
+    this.db.transaction(() => {
+      for (const c of changed) upd.run(c.hitCount, new Uint8Array(new Float32Array(c.vector).buffer), collection, c.clusterId);
+    })();
+    const byId = new Map(changed.map(c => [c.clusterId, c]));
+    this.centroidCache.set(collection, {
+      fp: this.centroidFingerprint(collection), at: Date.now(), own: true,
+      centroids: current.map(c => {
+        const n = byId.get(c.clusterId);
+        return n ? { clusterId: n.clusterId, vector: Array.from(new Float32Array(n.vector)), hitCount: n.hitCount } : c;
+      }),
+    });
+  }
+
   /** Allocate `n` globally-unique cluster ids (never reused, never reset per
    *  collection — see Global Constraints), so a bare `cluster_id IN (...)`
    *  filter on vec_chunks_p is always collection-correct with no join needed.
