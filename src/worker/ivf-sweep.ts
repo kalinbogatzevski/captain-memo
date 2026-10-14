@@ -25,6 +25,12 @@ export interface IvfSweepDeps {
     collection: string,
     limit: number,
   ) => Array<{ chunkId: string; embedding: Float32Array; clusterId: number }>;
+  /** The rebalance's sample: rows of already-clustered vectors that rotate through the corpus from call to call.
+   *  Optional: absent, the rebalance reads sampleClusteredVectors (the same leading rows every call). */
+  sampleRebalanceVectors?: (
+    collection: string,
+    limit: number,
+  ) => Array<{ chunkId: string; embedding: Float32Array; clusterId: number }>;
   getUnclusteredChunks: (collection: string, limit: number) => Array<{ chunkId: string; embedding: Float32Array }>;
   /** Move a whole batch in one transaction. Per-row reassignment measured 49 ms/row against the
    *  real store versus 2.62 ms batched — the difference between an unaffordable index build and a
@@ -67,7 +73,8 @@ const EMPTY_RESULT: IvfSweepResult = { legacyMigrated: 0, bootstrapped: 0, assig
  *     and no centroids exist yet.
  *  5. Assign one batch of newly-unclustered chunks to existing centroids.
  *  6. Rebalance one batch of already-clustered chunks (periodic upkeep),
- *     only actually moving chunks whose nearest centroid changed.
+ *     only actually moving chunks whose nearest centroid changed. The batch
+ *     rotates through the corpus.
  */
 export async function runIvfSweepSlice(deps: IvfSweepDeps): Promise<IvfSweepResult> {
   const { cfg, collection } = deps;
@@ -150,11 +157,11 @@ export async function runIvfSweepSlice(deps: IvfSweepDeps): Promise<IvfSweepResu
   // Nothing unclustered left — periodic rebalance: resample already-clustered
   // vectors and only move the ones whose nearest centroid has actually changed
   // (avoids needless delete+reinsert for chunks that are still correctly placed).
-  const sample = deps.sampleClusteredVectors(collection, cfg.sweepBatch);
+  const sample = (deps.sampleRebalanceVectors ?? deps.sampleClusteredVectors)(collection, cfg.sweepBatch);
   if (sample.length === 0) return EMPTY_RESULT;
   const items = sample.map(s => ({ id: s.chunkId, vector: s.embedding }));
   const { centroids: updated, assignments } = miniBatchUpdate(
-    items, centroids, cfg, await nearestInBatch(items, centroids, deps.yieldToLoop),
+    items, centroids, cfg, await nearestInBatch(items, centroids, deps.yieldToLoop), true,
   );
   const currentClusterById = new Map(sample.map(s => [s.chunkId, s.clusterId]));
   const embeddingById = new Map(sample.map(s => [s.chunkId, s.embedding]));

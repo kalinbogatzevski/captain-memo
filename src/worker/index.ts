@@ -1527,6 +1527,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         allocateClusterIds: (coll, n) => vector.allocateClusterIds(coll, n),
         sampleAnyVectors: (coll, limit) => vector.sampleAnyVectors(coll, limit),
         sampleClusteredVectors: (coll, limit) => vector.sampleClusteredVectors(coll, limit),
+        sampleRebalanceVectors: (coll, limit) => vector.sampleRebalanceVectors(coll, limit),
         getUnclusteredChunks: (coll, limit) => vector.getUnclusteredChunks(coll, limit),
         reassignClusterBatch: (items) => vector.reassignClusterBatch(items),
         sample: defaultSample,

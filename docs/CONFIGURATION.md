@@ -385,6 +385,12 @@ having new work.
 | `CAPTAIN_MEMO_IVF_SWEEP_MS` | `60000` | Cadence once converged, when the only remaining work is rebalancing. |
 | `CAPTAIN_MEMO_IVF_MIN_LEARNING_RATE` | `0.01` | Centroid drift floor, so clusters keep adapting instead of freezing. |
 
+Once converged, the sweep keeps rebalancing: each pass it takes a batch of 64 vectors, moves the ones
+whose nearest centroid is no longer the cluster they sit in, and nudges the centroids toward them. That
+batch walks the whole corpus (a lap is corpus/64 passes, ~73 hours at 279k vectors) rather than
+re-reading the same 64 rows, so a store whose centroids have drifted since its vectors were placed
+(14% of them on a 279k-vector store) is put right, a lap at a time.
+
 ### Tide (decay and lifecycle)
 
 | Setting | Default | Notes |

@@ -252,6 +252,10 @@ export function miniBatchUpdate(
   /** Each item's nearestCentroid against these same centroids, already computed (nearestInBatch), so a caller can
    *  spread that work across event-loop turns. Absent: computed here, in one go. */
   precomputed?: ReadonlyArray<{ clusterId: number } | null>,
+  /** The batch is rows that were already placed (the rebalance), not new mass: each pulls its centroid at the learning-rate
+   *  floor. The decaying rate would hand a centroid whose hit_count is 1 (add() never raises it; 54 of the dev store's 477)
+   *  a pull of hits/(1+hits), 0.5 for the first row it meets, and walk it toward that one row. */
+  revisit = false,
 ): { centroids: Centroid[]; assignments: Array<{ id: string; clusterId: number }> } {
   const assignments: Array<{ id: string; clusterId: number }> = [];
   const byCluster = new Map<number, Array<number[] | Float32Array>>();
@@ -272,7 +276,7 @@ export function miniBatchUpdate(
     if (!hits || hits.length === 0) return c;
     const batchMean = centroid(hits)!; // hits.length > 0, so never null
     const hitCount = c.hitCount + hits.length;
-    const lr = Math.max(cfg.minLearningRate, hits.length / hitCount);
+    const lr = revisit ? cfg.minLearningRate : Math.max(cfg.minLearningRate, hits.length / hitCount);
     const vector = c.vector.map((x, i) => x + lr * (batchMean[i]! - x));
     return { clusterId: c.clusterId, vector, hitCount };
   });

@@ -134,6 +134,8 @@ export class VectorStore {
   private ivfConfig: IvfConfig;
   private centroidCacheTtlMs: number;
   private centroidCache = new Map<string, { fp: string; at: number; own?: boolean; centroids: Centroid[] }>();
+  /** Per collection, the rowid of the last row sampleRebalanceVectors returned. */
+  private rebalanceCursor = new Map<string, number>();
 
   constructor(opts: VectorStoreOptions) {
     // macOS links Bun against Apple's libsqlite3, which is built WITHOUT extension
@@ -690,14 +692,61 @@ export class VectorStore {
     return out;
   }
 
+  /** `limit` vectors that sit in a cluster (cluster_id >= 0: not unclustered, not parked) of the collection, with each one's
+   *  current cluster, for the periodic rebalance: the rows after a cursor in rowid order, wrapping at the end, so successive
+   *  calls walk the whole corpus. sampleClusteredVectors returned the same leading rows every call, which pinned the
+   *  rebalance (and every hit_count) to 64 rows for good: on the dev store all 64 sat in cluster 0, a cluster of 101.
+   *
+   *  A move is delete + insert, which gives the row a new, higher rowid (AUTOINCREMENT, verified), so a row moved during a
+   *  lap is met once more before the lap ends, by then already in its nearest cluster.
+   *
+   *  The cursor is in memory and starts at a random rowid: a lap is corpus/64 sweeps (73 h on the dev store at the converged
+   *  cadence), longer than a worker usually stays up, so a start at 0 would rebalance the head and never reach the rest.
+   *  A layout of the shadow tables this code does not know falls back to the leading rows.
+   *
+   *  MEASURED on a copy of the dev store (279,227 vectors x 1024, 477 centroids, 2026-10-14, nice 19 on a box at load ~15),
+   *  190 real sweep slices in two runs from random starts: the cursor read alone (64 ids) 5.2 ms p50, 25 p95, 63 max; with the
+   *  64 reads by key (cold, where the same leading rows stayed warm) the sample is 89 ms p50, 206-350 p95, 725 max. A whole
+   *  slice 1.3 s p50, 1.9-2.6 p95: nearest-centroid ranking (~0.9 s, yielding between rows) and the rewrite of all 477
+   *  centroids (252-269 ms, unchanged by this) are most of it. Rows moved per slice: 3.9 and 9.7 mean (max 21); a 2,000-row
+   *  random sample says 13.6% of the rows are not in the cluster of their nearest centroid, so a lap moves ~38k rows, ~100 s of
+   *  write time in all. The move transaction: 41-54 ms p50, 184 p95, 501 max (929 p95 and 6.8 s max in a run whose disk was
+   *  starved by ionice idle). Busy 2.3-2.4% of the 60 s interval, 0.6-0.8% of it holding the write lock. */
+  sampleRebalanceVectors(
+    collection: string,
+    limit: number,
+  ): Array<{ chunkId: string; embedding: Float32Array; clusterId: number }> {
+    try {
+      const page = this.db.query(
+        `SELECT r.rowid AS rid, r.id AS id
+           FROM vec_chunks_p_rowids r
+           CROSS JOIN vec_chunks_p_chunks c ON c.chunk_id = r.chunk_id
+           CROSS JOIN vec_chunk_meta m ON m.collection_name = ? AND m.chunk_id = r.id
+          WHERE r.rowid > ? AND r.rowid <= ? AND c.partition00 >= 0
+          ORDER BY r.rowid LIMIT ?`,
+      );
+      let after = this.rebalanceCursor.get(collection);
+      if (after === undefined) {
+        const top = this.db.query('SELECT MAX(rowid) AS m FROM vec_chunks_p_rowids').get() as { m: number | null };
+        after = Math.floor(Math.random() * (top.m ?? 0));
+      }
+      const read = (lo: number, hi: number, n: number) => page.all(collection, lo, hi, n) as Array<{ rid: number; id: string }>;
+      let rows = read(after, Number.MAX_SAFE_INTEGER, limit);
+      if (rows.length < limit) rows = rows.concat(read(0, after, limit - rows.length));   // past the end: wrap to the head
+      if (rows.length === 0) return [];
+      this.rebalanceCursor.set(collection, rows[rows.length - 1]!.rid);
+      return this.vecRowsById(rows.map(r => r.id)).map(r => ({
+        chunkId: r.chunk_id,
+        embedding: new Float32Array(r.embedding.buffer, r.embedding.byteOffset, r.embedding.byteLength / 4),
+        clusterId: r.cluster_id,
+      }));
+    } catch { return this.sampleClusteredVectors(collection, limit); }
+  }
+
   /** Sample of already-clustered vectors (cluster_id != sentinel) for a
-   *  collection, including each one's current cluster — used by the periodic
-   *  rebalance step, which needs to know whether a re-sampled vector's nearest
-   *  centroid actually changed. Uses a plain LIMIT, not ORDER BY RANDOM() (that
-   *  would force a full-table sort every tick) — so this returns the same
-   *  leading rows every call. Deliberate MVP limitation: rebalancing adapts
-   *  slowly to later-arriving data rather than rotating through the whole
-   *  corpus; cursor-based rotation is named future work, not built here. */
+   *  collection, including each one's current cluster. A plain LIMIT, not ORDER BY RANDOM() (that would force a full-table
+   *  sort every tick), so it returns the same leading rows every call. That is what the repair's drain wants, which empties
+   *  the set it reads from; the rebalance reads sampleRebalanceVectors instead, which rotates. */
   sampleClusteredVectors(
     collection: string,
     limit: number,
