@@ -152,6 +152,8 @@ There is no fixed recommendation here: the wizard checks which of Claude, Codex 
 
 If you pick Voyage hosted and don't have your API key handy, leave it blank — the wizard writes `worker.env` without a key and tells you to add one before starting; put a `CAPTAIN_MEMO_EMBEDDER_API_KEY=…` line in `worker.env` and restart the worker.
 
+A hosted embedder receives the text of every chunk it embeds. If some of that text may hold credentials, add `CAPTAIN_MEMO_EMBED_REDACT=1` to `worker.env` and restart: credential-shaped values are then replaced before the text is sent. Only the copy that leaves the machine changes; your stored memory and local search keep the original. Off by default; it does nothing for the local sidecar, which sends nothing out.
+
 **Question 3 — Watched memory files** (which markdown the worker indexes and keeps in sync):
 
 | Pick | When |

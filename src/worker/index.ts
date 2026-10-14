@@ -448,6 +448,13 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     ...(embedTimeoutEnv > 0 && { patientTimeoutMs: embedTimeoutEnv }),
     ...(wasteLimitEnv?.trim() && Number.isFinite(Number(wasteLimitEnv)) && Number(wasteLimitEnv) >= 0 && { wasteLimitTokens: Number(wasteLimitEnv) }),
   });
+  // Said once, by the writer (the readers build the same Embedder): CAPTAIN_MEMO_EMBED_REDACT does nothing for a local
+  // endpoint, and the operator should not have to guess which of the two it is.
+  if (!opts.readOnly && process.env.CAPTAIN_MEMO_EMBED_REDACT === '1') {
+    console.log(embedder.redactsInput
+      ? '[worker] CAPTAIN_MEMO_EMBED_REDACT=1: credential-shaped values are redacted from the text sent to the embedder (stored chunks and local search keep the original)'
+      : '[worker] CAPTAIN_MEMO_EMBED_REDACT=1 has no effect: the embedder endpoint is on this machine, nothing leaves it');
+  }
   const ivfConfig = loadIvfConfig(process.env);
   const vector = new VectorStore({
     dbPath: opts.vectorDbPath,
