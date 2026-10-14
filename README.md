@@ -659,7 +659,7 @@ captain-memo theme undo <id>           # reverse a theme
 
 ```bash
 captain-memo dedup --runs                          # recent runs that folded something, with ids
-captain-memo dedup --undo --member 12706 2889 2333 # just these observations (the ids the fold archived)
+captain-memo dedup --undo --member 1204 981 77     # just these observations (the ids the fold archived)
 captain-memo dedup --undo --run 41                 # everything one run folded
 captain-memo dedup --undo --since 2026-10-14T09:30:00Z [--job semantic]   # everything folded after a moment
 ```
