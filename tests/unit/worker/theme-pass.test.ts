@@ -1,4 +1,6 @@
 import { test, expect, describe } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { runThemePass } from '../../../src/worker/theme-pass.ts';
 import type { ThemeCluster } from '../../../src/worker/theme-cluster.ts';
 
@@ -148,4 +150,14 @@ describe('runThemePass', () => {
     });
     expect(yields).toBe(2);
   });
+});
+
+// The worker's theme pass is a closure inside startWorker, so there is no seam to drive its co-retrieval load into a
+// failure: pin the source instead. A failed load makes every co-retrieval score 0 and the pass report "0 considered",
+// which reads as a clean corpus; the log line is the only place the cause shows.
+test('the worker logs when the theme pass cannot load its co-retrieval evidence (source pin)', () => {
+  const src = readFileSync(join(import.meta.dir, '../../../src/worker/index.ts'), 'utf8');
+  const at = src.indexOf('coRetrievalFailed = true;');
+  expect(at).toBeGreaterThan(-1);
+  expect(src.slice(at, at + 300)).toContain("console.error('[qm-theme] co-retrieval load FAILED");
 });

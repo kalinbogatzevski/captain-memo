@@ -1900,7 +1900,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // unrelated rows.
         const dream = await meta.observationIdsByChunk(breathe)
           .then(docToObs => loadDreamInputs(0, undefined, { docToObs, skipObservations: true, yieldToLoop: breathe }))
-          .catch(() => { coRetrievalFailed = true; return null; });
+          .catch((err: unknown) => {
+            // NEVER swallow this. When the load fails, every co-retrieval score is 0, every cluster is rejected for
+            // lack of evidence, and the pass reports "0 considered" — indistinguishable from a genuinely clean corpus.
+            coRetrievalFailed = true;
+            console.error('[qm-theme] co-retrieval load FAILED — no themes can form until this is fixed:',
+              err instanceof Error ? err.message : err);
+            return null;
+          });
         // Each read below is 70-230 ms on the dev store; run back to back with the co-retrieval parse and the first
         // seeds they were one 2.1 s block (2026-09-30). A breath between them.
         await breathe();
