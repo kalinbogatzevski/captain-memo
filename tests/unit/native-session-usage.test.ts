@@ -681,6 +681,45 @@ test('a narrow poll does not evict what a wide scan just built', () => {
   expect(src).toMatch(/lastTouchedMs/);
 });
 
+// THE LOOP, with the clock injected. A scan stamps what it touches with its START and a scan prunes against its own
+// later `now`, so a wide scan that is still running 20 minutes in had its finished work evicted by the next /stats
+// recompute (its 30-minute scan), ended with an empty cache, and the next one (5 minutes on) began cold again. A cold
+// read of a few GB of transcripts outlasts 20 minutes on a loaded box, so the writer thread sat at a full core
+// indefinitely. The accumulator's survival is observed by rewriting the transcript in place at the SAME size: a re-read
+// would see the new numbers, an accumulator that survived still reports the old ones.
+const MIN = 60_000;
+const WIDE = 365 * 24 * 60 * MIN;
+
+test('a poll that ends long after a wide scan began does not evict the wide scan\'s work', async () => {
+  const p = writeTranscript(SID, msg(111, 22));
+  const old = new Date(Date.now() - 3 * 60 * 60_000);
+  utimesSync(p, old, old);                                    // idle: only the wide scan ever touches it
+  const t0 = Date.now();
+  await readNativeSessionUsage(WIDE, t0, undefined, { includeFinished: true });                  // the wide scan reads it
+  await readNativeSessionUsage(30 * MIN, t0 + 21 * MIN, undefined, { includeFinished: true });   // a poll, 21 minutes later
+  writeFileSync(p, msg(222, 33));                             // same byte length, different tokens
+  utimesSync(p, old, old);
+  const [s] = await readNativeSessionUsage(WIDE, t0 + 26 * MIN, undefined, { includeFinished: true });
+  expect(s!.input_tokens).toBe(111);                          // served from the accumulator, not re-read from byte 0
+  expect(s!.output_tokens).toBe(22);
+});
+
+test('a wide scan still drops the accumulator of a transcript it no longer finds', async () => {
+  // The prune exists so a long-running worker's memory tracks the sessions still in play; moving it to the wide scan
+  // must not have removed it.
+  const p = writeTranscript(SID, msg(111, 22));
+  const old = new Date(Date.now() - 3 * 60 * 60_000);
+  utimesSync(p, old, old);
+  const t0 = Date.now();
+  await readNativeSessionUsage(WIDE, t0, undefined, { includeFinished: true });
+  rmSync(p);
+  await readNativeSessionUsage(WIDE, t0 + 25 * MIN, undefined, { includeFinished: true });       // not found, 25 min idle: pruned
+  const q = writeTranscript(SID, msg(222, 33));
+  utimesSync(q, old, old);
+  const [s] = await readNativeSessionUsage(WIDE, t0 + 26 * MIN, undefined, { includeFinished: true });
+  expect(s!.input_tokens).toBe(222);                          // a fresh accumulator, not the pruned one's 111
+});
+
 test('a SECOND workflow in the same session is still named', async () => {
   // The cache is keyed on sessionId but holds "the wf ids that existed the first time this
   // session was scanned". A session runs many workflows — ten in one session on this host — so

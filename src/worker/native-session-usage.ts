@@ -764,7 +764,19 @@ export async function readNativeSessionUsage(
   // accumulated, and the wide scan then re-read 2.4 GB from scratch every five minutes: 32.9s
   // cold against 1.6s warm. ACC_IDLE_MS exceeds the widest scan's TTL, so a scan can never
   // evict its own work.
-  for (const [path, t] of ACC) if (now - t.lastTouchedMs > ACC_IDLE_MS) ACC.delete(path);
+  //
+  // ...but only if the scan finishes within ACC_IDLE_MS. A scan stamps what it touches with its START (`now`),
+  // and every /stats recompute runs a 30-minute scan that prunes against its own later `now`, so a wide scan still
+  // running after 20 minutes had its finished work evicted under it, ended with an empty cache, and the next one
+  // (5 minutes on) began cold again. A cold read of a few GB of transcripts outlasts 20 minutes on a loaded box, so
+  // the writer thread sat at a full core indefinitely.
+  // MEASURED on a 189 MB sample of this host's transcripts (71 sessions, 156 transcripts) with the clock injected, a
+  // 30-minute scan ending 21 minutes after the wide scan began: the NEXT wide scan cost 14.9 s CPU re-reading what the
+  // poll had evicted; with the prune below, 0.13 s (the directory walk).
+  // So only a scan as wide as the all-time one prunes, and the stamps it prunes by are its own.
+  if (windowMs >= ALL_TIME_WINDOW_MS) {
+    for (const [path, t] of ACC) if (now - t.lastTouchedMs > ACC_IDLE_MS) ACC.delete(path);
+  }
 
   out.sort((a, b) => b.last_activity_epoch_ms - a.last_activity_epoch_ms);
   return out;
