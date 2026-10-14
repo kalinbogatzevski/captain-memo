@@ -254,3 +254,39 @@ describe('mergeBlocked — differing numbers (rule 4)', () => {
     expect(mergeBlocked('Bumped CLI exporter to 3.12', 'Bumped CLI exporter to 3.13')).toBe(true);
   });
 });
+
+// #666 — a clock time ("14:56") was read as two numbers, so two messages about one event a minute apart were
+// blocked by rule 4. Measured on 9,085 folds of a live corpus: ignoring clock times frees 5 blocks, adds none, and
+// none of the 5 is a wrong fold. Ignoring ISO dates as well frees 4 more, and those are different days
+// (the same check on two consecutive days, a page for two different dates): wrong, so dates stay numbers.
+describe('mergeBlocked — clock times are not numbers', () => {
+  test('one event reported a minute apart folds (14:56 / 14:57)', () => {
+    expect(mergeBlocked(
+      'Sync worker log is empty or missing at 14:56 UTC+2',
+      'Sync worker log not yet written at 14:57',
+    )).toBe(false);
+  });
+
+  test('seconds, a sentence-final period and a time after an ISO T are clock times too', () => {
+    expect(mergeBlocked('Nightly backup finished at 22:14:57', 'Nightly backup finished at 22:15:30')).toBe(false);
+    expect(mergeBlocked('Nightly backup finished at 22:14.', 'Nightly backup finished at 22:15.')).toBe(false);
+    expect(mergeBlocked('Backup finished 2026-07-05T22:14:57Z', 'Backup finished 2026-07-05T22:15:30Z')).toBe(false);
+  });
+
+  // Counted as an identifier, a shared "14:56" would let rule 2 through for two different services.
+  test('a clock time is no identifier either: a shared time cannot vouch for two different subjects', () => {
+    expect(mergeBlocked('Restarted CRON at 14:56', 'Restarted NGINX at 14:56')).toBe(true);
+  });
+
+  test('other numbers beside a clock time are still compared', () => {
+    expect(mergeBlocked('Backup of 12 volumes finished at 22:14', 'Backup of 15 volumes finished at 22:14')).toBe(true);
+  });
+
+  test('a port after an address is not a clock time', () => {
+    expect(mergeBlocked('Opened 192.168.1.5:22 to the office', 'Opened 192.168.1.5:80 to the office')).toBe(true);
+  });
+
+  test('different dates still block', () => {
+    expect(mergeBlocked('Rotated the log archive on 2026-03-02', 'Rotated the log archive on 2026-03-04')).toBe(true);
+  });
+});

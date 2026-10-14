@@ -43,6 +43,13 @@ function hasNegation(norm: string): boolean {
   return false;
 }
 
+// A clock time: 14:56, 22:14:57, 19:00-21:00 (each end), the 22:14:57 of 2026-07-05T22:14:57Z. Read as numbers it was two of
+// them, so one event reported a minute apart ("... at 14:56" / "... at 14:57") was blocked by rule 4. The lookarounds keep a
+// port after an address ("192.168.1.5:22") out of it. Measured on 9,085 folds of a live corpus: 5 blocks freed, none added,
+// and none of the 5 a wrong fold. ISO DATES are deliberately NOT treated this way: ignoring them as well freed 4 more, and
+// those were different days (the same check on two consecutive days; a page for two different dates).
+const CLOCK_TIME = /(?<![\d.:])\d{1,2}:\d{2}(?::\d{2})?(?!\d|[.:]\d)/g;
+
 // Load-bearing identifiers that descriptive titles use to distinguish instances.
 // Run against the RAW title (case preserved) so ALL-CAPS and uppercase tags
 // survive; results are lowercased into a comparable set.
@@ -78,7 +85,9 @@ function identifierSet(raw: string): { ids: Set<string>; nums: Set<string> } {
   ];
   // split('') gives UTF-16 code units, which is the same unit RegExp match indices use — so a
   // title carrying an emoji cannot shift the blanking off by one.
-  let rest = raw;
+  // Clock times are blanked before anything runs and added to neither set: as an identifier a shared "14:56" would let
+  // rule 2 vouch for two different subjects ("Restarted CRON at 14:56" / "Restarted NGINX at 14:56").
+  let rest = raw.replace(CLOCK_TIME, t => ' '.repeat(t.length));
   for (const { re, num } of patterns) {
     const spans: Array<[number, number]> = [];
     for (const m of rest.matchAll(re)) {
@@ -143,7 +152,11 @@ export function mergeBlocked(titleA: string, titleB: string): boolean {
   if (xa.size > 0 && xb.size > 0
     && [...xa].some(n => !xb.has(n)) && [...xb].some(n => !xa.has(n))) return true;
 
-  // Rule 2 — both sides carry identifiers, but they overlap in none.
+  // Rule 2 — both sides carry identifiers, but they overlap in none. Letters-and-digits codes that differ in their
+  // digits alone (p95/p99, mx1/mx2, 28px/24px) still fold when the titles share any other identifier. A rule for
+  // that (differing codes with one letter skeleton) was measured on the same 9,085 folds: 9 more blocked, 7 of them
+  // different things (mx1/mx2, v10/v12, 28px/24px), 2 the same finding under a 1.5s/1.4s wait. Not shipped: a
+  // false block is the milder error, but the rule is not free of them.
   if (ia.size > 0 && ib.size > 0) {
     for (const x of ia) if (ib.has(x)) return false; // shared identifier ⇒ not blocked by rule 2
     return true; // both have identifiers, zero shared ⇒ block
