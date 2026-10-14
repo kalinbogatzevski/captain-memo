@@ -1,7 +1,7 @@
 import { join } from 'path';
 import { homedir } from 'os';
 import { readStdinJson, writeStdout, workerFetch, logHookError, workerFailureMessage, isMainModule } from './shared.ts';
-import { homeworkDueFirst, homeworkDueParts, type HomeworkItem } from '../worker/homework.ts';
+import { homeworkDueFirst, homeworkDueParts, homeworkStartLines, type HomeworkItem } from '../worker/homework.ts';
 import { LOCAL_ARTICLES } from './local-articles.ts';
 import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS, DEFAULT_WORKER_PORT, DATA_DIR } from '../shared/paths.ts';
 import { VERSION } from '../shared/version.ts';
@@ -172,11 +172,18 @@ function formatTransitionBanner(t: WorkerTransition, willAnnounce: boolean, now:
   ].join('\n');
 }
 
-/** Codex / Gemini SessionStart (startup, resume, clear; Codex also compact): the local articles as additionalContext.
- *  Static text, so no worker call; none of main()'s self-heal, auto-update or skill refresh, which are Claude Code's. */
+/** Codex / Gemini SessionStart (startup, resume, clear; Codex also compact): the local articles plus the open homework
+ *  as additionalContext, which is what Claude Code's banner carries for itself. One bounded worker read for the
+ *  homework (a worker that is down or slow costs 1.5 s at most and adds nothing); none of main()'s self-heal,
+ *  auto-update or skill refresh, which are Claude Code's. */
 export async function nativeMain(): Promise<void> {
   try { await readStdinJson(); } catch { /* payload unused; a bad one must not cost the articles */ }
-  writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: LOCAL_ARTICLES } }));
+  let homework = '';
+  try {
+    const hw = await workerFetch<{ items: HomeworkItem[] }>('/homework/list?status=open', { method: 'GET', timeoutMs: 1_500 });
+    if (hw.ok && hw.body) homework = homeworkStartLines(hw.body.items);
+  } catch { /* best-effort: a malformed body must not cost the articles either */ }
+  writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: [LOCAL_ARTICLES, homework].filter(Boolean).join('\n\n') } }));
 }
 
 // Shown when the worker is confirmed ALIVE via /health but the heavier /stats snapshot

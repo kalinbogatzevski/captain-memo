@@ -188,18 +188,36 @@ test('dispatcher → unknown event → exit 0 silently', async () => {
 });
 
 // Codex and Gemini fire SessionStart themselves (startup/resume/clear, Codex also compact), so the articles ride on
-// it: once per session by construction, no marker. Static text: no worker call, none of Claude's self-heal/update work.
-test('dispatcher → CodexSessionStart / GeminiSessionStart inject the local articles, nothing else', async () => {
+// it: once per session by construction, no marker. The articles plus the open homework (one /homework/list read);
+// none of Claude's self-heal/update work.
+test('dispatcher → CodexSessionStart / GeminiSessionStart inject the local articles and the open homework, nothing else', async () => {
   for (const event of ['CodexSessionStart', 'GeminiSessionStart']) {
     const r = await runDispatcher(event, JSON.stringify({ session_id: 't', source: 'startup' }));
     expect(r.exitCode).toBe(0);
-    expect(JSON.parse(r.stdout)).toEqual({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: LOCAL_ARTICLES } });
+    const out = JSON.parse(r.stdout);
+    expect(out.hookSpecificOutput.hookEventName).toBe('SessionStart');
+    expect(out.hookSpecificOutput.additionalContext.startsWith(LOCAL_ARTICLES)).toBe(true);
     expect(LOCAL_ARTICLES).toContain('1. SEARCH BEFORE YOU ACT');
-    expect(gets).toEqual([]);
+    expect(out.hookSpecificOutput.additionalContext).toContain('📝 Open homework on this captain (1)');
+    expect(out.hookSpecificOutput.additionalContext).toContain('#7 stub homework item');
+    expect(out.continue).toBeUndefined();
+    expect(out.systemMessage).toBeUndefined();          // no Claude banner
+    expect(gets).toEqual(['/homework/list']);           // no /stats, no /health: no self-heal on this path
     expect(received).toHaveLength(0);
   }
-  // fail open: an unreadable payload still gets the articles
+  // fail open: an unreadable payload still gets the articles and the homework
   const bad = await runDispatcher('GeminiSessionStart', 'not json');
   expect(bad.exitCode).toBe(0);
-  expect(JSON.parse(bad.stdout).hookSpecificOutput.additionalContext).toBe(LOCAL_ARTICLES);
+  const badCtx = JSON.parse(bad.stdout).hookSpecificOutput.additionalContext;
+  expect(badCtx.startsWith(LOCAL_ARTICLES)).toBe(true);
+  expect(badCtx).toContain('#7 stub homework item');
+});
+
+test('dispatcher → CodexSessionStart with the worker down still injects the articles (homework is best-effort)', async () => {
+  const probe = Bun.serve({ port: 0, fetch: () => new Response('x') });
+  const deadPort = probe.port ?? 0;
+  probe.stop(true);                                      // a port nothing listens on
+  const r = await runDispatcher('CodexSessionStart', JSON.stringify({ session_id: 't', source: 'startup' }), { CAPTAIN_MEMO_WORKER_PORT: String(deadPort) });
+  expect(r.exitCode).toBe(0);
+  expect(JSON.parse(r.stdout)).toEqual({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: LOCAL_ARTICLES } });
 });
