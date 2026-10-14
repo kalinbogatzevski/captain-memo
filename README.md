@@ -651,9 +651,20 @@ Semantic folding and themes are the idle-time passes: they start only when nothi
 captain-memo consolidate --for 30m     # skip the idle gate for the next 30 minutes
 captain-memo consolidate --semantic --backlog --for 30m   # one-off: include never-recalled rows
 captain-memo theme list                # read what was written
-captain-memo dedup --undo              # reverse a fold
+captain-memo dedup --undo              # reverse every fold
 captain-memo theme undo <id>           # reverse a theme
 ```
+
+**Undoing part of a fold.** `dedup --undo` on its own reverses every fold, `dedup` and `semantic` alike. When a sweep got a few wrong, name them instead of undoing the lot:
+
+```bash
+captain-memo dedup --runs                          # recent runs that folded something, with ids
+captain-memo dedup --undo --member 12706 2889 2333 # just these observations (the ids the fold archived)
+captain-memo dedup --undo --run 41                 # everything one run folded
+captain-memo dedup --undo --since 2026-10-14T09:30:00Z [--job semantic]   # everything folded after a moment
+```
+
+A selector prints what it will undo (a count, then the first ten ids and titles) and then does it — there is no prompt, same as plain `--undo`. An id or run that matches nothing exits 1 and changes nothing; running the same undo twice is a no-op. Selectors combine (all must match). A run is matched to its merges by when it ran and its job, so a fold from a worker that stopped before recording its run belongs to no run — reach it with `--member` or `--since`. A partial undo leaves the survivor's last-surfaced time alone; undoing every fold into a survivor restores it.
 
 **`--backlog` is a one-off.** Folding normally targets what actually reaches you, so an observation
 that has never been recalled is skipped — on a mature corpus that is most of the collection. The
