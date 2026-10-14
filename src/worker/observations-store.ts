@@ -598,6 +598,12 @@ export interface MergeEventRow {
   undone: number; member_title: string | null;
 }
 
+/** One refold_blocks row as `listRefoldBlocks` returns it, with each side's title (null when the row is gone). */
+export interface RefoldBlockRow {
+  survivor_id: number; member_id: number; marked_at: number;
+  survivor_title: string | null; member_title: string | null;
+}
+
 /** Narrow an unknown DB cell to a RetrievalSource. */
 function isRetrievalSource(v: unknown): v is RetrievalSource {
   return v === 'auto' || v === 'search' || v === 'drill';
@@ -2207,6 +2213,22 @@ export class ObservationsStore {
     const key = (a: number, b: number): string => (a < b ? `${a}:${b}` : `${b}:${a}`);
     const pairs = new Set(rows.map(r => key(r.survivor_id, r.member_id)));
     return (a, b) => pairs.has(key(a, b));
+  }
+
+  /** The never-re-fold markers, newest first, each with both rows' titles (null when that row no longer exists).
+   *  With `ids`, only those involving one of them on either side: exactly what `clearRefoldBlocks(ids)` would delete. */
+  listRefoldBlocks(ids?: number[]): RefoldBlockRow[] {
+    const ph = ids?.map(() => '?').join(',');
+    return this.db
+      .query(
+        `SELECT b.survivor_id, b.member_id, b.marked_at, s.title AS survivor_title, m.title AS member_title
+           FROM refold_blocks b
+           LEFT JOIN observations s ON s.id = b.survivor_id
+           LEFT JOIN observations m ON m.id = b.member_id
+          ${ids ? `WHERE b.survivor_id IN (${ph}) OR b.member_id IN (${ph})` : ''}
+          ORDER BY b.marked_at DESC, b.survivor_id, b.member_id`,
+      )
+      .all(...(ids ? [...ids, ...ids] : [])) as RefoldBlockRow[];
   }
 
   /** Allow undone folds to be folded again: delete the markers involving `ids` (either side), or all of

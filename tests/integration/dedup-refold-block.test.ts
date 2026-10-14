@@ -156,3 +156,70 @@ test('a database without the table migrates, and the backfill marks folds that w
   expect((db.query('SELECT name FROM schema_versions WHERE version = 26').get() as { name: string }).name).toBe('add_refold_blocks');
   db.close();
 });
+
+// `--refold-blocks`: the read-only listing of the markers `--allow-refold` clears.
+test('--refold-blocks says so when nothing is marked; --json is an empty list', async () => {
+  const r = await cli(['--refold-blocks']);
+  expect(r.code).toBe(0);
+  expect(r.out).toContain('No never-re-fold markers');
+  expect(JSON.parse((await cli(['--refold-blocks', '--json'])).out)).toEqual([]);
+});
+
+test('--refold-blocks lists each marked pair with both titles and changes nothing; --member narrows it', async () => {
+  await cli(['--undo']);
+  const before = markers();
+  expect(before).toEqual([[S, M1], [S, M2]]);
+
+  const r = await cli(['--refold-blocks']);
+  expect(r.code).toBe(0);
+  expect(r.out).toContain('2 undone pair(s)');
+  for (const id of [S, M1, M2]) expect(r.out).toContain(`#${id}`);
+  for (const t of ['deploy script updates both servers', 'deploy script updates both servers now', 'deploy script pushes to both servers']) {
+    expect(r.out).toContain(t);
+  }
+  expect(r.out).toMatch(/marked \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/);
+  expect(r.out).toContain('--allow-refold');
+
+  const one = await cli(['--refold-blocks', '--member', String(M2)]);
+  expect(one.out).toContain('1 undone pair(s)');
+  expect(one.out).toContain('deploy script pushes to both servers');
+  expect(one.out).not.toContain('updates both servers now');
+  // Either side of the pair selects it, exactly as --allow-refold would.
+  expect((await cli(['--refold-blocks', '--member', String(S)])).out).toContain('2 undone pair(s)');
+  const none = await cli(['--refold-blocks', '--member', '99999']);
+  expect(none.code).toBe(0);
+  expect(none.out).toContain('No never-re-fold marker involves observation id(s) 99999');
+
+  const json = JSON.parse((await cli(['--refold-blocks', '--json'])).out) as Array<Record<string, unknown>>;
+  expect(json.map(j => [j.survivor_id, j.member_id]).sort()).toEqual([[S, M1], [S, M2]]);
+  expect(json[0]).toHaveProperty('member_title');
+  expect(json[0]).toHaveProperty('marked_at');
+
+  expect(markers()).toEqual(before);                            // read-only: nothing cleared
+  expect(archived(M1)).toBe(false);
+});
+
+test('--refold-blocks shows the ten newest, truncates titles, and marks a row that is gone', async () => {
+  await cli(['--undo']);
+  const db = new Database(dbPath);
+  const ins = db.query('INSERT INTO refold_blocks (survivor_id, member_id, marked_at) VALUES (?, ?, ?)');
+  for (let i = 0; i < 11; i++) ins.run(N, 5000 + i, 1_000_000 + i);   // 5000+i never existed; oldest of all
+  db.query('UPDATE observations SET title = ? WHERE id = ?').run('x'.repeat(200), N);
+  db.close();
+
+  const r = await cli(['--refold-blocks']);
+  expect(r.out).toContain('13 undone pair(s)');
+  expect(r.out).toContain('… and 3 more');
+  expect(r.out).toContain('#5010');                               // newest of the inserted, shown
+  expect(r.out).not.toContain('#5000');                          // the oldest three fall below the ten shown
+  expect(r.out).toContain('(row gone)');
+  expect(r.out).not.toContain('x'.repeat(100));                   // 70 chars at most
+  expect(JSON.parse((await cli(['--refold-blocks', '--json'])).out)).toHaveLength(13);  // --json prints them all
+});
+
+test('--refold-blocks only lists: it refuses every other mode, and --help names it', async () => {
+  for (const bad of [['--undo'], ['--apply'], ['--runs'], ['--allow-refold'], ['--run', '1'], ['--since', '5'], ['--job', 'dedup']]) {
+    expect((await cli(['--refold-blocks', ...bad])).code).toBe(2);
+  }
+  expect((await cli(['--help'])).out).toContain('--refold-blocks');
+});

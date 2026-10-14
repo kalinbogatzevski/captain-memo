@@ -66,7 +66,7 @@ Commands:
   inspect-claude-mem  Print row counts of ~/.claude-mem/claude-mem.db (read-only).
   migrate-from-claude-mem  One-time migration of ~/.claude-mem/claude-mem.db (read-only)
   dream        Preview Local Dreaming clusters (read-only; --dry-run only in v1)
-  dedup        Fold near-duplicate observations together (dry-run by default; --apply, --undo [--member|--run|--since], --runs, --allow-refold)
+  dedup        Fold near-duplicate observations together (dry-run by default; --apply, --undo [--member|--run|--since], --runs, --refold-blocks, --allow-refold)
   supersede    list | undo <id> — inspect open supersede links and reverse them
   theme        list | show <id> | undo <id> — inspect machine-written themes and reverse them
   consolidate  run a consolidation pass now, without waiting for the idle window

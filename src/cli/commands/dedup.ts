@@ -11,7 +11,7 @@
 //   - --undo reverses every prior dedup merge. With a selector (--member, --run, --since,
 //     --job) it reverses only the merges that selector names; --runs lists the runs to pick from.
 //   - An UNDONE fold is remembered: --undo marks each (survivor, member) pair it reverses and no pass folds
-//     that pair again (--allow-refold takes the mark away).
+//     that pair again (--refold-blocks lists the marks, read-only; --allow-refold takes them away).
 //   - PROTECTED rows (drilled into, or anchored) are never folded — the same
 //     gate runQmDedupSlice applies. This was missing, so the manual command was
 //     more destructive than the automatic sweep it exists to supplement.
@@ -40,6 +40,7 @@ Usage:
   captain-memo dedup [--apply] [--threshold N] [--json]
   captain-memo dedup --undo [<selector>...] [--json]
   captain-memo dedup --runs [--json]
+  captain-memo dedup --refold-blocks [--member ID...] [--json]
   captain-memo dedup --allow-refold [--member ID...] [--json]
 
 Options:
@@ -53,6 +54,8 @@ Options:
                     (2026-10-14T09:30:00Z; with no offset it is your local time, a bare date is UTC).
   --job NAME        Restrict to 'dedup' or 'semantic' folds. Alone, undoes every fold of that job.
   --runs            List the 10 most recent runs that folded something (read-only).
+  --refold-blocks   List the never-re-fold markers (read-only): each undone pair, when it was marked, and both
+                    titles. With --member, only the markers involving those ids: what --allow-refold would clear.
   --allow-refold    Let folds you undid be folded again: remove their never-re-fold markers (the ones
                     involving the --member ids, or every one when none is named). Takes nothing else.
   --threshold N     Title-similarity threshold 0..1 (default ${DEFAULT_SIMILARITY_THRESHOLD}).
@@ -80,7 +83,7 @@ Notes:
     one even when the survivor's earliest folds were undone first.
   - An undone fold is remembered. --undo marks every (survivor, member) pair it reverses, and neither
     this command nor the background sweeps (dedup, semantic, consolidate --semantic) fold that pair
-    again, whichever of the two rows would lead. --allow-refold removes the mark.
+    again, whichever of the two rows would lead. --refold-blocks lists the marks; --allow-refold removes them.
   - A run is matched to its merges by the time it ran and its job. A merge from a worker that
     stopped before recording its run belongs to no run: reach it with --member or --since.
 `;
@@ -96,6 +99,7 @@ export async function dedupCommand(args: string[]): Promise<number> {
   let threshold = DEFAULT_SIMILARITY_THRESHOLD;
   let listRuns = false;
   let allowRefold = false;
+  let listRefolds = false;
   const sel: MergeSelector = {};
 
   for (let i = 0; i < args.length; i++) {
@@ -107,6 +111,7 @@ export async function dedupCommand(args: string[]): Promise<number> {
       case '--threshold': threshold = parseFloat(args[++i] ?? ''); break;
       case '--runs':      listRuns = true; break;
       case '--allow-refold': allowRefold = true; break;
+      case '--refold-blocks': listRefolds = true; break;
       case '--member': {
         const ids: number[] = [];
         while (/^\d+(,\d+)*$/.test(args[i + 1] ?? '')) ids.push(...args[++i]!.split(',').map(Number));
@@ -155,6 +160,10 @@ export async function dedupCommand(args: string[]): Promise<number> {
     console.error('--allow-refold takes only --member (and --json); use it on its own');
     return 2;
   }
+  if (listRefolds && (undo || apply || listRuns || allowRefold || sel.runId !== undefined || sel.since !== undefined || sel.job)) {
+    console.error('--refold-blocks only lists; it takes only --member (and --json); use it on its own');
+    return 2;
+  }
   if (listRuns && (selective || undo || apply)) {
     console.error('--runs only lists; use it on its own');
     return 2;
@@ -172,6 +181,7 @@ export async function dedupCommand(args: string[]): Promise<number> {
   const store = new ObservationsStore(obsPath);
   try {
     if (allowRefold) return runAllowRefold(store, json, sel.memberIds);
+    if (listRefolds) return listRefoldMarkers(store, json, sel.memberIds);
     if (listRuns) return listFoldRuns(store, json);
     if (selective) return runSelectiveUndo(store, json, sel);
     if (undo) return runUndo(store, json);
@@ -207,6 +217,31 @@ function runAllowRefold(store: ObservationsStore, json: boolean, ids: number[] |
   if (json) console.log(JSON.stringify({ cleared }));
   else if (cleared === 0) console.log(dim('No never-re-fold markers to clear.'));
   else console.log(`${green('✓')} Cleared ${cyanBold(String(cleared))} never-re-fold marker(s); ${ids ? 'those pairs' : 'every undone pair'} may be folded again.`);
+  return 0;
+}
+
+/** `--refold-blocks`: the never-re-fold markers, newest first, for the named ids (either side) or all of them. */
+function listRefoldMarkers(store: ObservationsStore, json: boolean, ids: number[] | undefined): number {
+  const rows = store.listRefoldBlocks(ids);
+  if (json) {
+    console.log(JSON.stringify(rows));
+    return 0;
+  }
+  if (rows.length === 0) {
+    console.log(dim(ids
+      ? `No never-re-fold marker involves observation id(s) ${ids.join(', ')}.`
+      : 'No never-re-fold markers. An undone fold gets one: captain-memo dedup --undo.'));
+    return 0;
+  }
+  console.log(`${cyanBold('captain-memo dedup --refold-blocks')} ${dim(`· ${rows.length} undone pair(s) no fold will touch again, newest first`)}`);
+  for (const r of rows.slice(0, PREVIEW_ROWS)) {
+    const when = new Date(r.marked_at * 1000).toISOString().slice(0, 16).replace('T', ' ');
+    console.log(`  ${cyan(`#${r.survivor_id}`)} ${dim('↔')} ${cyan(`#${r.member_id}`)}  ${dim(`marked ${when} UTC`)}`);
+    console.log(`      ${dim('survivor')} ${trim(r.survivor_title ?? '(row gone)', 70)}`);
+    console.log(`      ${dim('member  ')} ${trim(r.member_title ?? '(row gone)', 70)}`);
+  }
+  if (rows.length > PREVIEW_ROWS) console.log(dim(`  … and ${rows.length - PREVIEW_ROWS} more (--member ID narrows the list; --json prints all)`));
+  console.log(dim('  Allow a pair to be folded again: captain-memo dedup --allow-refold [--member ID...]'));
   return 0;
 }
 
