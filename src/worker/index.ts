@@ -2921,6 +2921,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           dream,
           version: VERSION,
           edition: EDITION,   // 'federation' | 'oss' — surfaced for the SessionStart banner
+          // worker.env is read by the worker, never by the hooks, so the banner's opt-in greeting rides on /stats.
+          ...(process.env.CAPTAIN_MEMO_GREETING ? { greeting: process.env.CAPTAIN_MEMO_GREETING } : {}),
           // The ACTIVE summarizer, so `captain-memo stats` / doctor can answer "which one is
           // running?" — the RESOLVED provider (post-fallback), which is the ground truth the raw
           // worker.env value can't give (a bad "codex,agy" shows here as its real fallback).

@@ -12,6 +12,10 @@ import { readFileSync } from 'fs';
 import { spawn } from 'bun';
 import { VERSION } from '../../src/shared/version.ts';
 import { LOCAL_ARTICLES } from '../../src/hooks/local-articles.ts';
+import { sanitizeGreeting } from '../../src/hooks/session-start.ts';
+
+// The greeting tests need the setting UNSET in the spawned hook, whatever the developer's own shell exports.
+delete process.env.CAPTAIN_MEMO_GREETING;
 
 let port = 0;
 const FIXTURE = readFileSync(
@@ -280,4 +284,44 @@ test('SessionStart — /stats fails but /health OK: shows "active (stats slow)",
   } finally {
     srv.stop();
   }
+});
+
+// CAPTAIN_MEMO_GREETING (#660): one opt-in line first in the banner. The hooks never read worker.env, so the worker
+// reports its own value in /stats; the AI tool's environment, which the hook does read, wins over it.
+const bannerOf = async (env: Record<string, string> = {}) => JSON.parse((await runHook(env)).stdout).systemMessage as string;
+
+test('SessionStart — no greeting set: the banner is what it always was; set, it gains exactly one first line', async () => {
+  const plain = await bannerOf();
+  expect(plain.startsWith('\n\n⚓ Captain Memo')).toBe(true);
+  const greeted = await bannerOf({ CAPTAIN_MEMO_GREETING: 'Samo Levski!' });
+  expect(greeted).toBe(plain.replace('\n\n⚓', '\n\nSamo Levski!\n⚓'));
+});
+
+test('SessionStart — the worker\'s greeting (worker.env) shows, and the tool\'s own environment wins over it', async () => {
+  statsExtra = { greeting: 'From the worker' };
+  try {
+    expect((await bannerOf()).split('\n')[2]).toBe('From the worker');
+    expect((await bannerOf({ CAPTAIN_MEMO_GREETING: 'From the tool' })).split('\n')[2]).toBe('From the tool');
+    expect((await bannerOf({ CAPTAIN_MEMO_GREETING: '' })).split('\n')[2]).toStartWith('⚓ Captain Memo');   // blanked for this tool
+  } finally { statsExtra = {}; }
+});
+
+test('SessionStart — a hostile greeting is one clean line of at most 80 characters', async () => {
+  statsExtra = { greeting: `Ahoy\n\x1b[31m\x1b]0;pwned\x07 ${'x'.repeat(200)}` };
+  try {
+    const banner = await bannerOf();
+    expect(banner).not.toMatch(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/);   // no control character but the newlines between lines
+    const line = banner.split('\n')[2]!;
+    expect(line.startsWith('Ahoy [31m')).toBe(true);
+    expect(line.length).toBe(80);
+    expect(banner.split('\n')[3]).toStartWith('⚓ Captain Memo');
+  } finally { statsExtra = {}; }
+});
+
+test('sanitizeGreeting — control characters out, 80 code points at most, nothing in means nothing out', () => {
+  expect(sanitizeGreeting('  Samo Levski!  ')).toBe('Samo Levski!');
+  expect(sanitizeGreeting('a\r\nb\tc\u0085d\u2028e')).toBe('a b c d e');
+  expect(sanitizeGreeting('😀'.repeat(100))).toBe('😀'.repeat(80));   // never half an emoji
+  expect(sanitizeGreeting('y'.repeat(79) + 'é!!!')).toBe('y'.repeat(79) + 'é');
+  for (const none of [undefined, '', '   ', '\n\x1b\t', 42, null, {}]) expect(sanitizeGreeting(none)).toBe('');
 });

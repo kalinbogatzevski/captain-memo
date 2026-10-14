@@ -38,6 +38,7 @@ interface StatsResponse {
   disk?: { bytes: number; path: string };
   version?: string;
   edition?: string;   // 'federation' | 'oss' — shown as a banner suffix; absent ⇒ no suffix (older worker)
+  greeting?: string;  // the worker's CAPTAIN_MEMO_GREETING (worker.env, which the hook itself never reads); absent ⇒ none
 }
 
 function fmtNum(n: number): string {
@@ -53,13 +54,23 @@ function fmtBytes(bytes: number): string {
   return `${size.toFixed(size >= 100 ? 0 : 1)} ${units[i]}`;
 }
 
+/** CAPTAIN_MEMO_GREETING as the banner prints it: one line, control characters (newline, tab, ESC, the C1 range) turned
+ *  to a space, at most 80 characters (code points, so an emoji is never cut in half). Empty ⇒ no greeting line. */
+export function sanitizeGreeting(raw: unknown): string {
+  return typeof raw === 'string' ? [...raw.replace(/[\p{Cc}\u2028\u2029]+/gu, ' ').trim()].slice(0, 80).join('').trim() : '';
+}
+
 function formatBanner(stats: StatsResponse, homework: HomeworkItem[] = []): string {
   const ver = stats.version ? ` v${stats.version}` : '';
   // Build edition suffix — only for a worker that reports it (older workers omit it ⇒ no suffix).
   const ed = stats.edition === 'federation' ? ' (Federation)' : stats.edition === 'oss' ? ' (OSS)' : '';
+  // OPT-IN greeting, first line of the banner. The AI tool's own environment wins (the hooks read only that); else the
+  // worker's, which is how it comes from worker.env. Unset ⇒ no line and the banner is exactly what it was.
+  const greeting = sanitizeGreeting(process.env.CAPTAIN_MEMO_GREETING ?? stats.greeting);
   const lines: string[] = [
     '',
     '',
+    ...(greeting ? [greeting] : []),
     `⚓ Captain Memo${ver}${ed}`,
     '─'.repeat(60),
   ];

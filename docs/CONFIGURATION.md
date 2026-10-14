@@ -33,7 +33,7 @@ Changes to worker settings take effect on worker restart:
 captain-memo restart && captain-memo status
 ```
 
-**Settings read by the hooks.** The hooks are short-lived processes started by the AI tool, and they never read `worker.env`. The settings marked (hook) below, and the rows of the Hooks table (except `CAPTAIN_MEMO_HOOK_BUDGET_TOKENS`, which the worker reads, and `CAPTAIN_MEMO_HOOK_EVENT`, which is not a setting), come from the environment of that AI tool: for Claude Code, the `env` block of its `settings.json`, or exported before it starts. They take effect in the next session, not on a worker restart. The MCP server reads both `worker.env` and its own environment.
+**Settings read by the hooks.** The hooks are short-lived processes started by the AI tool, and they never read `worker.env`. The settings marked (hook) below, and the rows of the Hooks table (except `CAPTAIN_MEMO_HOOK_BUDGET_TOKENS`, which the worker reads, `CAPTAIN_MEMO_GREETING`, which takes either, and `CAPTAIN_MEMO_HOOK_EVENT`, which is not a setting), come from the environment of that AI tool: for Claude Code, the `env` block of its `settings.json`, or exported before it starts. They take effect in the next session, not on a worker restart. The MCP server reads both `worker.env` and its own environment.
 
 Booleans are strings. To switch an OFF-by-default setting on, write exactly `1`: `true` and `yes` are
 not recognised, and the setting stays off. An ON-by-default setting stays on for any value except `0`, so
@@ -270,6 +270,7 @@ Read by `services/embed/`, not by the worker. Set these where the service starts
 |---|---|---|
 | `CAPTAIN_MEMO_HOOK_TIMEOUT_MS` | `1500` | Budget for the memory envelope on each prompt (`UserPromptSubmit`), and the `SessionStart` stats timeout when `CAPTAIN_MEMO_SESSION_START_TIMEOUT_MS` is unset. It does not govern homework capture: an `idea:` / `todo:` prompt waits up to 6 s for the worker to confirm the write (less under Codex, Gemini and Kimi, whose hosts kill the hook at 5 s). `PreToolUse`, `PostToolUse` and `PreCompact` have their own settings below. |
 | `CAPTAIN_MEMO_HOOK_BUDGET_TOKENS` | `4000` | Ceiling on injected context per turn. Read by the worker, so `worker.env` works for this one. |
+| `CAPTAIN_MEMO_GREETING` | unset | A line printed first in the session-start banner, e.g. `Samo Levski!`. Unset, nothing extra is printed. One line, control characters replaced by a space, at most 80 characters. In `worker.env` it needs a worker restart: the worker hands it to the hook, which never reads that file. In the environment of the AI tool it applies from the next session and wins over the worker's; set empty there, it hides the worker's. The banner already shows the version on its next line. |
 | `CAPTAIN_MEMO_HOOK_DEBUG` | OFF | `1` logs hook decisions to stderr. |
 | `CAPTAIN_MEMO_HOOK_EVENT` | unset | Set by the dispatcher; not an operator setting. |
 | `CAPTAIN_MEMO_SESSION_START_TIMEOUT_MS` | `10000` | How long session-start waits for `/stats`. Unset, it falls back to `CAPTAIN_MEMO_HOOK_TIMEOUT_MS` when that is set, else 10 s. |
