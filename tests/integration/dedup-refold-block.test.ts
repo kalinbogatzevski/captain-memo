@@ -223,3 +223,15 @@ test('--refold-blocks only lists: it refuses every other mode, and --help names 
   }
   expect((await cli(['--help'])).out).toContain('--refold-blocks');
 });
+
+// `--member` is also an undo selector: the listing must never fall through to it. M2 is still folded here.
+test('--refold-blocks --member never undoes a fold: an id with no marker leaves its live fold alone', async () => {
+  await cli(['--undo', '--member', String(M1)]);                // marks (S, M1) only; M2 stays folded into S
+  expect(archived(M2)).toBe(true);
+
+  const r = await cli(['--refold-blocks', '--member', String(M2)]);
+  expect(r.code).toBe(0);
+  expect(r.out).toContain('No never-re-fold marker involves');
+  expect(archived(M2)).toBe(true);                              // still folded: the listing undid nothing
+  expect(markers()).toEqual([[S, M1]]);
+});
