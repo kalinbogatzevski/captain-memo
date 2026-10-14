@@ -235,6 +235,18 @@ export function embedCoverageCheck(
            remedy: 'run doctor again in a few minutes — ingest may still be catching up. If it persists: captain-memo reindex' };
 }
 
+/** The vector index has centroids that are all zeros. Such a centroid never wins a vector, so everything lands in the
+ *  others (an outside user's store, 2026-10-14: 10 of 11, all 41,198 vectors in one cluster) and every dedup / theme
+ *  pass walks every pair. `ivf.assigned == ivf.vectors` read as a healthy 100% the whole time. Not a FAIL: since 0.57.8
+ *  the worker repairs it by itself. */
+export function ivfHealthCheck(ivf: { centroids?: unknown; zeroCentroids?: unknown } | null | undefined): Check | null {
+  const zero = ivf?.zeroCentroids, total = ivf?.centroids;
+  if (typeof zero !== 'number' || typeof total !== 'number' || zero <= 0) return null;
+  return { name: 'vector index', status: 'WARN',
+           detail: `${zero} of ${total} clusters have an all-zero centre and can never receive a vector, so the rest hold everything and consolidation (dedup, themes) finds nothing`,
+           remedy: 'nothing required: after captain-memo restart the worker rebuilds the index by itself, in the background (search keeps working). Until it finishes this warning stays.' };
+}
+
 /** Chunks the embedder refused on their own, again and again. The rest of the queue is not waiting on them. */
 export function parkedEmbedCheck(name: string, host: string, parked: number, err: string): Check {
   return { name, status: 'WARN',
@@ -298,6 +310,8 @@ async function checkEmbedder(): Promise<void> {
     indexing: (lastStats.indexing as { status?: unknown } | undefined)?.status,
   });
   if (coverage) record(coverage);
+  const ivfHealth = ivfHealthCheck(lastStats?.ivf as { centroids?: unknown; zeroCentroids?: unknown } | undefined);
+  if (ivfHealth) record(ivfHealth);
   if (!isLocal) {
     record(embedderVerdict(endpoint, queue));
     return;

@@ -5,7 +5,7 @@
 // newly-unclustered chunks, OR rebalance one batch of already-clustered ones.
 // Never more than one of those per tick, so cost per call stays predictable.
 import {
-  targetClusterCount, seedCentroids, miniBatchUpdate, nearestInBatch,
+  targetClusterCount, seedCentroids, miniBatchUpdate, nearestInBatch, isZeroVector, UNCLUSTERED_CLUSTER,
   type IvfConfig, type Centroid,
 } from './ivf.ts';
 
@@ -18,7 +18,9 @@ export interface IvfSweepDeps {
   getCentroids: (collection: string) => Centroid[];
   setCentroids: (collection: string, centroids: Centroid[]) => void;
   allocateClusterIds: (collection: string, n: number) => number[];
-  sampleAnyVectors: (collection: string, limit: number) => Array<{ chunkId: string; embedding: Float32Array }>;
+  /** May be async: reading seeds by key is ~2 ms a row on a large store, so the real one yields to the event loop as it goes. */
+  sampleAnyVectors: (collection: string, limit: number) => Array<{ chunkId: string; embedding: Float32Array }>
+    | Promise<Array<{ chunkId: string; embedding: Float32Array }>>;
   sampleClusteredVectors: (
     collection: string,
     limit: number,
@@ -41,9 +43,11 @@ export interface IvfSweepResult {
   bootstrapped: number;
   assigned: number;
   rebalanced: number;
+  /** Rows sent back to unclustered while repairing an index seeded from vectors with no direction. */
+  reset: number;
 }
 
-const EMPTY_RESULT: IvfSweepResult = { legacyMigrated: 0, bootstrapped: 0, assigned: 0, rebalanced: 0 };
+const EMPTY_RESULT: IvfSweepResult = { legacyMigrated: 0, bootstrapped: 0, assigned: 0, rebalanced: 0, reset: 0 };
 
 /**
  * Run one bounded IVF sweep slice. Does exactly one of, in priority order:
@@ -56,6 +60,9 @@ const EMPTY_RESULT: IvfSweepResult = { legacyMigrated: 0, bootstrapped: 0, assig
  *     config. See the plan's Global Constraints for the full incident.
  *  2. Nothing further, if clustering itself is disabled.
  *  3. Nothing, if the corpus is still below the clustering threshold.
+ *  3b. Repair an index whose centroids include an all-zero one (see below):
+ *     send one batch of its rows back to unclustered, and once none are left
+ *     fall through to the bootstrap, which replaces the whole set.
  *  4. Bootstrap centroids (once), if the corpus has crossed the threshold
  *     and no centroids exist yet.
  *  5. Assign one batch of newly-unclustered chunks to existing centroids.
@@ -76,10 +83,35 @@ export async function runIvfSweepSlice(deps: IvfSweepDeps): Promise<IvfSweepResu
   const totalVectors = deps.countVectors(collection);
   if (totalVectors < cfg.minCorpusSize) return EMPTY_RESULT;
 
-  const centroids = deps.getCentroids(collection);
+  let centroids = deps.getCentroids(collection);
+
+  // An all-zero centroid scores 0 against every vector and a populated one scores above it, so it never wins a row and
+  // the mini-batch update never moves it: a bad seed was permanent. An outside user's store was seeded (first rows of
+  // the table, 2026-08, while an embed failure still stored zero vectors) with 10 zero centroids of 11: all 41,198
+  // vectors in one cluster, so every finder walked all 848M pairs. Seeding now skips such vectors, but an index already
+  // built that way has to be redone: the rows go back to unclustered one batch per slice (the same 64-row transaction
+  // as an assignment), and when none is left the bootstrap below replaces the centroids in ONE transaction, so a reader
+  // never sees an empty set. Search keeps answering throughout: it always probes the unclustered partition.
+  // MEASURED on a copy of the 272k-vector dev store (2026-10-14), 300 reset slices of 64 rows, flat from the first slice to
+  // the last as the unclustered partition grew to 19,200: slice 110-150 ms p50, 240-400 ms p95, 460 ms max; the write
+  // transaction (the lock) 41-48 ms p50, 146-273 ms p95, 314 ms max; about 6% of writer time at the 2 s build cadence.
+  const repairing = centroids.some(c => isZeroVector(c.vector));
+  const resetBatch = (): number => {
+    const placed = deps.sampleClusteredVectors(collection, cfg.sweepBatch);
+    if (placed.length > 0) {
+      deps.reassignClusterBatch(placed.map(p => ({ chunkId: p.chunkId, embedding: p.embedding, clusterId: UNCLUSTERED_CLUSTER })));
+    }
+    return placed.length;
+  };
+  if (repairing) {
+    const n = resetBatch();
+    if (n > 0) return { ...EMPTY_RESULT, reset: n };
+    centroids = [];
+  }
+
   if (centroids.length === 0) {
     const k = targetClusterCount(totalVectors, cfg);
-    const vectors = deps.sampleAnyVectors(collection, k);
+    const vectors = await deps.sampleAnyVectors(collection, k);
     if (vectors.length === 0) return EMPTY_RESULT;
     const clusterIds = deps.allocateClusterIds(collection, Math.min(k, vectors.length));
     const seeded = seedCentroids(
@@ -87,6 +119,14 @@ export async function runIvfSweepSlice(deps: IvfSweepDeps): Promise<IvfSweepResu
       clusterIds,
       deps.sample,
     );
+    if (seeded.length === 0) return EMPTY_RESULT;   // every sampled vector lacked a direction: try again next slice
+    // Reading the seeds gave the event loop turns, and a chunk added in one of them took the OLD set's nearest cluster.
+    // Replacing the set would strand it under an id no query probes, so what is left is sent back first. No await from
+    // here to setCentroids: nothing can be added in between.
+    if (repairing) {
+      const n = resetBatch();
+      if (n > 0) return { ...EMPTY_RESULT, reset: n };
+    }
     deps.setCentroids(collection, seeded);
     return { ...EMPTY_RESULT, bootstrapped: seeded.length };
   }

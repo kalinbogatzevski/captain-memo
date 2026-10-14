@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite';
 import { ensureExtensionCapableSqlite, isExtensionLoadingUnsupported, MACOS_SQLITE_REMEDY } from '../shared/sqlite-extensions.ts';
 import * as sqliteVec from 'sqlite-vec';
 import { readPaged } from '../shared/paged-read.ts';
-import { DEFAULT_IVF_CONFIG, nearestCentroids, nearestInBatch, type IvfConfig, type Centroid } from './ivf.ts';
+import { DEFAULT_IVF_CONFIG, nearestCentroids, nearestInBatch, hasDirection, isZeroVector, UNCLUSTERED_CLUSTER, type IvfConfig, type Centroid } from './ivf.ts';
 
 export interface VectorStoreOptions {
   dbPath: string;
@@ -31,7 +31,7 @@ export interface VectorQueryResult {
 /** Unclustered sentinel — chunks not yet assigned a real cluster carry this
  *  value. Never NULL: NULL-partition-key behavior in vec0 was never verified,
  *  and an explicit sentinel is unambiguous in every query (Task 2 spike). */
-const UNCLUSTERED = -1;
+const UNCLUSTERED = UNCLUSTERED_CLUSTER;
 
 /** Vectors per vec0 chunk. vec0 allocates a fixed-size chunk PER PARTITION and scans whole
  *  chunks, so a chunk far larger than a cluster costs both disk and query time for empty space.
@@ -234,6 +234,11 @@ export class VectorStore {
       ? (await nearestInBatch(items.map(i => ({ vector: i.embedding })), centroids,
           () => new Promise<void>(r => setImmediate(r)))).map(n => n ? n.clusterId : UNCLUSTERED)
       : items.map(() => UNCLUSTERED);
+    // The awaits above give the sweep a turn, and an index repair replaces the whole centroid set (new ids). A chunk
+    // written under an id the set no longer has is probed by no query and is never revisited, so each id is checked
+    // against the current set here, with no await before the write; unclustered is always probed and the sweep places it.
+    const live = centroids.length > 0 ? new Set(this.getCentroids(collection).map(c => c.clusterId)) : null;
+    if (live) for (const [i, id] of clusterIds.entries()) if (id !== UNCLUSTERED && !live.has(id)) clusterIds[i] = UNCLUSTERED;
 
     const deleteVec = this.db.query(`DELETE FROM vec_chunks_p WHERE chunk_id = ?`);
     const insertVec = this.db.query(
@@ -653,16 +658,36 @@ export class VectorStore {
       }));
   }
 
-  /** Sample of vectors for a collection regardless of cluster state — used
-   *  ONLY for bootstrap seeding (every row is still unclustered at that point,
-   *  so a cluster-state filter would return nothing). */
-  sampleAnyVectors(collection: string, limit: number): Array<{ chunkId: string; embedding: Float32Array }> {
-    // Two steps for the same reason as getUnclusteredChunks: LIMIT cannot apply until after a
-    // join, so the joined form scans the whole meta table before discarding all but `limit` rows.
-    const candidates = this.db
-      .query(`SELECT chunk_id, embedding FROM vec_chunks_p LIMIT ?`)
-      .all(limit) as Array<{ chunk_id: string; embedding: Uint8Array }>;
-    return this.filterToCollection(collection, candidates);
+  /** Up to `limit` vectors that have a direction (hasDirection), drawn at random from a collection regardless of cluster
+   *  state: the bootstrap's seeds, and ONLY that, since every row is unclustered then.
+   *
+   *  The ids come from vec_chunk_meta, an ordinary table, and the vectors are read by key. This used to be
+   *  `SELECT ... FROM vec_chunks_p LIMIT ?`: the first rows of the table, every call. An outside user's store was
+   *  seeded from rows that were nearly all zero vectors (an embed failure stored them until 0.48.0), so 10 of its 11
+   *  centroids were all-zero and every vector landed in the 11th. Three times `limit` ids are drawn so zero vectors can
+   *  be skipped; the reads stop at `limit` usable ones.
+   *
+   *  MEASURED on a copy of the dev store (272,019 vectors x 1024, 2026-10-14): the draw (ORDER BY RANDOM() LIMIT 2721) is
+   *  219 ms; a read by key is 2.1 ms cold, 0.9 ms warm, against 0.18 ms a row for a sequential scan of the first rows.
+   *  The 907 seeds that store would get took 5.6-7.4 s reading 3x as many in one go; stopping at `limit` usable ones and
+   *  yielding every 32 reads (~70 ms) takes 3.0-3.2 s in all, with the event loop stalled at most 232-477 ms (the draw
+   *  plus one batch, once). Async, because the sweep awaits it. Fewer than `limit` come back only when the store holds
+   *  fewer usable vectors. */
+  async sampleAnyVectors(collection: string, limit: number): Promise<Array<{ chunkId: string; embedding: Float32Array }>> {
+    const pool = (this.db
+      .query(`SELECT chunk_id FROM vec_chunk_meta WHERE collection_name = ? ORDER BY RANDOM() LIMIT ?`)
+      .all(collection, limit * 3) as Array<{ chunk_id: string }>).map(r => r.chunk_id);
+    const q = this.db.query('SELECT chunk_id, embedding FROM vec_chunks_p WHERE chunk_id = ?');
+    const out: Array<{ chunkId: string; embedding: Float32Array }> = [];
+    for (let i = 0; i < pool.length && out.length < limit; i++) {
+      const r = q.get(pool[i]!) as { chunk_id: string; embedding: Uint8Array } | null;
+      if (r) {
+        const embedding = new Float32Array(r.embedding.buffer, r.embedding.byteOffset, r.embedding.byteLength / 4);
+        if (hasDirection(embedding)) out.push({ chunkId: r.chunk_id, embedding });
+      }
+      if (i % 32 === 31) await new Promise<void>(res => setImmediate(res));
+    }
+    return out;
   }
 
   /** Sample of already-clustered vectors (cluster_id != sentinel) for a
@@ -768,14 +793,18 @@ export class VectorStore {
    * assignments made, so once the build completes and rebalancing begins it can drift past the
    * vector count — hence the caller clamps to 100%.
    */
-  indexSummary(collection: string): { centroids: number; vectors: number; assigned: number } {
+  indexSummary(collection: string): { centroids: number; vectors: number; assigned: number; zeroCentroids: number } {
     const c = this.db
       .query(`SELECT COUNT(*) n, COALESCE(SUM(hit_count),0) h FROM vec_cluster_centroids WHERE collection_name = ?`)
       .get(collection) as { n: number; h: number };
     const v = this.db
       .query(`SELECT COUNT(*) n FROM vec_chunk_meta WHERE collection_name = ?`)
       .get(collection) as { n: number };
-    return { centroids: c.n, vectors: v.n, assigned: Math.min(c.h, v.n) };
+    // From the cached centroid set, not a SQL compare of the blobs: that read 477 x 4 KB of overflow pages on every /stats
+    // poll, a path polled every 2 s. Measured on the 272k-vector dev copy: 43.7 ms p50 this way against 44.4 ms for the
+    // summary without it; the SQL compare was 50.3 ms.
+    const zeroCentroids = c.n === 0 ? 0 : this.getCentroids(collection).filter(x => isZeroVector(x.vector)).length;
+    return { centroids: c.n, vectors: v.n, assigned: Math.min(c.h, v.n), zeroCentroids };
   }
 
   /** Count of rows still in the pre-A2 `vec_chunks` table (0 once fully

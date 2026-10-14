@@ -7,6 +7,41 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.57.8] — 2026-10-14
+
+### Fixed
+
+- **The vector index no longer puts every vector in one cluster, and repairs itself where it already did.** The first
+  clusters were seeded from the first rows of the vector table, not a random draw. On an outside user's store those rows
+  were most likely zero vectors (an embed failure stored them until 0.48.0): 10 of its 11 centres were all zeros. A zero
+  centre scores 0 against everything, a populated one scores above it, and the update only moves centres that win a vector:
+  the bad seeds were permanent. All 41,198 vectors sat in the 11th cluster, and one dedup pass walked all 848 million pairs
+  for 7,723 s and found no group. Seeds are now drawn at random and never from a zero vector, and a store whose index
+  already holds an all-zero centre is rebuilt by the worker itself, after the update and a restart: its rows go back to
+  unclustered 64 at a time, then a new set of centres replaces the old one in a single write, then the rows are placed
+  again. Search keeps answering throughout, since every query also probes the unclustered rows. Measured on a copy of a
+  272,019-vector store: a batch of 64 takes 110-150 ms (the write itself 41-48 ms, 314 ms at worst) and stays flat as the
+  unclustered rows pile up, about 6% of the writer's time at the build cadence; a store of 41,000 vectors should need roughly
+  an hour (an estimate, not a measurement). The worker log prints a `reset=` count while it runs.
+- **Vectors with no direction are kept out of every cluster.** An all-zero or non-finite vector went to the first centre and
+  pulled it toward the origin (on one store 538 of them did, and 79% of that cluster was zeros). They are now parked in a
+  cluster of their own that no query probes and that dedup skips, so they cannot seed a centre, drag one or be walked as a
+  group. Re-embedding the chunk (`captain-memo maintenance --apply` queues it) puts it back in the normal flow.
+- **A chunk added while the index is being rebuilt can no longer be stranded.** It would have taken the cluster id of the
+  old set of centres, which no query probes, and stayed there. The id is now checked against the current set just before the
+  write.
+- **`doctor` warns when a centre of the vector index is all zeros** (`stats` reports it as `ivf.zeroCentroids`).
+  `ivf.assigned` equal to `ivf.vectors` had read as a healthy 100% on the broken store.
+
+### Notes
+
+- Chunks whose vector is all zeros still have no usable embedding. `captain-memo maintenance` (a dry run) counts them:
+  look for the "zero vectors: would queue" line. `--apply` queues them for re-embedding at 25 a minute.
+- Only dedup reads the clusters. The semantic, theme and supersede passes find their candidates another way (by session,
+  by window), so this change does not touch them.
+- The number of centres is still fixed when the index is first built and is not re-derived as the store grows, and the
+  rebalance step still re-samples the same 64 rows. Both are known limits, not changed here.
+
 ## [0.57.7] — 2026-10-13
 
 ### Fixed

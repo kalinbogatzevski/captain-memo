@@ -118,3 +118,40 @@ test('miniBatchUpdate — nearest computed ahead (nearestInBatch, with yields) g
   expect(yields).toBe(batch.length);
   expect(miniBatchUpdate(batch, cs, DEFAULT_IVF_CONFIG, pre)).toEqual(miniBatchUpdate(batch, cs, DEFAULT_IVF_CONFIG));
 });
+
+// Vectors with no direction: an embed failure stored all-zero vectors until 0.48.0 (0.73.0 on the federation line).
+import { hasDirection, isZeroVector, PARKED_CLUSTER } from '../../src/worker/ivf.ts';
+
+test('hasDirection — all zeros, NaN and Infinity have none; anything with a finite non-zero component has', () => {
+  expect(hasDirection([0, 0, 0])).toBe(false);
+  expect(hasDirection(new Float32Array(4))).toBe(false);
+  expect(hasDirection([])).toBe(false);
+  expect(hasDirection([0, NaN, 1])).toBe(false);
+  expect(hasDirection([1, Infinity])).toBe(false);
+  expect(hasDirection([0, 0, 1e-9])).toBe(true);
+  expect(hasDirection(Float32Array.from([0, -1]))).toBe(true);
+});
+
+test('seedCentroids — never seeds from a vector with no direction', () => {
+  const vs = [
+    { id: 'z1', vector: [0, 0, 0] }, { id: 'a', vector: [1, 0, 0] }, { id: 'z2', vector: [0, 0, 0] }, { id: 'b', vector: [0, 1, 0] },
+  ];
+  const seeds = seedCentroids(vs, [10, 11, 12, 13], (n, k) => Array.from({ length: Math.min(n, k) }, (_, i) => i));
+  expect(seeds.map(s => s.vector)).toEqual([[1, 0, 0], [0, 1, 0]]);   // 2 usable of 4 asked for: fewer seeds, none of them zero
+  expect(seeds.map(s => s.clusterId)).toEqual([10, 11]);
+});
+
+test('miniBatchUpdate — a vector with no direction is parked: not the first centroid, and no pull on any', () => {
+  const cents = [{ clusterId: 0, vector: [1, 0, 0], hitCount: 10 }, { clusterId: 1, vector: [0, 1, 0], hitCount: 10 }];
+  const { centroids, assignments } = miniBatchUpdate(
+    [{ id: 'z', vector: [0, 0, 0] }, { id: 'a', vector: [0, 1, 0] }], cents, { ...DEFAULT_IVF_CONFIG },
+  );
+  expect(assignments).toEqual([{ id: 'z', clusterId: PARKED_CLUSTER }, { id: 'a', clusterId: 1 }]);
+  expect(centroids[0]).toEqual(cents[0]);   // the zero vector would have won centroid 0 (first of a tie at 0) and dragged it
+});
+
+test('isZeroVector — true only when every component is exactly 0', () => {
+  expect(isZeroVector(new Float32Array(1024))).toBe(true);
+  expect(isZeroVector([0, 0, 1e-9])).toBe(false);
+  expect(isZeroVector([NaN])).toBe(false);   // not "zero": the sweep only repairs what is provably dead
+});

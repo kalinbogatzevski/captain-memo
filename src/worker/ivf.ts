@@ -120,6 +120,35 @@ export function targetClusterCount(vectorCount: number, cfg: IvfConfig): number 
   return Math.max(1, Math.round(vectorCount / cfg.targetPerCluster));
 }
 
+/** `cluster_id` of a chunk no query has placed yet: every query probes it, the sweep drains it. */
+export const UNCLUSTERED_CLUSTER = -1;
+
+/** `cluster_id` of a vector with no direction (see hasDirection). It belongs to no centroid, no query probes it and the
+ *  finders skip it; re-embedding the chunk writes a fresh row at UNCLUSTERED_CLUSTER. */
+export const PARKED_CLUSTER = -2;
+
+/** Every component is exactly 0. Stops at the first non-zero one, so a healthy vector costs one comparison: the sweep runs
+ *  this over every centroid on every slice. Over 477 x 1024 on the dev store: 0.07 ms p50, 1.55 ms max, where hasDirection
+ *  (every component, finite check) was 20 ms p50, 65 ms max. */
+export function isZeroVector(v: ArrayLike<number>): boolean {
+  for (let i = 0; i < v.length; i++) if (v[i] !== 0) return false;
+  return true;
+}
+
+/** A vector that points somewhere: every component finite, at least one non-zero. An embed failure stored all-zero
+ *  vectors until 0.48.0 (0.73.0 on the federation line). A zero vector scores 0 against every centroid, so as a seed it
+ *  is a centroid nothing can ever outscore (an outside user's store: 10 of 11 seeds, every vector in the 11th), and as a
+ *  batch member it wins the first centroid and drags it toward the origin. */
+export function hasDirection(v: ArrayLike<number>): boolean {
+  let nonZero = false;
+  for (let i = 0; i < v.length; i++) {
+    const x = v[i]!;
+    if (!Number.isFinite(x)) return false;
+    if (x !== 0) nonZero = true;
+  }
+  return nonZero;
+}
+
 export interface Centroid {
   clusterId: number;
   vector: number[];
@@ -227,6 +256,10 @@ export function miniBatchUpdate(
   const assignments: Array<{ id: string; clusterId: number }> = [];
   const byCluster = new Map<number, Array<number[] | Float32Array>>();
   for (const [i, item] of batch.entries()) {
+    if (!hasDirection(item.vector)) {
+      assignments.push({ id: item.id, clusterId: PARKED_CLUSTER });   // not the first centroid, and no pull on it
+      continue;
+    }
     const nearest = precomputed ? precomputed[i] : nearestCentroid(item.vector, centroids);
     if (!nearest) continue;
     assignments.push({ id: item.id, clusterId: nearest.clusterId });
@@ -262,7 +295,7 @@ export async function nearestInBatch(
 }
 
 /** Seed initial centroids via the Forgy method: sample k vectors from the
- *  corpus (via the injected `sample`) and use them as-is. `clusterIds` supplies
+ *  corpus (via the injected `sample`) and use them as-is, vectors with no direction excluded. `clusterIds` supplies
  *  the (already globally-allocated) ids to tag each seed with — this function
  *  never invents cluster ids itself, since allocation must be DB-backed and
  *  collision-free across collections (VectorStore's job, not this pure module's). */
@@ -271,10 +304,11 @@ export function seedCentroids(
   clusterIds: readonly number[],
   sample: (n: number, k: number) => number[],
 ): Centroid[] {
-  const indices = sample(vectors.length, Math.min(clusterIds.length, vectors.length));
+  const usable = vectors.filter(v => hasDirection(v.vector));
+  const indices = sample(usable.length, Math.min(clusterIds.length, usable.length));
   return indices.map((idx, i) => ({
     clusterId: clusterIds[i]!,
-    vector: Array.from(vectors[idx]!.vector),
+    vector: Array.from(usable[idx]!.vector),
     hitCount: 1,
   }));
 }

@@ -28,7 +28,7 @@ import type { RecallQuery, RecallView, RecallSort } from './observations-store.t
 import { loadTideConfig, computeBuoyancy, tideMultiplier } from './tide.ts';
 import { runTideSweepSlice } from './tide-sweep.ts';
 import { runIvfSweepSlice } from './ivf-sweep.ts';
-import { loadIvfConfig, defaultSample } from './ivf.ts';
+import { loadIvfConfig, defaultSample, PARKED_CLUSTER } from './ivf.ts';
 import { loadQmConfig } from './qm.ts';
 import { loadPromotionConfig } from './promotion-config.ts';
 import { runPromotionSlice, type PromotionDeps } from './promotion.ts';
@@ -1526,11 +1526,11 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
       })
           .then(r => {
-            const building = r.legacyMigrated > 0 || r.bootstrapped > 0 || r.assigned > 0;
+            const building = r.legacyMigrated > 0 || r.bootstrapped > 0 || r.assigned > 0 || r.reset > 0;
             if (building || r.rebalanced > 0) {
               console.error(
                 `[ivf-sweep] legacyMigrated=${r.legacyMigrated} bootstrapped=${r.bootstrapped} `
-                + `assigned=${r.assigned} rebalanced=${r.rebalanced}`,
+                + `assigned=${r.assigned} rebalanced=${r.rebalanced} reset=${r.reset}`,
               );
             }
             return building;
@@ -1579,7 +1579,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   const clusterObservationIds = async (yieldToLoop: () => Promise<void>): Promise<number[][]> => {
     const obsByChunk = await meta.observationIdsByChunk(yieldToLoop);
     const out: number[][] = [];
-    for (const chunkIds of (await vector.clusterMembership(collectionName, yieldToLoop)).values()) {
+    for (const [clusterId, chunkIds] of await vector.clusterMembership(collectionName, yieldToLoop)) {
+      if (clusterId === PARKED_CLUSTER) continue;   // vectors with no direction: every pair among them is cosine 0
       const ids = new Set<number>();
       for (const cid of chunkIds) {
         const id = obsByChunk.get(cid);

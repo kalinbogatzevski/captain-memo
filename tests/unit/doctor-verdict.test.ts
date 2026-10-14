@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { embedderSpendCheck, nonMarkdownMemoryCheck, schemaDrift, migrationVerdict, workerVerdict, embedderVerdict, embedCoverageCheck, sidecarHealthVerdict, injectLatencyVerdict, INJECT_MIN_SAMPLES, captureSourceVerdict, summarizerVerdict } from '../../src/cli/commands/doctor.ts';
+import { embedderSpendCheck, nonMarkdownMemoryCheck, schemaDrift, migrationVerdict, workerVerdict, embedderVerdict, embedCoverageCheck, ivfHealthCheck, sidecarHealthVerdict, injectLatencyVerdict, INJECT_MIN_SAMPLES, captureSourceVerdict, summarizerVerdict } from '../../src/cli/commands/doctor.ts';
 
 // ---------------------------------------------------------------------------
 // schemaDrift — does the live DB actually HAVE what the migrations promise?
@@ -528,4 +528,20 @@ test('embedCoverageCheck says nothing during the first index, on a tiny corpus, 
 
 test('embedCoverageCheck: vectors above total (a stale index) never reads as a gap', () => {
   expect(embedCoverageCheck({ total_chunks: 100, vectors: 130, indexing: 'ready' })).toBeNull();
+});
+
+// ivfHealthCheck — 2026-10-14 an outside user's index had 10 of 11 centroids all-zero: every vector in one cluster, every
+// dedup pass walking all 848M pairs, while ivf.assigned == ivf.vectors read as a healthy 100%.
+test('ivfHealthCheck WARNs when any centroid is all-zero, and says the worker repairs it itself', () => {
+  const c = ivfHealthCheck({ centroids: 11, zeroCentroids: 10 });
+  expect(c?.status).toBe('WARN');
+  expect(c?.detail).toContain('10 of 11');
+  expect(c?.remedy).toContain('captain-memo restart');
+});
+
+test('ivfHealthCheck is silent on a healthy index, an older worker that does not report it, and a missing ivf block', () => {
+  expect(ivfHealthCheck({ centroids: 477, zeroCentroids: 0 })).toBeNull();
+  expect(ivfHealthCheck({ centroids: 477 })).toBeNull();
+  expect(ivfHealthCheck(undefined)).toBeNull();
+  expect(ivfHealthCheck(null)).toBeNull();
 });

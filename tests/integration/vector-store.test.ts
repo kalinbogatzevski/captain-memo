@@ -189,7 +189,7 @@ test('VectorStore — sampleAnyVectors returns vectors regardless of cluster ass
   await store.add('coll_a', [{ id: 'a1', embedding: [1, 0, 0, 0] }, { id: 'a2', embedding: [0, 1, 0, 0] }]);
   const [u1] = store.getUnclusteredChunks('coll_a', 1);
   store.reassignCluster(u1!.chunkId, u1!.embedding, 0); // a1 (or a2) now clustered, the other still unclustered
-  const anyVecs = store.sampleAnyVectors('coll_a', 10);
+  const anyVecs = await store.sampleAnyVectors('coll_a', 10);
   expect(anyVecs.map(v => v.chunkId).sort()).toEqual(['a1', 'a2']);
 });
 
