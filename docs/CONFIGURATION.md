@@ -381,7 +381,7 @@ having new work.
 | `CAPTAIN_MEMO_IVF_TARGET_PER_CLUSTER` | `300` | Vectors per cluster; cluster count is corpus size divided by this. An index built before the build size was recorded is read as its cluster count times this, so lowering it can start one rebuild (see `REGROW_RATIO`). |
 | `CAPTAIN_MEMO_IVF_PROBE_CLUSTERS` | `16` | Clusters read per query. Lower is faster and misses more — see the table; measure on your own corpus. |
 | `CAPTAIN_MEMO_IVF_SWEEP_BATCH` | `64` | Vectors per slice. Measured optimum: past ~64 the vec0 partition rewrite goes superlinear (256 held the writer for 8.6 s), so a bigger batch is worse on **both** throughput and latency. |
-| `CAPTAIN_MEMO_IVF_BUILD_MS` | `2000` | Cadence while building. Holds writer duty at ~19% and builds 143k vectors in ~75 min. |
+| `CAPTAIN_MEMO_IVF_BUILD_MS` | `2000` | Shortest gap between build slices. A slice slower than ~670 ms (many clusters, a busy machine) is followed by a gap of three slice-times instead, so the writer is busy at most 25% of the time: a 1.6 s slice at 931 clusters gets a 5.2 s gap. The earlier "~19% duty, 143k vectors in ~75 min" assumed a 376 ms slice and did not count the nearest-cluster ranking or the cluster rewrite. |
 | `CAPTAIN_MEMO_IVF_SWEEP_MS` | `60000` | Cadence once converged, when the only remaining work is rebalancing. |
 | `CAPTAIN_MEMO_IVF_MIN_LEARNING_RATE` | `0.01` | Centroid drift floor, so clusters keep adapting instead of freezing. |
 | `CAPTAIN_MEMO_IVF_REGROW_RATIO` | `3` | Rebuild the index once the corpus is this many times the size it was built for; `0` never. See below. |
@@ -398,7 +398,7 @@ theme passes take their groups from cluster membership. So once the corpus reach
 `REGROW_RATIO` times the size the index was built for, the sweep rebuilds it with the cluster count
 the corpus has now: every vector goes back to the unclustered partition, 64 per slice, then is
 assigned again. Search stays complete throughout (that partition is always read) but is slower
-until it drains — on a 279k-vector store about 5x slower for a few hours — which is why the ratio
+until it drains — on a 279k-vector store 5-6x slower for roughly eleven hours — which is why the ratio
 is 3 and not 2: an index at 1.95x (477 clusters for 279k vectors) is left alone, and each rebuild
 is a tripling apart.
 

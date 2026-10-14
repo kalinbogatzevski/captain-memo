@@ -28,7 +28,7 @@ import type { RecallQuery, RecallView, RecallSort } from './observations-store.t
 import { loadTideConfig, computeBuoyancy, tideMultiplier } from './tide.ts';
 import { runTideSweepSlice } from './tide-sweep.ts';
 import { runIvfSweepSlice } from './ivf-sweep.ts';
-import { loadIvfConfig, defaultSample, observationGroups } from './ivf.ts';
+import { loadIvfConfig, defaultSample, observationGroups, nextSweepDelayMs } from './ivf.ts';
 import { loadQmConfig } from './qm.ts';
 import { loadPromotionConfig } from './promotion-config.ts';
 import { runPromotionSlice, type PromotionDeps } from './promotion.ts';
@@ -1516,6 +1516,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     // slice is only scheduled once the previous one has settled.
     const scheduleIvfSweep = (delayMs: number): void => {
       ivfSweepTimer = setTimeout(() => {
+        const sliceStart = performance.now();
         ivfSweepPromise = runIvfSweepSlice({
         collection: collectionName,
         cfg: ivfConfig,
@@ -1550,7 +1551,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           .catch(err => { console.error('[ivf-sweep] ERROR', err); return false; })
           .then(building => {
             ivfSweepPromise = null;
-            scheduleIvfSweep(building ? ivfConfig.buildIntervalMs : ivfConfig.sweepIntervalMs);
+            scheduleIvfSweep(nextSweepDelayMs(building, performance.now() - sliceStart, ivfConfig));
           });
       }, delayMs);
     };

@@ -100,18 +100,33 @@ export const DEFAULT_IVF_CONFIG: IvfConfig = {
   // average 900+ vectors against the 300 aimed for, and the dev store (279,227 vectors, 477 centroids, 1.95x) is left alone
   // until ~430k. 2 would rebuild it at ~286k, 7k vectors from now. Growth by 3x between rebuilds also keeps the total
   // rebuilding work proportional to the corpus, not to its history.
-  // MEASURED on a copy of the dev store (2026-10-14, nice 19 on a box at load ~15, so slow and with fat tails), the rebuild
-  // the dev store would get if it crossed the ratio:
-  //   reset phase   4,363 slices of 64 rows: slice 126 ms p50 / 333 p95, write transaction 46 / 238 ms (451 max), ~6% of
-  //                 writer time at the 2 s build cadence -> 2.6 h
-  //   bootstrap     seed draw for k=931: 7.4 s (event loop stalled 1.3 s at most); replacing the 931 centroids: 1.35 s, once
-  //   assign phase  4,363 slices: 2.4 s p50 / 3.5 p95, of which rewriting all 931 centroids 636 ms and the row moves 107 ms
-  //                 (the 477-centroid rebalance tick pays 252-269 ms for the same rewrite) -> ~54% writer duty at 2 s, 5.3 h
-  //   search        a flat scan of the store 4.8 s p50 (12.6 max) against 1.0 s for the probe-16 query, so up to ~5x slower
-  //                 while the parked rows drain
+  // MEASURED on a copy of the dev store (2026-10-14, nice 19, box at load 8-15, so slow and with fat tails; two runs, ranges
+  // below), the rebuild the dev store would get if it crossed the ratio:
+  //   reset phase   4,363 slices of 64 rows: slice 126-151 ms p50 / 333-373 p95, write transaction 46-52 ms p50 / 238-261 p95
+  //                 (451 and 1,095 ms max), ~7% of writer time at the 2 s gap -> 2.6 h
+  //   bootstrap     seed draw for k=931: 3.8-7.4 s (event loop stalled 1.1-1.3 s at most); replacing the 931 centroids:
+  //                 0.44-1.35 s, once
+  //   assign phase  4,363 slices at 1.6 s p50 / 3.6 p95, spaced 3 slice-times apart (BUILD_SPACING) so the writer is busy 25% -> 8.5 h
+  //   search        a flat scan of the store 4.8-9.3 s p50 against 1.0-1.4 s for the probe-16 query, so 4.7-6.4x slower
+  //                 while the parked rows drain; ~11 h in all for 279k vectors, ~17 h at 430k
   // Not a cost the converged index ever pays, and the same assign phase a first build at that size already costs.
   regrowRatio: 3,
 };
+
+/** A build slice is followed by at least this many slice-times of quiet, so the writer is busy at most 1/(1+3) = 25% of the
+ *  time (the owner's budget) however slow the box or large the index makes a slice. buildIntervalMs alone could not hold it:
+ *  its 2 s was sized for a 376 ms slice (18.8%), which counted neither the nearest-centroid ranking nor the centroid rewrite.
+ *  MEASURED on a copy of the dev store (279,227 vectors, 931 centroids, 2026-10-14, nice 19, box at load 8-13), 20 real assign
+ *  slices with the touched-only centroid write: 1.6 s p50, 3.6 p95 (mean 1.75 s; 2.4 s before that write, on a busier box), so
+ *  at a fixed 2 s gap the writer was busy 47% (45% at p50; 54% in the earlier run), and with this spacing the gap is 5.2 s and
+ *  it is 25%. A slice under ~670 ms keeps the plain build interval, so a small index builds as fast as before. */
+export const BUILD_SPACING = 3;
+
+/** Milliseconds until the next sweep slice: the slow cadence once converged, and while building the build interval or
+ *  BUILD_SPACING times the slice that just ran, whichever is longer. */
+export function nextSweepDelayMs(building: boolean, sliceMs: number, cfg: IvfConfig): number {
+  return building ? Math.max(cfg.buildIntervalMs, BUILD_SPACING * sliceMs) : cfg.sweepIntervalMs;
+}
 
 /** Build an IvfConfig from a plain env record. Unparseable values fall back to
  *  the default (never NaN) — mirrors tide.ts's loadTideConfig exactly. */
