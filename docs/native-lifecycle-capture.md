@@ -27,11 +27,15 @@ exact session native; from then on, the compatibility reader skips it to prevent
 Recall and capture use the three hooks above. Since 0.50.0 and 0.51.0, `captain-memo connect` also installs
 a session-start hook and a pre-tool hook for Codex and Gemini:
 
-| CLI | Recall and capture | Working rules at session start | Work-board guard |
+| CLI | Recall and capture | Session start (working rules, open homework) | Work-board guard |
 |---|---|---|---|
 | Codex CLI | `UserPromptSubmit`, `PostToolUse`, `Stop` | `SessionStart` (sent again after `/compact`) | `PreToolUse` |
 | Gemini CLI | `BeforeAgent`, `AfterTool`, `AfterAgent` | `SessionStart` (not sent again after a compression) | `BeforeTool` (`write_file`, `replace`, `run_shell_command`) |
 | Kimi CLI | `UserPromptSubmit`, `PostToolUse`, `Stop` | none | none |
+
+The session-start hook hands the model the working rules and, since 0.57.11, the open homework: up to six
+items, due ones first, from one worker read bounded at 1.5 s. A worker that is down or slow adds nothing,
+and the rules are sent either way. Kimi has no session-start hook.
 
 A session counts as native only after `PostToolUse` reaches the worker; the other hooks do not change that.
 
