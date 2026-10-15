@@ -141,7 +141,7 @@ After the wizard, **fully restart Claude Code** (quit the `claude` process, not 
 
 There is no fixed recommendation here: the wizard checks which of Claude, Codex and agy is actually logged in on this machine and recommends the first one that is — each option says whether it is logged in here, and a headless install takes that pick. If none of the three is logged in, the interactive wizard says so and tells you to log in and restart the worker; a headless install falls back to Claude via OAuth.
 
-A summarizer that stops while the worker is running comes back on its own: with no provider left, `captain-memo doctor` FAILs and the Claude Code session banner prints `Summarizer DOWN` with the reason, and the worker re-checks the whole provider chain every 10 minutes and, once one works, releases the observations that were dead-lettered meanwhile. `captain-memo queue retry` does the same on demand.
+A summarizer that stops while the worker is running comes back on its own: with no provider left, `captain-memo doctor` FAILs and the Claude Code session banner prints `Summarizer DOWN` with the reason, and the worker re-checks the whole provider chain every 10 minutes and, once one works, releases the observations that were dead-lettered meanwhile. `captain-memo queue retry --apply` does the same on demand; without `--apply` it is a dry run that only reports what it would release.
 
 **Question 2 — Embedder** (turns text into vectors for semantic search):
 
