@@ -35,7 +35,7 @@ a session-start hook and a pre-tool hook for Codex and Gemini:
 
 The session-start hook hands the model the working rules and, since 0.57.11, the open homework: up to six
 items, due ones first, from one worker read bounded at 1.5 s. A worker that is down or slow adds nothing,
-and the rules are sent either way. Kimi has no session-start hook.
+and the rules are sent either way. No session-start hook is wired for Kimi.
 
 A session counts as native only after `PostToolUse` reaches the worker; the other hooks do not change that.
 
