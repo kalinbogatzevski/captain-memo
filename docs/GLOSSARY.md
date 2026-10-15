@@ -89,7 +89,8 @@ observations by what you actually recall **together** — not just by what share
 vocabulary — and folds each cluster into one higher-level theme, archiving the originals
 rather than deleting them. It runs locally, on your schedule, with the model login you
 already have. `captain-memo dream --dry-run` previews the clusters and writes nothing;
-themes are written by the consolidation passes (`consolidate`, `theme`), not by `dream`.
+themes are written by the background consolidation passes (`consolidate` runs them
+now), not by `dream`; `theme` lists and reverses them.
 
 The name is Anthropic's: [Dreams](https://platform.claude.com/docs/en/managed-agents/dreams)
 shipped in Claude Managed Agents in May 2026 — a pass that re-reads an agent's memory store

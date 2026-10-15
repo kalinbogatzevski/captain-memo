@@ -255,7 +255,7 @@ Read by `services/embed/`, not by the worker. Set these where the service starts
 | `CAPTAIN_MEMO_EMBED_INFERENCE_BATCH_SIZE` | `8` | |
 | `CAPTAIN_MEMO_EMBED_TORCH_THREADS` | `4` | |
 
-A service that cannot load its model stays up instead of crash-looping: `/health` reports why, embedding requests get a 503 that carries the reason, and the load is retried in the background. `captain-memo doctor` then shows `embedder model: local sidecar is running but could not load …`. A worker that starts before its embedder retries its dimension check in the background (after 5 s, 15 s, 45 s, 2 min, then every 5 min, 12 tries in all) instead of leaving the embedder unchecked.
+A service that cannot load its model stays up instead of crash-looping: `/health` reports why, embedding requests get a 503 that carries the reason, and the load is retried in the background. `captain-memo doctor` then shows `embedder model: local sidecar is running but could not load …`. The worker, not the service, retries its embedder dimension check in the background when it starts first (after 5 s, 15 s, 45 s, 2 min, then every 5 min: 12 retries, under an hour in all) instead of leaving the embedder unchecked.
 
 ### Summarizer
 
