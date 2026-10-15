@@ -17,6 +17,8 @@ The size of the searchable index, in **chunks** (embedding-sized pieces of text)
 | Term | Meaning |
 |---|---|
 | **memory** | Chunks from the `memory` channel — things you explicitly `remember`ed, plus promoted facts. |
+| **skill** | Chunks from the `skill` channel — the cross-AI Agent Skills Captain Memo synchronizes (the registry row itself is lossless; these are its searchable sections). Listed when the channel holds chunks. |
+| **capability** | Chunks from the `capability` channel — sanitized plugin and extension descriptors. Searchable, never injected into the prompt envelope. Listed when the channel holds chunks. |
 | **observation** | Chunks from **observations** — the summarizer-distilled summaries of past sessions (Claude Code + captured cross-AI tools). |
 | **Total** | Total chunks in the vector index across all channels. |
 
@@ -30,6 +32,8 @@ re-work is avoided.
 | **Compression** | `raw session tokens ÷ stored observation tokens`. `7.7×` means the stored memory is 7.7× smaller than the material it was distilled from. |
 | **distilled A → B tok** | The raw work tokens (`A`) the summarizer read, versus the tokens (`B`) it actually stored. The `saved %` is `1 − B/A`. |
 | **Embedder** | Embedding-API activity since the worker started: number of calls, average latency, throughput (tokens/sec). |
+| **Embed tokens** | Tokens sent to the embedding provider since the worker started: every request, retries included, from the indexer and from every search reader, and how many of them went to requests that never got an answer. |
+| **embedding paused** | Shown under **Embed tokens** when embedding is standing still: it pauses for 30 minutes after more than 500,000 such unanswered tokens in an hour, in at least one engine (`CAPTAIN_MEMO_EMBEDDER_WASTE_LIMIT_TOKENS` sets the limit, `0` turns the pause off). |
 | **Dedup** | Share of documents skipped on re-index because their content hash was **unchanged** — i.e. work avoided. `42%  8 / 19 unchanged` = 8 of 19 re-seen docs needed no re-embed. |
 
 ## AI sources
@@ -76,7 +80,7 @@ over time) outrank one-off noise, and lets idle memories fade.
 | **tiering** | Phase-2 auto-tiering: whether idle memories are automatically demoted down tiers over time. |
 | **Strengthened** | Observations whose **stability** has grown because a recall reinforced them (a memory earning permanence). |
 | **max stability** | The highest stability any single observation has reached, in days. |
-| **Tiers** | Lifecycle buckets: **active** (in play) · **dormant** (idle, deprioritised) · **archived** (aged out of normal retrieval). |
+| **Tiers** | Lifecycle buckets: **active** (in play) · **dormant** (idle, deprioritised) · **archived** (aged out of normal retrieval). Two more figures show when they are not zero: **folded** (rows folded into a survivor or a theme, which are not counted as active) and **anchored** (rows pinned so they never ebb). |
 
 ## Dream — *data feeding the Dreams pipeline*
 
@@ -84,8 +88,8 @@ over time) outrank one-off noise, and lets idle memories fade.
 observations by what you actually recall **together** — not just by what shares
 vocabulary — and folds each cluster into one higher-level theme, archiving the originals
 rather than deleting them. It runs locally, on your schedule, with the model login you
-already have. Preview it with `captain-memo dream --dry-run`; the write path is not
-shipped yet.
+already have. `captain-memo dream --dry-run` previews the clusters and writes nothing;
+themes are written by the consolidation passes (`consolidate`, `theme`), not by `dream`.
 
 The name is Anthropic's: [Dreams](https://platform.claude.com/docs/en/managed-agents/dreams)
 shipped in Claude Managed Agents in May 2026 — a pass that re-reads an agent's memory store
@@ -124,6 +128,6 @@ them; `captain-memo stats` does not.
 | **Indexing** | Index build progress (`done / total`). |
 | **Embedder** | The embedding model + endpoint in use. |
 | **Disk** | On-disk footprint of the data dir. |
-| **Summarizer** | The resolved summarizer provider + model. If this isn't running, **no observations are created and cross-AI capture is disabled** — `doctor` will flag it red. |
+| **Summarizer** | The resolved summarizer provider + model. If this isn't running, **no observations are created and cross-AI capture is disabled** — `doctor` will flag it red, the Claude Code session banner says `Summarizer DOWN`, and the worker re-checks the provider chain every 10 minutes and resumes by itself once one works. |
 
 *Seeing something not listed here? Open an issue — the glossary should cover every term on screen.*

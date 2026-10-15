@@ -36,7 +36,7 @@ The worker watches memory, skill, and capability sources together. [CONFIGURATIO
 ```bash
 captain-memo status                     # health check + total chunk count
 captain-memo stats                      # corpus stats by channel
-captain-memo reindex                    # cheap sha-diff reindex
+captain-memo reindex                    # cheap sha-diff reindex (re-embeds any chunk whose vector is gone)
 captain-memo reindex --channel memory   # restrict to one channel
 captain-memo reindex --force            # ignore sha cache, re-embed all
 captain-memo skill list                 # browse synchronized virtual skills
@@ -44,6 +44,8 @@ captain-memo skill list --source codex  # filter by source AI (--json is availab
 captain-memo capability list            # installed plugin/extension capabilities
 captain-memo capability recommend "generate an image"
 ```
+
+With the threaded worker (`CAPTAIN_MEMO_WORKER_THREADED=1`, off by default), a `reindex`, `consolidate` or `promote` call that the worker stops waiting for is reported as unconfirmed and exits 2, not as failed: the work carries on, so do not retry it; check the status the message names. `remember` prints `Memory write UNCONFIRMED` for the same reason.
 
 ## Upkeep — disk and staleness
 
@@ -56,7 +58,10 @@ captain-memo maintenance --grace-days 14    # plugin-cache trees orphaned longer
 
 Three sweeps: finished queue rows past the retention window, embeddings whose chunk is gone, and
 superseded plugin-cache trees. It also finds embeddings stored as all zeros (an old embed-failure
-fallback) and, with `--apply`, queues their chunks for re-embedding. Dry-run by default — it deletes, so it
+fallback) and, with `--apply`, queues their chunks for re-embedding. It lists indexed memory documents that are not
+markdown (leftovers of an earlier over-wide file watcher) and, with `--apply`, removes them with their
+vectors; the worker removes them hourly on its own and `captain-memo doctor` warns while any remain.
+Dry-run by default — it deletes, so it
 shows its work first. Safe to run with the worker up; queue.db is only shrunk when the worker is stopped.
 
 **About the plugin cache.** Upgrading re-points Claude Code at a new version directory under
@@ -70,7 +75,7 @@ share most of their files, so `du` and a naive byte-sum both overstate what a de
 
 | check | means |
 |---|---|
-| `plugin cache version` | the cache copy is older than this checkout — the cache did not follow the last update. Re-run `captain-memo install`. |
+| `plugin cache version` | the cache copy is older than this checkout — the cache did not follow the last update. The next session start refreshes it (a directory marketplace on this checkout); `captain-memo install --yes` does it at once. |
 | `live plugin version` | a running session is on an older plugin than this checkout, and names which. |
 
 A session's plugin root is fixed in its **process argv at spawn** (`--plugin-dir <path>`), not read
@@ -85,6 +90,12 @@ them: on a machine you connect to remotely there are typically two, and they do 
 
 Restarting `claude rc` therefore leaves every Desktop session running its old copy — the trap this
 check exists to name.
+
+**Data checks in `captain-memo doctor`:** `embedding coverage` (WARN above 2% of chunks without a vector,
+FAIL above 50%; a plain `captain-memo reindex` re-embeds them), `vector index` (a cluster centre that is
+all zeros; the worker repairs it after an update and a restart), `embedder spend` (embedding is paused
+after a run of requests that got no answer) and `indexed non-markdown files` (`captain-memo maintenance
+--apply` removes them).
 
 ## Use the MCP server (manual)
 
@@ -112,11 +123,11 @@ Skill-broker tools: `list_skills` browses the synchronized catalog, `recommend_s
 
 Work coordination is `work_set` / `work_active` / `work_clear`. Always pass `topics` to `work_set`: 1–5 short kebab tags for what the work is *about* (`billing-rounding`, `installer-windows`) — two sessions on one topic are flagged whatever files they touch. Each row in `overlaps[]` says its `kind` (`topics` | `files` | `semantic` | `repo`) and what is shared; `work_active` adds `topic_contention` (every topic two or more sessions hold, and who), and both report `semantic` — whether the meaning-match pass is working right now, and since when / why it is degraded.
 
-A live claim blocks. Another Claude Code, Codex or Gemini session's edit or upload of a file you hold is refused until the user types `override: <file>`; the override lasts 30 minutes and shows on `work_active`. A claim with no edit for 10 minutes (`CAPTAIN_MEMO_WORKNOTE_STALE_MS`) only warns, and `work_set` cannot claim a file a live session holds. `work_set` and `work_clear` act only on your own session: another session's id is refused with `not_your_session` (Claude Code, and Codex and Gemini where their process id is found). Blocking needs the AI process id of both sessions. It is found on Linux, the macOS lookup is built but has not been run on a Mac yet, and on Windows Codex and Gemini claims only warn. `CAPTAIN_MEMO_WORKBOARD_ENFORCE=0`, set in the AI tool's environment, turns blocking back into warnings.
+A live claim blocks. Another Claude Code, Codex or Gemini session's edit or upload of a file you hold is refused until the user types `override: <file>`; the override lasts 30 minutes and shows on `work_active`. A claim with no edit for 10 minutes (`CAPTAIN_MEMO_WORKNOTE_STALE_MS`) only warns, and `work_set` cannot claim a file a live session holds. `work_set` and `work_clear` act only on your own session: another session's id is refused with `not_your_session` (Claude Code, and Codex and Gemini where their process id is found). Blocking needs the AI process id of both sessions. It is found on Linux, the macOS lookup is built but has not been run on a Mac, and on Windows Codex and Gemini claims only warn. `CAPTAIN_MEMO_WORKBOARD_ENFORCE=0`, set in the AI tool's environment, turns blocking back into warnings.
 
 ### Session-start working rules
 
-Claude Code, Codex and Gemini sessions are sent a fixed set of working rules (under 3 KB) at session start, and again after `/compact` in Claude Code and Codex. The work-board steps come first, then seven rules: search memory before acting, never guess, committed is not deployed, ask when intent is unclear, `idea:` / `todo:` is homework, run tests and data scripts next to the data they use, and run independent work in parallel. They are always on in this release. Other AI tools get the work-board part through the captain-memo skill, when the model loads it.
+Claude Code, Codex and Gemini sessions are sent a fixed set of working rules (under 3 KB) at session start, and again after `/compact` in Claude Code and Codex. The work-board steps come first, then seven rules: search memory before acting, never guess, committed is not deployed, ask when intent is unclear, `idea:` / `todo:` is homework, build the whole change first and run test suites only when the user asks (then once, never between steps, beside the database host and never over a WAN), and run independent work in parallel. They are always on in this release. Other AI tools get the work-board part through the captain-memo skill, when the model loads it.
 
 ### Homework
 
@@ -124,8 +135,8 @@ Ideas and todos parked for later, per captain — every AI session on this machi
 
 - Type `idea: …`, `todo: …`, `homework: …` or `later: …` (`идея:` / `за после:`) at the start of a prompt (then `:`, `-` or `—`) and the prompt hook files it on this machine before the model acts on it. The prompt still reaches the model, with memory recall skipped; the model sees `📝 Filed as homework #N on this captain (not for now): …` and can just answer "noted" (not under Kimi CLI, whose prompt-hook output does not reach the model as of 1.52.0). The hook runs in Claude Code, and in Codex, Gemini and Kimi where `connect` wired their native hooks (Codex runs them only after you approve them once in `/hooks`). Elsewhere nothing files it automatically: the `todo_add` tool description, and the skill `connect` copies in where the tool reads it, ask the model to file it with `todo_add`. JetBrains gets the `todo_*` tools only once you add the MCP server in the IDE from the snippet `connect` writes.
 - `todo_add(text, topics, project, due)` files one from a session; `due` is optional: an ISO 8601 date (`2026-10-01`, this host's midnight) or date-time (`2026-10-01T09:30`, this host's local time unless it carries a zone), refused if it is not one or the date does not exist; `todo_list(status)` shows what is `open` (default), `done` (kept a week) or `all`; `todo_claim(id)` takes one, so every other session on this machine sees it as taken (advisory: claiming again just changes the holder); `todo_unclaim(id)` hands your own claim back without closing it (another session's claim is refused); `todo_done(id, note)` closes it.
-- Claude Code sessions list up to three open items in the session-start banner; an item whose due time has come leads it, marked `⏰ … (DUE since 2026-10-01 09:30)`, the one due longest ago first, and a due item still ahead shows `(due …)` in its place. A reminder only: nothing starts by itself. Other AI tools have no session-start hook; their model calls `todo_list()`, which returns `due` in UTC.
-- Worker routes: `POST /homework/add`, `GET /homework/list`, `POST /homework/claim`, `POST /homework/done`. Like every worker route except `GET /health`, they need the worker secret, which the hooks, the MCP server and the CLI send for you (see [CONFIGURATION.md](CONFIGURATION.md#worker-runtime)).
+- Claude Code sessions list up to three open items in the session-start banner; an item whose due time has come leads it, marked `⏰ … (DUE since 2026-10-01 09:30)`, the one due longest ago first, and a due item still ahead shows `(due …)` in its place. A reminder only: nothing starts by itself. Codex and Gemini sessions are given the open homework at start, as context for the model rather than a banner: up to six items with their topics, due ones first, from one worker read bounded at 1.5 s (a worker that is down or slow adds nothing). It needs the `SessionStart` hook that `connect` installs, and Codex runs it only after you approve it once in `/hooks`; a `connect` from before 0.50.0 did not install it, so run `captain-memo connect` again, and open a new session after updating. Kimi CLI, Antigravity, opencode, Cursor, Vibe, VS Code, JetBrains, goose and Claude Desktop have no session-start hook; their model calls `todo_list()`, which returns `due` in UTC.
+- Worker routes: `POST /homework/add`, `GET /homework/list`, `POST /homework/claim`, `POST /homework/unclaim`, `POST /homework/done`. Like every worker route except `GET /health`, they need the worker secret, which the hooks, the MCP server and the CLI send for you (see [CONFIGURATION.md](CONFIGURATION.md#worker-runtime)).
 - Full guide: [captain-memo.ispcq.com/homework.html](https://captain-memo.ispcq.com/homework.html).
 
 ## Watch paths
@@ -156,10 +167,14 @@ on top of the foundation above.
 > - **At runtime** a provider that dies is retired and the next one takes over — an OAuth token that
 >   expires at hour 30 no longer means observations are dead-lettered. Auth-shaped failures (401/403,
 >   missing token, missing binary) demote immediately; a plain bad request does not, so one
->   malformed batch cannot retire a working provider. A demoted provider is never retried until the
->   worker restarts, deliberately: no cooldown, no flapping between two half-broken providers.
-> - **When the chain runs out**, the summarizer stops and `doctor` FAILs loudly saying so. Restarting
->   re-walks the whole list.
+>   malformed batch cannot retire a working provider. While another provider is serving, a demoted one
+>   is not retried, deliberately: no cooldown, no flapping between two half-broken providers.
+> - **When the chain runs out**, the summarizer stops, `doctor` FAILs loudly saying so and the Claude
+>   Code session banner prints `Summarizer DOWN` with the reason. The worker then re-walks the whole
+>   list every 10 minutes and, once a provider works, restores the summarizer and releases the
+>   observations that were dead-lettered meanwhile (up to 500 per recovery, and again at every boot).
+>   A login that is still bad costs one failed request per cycle. A restart re-walks the list at once,
+>   and `captain-memo queue retry [--apply] [--limit N]` releases dead-lettered rows on demand.
 > - **`captain-memo install --summarizer <x>` REPLACES the previous choice** (it doesn't add). The
 >   wizard prints `summarizer changed: codex → agy (replaces it)` so you can see the swap.
 > - **To see what is actually running:** `captain-memo stats` shows the live provider;
@@ -316,11 +331,13 @@ captain-memo install-hooks --project
 | Hook | Latency budget | Behavior on worker down |
 |---|---|---|
 | `UserPromptSubmit` | 1500 ms (`CAPTAIN_MEMO_HOOK_TIMEOUT_MS`); an `idea:` / `todo:` prompt waits up to 6 s for the homework write instead, whatever that setting says (less under Codex, Gemini and Kimi, whose hosts kill the hook at 5 s); with `CAPTAIN_MEMO_AUTO_UPDATE=1` in Claude Code, a prompt that finds an update check due also waits a few seconds for it | No envelope; original prompt still passes through. A homework prompt tells the model it may not have been filed: check `todo_list()`, else `todo_add` it |
-| `SessionStart` | registered with a 60 s timeout; waits ≤15 s for a starting worker, ≤20 s for one that is updating or booting | Prints a banner: the degraded one, or — when the worker left a transition breadcrumb — "updating (vX → vY)" with a note that memory resumes by itself, no restart needed. The working rules are sent either way |
+| `SessionStart` | registered with a 60 s timeout; waits ≤15 s for a starting worker, ≤20 s for one that is updating or booting | Prints a banner: the degraded one, or — when the worker left a transition breadcrumb — "updating (vX → vY)" with a note that memory resumes by itself, no restart needed. With the worker up but no usable summarizer, the Claude Code banner says `Summarizer DOWN` with the reason, and its queue line reads `stalled — summarizer down`. The working rules are sent either way |
 | `PreToolUse` | 1500 ms per worker call (`CAPTAIN_MEMO_PRE_TOOL_USE_TIMEOUT_MS`); Claude Code, Codex and Gemini (Gemini calls it `BeforeTool`) | Fails open: with no answer from the worker the tool call proceeds. With the worker up it refuses an edit or upload over another session's live claim, and an upload whose server copy is not yours, until the user types `override: <file>` (`CAPTAIN_MEMO_WORKBOARD_ENFORCE=0` makes both advisory) |
 | `PostToolUse` | 1000 ms to enqueue (`CAPTAIN_MEMO_POST_TOOL_USE_TIMEOUT_MS`) | Event dropped |
 | `Stop` | 5 s drain | Queue persists for next session |
 | `PreCompact` | 5 s to enqueue (`CAPTAIN_MEMO_PRE_COMPACT_TIMEOUT_MS`), registered with a 10 s timeout | Pre-compaction event dropped; compaction proceeds |
+
+A worker whose writer thread is momentarily stalled answers `/health` with 503 and its process identity; the hooks and the watchdog count that as alive unless the engine has reported itself stuck for two minutes, and a session start against it says "active (stats snapshot slow to load)". Only a hook that is strictly newer than the running worker replaces it.
 
 The hooks read their settings (`CAPTAIN_MEMO_HOOK_TIMEOUT_MS`, the `*_TIMEOUT_MS` ones above, `CAPTAIN_MEMO_AUTO_UPDATE`, `CAPTAIN_MEMO_DISABLE_SELF_HEAL`, `CAPTAIN_MEMO_HOOK_DEBUG`, `CAPTAIN_MEMO_WORKBOARD_ENFORCE`) from the environment of the AI tool, not from `worker.env`. For Claude Code, put them in the `env` block of its `settings.json` or export them before it starts. They apply from the next session.
 

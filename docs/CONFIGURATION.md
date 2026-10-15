@@ -48,7 +48,7 @@ misbehaves and you want it to stop.
 
 | Setting | Turns off | Default |
 |---|---|---|
-| `CAPTAIN_MEMO_QM_ENABLED=0` | All Quartermaster housekeeping (dedup + supersede + semantic) | ON |
+| `CAPTAIN_MEMO_QM_ENABLED=0` | All Quartermaster housekeeping: dedup, supersede, semantic fold and theme building (each also has its own switch below) | ON |
 | `CAPTAIN_MEMO_QM_DEDUP=0` | Near-duplicate folding only | ON |
 | `CAPTAIN_MEMO_QM_SUPERSEDE=0` | Stale-version demotion only | ON |
 | `CAPTAIN_MEMO_QM_SEMANTIC=0` | Idle-time semantic consolidation only | ON |
@@ -255,6 +255,8 @@ Read by `services/embed/`, not by the worker. Set these where the service starts
 | `CAPTAIN_MEMO_EMBED_INFERENCE_BATCH_SIZE` | `8` | |
 | `CAPTAIN_MEMO_EMBED_TORCH_THREADS` | `4` | |
 
+A service that cannot load its model stays up instead of crash-looping: `/health` reports why, embedding requests get a 503 that carries the reason, and the load is retried in the background. `captain-memo doctor` then shows `embedder model: local sidecar is running but could not load …`. A worker that starts before its embedder keeps probing it in the background rather than leaving it unchecked.
+
 ### Summarizer
 
 | Setting | Default | Notes |
@@ -270,7 +272,7 @@ Read by `services/embed/`, not by the worker. Set these where the service starts
 |---|---|---|
 | `CAPTAIN_MEMO_HOOK_TIMEOUT_MS` | `1500` | Budget for the memory envelope on each prompt (`UserPromptSubmit`), and the `SessionStart` stats timeout when `CAPTAIN_MEMO_SESSION_START_TIMEOUT_MS` is unset. It does not govern homework capture: an `idea:` / `todo:` prompt waits up to 6 s for the worker to confirm the write (less under Codex, Gemini and Kimi, whose hosts kill the hook at 5 s). `PreToolUse`, `PostToolUse` and `PreCompact` have their own settings below. |
 | `CAPTAIN_MEMO_HOOK_BUDGET_TOKENS` | `4000` | Ceiling on injected context per turn. Read by the worker, so `worker.env` works for this one. |
-| `CAPTAIN_MEMO_GREETING` | unset | A line printed first in the session-start banner, e.g. `Samo Levski!`. Unset, nothing extra is printed. One line, control characters replaced by a space, at most 80 characters. In `worker.env` it needs a worker restart: the worker hands it to the hook, which never reads that file. In the environment of the AI tool it applies from the next session and wins over the worker's; set empty there, it hides the worker's. The banner already shows the version on its next line. |
+| `CAPTAIN_MEMO_GREETING` | unset | A line printed first in the Claude Code session-start banner, e.g. `Fair winds, captain.`. Unset, nothing extra is printed. One line, control characters replaced by a space, at most 80 characters. In `worker.env` it needs a worker restart: the worker hands it to the hook, which never reads that file. In the environment of the AI tool it applies from the next session and wins over the worker's; set empty there, it hides the worker's. The banner already shows the version on its next line. |
 | `CAPTAIN_MEMO_HOOK_DEBUG` | OFF | `1` logs hook decisions to stderr. |
 | `CAPTAIN_MEMO_HOOK_EVENT` | unset | Set by the dispatcher; not an operator setting. |
 | `CAPTAIN_MEMO_SESSION_START_TIMEOUT_MS` | `10000` | How long session-start waits for `/stats`. Unset, it falls back to `CAPTAIN_MEMO_HOOK_TIMEOUT_MS` when that is set, else 10 s. |
@@ -432,7 +434,7 @@ Anchored rows, and any row ever drilled into, are permanently exempt from ebbing
 
 | Setting | Default | Notes |
 |---|---|---|
-| `CAPTAIN_MEMO_QM_ENABLED` | ON | Master switch for both passes. |
+| `CAPTAIN_MEMO_QM_ENABLED` | ON | Master switch for dedup, supersede, semantic fold and theme building; each also has its own switch. |
 | `CAPTAIN_MEMO_QM_DEDUP` | ON | Folds near-duplicates into a survivor. Archives, never deletes. |
 | `CAPTAIN_MEMO_QM_DEDUP_TITLE` | `0.5` | Jaccard title similarity to become a candidate. |
 | `CAPTAIN_MEMO_QM_DEDUP_COSINE` | `0.95` | Embedding confirm before folding. Measured, not guessed: identical-title pairs score median 0.947, max 0.990. |
