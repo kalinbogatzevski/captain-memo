@@ -37,6 +37,7 @@ Captain Memo — corpus statistics
   By channel:
     memory          <count>
     skill           <count>
+    capability      <count>
     observation     <count>
   Observations:   <total> · <pending> pending · <processing> processing
   Embedder:       <model> @ <endpoint>

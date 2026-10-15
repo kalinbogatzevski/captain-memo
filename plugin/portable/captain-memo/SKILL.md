@@ -75,7 +75,7 @@ in different files:
   more sessions hold, with who).
 - Claude Code, Codex and Gemini auto-claim the files they edit. A live claim blocks another session's edit or
   upload of that file (only the user lifts it, by typing `override: <file>`); a claim with no edit for 10 minutes
-  only warns. Codex and Gemini claims block on Linux; the macOS lookup has not been run on a Mac yet, and on
+  only warns. Codex and Gemini claims block on Linux; the macOS lookup has not been run on a Mac, and on
   Windows those claims only warn. On other CLIs nothing claims for you. State intent yourself.
 
 ## Homework — ideas for later
@@ -86,8 +86,9 @@ open → claimed → done, visible to every AI session here.
   you see `📝 Filed as homework #N` — answer with a short "noted" and carry on. If no such line appears
   (this CLI has no prompt hook wired), file it yourself with `todo_add(text, topics)` and say so.
 - `todo_add(text, due)` makes it a reminder: `due` is an ISO 8601 date or date-time (no zone = this host's local
-  time). From then on Claude Code's session-start list shows it first, marked ⏰; `todo_list()` returns it with
-  its due time (UTC). Nothing runs by itself.
-- `todo_list()` — what is open (Claude Code also lists it in the session banner). `todo_claim(id)` before you
+  time). From then on the session-start list (Claude Code's banner; Codex and Gemini get it as context) shows it
+  first, marked ⏰; `todo_list()` returns it with its due time (UTC). Nothing runs by itself.
+- `todo_list()` — what is open (Claude Code lists it in its banner and Codex and Gemini receive it at session
+  start; elsewhere this call is how you see it). `todo_claim(id)` before you
   start one, so other sessions see it is taken (advisory, not a lock); `todo_unclaim(id)` hands your claim back without closing it; `todo_done(id, note)` when it is done.
 - Not a memory (`remember` is for facts to recall) and not a work claim (`work_set` is what you do now).

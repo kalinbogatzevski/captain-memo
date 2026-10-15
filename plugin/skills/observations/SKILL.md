@@ -5,7 +5,7 @@ description: List recent captured session observations (the summarized voyage lo
 
 # Captain Memo — recent observations
 
-When the user invokes this skill, they want a quick view of recent session observations — the structured "voyage logs" the Stop hook produces.
+When the user invokes this skill, they want a quick view of recent session observations — the structured "voyage logs" the summarizer writes from a session's tool events.
 
 ## What to do
 
@@ -35,4 +35,4 @@ The timestamp is UTC. For a hit worth reading in full, `search_observations` or 
 ## If empty
 
 Say something like:
-> "No observations yet. Captain Memo's `Stop` hook summarises sessions when they end — make sure you've actually closed (`/exit`) at least one Claude Code session since installing, and that a summarizer is configured — `captain-memo stats` shows which one is live, `captain-memo doctor` says why it is not."
+> "No observations yet. Tool events are summarised shortly after each turn, so an empty list usually means no session has run since installing, or no summarizer is live — `captain-memo stats` shows which one is live, `captain-memo doctor` says why it is not."
