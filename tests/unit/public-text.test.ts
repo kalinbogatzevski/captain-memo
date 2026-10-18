@@ -30,3 +30,11 @@ test('captain-memo help names every target `connect` really supports (ADAPTERS),
   expect(line).not.toBe('');
   for (const a of ADAPTERS) expect(line).toContain(a.id);
 });
+
+test('todo_add says Claude Code, Codex and Gemini sessions see open items at start; its schema is unchanged', async () => {
+  const { TOOLS } = await import('../../src/mcp-server.ts');
+  const t = TOOLS.find((x: { name: string }) => x.name === 'todo_add')!;
+  expect(t.description).toMatch(/Claude Code, Codex and Gemini sessions see the open items at start/);
+  expect(Object.keys(t.inputSchema.properties as object).sort()).toEqual(['due', 'project', 'text', 'topics']);
+  expect((t.inputSchema as { required: string[] }).required).toEqual(['text']);
+});
