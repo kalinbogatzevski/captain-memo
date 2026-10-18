@@ -7,6 +7,7 @@ import { codexHomeVerdict } from '../../src/cli/commands/doctor.ts';
 
 const HOME = '/home/u';
 const WENV = '/home/u/.config/captain-memo/worker.env';
+const DEFAULT = join(HOME, '.codex');   // how codexHomeDir builds the default folder: backslashes on Windows, so not a literal '/home/u/.codex'
 
 test('silent when they agree: both unset, both empty, the same folder (quotes, slashes, trailing slash do not matter)', () => {
   expect(codexHomeVerdict(undefined, null, WENV, HOME)).toBeNull();
@@ -22,7 +23,7 @@ test('shell sets it, worker.env does not: WARN, names both folders, remedy adds 
   expect(c.status).toBe('WARN');
   expect(c.name).toBe('codex home');
   expect(c.detail).toContain('/data/codex');
-  expect(c.detail).toContain('/home/u/.codex');
+  expect(c.detail).toContain(DEFAULT);
   expect(c.detail).toContain(WENV);
   expect(c.remedy).toContain(`add CODEX_HOME=/data/codex to ${WENV}`);
   expect(c.remedy).toContain('captain-memo restart');
@@ -31,7 +32,7 @@ test('shell sets it, worker.env does not: WARN, names both folders, remedy adds 
 test('worker.env sets it, the shell does not: WARN, remedy sets it in the shell or removes it from worker.env', () => {
   const c = codexHomeVerdict(undefined, '/srv/codex', WENV, HOME)!;
   expect(c.status).toBe('WARN');
-  expect(c.detail).toContain('/home/u/.codex');
+  expect(c.detail).toContain(DEFAULT);
   expect(c.detail).toContain('/srv/codex');
   expect(c.remedy).toContain('set CODEX_HOME to /srv/codex in your shell profile');
   expect(c.remedy).toContain(`remove CODEX_HOME from ${WENV}`);
