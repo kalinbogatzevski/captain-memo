@@ -53,14 +53,15 @@ test('mergeVibeMcpConfig — appends a [[mcp_servers]] block; idempotent on the 
 
 let home: string;
 let skillSource: string;
+let srcDir: string;   // the skill source's folder, removed with the home (it was left in the temp dir on every run)
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'captain-memo-inst-'));
-  const srcDir = mkdtempSync(join(tmpdir(), 'captain-memo-skillsrc-'));
+  srcDir = mkdtempSync(join(tmpdir(), 'captain-memo-skillsrc-'));
   skillSource = join(srcDir, 'SKILL.md');
   writeFileSync(skillSource, '# skill\n');
 });
-afterEach(() => { rmSync(home, { recursive: true, force: true }); });
+afterEach(() => { rmSync(home, { recursive: true, force: true }); rmSync(srcDir, { recursive: true, force: true }); });
 
 test('connect only:[opencode] writes opencode.json (added; idempotent → present); never a literal key', () => {
   const first = connectCrossAi({ only: ['opencode'], mcpCommand: ['bun', MCP_PATH], skillSource, home, run: noopRunner });

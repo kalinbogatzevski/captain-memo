@@ -659,6 +659,7 @@ test('gooseConfigPath — prefers a candidate that already exists over the platf
 
 let home: string;
 let skillSource: string;
+let srcDir: string;   // the skill source's folder, removed with the home (it was left in the temp dir on every run)
 
 // The claude-desktop and goose adapters resolve their config dir from process.env (APPDATA,
 // LOCALAPPDATA, XDG_CONFIG_HOME, GOOSE_PATH_ROOT), NOT from the injected `home` — that is how a
@@ -680,13 +681,14 @@ beforeEach(() => {
   // Make cursor "detected".
   mkdirSync(join(home, '.cursor'), { recursive: true });
   // A real skill source to copy.
-  const srcDir = mkdtempSync(join(tmpdir(), 'captain-memo-skillsrc-'));
+  srcDir = mkdtempSync(join(tmpdir(), 'captain-memo-skillsrc-'));
   skillSource = join(srcDir, 'SKILL.md');
   writeFileSync(skillSource, '# skill body\n');
 });
 
 afterEach(() => {
   rmSync(home, { recursive: true, force: true });
+  rmSync(srcDir, { recursive: true, force: true });
   for (const k of PINNED_ENV) { if (savedEnv[k] === undefined) delete process.env[k]; else process.env[k] = savedEnv[k]; }
 });
 
