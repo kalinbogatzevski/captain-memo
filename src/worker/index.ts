@@ -1,4 +1,5 @@
 import { join, dirname, basename } from 'path';
+import { homedir } from 'os';
 import { statSync, readdirSync, chmodSync, existsSync, unlinkSync, readFileSync } from 'node:fs';
 import { detectBranchSyncCached } from './branch.ts';
 import { z } from 'zod';
@@ -4411,6 +4412,23 @@ export async function buildWorkerOptionsFromEnv(): Promise<WorkerOptions> {
   };
 }
 
+/** Once the port is open: append the captain-memo tool approvals a release added to Codex's config.toml (cross-ai.ts
+ *  refreshCodexToolApprovals: append-only, only where captain-memo is already registered, never throws; opt out with
+ *  CAPTAIN_MEMO_CODEX_APPROVALS=0). It goes by the worker's OWN process.env, so a CODEX_HOME outside ~/.codex has to be in
+ *  worker.env (or the unit) for it to be followed; `doctor` and `connect` read it from the shell. The boot is the one place
+ *  every update route ends: the auto-update, `captain-memo restart`, and the SessionStart hook's restart of a worker older
+ *  than its plugin.
+ *  Cost, measured here with the 23 tools and a config that registers the server but approves none: ~4 ms to append all the
+ *  blocks, ~1 ms to read the file and find nothing missing; once per boot, off the request path. The dynamic import of
+ *  cross-ai.ts was 55-70 ms in a bare bun process (an upper bound: the worker has loaded part of its imports already, which
+ *  I did not measure). */
+async function refreshCodexApprovals(): Promise<void> {
+  try {
+    const { refreshCodexToolApprovals } = await import('../cli/cross-ai.ts');
+    refreshCodexToolApprovals(homedir(), process.env, (line) => console.log(`[worker] ${line}`));
+  } catch (e) { console.warn('[worker] codex approvals: ' + (e as Error).message); }
+}
+
 // Exported so a `bin/captain-memo-worker` shim can call this explicitly.
 // Avoid gating on `import.meta.main` alone: when this file is imported
 // (rather than invoked directly), `import.meta.main` is false and the
@@ -4472,6 +4490,7 @@ export async function runWorkerCli(): Promise<void> {
     // reflects the path that actually bound the port.
     const handle = await startThreadedWorker(port);
     clearTransition();                 // listening — no longer in transition
+    void refreshCodexApprovals();
     const shutdown = async () => { await handle.stop(); process.exit(0); };
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
@@ -4481,6 +4500,7 @@ export async function runWorkerCli(): Promise<void> {
   const opts = await buildWorkerOptionsFromEnv();
   const handle = await startWorker(opts);
   clearTransition();                   // listening — no longer in transition
+  void refreshCodexApprovals();
   console.log(`[worker] listening on http://localhost:${handle.port}`);
 
   const shutdown = async () => {

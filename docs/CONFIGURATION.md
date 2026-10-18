@@ -57,6 +57,7 @@ misbehaves and you want it to stop.
 | `CAPTAIN_MEMO_TIDE_TIERING=0` | Lifecycle transitions (active → dormant → archived) | ON |
 | `CAPTAIN_MEMO_RECALL_AUDIT=0` | The recall audit log that feeds dream stats | ON |
 | `CAPTAIN_MEMO_PLUGIN_HEAL=0` | The worker installing the plugin into Claude Code again when it is missing (checked at start and every 30 min, on a real git clone only). A removal through `captain-memo uninstall` is respected until `captain-memo install` runs again; removing the plugin by hand with `claude plugin …` while the worker runs is undone, so set this to `0` to keep it removed | ON |
+| `CAPTAIN_MEMO_CODEX_APPROVALS=0` | The worker appending the approval for each Captain Memo tool a release adds to Codex's `~/.codex/config.toml` (`%USERPROFILE%\.codex` on Windows; `$CODEX_HOME/config.toml` when `CODEX_HOME` is set in the worker's environment, so put it in `worker.env` too). Runs once per worker start, only where `[mcp_servers.captain-memo]` is already in that file, and only adds blocks that are missing; set it in `worker.env`. `captain-memo doctor` still reports the gap | ON |
 | `CAPTAIN_MEMO_BRANCH_BOOST=0` | Ranking preference for the current git branch | ON |
 | `CAPTAIN_MEMO_IDENTIFIER_BOOST=0` | Ranking boost for code identifiers in the query | ON |
 | `CAPTAIN_MEMO_RARE_TOKEN_BOOST=0` | Ranking boost for rare tokens | ON |

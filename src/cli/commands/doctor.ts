@@ -30,8 +30,8 @@ import { isWindows } from '../../shared/platform.ts';
 import { VERSION } from '../../shared/version.ts';
 import { decideWorkerDrift, pickUpgradeTarget, parseRemoteCandidates } from '../../shared/version-drift.ts';
 import { compareSemver } from '../../shared/self-update.ts';
-import { describeSessionOf, readLivePluginPins, readPluginManifest } from '../../shared/plugin-cache.ts';
-import { geminiHooksToggleRejected } from '../cross-ai.ts';
+import { describeSessionOf, normalizePath, readLivePluginPins, readPluginManifest } from '../../shared/plugin-cache.ts';
+import { CODEX_TOOL_NAMES, codexApprovalState, codexConfigPath, codexHomeDir, geminiHooksToggleRejected } from '../cross-ai.ts';
 import { WINDOWS_SHIM_FIX, windowsCliShimPath, windowsShimState } from '../../shared/windows-shim.ts';
 import { WORKER_TOKEN_PATH, readWorkerToken, workerAuthHeaders, type TokenlessRow } from '../../shared/worker-auth.ts';
 
@@ -791,6 +791,66 @@ export function checkRemember(): Check {
   return check;
 }
 
+/** Codex approves MCP tools one at a time, and `connect codex` writes those approvals once (see mergeCodexToolApprovals),
+ *  so a release that adds a tool leaves it unapproved until the worker's boot refresh or `connect codex` appends it. Until
+ *  then Codex asks for it, and `codex exec` rejects the call outright. null = not applicable: no config file, or
+ *  captain-memo is not registered in it (Codex not installed, or never connected). Read-only. */
+export function codexApprovalsVerdict(toml: string | null, cfgPath: string): Check | null {
+  const { registered, missing } = codexApprovalState(toml);
+  if (!registered) return null;
+  const name = 'codex approvals';
+  if (missing.length === 0) return { name, status: 'PASS', detail: `all ${CODEX_TOOL_NAMES.length} captain-memo tools approved in ${cfgPath}` };
+  return {
+    name, status: 'WARN',
+    detail: `${missing.length} of ${CODEX_TOOL_NAMES.length} captain-memo tools have no approval in ${cfgPath}: ${missing.join(', ')}. Codex prompts for each, and \`codex exec\` rejects it`,
+    remedy: 'captain-memo connect codex',
+  };
+}
+
+/** The `codex approvals` row for the config.toml Codex itself reads ($CODEX_HOME, else ~/.codex — the same file `connect
+ *  codex` and the worker's boot refresh write), or null when the check does not apply. */
+export function codexApprovalsCheck(home: string = homedir(), env: Record<string, string | undefined> = process.env): Check | null {
+  const cfgPath = codexConfigPath(home, env);
+  try {
+    return codexApprovalsVerdict(existsSync(cfgPath) ? readFileSync(cfgPath, 'utf-8') : null, cfgPath);
+  } catch (e) {
+    return { name: 'codex approvals', status: 'WARN', detail: `could not read ${cfgPath} (${(e as Error).message})`, remedy: 'captain-memo connect codex' };
+  }
+}
+
+function checkCodexApprovals(): void {
+  const check = codexApprovalsCheck();
+  if (check) record(check);
+}
+
+/** worker.env's CODEX_HOME as the worker reads it (loadWorkerEnv strips one pair of surrounding quotes; readWorkerEnvVar does not). */
+function unquoteEnvValue(v: string | null): string {
+  const t = (v ?? '').trim();
+  return t.length >= 2 && /^(["']).*\1$/.test(t) ? t.slice(1, -1) : t;
+}
+
+/** `connect` and `doctor` follow the CODEX_HOME of the SHELL they run in; the worker's boot refresh of Codex's tool approvals follows its OWN
+ *  environment: worker.env (on Windows, a Scheduled Task with no shell, that is all of it). Where the two name different folders the approvals
+ *  land in one config.toml while the other stays stale, and nothing else says so. null = they agree (both unset, or the same folder). Empty
+ *  counts as unset, as Codex reads it. A CODEX_HOME given to the worker some other way (a systemd unit's Environment=) is not visible here. */
+export function codexHomeVerdict(shellCodexHome: string | undefined, workerEnvCodexHome: string | null, workerEnvPath: string, home: string = homedir()): Check | null {
+  const shell = codexHomeDir(home, { CODEX_HOME: shellCodexHome });
+  const worker = codexHomeDir(home, { CODEX_HOME: unquoteEnvValue(workerEnvCodexHome) });
+  if (normalizePath(shell) === normalizePath(worker)) return null;
+  return {
+    name: 'codex home', status: 'WARN',
+    detail: `your shell's CODEX_HOME is ${shell}, but the worker (${workerEnvPath}) uses ${worker}: connect and doctor follow the shell, the worker's refresh of Codex's tool approvals follows worker.env`,
+    remedy: shellCodexHome
+      ? `add CODEX_HOME=${shellCodexHome} to ${workerEnvPath}, then: captain-memo restart   (or unset it in your shell if worker.env is the right one)`
+      : `set CODEX_HOME to ${worker} in your shell profile, or remove CODEX_HOME from ${workerEnvPath} and run: captain-memo restart`,
+  };
+}
+
+function checkCodexHome(): void {
+  const check = codexHomeVerdict(process.env.CODEX_HOME, readWorkerEnvVar('CODEX_HOME'), workerEnvPaths().find((p) => existsSync(p)) ?? workerEnvPaths()[0] ?? 'worker.env');
+  if (check) record(check);
+}
+
 /** The `cli shim` row: the Windows PATH shim that install wrote, judged by what it names. null = nothing to say (no shim, or not a
  *  `bun "<path>"` body). Before v0.44.0 install COPIED the checkout's bin\captain-memo.cmd, whose %~dp0 only works inside the checkout. */
 export function windowsShimCheck(shimPath: string, body: string | null, exists?: (p: string) => boolean): Check | null {
@@ -1298,6 +1358,8 @@ export async function doctorCommand(_args: string[]): Promise<number> {
   checkConfig();
   checkWindowsShim();
   checkRemember();
+  checkCodexApprovals();
+  checkCodexHome();
   checkGeminiHooksToggle();
   checkPluginRegistration();
   checkPluginManifest();

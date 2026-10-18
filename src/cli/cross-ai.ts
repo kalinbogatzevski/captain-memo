@@ -640,6 +640,52 @@ export function codexHomeDir(home: string = homedir(), env: Record<string, strin
   return env.CODEX_HOME || join(home, '.codex');
 }
 
+/** Codex's config.toml — the one file connect, `doctor` and the worker's boot refresh all look at. */
+export function codexConfigPath(home: string = homedir(), env: Record<string, string | undefined> = process.env): string {
+  return join(codexHomeDir(home, env), 'config.toml');
+}
+
+/** What config.toml says about captain-memo: is the server registered in it, and which tools in CODEX_TOOL_NAMES have no
+ *  approval block yet. The ONE reading `captain-memo doctor` and the worker's boot refresh both go by.
+ *
+ *  Registered = the server's own table header on a line by itself. Not a prefix match: every approval block also starts
+ *  `[mcp_servers.captain-memo`, so leftovers from a server that was removed would read as a registration.
+ *  "Missing" asks mergeCodexToolApprovals itself (it returns its input unchanged when the header is there), so the two
+ *  can never disagree about what counts as present. */
+export function codexApprovalState(toml: string | null): { registered: boolean; missing: string[] } {
+  if (toml === null || !/^[ \t]*\[mcp_servers\.captain-memo\][ \t]*(?:#.*)?$/m.test(toml)) return { registered: false, missing: [] };
+  return { registered: true, missing: CODEX_TOOL_NAMES.filter((tool) => mergeCodexToolApprovals(toml, [tool]) !== toml) };
+}
+
+/** Keep the approvals current after a release adds a tool: `connect codex` writes them once, and nothing else did, so
+ *  Codex prompted for (or, under `codex exec`, silently rejected) every tool added since. Called by the worker after every
+ *  boot, which is where every update route ends (src/worker/index.ts).
+ *
+ *  Append-only through mergeCodexToolApprovals, and ONLY into a config that already registers captain-memo: it never
+ *  creates the file or the directory, and never registers a server the user did not connect. A block that is already there
+ *  is left alone whatever its approval_mode. Idempotent; never throws (a failure is one log line, `doctor` still sees the
+ *  gap). CAPTAIN_MEMO_CODEX_APPROVALS=0 turns it off. Returns the tools it added. */
+export function refreshCodexToolApprovals(
+  home: string = homedir(),
+  env: Record<string, string | undefined> = process.env,
+  log: (line: string) => void = () => {},
+): string[] {
+  if (env.CAPTAIN_MEMO_CODEX_APPROVALS === '0') return [];
+  const cfgPath = codexConfigPath(home, env);
+  try {
+    if (!existsSync(cfgPath)) return [];
+    const before = readFileSync(cfgPath, 'utf-8');
+    const { missing } = codexApprovalState(before);
+    if (missing.length === 0) return [];
+    writeFileSync(cfgPath, mergeCodexToolApprovals(before, missing));
+    log(`codex approvals: appended ${missing.length} missing captain-memo tool approval${missing.length === 1 ? '' : 's'} to ${cfgPath} (${missing.join(', ')}); CAPTAIN_MEMO_CODEX_APPROVALS=0 turns this off`);
+    return missing;
+  } catch (e) {
+    log(`codex approvals: could not refresh ${cfgPath} (${(e as Error).message})`);
+    return [];
+  }
+}
+
 export const CAPTAIN_MEMO_CODEX_HOOK_MARKER = 'captain-memo-codex-hook-managed';
 
 type CommandHookEntry = {

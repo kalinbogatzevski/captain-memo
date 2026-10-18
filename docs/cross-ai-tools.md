@@ -41,10 +41,12 @@ Native-hook auto-injection is guaranteed only where the Codex host executes `~/.
 the shared rollout reader still observes the other surfaces.
 
 Codex keeps all of that in `$CODEX_HOME` when the variable is set and in `~/.codex` otherwise; every `~/.codex` path
-on this page means that directory. `connect codex` follows it from your shell: the MCP registration, the tool approvals,
-`hooks.json` and the skill all go where Codex reads them. A `CODEX_HOME` that points at a directory that does not exist
+on this page means that directory. `connect codex` and `captain-memo doctor` follow it from your shell: the MCP registration,
+the tool approvals, `hooks.json` and the skill all go where Codex reads them. A `CODEX_HOME` that points at a directory that does not exist
 makes `connect codex` report failed and write nothing, because Codex itself refuses to start with it (it does not create the
-directory for you); create the directory or fix the variable, then run it again. Not yet following `CODEX_HOME`: the
+directory for you); create the directory or fix the variable, then run it again. The worker's start-up refresh of the
+approvals follows it only if the worker's own environment has it, so put `CODEX_HOME` in `worker.env` as well (`doctor` warns
+when your shell and `worker.env` name different folders). Not yet following `CODEX_HOME`: the
 transcript reader (`sessions/`), the skill and memory indexing, and the post-update refresh of the installed skill copies.
 
 It's two pieces per tool:
@@ -151,6 +153,15 @@ approval_mode = "approve"
 config.toml is never rewritten or reflowed. Note there is **no server-level switch**: a
 `[mcp_servers.captain-memo] approval_mode = …` is rejected by `codex --strict-config` as an unknown
 field, which is why it has to be enumerated.
+
+**A release that adds a tool does not leave it unapproved.** Each time the worker starts (every
+update ends in a start) it appends the blocks that are missing, the same way and under the same
+rules as `connect codex`: only where `[mcp_servers.captain-memo]` is already in config.toml (it never
+creates the file and never registers a server you did not connect), only blocks whose header is
+absent (a tool you already have a block for — whatever its `approval_mode` — is left alone), and one
+log line in the worker log when it adds something. `captain-memo doctor` compares the file with the
+tool list and warns, naming the tools, when one has no approval; `captain-memo connect codex` fixes
+it at once. Set `CAPTAIN_MEMO_CODEX_APPROVALS=0` in `worker.env` to stop the worker doing this.
 
 Do **not** reach for `--dangerously-bypass-approvals-and-sandbox` for this. It disables approvals
 *and* the sandbox for everything in that run, which is a far larger grant than "let captain-memo read
