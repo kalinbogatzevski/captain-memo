@@ -1,7 +1,7 @@
 {
   "name": "captain-memo",
   "version": "0.57.11",
-  "description": "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
+  "description": "Cross-AI local memory layer for Claude Code, Codex, Gemini CLI, Antigravity, goose, Cursor, opencode, Kimi CLI and more: hybrid search, six summarizer providers, hosted or local embedder. Replaces claude-mem.",
   "type": "module",
   "private": true,
   "license": "Apache-2.0",

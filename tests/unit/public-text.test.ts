@@ -2,6 +2,7 @@
 // and half the connect targets (the site points people at it for the full list).
 import { test, expect, beforeAll } from 'bun:test';
 import { join } from 'path';
+import { readFileSync } from 'fs';
 import { ADAPTERS } from '../../src/cli/cross-ai.ts';
 
 const ROOT = join(import.meta.dir, '../..');
@@ -37,4 +38,11 @@ test('todo_add says Claude Code, Codex and Gemini sessions see open items at sta
   expect(t.description).toMatch(/Claude Code, Codex and Gemini sessions see the open items at start/);
   expect(Object.keys(t.inputSchema.properties as object).sort()).toEqual(['due', 'project', 'text', 'topics']);
   expect((t.inputSchema as { required: string[] }).required).toEqual(['text']);
+});
+
+test('package.json description mirrors the plugin manifest and no longer says Voyage-embedded', () => {
+  const read = (p: string) => JSON.parse(readFileSync(join(ROOT, p), 'utf-8')) as { description: string };
+  const pkg = read('package.json').description;
+  expect(pkg).toBe(read('plugin/.claude-plugin/plugin.json').description);
+  expect(pkg).not.toMatch(/voyage/i);
 });
