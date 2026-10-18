@@ -67,9 +67,10 @@ test('a failing copy is isolated — the remaining destinations still refresh', 
 test('the refresh list covers every captain-memo destination in cross-ai.ts', () => {
   const src = readFileSync(new URL('../../src/cli/cross-ai.ts', import.meta.url), 'utf8');
   const found = new Set<string>();
-  const re = /copySkill\(\s*ctx\.skillSource\s*,\s*join\(\s*ctx\.home\s*,\s*([^)]*)\)/g;
+  // connect codex writes under codexHome (= $CODEX_HOME or ~/.codex), the refresh list is ~/.codex-relative
+  const re = /copySkill\(\s*ctx\.skillSource\s*,\s*join\(\s*(ctx\.home|codexHome)\s*,\s*([^)]*)\)/g;
   for (const m of src.matchAll(re)) {
-    const segs = [...m[1]!.matchAll(/'([^']+)'/g)].map((s) => s[1]!);
+    const segs = [...(m[1] === 'codexHome' ? ['.codex'] : []), ...[...m[2]!.matchAll(/'([^']+)'/g)].map((s) => s[1]!)];
     if (segs.length) found.add(segs.join('/'));
   }
   expect(found.size).toBeGreaterThan(0);
