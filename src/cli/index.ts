@@ -11,6 +11,7 @@ import { configCommand } from './commands/config.ts';
 import { installHooksCommand } from './commands/install-hooks.ts';
 import { installCommand } from './commands/install.ts';
 import { connectCommand } from './commands/connect.ts';
+import { ADAPTERS } from './cross-ai.ts';
 import { uninstallCommand } from './commands/uninstall.ts';
 import { doctorCommand } from './commands/doctor.ts';
 import { queueCommand } from './commands/queue.ts';
@@ -54,12 +55,14 @@ Commands:
   vacuum       Reclaim disk after deletions/reindex (SQLite VACUUM; worker must be stopped)
   upgrade      Bring the corpus up to the current chunker shape (reindex + vacuum, end-to-end)
   observation  list|sunk|flush — manage observations (sunk: list dormant/archived; --archived)
+  queue        dedupe | retry — repair the observation queue (dry run; --apply, --limit N)
+  maintenance  Report, and with --apply remove, what the databases and plugin cache carry that nothing needs (--retention-days N, --grace-days N)
   restore      Re-surface a sunk (dormant/archived) observation: restore <id>
   backup       create | restore | info — portable memory archive (move/restore a captain's memories)
   gateway      pair | list | revoke — pair a second device (phone, another machine) to this corpus
   config       show — print effective config (env + defaults, secrets masked)
   install      Interactive wizard — installs everything (embedder, worker, plugin)
-  connect      Wire other AI tools (Codex, Gemini, Cursor, opencode, Vibe, VS Code, JetBrains) to the shared worker (--list)
+  connect      Wire other AI tools to the shared worker: ${ADAPTERS.map((a) => a.id).join(', ')} (--list)
   uninstall    Clean removal of everything (--purge for data too)
   doctor       Health probe across embedder / worker / plugin
   restart      Restart the local worker (reload config / recover). --force to hard-stop
