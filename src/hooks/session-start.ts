@@ -6,6 +6,7 @@ import { LOCAL_ARTICLES } from './local-articles.ts';
 import { DEFAULT_HOOK_TIMEOUT_MS, ENV_HOOK_TIMEOUT_MS, DEFAULT_WORKER_PORT, DATA_DIR } from '../shared/paths.ts';
 import { VERSION } from '../shared/version.ts';
 import { consumeUpgrade, formatUpgradeBanner, formatAutoUpdateBanner, formatAutoUpdateBlockedBanner, formatRollbackBanner, writeMarker, compareSemver } from '../shared/self-update.ts';
+import { staleWindowsShimNotice } from '../shared/windows-shim.ts';
 import { newsLines, type NewsItem } from '../shared/whats-new.ts';
 import { runAutoUpdatePass } from './auto-update.ts';
 import { ensureWorkerHealthy } from '../shared/worker-health.ts';
@@ -408,7 +409,10 @@ export async function main(): Promise<void> {
   // autoUpdateNotice (this session's active pull) takes precedence; consumeUpgrade covers the
   // marketplace-refresh path. Only one normally fires — the auto-update path advances the marker so
   // it doesn't double-announce — but combine defensively in case both have something to say.
-  const notices = [autoUpdateNotice, upgradeNotice].filter(Boolean).join('\n\n');
+  // On the session an update announces itself (this hook's own pull above, or the first session whose VERSION passed the marker,
+  // whichever route moved it), also say so if the Windows `captain-memo` PATH shim is the stale pre-0.44.0 copy. Windows-only; one small file read.
+  const shimNotice = (autoUpdateNotice || upgrade) ? (staleWindowsShimNotice() ?? '') : '';
+  const notices = [autoUpdateNotice, upgradeNotice, shimNotice].filter(Boolean).join('\n\n');
   const withNotice = (banner: string): string => (notices ? `${notices}\n\n${banner}` : banner);
 
   // Open homework for the banner — best-effort and quick; a worker that answered /stats answers this too.

@@ -32,6 +32,7 @@ import { decideWorkerDrift, pickUpgradeTarget, parseRemoteCandidates } from '../
 import { compareSemver } from '../../shared/self-update.ts';
 import { describeSessionOf, readLivePluginPins, readPluginManifest } from '../../shared/plugin-cache.ts';
 import { geminiHooksToggleRejected } from '../cross-ai.ts';
+import { WINDOWS_SHIM_FIX, windowsCliShimPath, windowsShimState } from '../../shared/windows-shim.ts';
 import { WORKER_TOKEN_PATH, readWorkerToken, workerAuthHeaders, type TokenlessRow } from '../../shared/worker-auth.ts';
 
 // Lookup a single key from worker.env (CONFIG_DIR per platform, then the /etc
@@ -790,6 +791,26 @@ export function checkRemember(): Check {
   return check;
 }
 
+/** The `cli shim` row: the Windows PATH shim that install wrote, judged by what it names. null = nothing to say (no shim, or not a
+ *  `bun "<path>"` body). Before v0.44.0 install COPIED the checkout's bin\captain-memo.cmd, whose %~dp0 only works inside the checkout. */
+export function windowsShimCheck(shimPath: string, body: string | null, exists?: (p: string) => boolean): Check | null {
+  if (body === null) return null;
+  const s = windowsShimState(body, exists);
+  if (s.state === 'unknown') return null;
+  const name = 'cli shim';
+  if (s.state === 'ok') return { name, status: 'PASS', detail: `${shimPath} -> ${s.entry}` };
+  return { name, status: 'WARN', detail: `${shimPath} is stale: ${s.reason}, so \`captain-memo <anything>\` fails with "Module not found"`, remedy: WINDOWS_SHIM_FIX };
+}
+
+function checkWindowsShim(): void {
+  if (!isWindows) return;
+  const path = windowsCliShimPath();
+  let body: string | null = null;
+  try { body = readFileSync(path, 'utf-8'); } catch { /* no shim installed */ }
+  const check = windowsShimCheck(path, body);
+  if (check) record(check);
+}
+
 /** Every Gemini outside 0.24-0.25 rejects the boolean `hooks.enabled` that connect wrote before it read the version
  *  (0.26+ prints "Invalid configuration" at every start) until connect rewrites it. Silent when there is nothing to report.
  *  0.22 and 0.23 can never be flagged here: with that key present their `gemini --version` exits 52 with empty stdout
@@ -1275,6 +1296,7 @@ export async function doctorCommand(_args: string[]): Promise<number> {
   await checkCapture();
   checkCheckout();
   checkConfig();
+  checkWindowsShim();
   checkRemember();
   checkGeminiHooksToggle();
   checkPluginRegistration();
