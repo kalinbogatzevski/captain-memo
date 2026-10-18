@@ -25,7 +25,7 @@ import { isWindows, isMac, homeOf, totalMemGb, diskFreeGb, whichBun as probeBun 
 import { ensureExtensionCapableSqlite } from '../../shared/sqlite-extensions.ts';
 import { WORKER_ENV_PATH, CONFIG_DIR, LOGS_DIR, DATA_DIR, DEFAULT_WORKER_PORT, DEFAULT_CODEX_MODEL, DEFAULT_AGY_MODEL, DEFAULT_CLAUDE_CODE_MODEL } from '../../shared/paths.ts';
 import { backupWorkerEnv, restoreWorkerEnvBackup } from '../../shared/worker-env.ts';
-import { summarizerLogins } from '../../shared/summarizer-login.ts';
+import { summarizerLogins, probeSummarizerLogins, type SummarizerLogins } from '../../shared/summarizer-login.ts';
 import { getServiceManager } from '../../services/service-manager/index.ts';
 import { grantPluginToolPermissions } from './install-hooks.ts';
 import { getEmbedderInstaller } from '../../services/embedder-installer/index.ts';
@@ -581,8 +581,10 @@ export function loadExistingConfig(envPath: string): Partial<WizardConfig> {
   return cfg;
 }
 
-/** `mac` picks the embedder menu (embedderChoices); a parameter so a test on Linux can see the macOS one. */
-export function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOptions, mac = isMac): WizardConfig {
+/** `mac` picks the embedder menu (embedderChoices); a parameter so a test on Linux can see the macOS one.
+ *  `logins` is what each subscription summarizer is logged in as: the install paths pass probeSummarizerLogins() (it also
+ *  asks the OS keyring about agy, which needs an await); the default reads files only, so this stays synchronous. */
+export function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOptions, mac = isMac, logins: SummarizerLogins = summarizerLogins()): WizardConfig {
   // Default to interactive (TTY) behaviour when no options were threaded
   // through — preserves the original prompt-everything path exactly.
   const nonInteractive = opts?.nonInteractive ?? false;
@@ -594,7 +596,6 @@ export function gatherConfig(existing?: Partial<WizardConfig>, opts?: InstallOpt
   // Recommend (and, headless, pick) the first subscription-backed provider that is LOGGED IN on this machine:
   // a first install on a laptop with no Claude login used to take the Claude default and come up with a dead
   // summarizer. The labels say which ones are usable here, so the choice is informed either way.
-  const logins = summarizerLogins();
   const loginTag = (ok: boolean): string => ok ? ' [logged in here]' : ' [not logged in on this machine]';
   const firstUsable = (['claude-oauth', 'codex', 'agy'] as const).findIndex((p) => logins[p]);
   const summarizerDefaultIdx = firstUsable >= 0 ? firstUsable : 0;
@@ -1150,7 +1151,7 @@ async function installWindows(args: string[], opts: InstallOptions): Promise<num
   }
 
   // gatherConfig() is the same wizard the Linux path uses; opts make it headless.
-  const cfg = gatherConfig(existing, opts);
+  const cfg = gatherConfig(existing, opts, undefined, await probeSummarizerLogins());
 
   console.log();
   header('Summary');
@@ -1453,7 +1454,7 @@ Both modes: re-running preserves existing config (flags/env override). To remove
     else info('keeping current config; re-running setup steps only.');
   }
 
-  const cfg = gatherConfig(existing, opts);
+  const cfg = gatherConfig(existing, opts, undefined, await probeSummarizerLogins());
 
   console.log();
   header('Summary');

@@ -65,3 +65,26 @@ test('gatherConfig — the embedder menu is embedderChoices(mac): answer 2 is op
     console.log = realLog;
   }
 });
+
+// The install paths hand gatherConfig the logins they probed (agy may be logged in only through the OS keyring, which
+// needs an await the wizard itself cannot do). The summarizer menu must follow THAT answer, not re-read the files.
+test('gatherConfig — the summarizer menu labels follow the `logins` it is given', () => {
+  const realPrompt = globalThis.prompt;
+  const realLog = console.log;
+  const out: string[] = [];
+  globalThis.prompt = (() => '') as typeof prompt;   // '' = every default
+  console.log = (...a: unknown[]) => { out.push(a.join(' ')); };
+  try {
+    const opts = { yes: false, nonInteractive: false, watch: 'none' } as Parameters<typeof gatherConfig>[1];
+    const agyLine = (loggedIn: boolean): string | undefined => {
+      out.length = 0;
+      gatherConfig(undefined, opts, false, { 'claude-oauth': loggedIn, codex: loggedIn, agy: loggedIn });
+      return out.find((l) => l.includes('Antigravity CLI'));
+    };
+    expect(agyLine(true)).toContain('[logged in here]');
+    expect(agyLine(false)).toContain('[not logged in on this machine]');
+  } finally {
+    globalThis.prompt = realPrompt;
+    console.log = realLog;
+  }
+});

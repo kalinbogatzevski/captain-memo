@@ -1,6 +1,7 @@
 // tests/unit/summarizer-login.test.ts — the wizard recommends a summarizer that is logged in on THIS machine.
 import { test, expect } from 'bun:test';
-import { summarizerLogins, type LoginProbeEnv } from '../../src/shared/summarizer-login.ts';
+import { summarizerLogins, probeSummarizerLogins, type LoginProbeEnv } from '../../src/shared/summarizer-login.ts';
+import { AGY_KEYRING_ATTRS, type SecretStoreState } from '../../src/shared/secret-store.ts';
 
 function fakeEnv(files: Record<string, string>, bins: string[], env: Record<string, string> = {}): LoginProbeEnv {
   const norm = (p: string) => p.replaceAll('\\', '/');
@@ -31,4 +32,33 @@ test('Codex: needs the binary AND auth.json with an api key or tokens; agy: bina
   expect(summarizerLogins(fakeEnv({}, ['codex'])).codex).toBe(false);                                           // installed, signed out
   expect(summarizerLogins(fakeEnv({ '/home/u/.gemini/antigravity-cli/antigravity-oauth-token': 'x' }, ['agy'])).agy).toBe(true);
   expect(summarizerLogins(fakeEnv({}, ['agy'])).agy).toBe(false);
+});
+
+// A keyring-only agy (Linux desktop with a Secret Service, Windows Credential Manager) never writes the token file.
+test('agy: the OS keyring answer counts when the token file is absent — present or locked yes, none / unknown no', () => {
+  const env = fakeEnv({}, ['agy']);
+  expect(summarizerLogins(env, 'unlocked').agy).toBe(true);
+  expect(summarizerLogins(env, 'locked').agy).toBe(true);     // the item exists, it is just not readable until the keyring is unlocked
+  expect(summarizerLogins(env, 'none').agy).toBe(false);
+  expect(summarizerLogins(env, null).agy).toBe(false);        // could not ask
+  expect(summarizerLogins(fakeEnv({}, []), 'unlocked').agy).toBe(false);   // agy not installed: a stale keyring item is not a usable summarizer
+});
+
+test('probeSummarizerLogins asks the keyring only when agy is installed and its token file is missing', async () => {
+  const asked: Array<Readonly<Record<string, string>>> = [];
+  const probe = (answer: SecretStoreState | null) => async (attrs: Readonly<Record<string, string>>) => { asked.push(attrs); return answer; };
+
+  expect((await probeSummarizerLogins(fakeEnv({}, ['agy']), probe('unlocked'))).agy).toBe(true);
+  expect(asked).toEqual([AGY_KEYRING_ATTRS]);
+
+  asked.length = 0;
+  expect((await probeSummarizerLogins(fakeEnv({}, ['agy']), probe('none'))).agy).toBe(false);
+  expect((await probeSummarizerLogins(fakeEnv({}, ['agy']), probe(null))).agy).toBe(false);
+  expect(asked.length).toBe(2);
+
+  asked.length = 0;
+  const withFile = fakeEnv({ '/home/u/.gemini/antigravity-cli/antigravity-oauth-token': 'x' }, ['agy']);
+  expect((await probeSummarizerLogins(withFile, probe('none'))).agy).toBe(true);   // the file already answered
+  expect((await probeSummarizerLogins(fakeEnv({}, []), probe('unlocked'))).agy).toBe(false);   // agy not installed
+  expect(asked).toEqual([]);
 });
