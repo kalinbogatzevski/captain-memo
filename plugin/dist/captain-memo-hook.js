@@ -975,8 +975,8 @@ var package_default;
 var init_package = __esm(() => {
   package_default = {
     name: "captain-memo",
-    version: "0.57.11",
-    description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
+    version: "0.57.12",
+    description: "Cross-AI local memory layer for Claude Code, Codex, Gemini CLI, Antigravity, goose, Cursor, opencode, Kimi CLI and more: hybrid search, six summarizer providers, hosted or local embedder. Replaces claude-mem.",
     type: "module",
     private: true,
     license: "Apache-2.0",
@@ -1442,9 +1442,9 @@ var init_auto_update = __esm(() => {
 });
 
 // src/shared/plugin-cache.ts
-import { existsSync as existsSync5, readFileSync as readFileSync8, readdirSync as readdirSync2, statSync as statSync5 } from "fs";
-import { homedir as homedir5 } from "os";
-import { join as join11 } from "path";
+import { existsSync as existsSync6, readFileSync as readFileSync9, readdirSync as readdirSync2, statSync as statSync5 } from "fs";
+import { homedir as homedir6 } from "os";
+import { join as join12 } from "path";
 function normalizePath(p) {
   return p.replace(/\\/g, "/").replace(/\/+$/, "");
 }
@@ -1474,7 +1474,7 @@ function parseInstalledPaths(json) {
 }
 function readPluginManifest(root) {
   try {
-    const m = JSON.parse(readFileSync8(join11(root, ".claude-plugin", "plugin.json"), "utf-8"));
+    const m = JSON.parse(readFileSync9(join12(root, ".claude-plugin", "plugin.json"), "utf-8"));
     if (typeof m.name !== "string")
       return null;
     return { name: m.name, version: typeof m.version === "string" ? m.version : null };
@@ -1484,29 +1484,29 @@ function readPluginManifest(root) {
 }
 function readInstalledPaths(file = INSTALLED_PLUGINS_PATH) {
   try {
-    return parseInstalledPaths(readFileSync8(file, "utf-8"));
+    return parseInstalledPaths(readFileSync9(file, "utf-8"));
   } catch {
     return null;
   }
 }
 var CACHE_ROOT, INSTALLED_PLUGINS_PATH;
 var init_plugin_cache = __esm(() => {
-  CACHE_ROOT = join11(homedir5(), ".claude", "plugins", "cache");
-  INSTALLED_PLUGINS_PATH = join11(homedir5(), ".claude", "plugins", "installed_plugins.json");
+  CACHE_ROOT = join12(homedir6(), ".claude", "plugins", "cache");
+  INSTALLED_PLUGINS_PATH = join12(homedir6(), ".claude", "plugins", "installed_plugins.json");
 });
 
 // src/cli/plugin-cache-refresh.ts
 import { spawnSync as spawnSync4 } from "child_process";
-import { existsSync as existsSync6, mkdirSync as mkdirSync8, readFileSync as readFileSync9, readdirSync as readdirSync3, rmSync as rmSync4, writeFileSync as writeFileSync8 } from "fs";
-import { homedir as homedir6 } from "os";
-import { join as join12 } from "path";
-function marketplacePointsAtCheckout(repoRoot, home = homedir6()) {
+import { existsSync as existsSync7, mkdirSync as mkdirSync8, readFileSync as readFileSync10, readdirSync as readdirSync3, rmSync as rmSync4, writeFileSync as writeFileSync8 } from "fs";
+import { homedir as homedir7 } from "os";
+import { join as join13 } from "path";
+function marketplacePointsAtCheckout(repoRoot, home = homedir7()) {
   return marketplaceState(repoRoot, home) === "ours";
 }
-function marketplaceState(repoRoot, home = homedir6()) {
+function marketplaceState(repoRoot, home = homedir7()) {
   try {
-    const file = join12(home, ".claude", "plugins", "known_marketplaces.json");
-    const parsed = JSON.parse(readFileSync9(file, "utf-8"));
+    const file = join13(home, ".claude", "plugins", "known_marketplaces.json");
+    const parsed = JSON.parse(readFileSync10(file, "utf-8"));
     const entry = parsed["captain-memo"];
     if (!entry)
       return "absent";
@@ -1516,8 +1516,8 @@ function marketplaceState(repoRoot, home = homedir6()) {
     return "unknown";
   }
 }
-function activeCachedVersion(home = homedir6(), runningVersion) {
-  const installed = readInstalledPaths(join12(home, ".claude", "plugins", "installed_plugins.json"));
+function activeCachedVersion(home = homedir7(), runningVersion) {
+  const installed = readInstalledPaths(join13(home, ".claude", "plugins", "installed_plugins.json"));
   if (installed === null)
     return null;
   let first = null;
@@ -1558,7 +1558,7 @@ var REPO_ROOT3, CACHE_REFRESH_LOCK = ".plugin-cache-refresh.lock";
 var init_plugin_cache_refresh = __esm(() => {
   init_plugin_cache();
   init_paths();
-  REPO_ROOT3 = join12(import.meta.dir, "..", "..");
+  REPO_ROOT3 = join13(import.meta.dir, "..", "..");
 });
 
 // src/shared/vscode-paths.ts
@@ -1575,22 +1575,22 @@ var init_vscode_paths = __esm(() => {
 });
 
 // src/cli/skill-refresh.ts
-import { existsSync as existsSync7, copyFileSync } from "fs";
-import { join as join13 } from "path";
+import { existsSync as existsSync8, copyFileSync } from "fs";
+import { join as join14 } from "path";
 function resolveMemoSkillSource(base = import.meta.dir) {
   return [
-    join13(base, "..", "..", "skills", "captain-memo", "SKILL.md"),
-    join13(base, "..", "portable", "captain-memo", "SKILL.md")
-  ].find((p) => existsSync7(p)) ?? null;
+    join14(base, "..", "..", "skills", "captain-memo", "SKILL.md"),
+    join14(base, "..", "portable", "captain-memo", "SKILL.md")
+  ].find((p) => existsSync8(p)) ?? null;
 }
 function refreshMemoSkills(source, home, deps = {}) {
-  const exists = deps.exists ?? existsSync7;
+  const exists = deps.exists ?? existsSync8;
   const copy = deps.copy ?? copyFileSync;
   if (!exists(source))
     return [];
   const refreshed = [];
   for (const rel of [...MEMO_SKILL_RELPATHS, ...VSCODE_SKILL_RELPATHS]) {
-    const dest = join13(home, ...rel.split("/"));
+    const dest = join14(home, ...rel.split("/"));
     if (!exists(dest))
       continue;
     try {
@@ -1847,8 +1847,8 @@ if (isMainModule(import.meta)) {
 
 // src/hooks/session-start.ts
 init_shared();
-import { join as join14 } from "path";
-import { homedir as homedir7 } from "os";
+import { join as join15 } from "path";
+import { homedir as homedir8 } from "os";
 
 // src/hooks/local-articles.ts
 var LOCAL_ARTICLES = [
@@ -1880,6 +1880,45 @@ var LOCAL_ARTICLES = [
 init_paths();
 init_version();
 init_self_update();
+
+// src/shared/windows-shim.ts
+import { existsSync as existsSync5, readFileSync as readFileSync8 } from "fs";
+import { homedir as homedir5 } from "os";
+import { join as join11 } from "path";
+
+// src/shared/platform.ts
+var isWindows = process.platform === "win32";
+var isMac = process.platform === "darwin";
+var isLinux = process.platform === "linux";
+
+// src/shared/windows-shim.ts
+function windowsCliShimPath(env = process.env, home = homedir5()) {
+  return join11(env.LOCALAPPDATA ?? join11(home, "AppData", "Local"), "captain-memo", "bin", "captain-memo.cmd");
+}
+var WINDOWS_SHIM_FIX = "bun src\\cli\\index.ts install --yes   (run it from the captain-memo checkout)";
+function windowsShimState(body, exists = existsSync5) {
+  const entry = /^\s*bun\s+"([^"]+)"/im.exec(body)?.[1];
+  if (!entry)
+    return { state: "unknown" };
+  if (entry.includes("%~dp0"))
+    return { state: "stale", reason: "it locates the entry point relative to itself (%~dp0), which only works inside the checkout's bin folder" };
+  return exists(entry) ? { state: "ok", entry } : { state: "stale", reason: `it points at ${entry}, which does not exist` };
+}
+function windowsShimStaleText(path, reason) {
+  return `The captain-memo command on your PATH (${path}) is stale: ${reason}, so \`captain-memo <anything>\` fails with "Module not found". Fix: ${WINDOWS_SHIM_FIX}`;
+}
+function staleWindowsShimNotice(path = isWindows ? windowsCliShimPath() : null, exists = existsSync5) {
+  if (!path)
+    return null;
+  let body;
+  try {
+    body = readFileSync8(path, "utf-8");
+  } catch {
+    return null;
+  }
+  const s = windowsShimState(body, exists);
+  return s.state === "stale" ? windowsShimStaleText(path, s.reason) : null;
+}
 
 // src/shared/whats-new.ts
 init_self_update();
@@ -2161,7 +2200,7 @@ async function main2() {
   }
   try {
     await Promise.resolve().then(() => init_plugin_cache_refresh());
-    const lock = join14(DATA_DIR, CACHE_REFRESH_LOCK);
+    const lock = join15(DATA_DIR, CACHE_REFRESH_LOCK);
     if (acquireHealLock(lock)) {
       try {
         const r = refreshPluginCacheIfStale(VERSION);
@@ -2181,13 +2220,14 @@ async function main2() {
     await Promise.resolve().then(() => init_skill_refresh());
     const memoSource = resolveMemoSkillSource();
     if (memoSource)
-      refreshMemoSkills(memoSource, homedir7());
+      refreshMemoSkills(memoSource, homedir8());
   } catch (err) {
     logHookError("SessionStart", err);
   }
   const upgrade = consumeUpgrade(DATA_DIR, VERSION);
   const upgradeNotice = upgrade ? formatUpgradeBanner(upgrade.from, upgrade.to, await fetchNews(upgrade.from, upgrade.to)) : "";
-  const notices = [autoUpdateNotice, upgradeNotice].filter(Boolean).join(`
+  const shimNotice = autoUpdateNotice || upgrade ? staleWindowsShimNotice() ?? "" : "";
+  const notices = [autoUpdateNotice, upgradeNotice, shimNotice].filter(Boolean).join(`
 
 `);
   const withNotice = (banner) => notices ? `${notices}
@@ -2536,10 +2576,10 @@ function parseWrittenPaths(command, cwd, shell = "posix") {
 }
 
 // src/hooks/deploy-guard.ts
-import { resolve as resolve5, basename, dirname as dirname3, join as join15, relative } from "path";
+import { resolve as resolve5, basename, dirname as dirname3, join as join16, relative } from "path";
 import { createHash } from "crypto";
-import { homedir as homedir8 } from "os";
-import { existsSync as existsSync8, statSync as statSync6, readFileSync as readFileSync10, writeFileSync as writeFileSync9, mkdirSync as mkdirSync9 } from "fs";
+import { homedir as homedir9 } from "os";
+import { existsSync as existsSync9, statSync as statSync6, readFileSync as readFileSync11, writeFileSync as writeFileSync9, mkdirSync as mkdirSync9 } from "fs";
 import { spawnSync as spawnSync5 } from "child_process";
 init_paths();
 init_branch();
@@ -2581,7 +2621,7 @@ var RSYNC_VALUE_FLAGS = new Set([
 ]);
 var SSH_VALUE_FLAGS = new Set(["-p", "-i", "-o", "-J", "-F", "-l", "-L", "-R", "-D", "-b", "-c", "-E", "-e", "-m", "-O", "-Q", "-S", "-W", "-w", "-B"]);
 var SSH_PASS = new Set(["-p", "-i", "-o", "-J", "-F", "-l"]);
-var tilde = (p) => p === "~" || p.startsWith("~/") ? homedir8() + p.slice(1) : p;
+var tilde = (p) => p === "~" || p.startsWith("~/") ? homedir9() + p.slice(1) : p;
 function sshPassArgs(toks) {
   const out = [];
   for (let i = 0;i < toks.length; i++) {
@@ -2755,7 +2795,7 @@ function parseTransfers(command, cwd, isDir = defaultIsDir) {
               if (!r || !r.path || r.path.includes("*") || src.includes("$"))
                 continue;
               const destAbs = resolve5(dir, tilde(destTok));
-              const local = destTok.endsWith("/") || destTok === "." || isDir(destAbs) ? join15(destAbs, basename(r.path)) : destAbs;
+              const local = destTok.endsWith("/") || destTok === "." || isDir(destAbs) ? join16(destAbs, basename(r.path)) : destAbs;
               downloads.push({ local, userhost: r.userhost, path: r.path, sshArgs: [...sshArgs] });
             }
           }
@@ -2856,7 +2896,7 @@ function localMd5(p) {
     const st = statSync6(p);
     if (!st.isFile() || st.size > MAX_HASH_BYTES)
       return null;
-    return md5Of(readFileSync10(p));
+    return md5Of(readFileSync11(p));
   } catch {
     return null;
   }
@@ -2897,7 +2937,7 @@ function committedMd5s(file, remotePath, cwd) {
     if (rel.startsWith("..") && remotePath && cwd) {
       root = detectRepoRootSync(cwd);
       const parts = remotePath.split("/").filter(Boolean);
-      const i = root ? parts.findIndex((_, k) => existsSync8(join15(root, ...parts.slice(k)))) : -1;
+      const i = root ? parts.findIndex((_, k) => existsSync9(join16(root, ...parts.slice(k)))) : -1;
       rel = i >= 0 ? parts.slice(i).join("/") : "..";
     }
     if (!root || rel.startsWith(".."))
@@ -2936,10 +2976,10 @@ function committedMd5s(file, remotePath, cwd) {
   } catch {}
   return out;
 }
-var baseFile = (sid) => join15(process.env.CAPTAIN_MEMO_DATA_DIR ?? DATA_DIR, "deploy-base", `${sid.replace(/[^A-Za-z0-9_.-]/g, "_")}.json`);
+var baseFile = (sid) => join16(process.env.CAPTAIN_MEMO_DATA_DIR ?? DATA_DIR, "deploy-base", `${sid.replace(/[^A-Za-z0-9_.-]/g, "_")}.json`);
 function readBaselines(sid) {
   try {
-    return JSON.parse(readFileSync10(baseFile(sid), "utf-8"));
+    return JSON.parse(readFileSync11(baseFile(sid), "utf-8"));
   } catch {
     return {};
   }
@@ -2949,7 +2989,7 @@ function recordBaseline(sid, key, md5, how) {
     const b = readBaselines(sid);
     b[key] = [...(b[key] ?? []).filter((e) => e.md5 !== md5), { md5, how }].slice(-5);
     const f = baseFile(sid);
-    if (!existsSync8(dirname3(f)))
+    if (!existsSync9(dirname3(f)))
       mkdirSync9(dirname3(f), { recursive: true });
     writeFileSync9(f, JSON.stringify(b));
   } catch {}
@@ -3189,7 +3229,7 @@ function globsOverlap(aGlobs, bGlobs) {
 }
 
 // src/shared/ai-process.ts
-import { readFileSync as readFileSync11 } from "fs";
+import { readFileSync as readFileSync12 } from "fs";
 import { spawnSync as spawnSync6 } from "child_process";
 import { basename as basename2 } from "path";
 var MAX_DEPTH = 8;
@@ -3240,12 +3280,12 @@ function aiProcessPid(agents, start = process.ppid, root = "/proc", platform = p
   let pid = start;
   for (let i = 0;i < MAX_DEPTH && pid > 1; i++) {
     try {
-      const comm = readFileSync11(`${root}/${pid}/comm`, "utf8").trim();
-      const argv = readFileSync11(`${root}/${pid}/cmdline`, "utf8").split("\x00");
+      const comm = readFileSync12(`${root}/${pid}/comm`, "utf8").trim();
+      const argv = readFileSync12(`${root}/${pid}/cmdline`, "utf8").split("\x00");
       const script = argv.slice(1).find((a) => a !== "" && !a.startsWith("-"));
       if (agents.some((a) => comm === a || name(argv[0]) === a || name(script) === a))
         return pid;
-      const stat = readFileSync11(`${root}/${pid}/stat`, "utf8");
+      const stat = readFileSync12(`${root}/${pid}/stat`, "utf8");
       pid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
     } catch {
       return;

@@ -12900,8 +12900,8 @@ function loadWorkerEnv() {
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.57.11",
-  description: "Cross-AI local memory layer (Claude Code, Codex, Gemini, Cursor) \u2014 Voyage-embedded, hybrid search",
+  version: "0.57.12",
+  description: "Cross-AI local memory layer for Claude Code, Codex, Gemini CLI, Antigravity, goose, Cursor, opencode, Kimi CLI and more: hybrid search, six summarizer providers, hosted or local embedder. Replaces claude-mem.",
   type: "module",
   private: true,
   license: "Apache-2.0",
@@ -13329,7 +13329,7 @@ var TOOLS = [
   },
   {
     name: "todo_add",
-    description: 'File HOMEWORK on this captain: an idea or a task for later \u2014 not for now. Kept per captain (every AI session on this machine shares the list; Claude Code sessions see the open items at start, other tools call todo_list), with a lifecycle open \u2192 claimed \u2192 done. Use it when the user says "idea:", "todo:", "later:", "note for later", or when you notice work that should happen but not in this session. NOT a memory (that is `remember`: a fact to recall) and NOT a work claim (that is `work_set`: what you are doing right now). Returns the item with its number (#12) and how many are open.',
+    description: 'File HOMEWORK on this captain: an idea or a task for later \u2014 not for now. Kept per captain (every AI session on this machine shares the list; Claude Code, Codex and Gemini sessions see the open items at start, other tools call todo_list), with a lifecycle open \u2192 claimed \u2192 done. Use it when the user says "idea:", "todo:", "later:", "note for later", or when you notice work that should happen but not in this session. NOT a memory (that is `remember`: a fact to recall) and NOT a work claim (that is `work_set`: what you are doing right now). Returns the item with its number (#12) and how many are open.',
     inputSchema: { type: "object", properties: { text: { type: "string", description: "What to do, in one or two lines; the first line is the title." }, topics: { type: "array", items: { type: "string" }, description: "Optional 1\u20135 kebab tags, like work_set topics." }, project: { type: "string", description: "Optional project it belongs to; defaults to this cwd's project." }, due: { type: "string", description: `Optional: when it is due, an ISO 8601 date or date-time ("2026-10-01T00:05"; no zone = this host's local time, a bare date = its midnight). From then on the session-start list in Claude Code shows it first, marked due; todo_list returns it with its due time. A reminder: nothing runs by itself.` } }, required: ["text"] }
   },
   {

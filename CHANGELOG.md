@@ -7,6 +7,48 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.57.12] — 2026-10-18
+
+### Added
+
+- **`captain-memo doctor` gets a `codex approvals` row and a `codex home` row, and the worker keeps Codex's tool
+  approvals current.** `connect codex` writes the per-tool approvals once, so a tool a release added later
+  (`todo_unclaim`, for one) stayed unapproved: Codex prompted for it and `codex exec` rejected the call. The worker now
+  appends the missing blocks to Codex's `config.toml` each time it starts, only where `[mcp_servers.captain-memo]` is
+  already registered, never creating the file, leaving any block you already have alone. Doctor names the tools that
+  still lack an approval and warns when your shell's `CODEX_HOME` differs from `worker.env`'s.
+  `CAPTAIN_MEMO_CODEX_APPROVALS=0` turns the refresh off.
+- **`captain-memo doctor` flags a stale Windows PATH shim.** Before 0.44.0 install copied `bin\captain-memo.cmd`, which
+  only works inside the checkout; a machine that never re-ran install gets "Module not found" from every `captain-memo`
+  command. A `cli shim` row (Windows only) warns with the fix, and the session an update announces says it in one line.
+
+### Fixed
+
+- **The install wizard sees an agy login kept in the OS keyring.** On a Linux desktop with a Secret Service, and on
+  Windows, agy never writes its token file, so the wizard called agy "not logged in on this machine" and would not
+  recommend it. It now asks the keyring once (Linux: a read-only `busctl` query that returns item paths only, no secret
+  read and no keyring daemon started; Windows: `cmdkey /list`, names only), only when agy is on PATH and the file is
+  missing, bounded at about 6 s. A locked keyring counts as logged in; no answer keeps the old verdict.
+- **A Windows worker task that will not register no longer skips the CLI shim.** `schtasks /Create ... Access is denied`
+  used to abort the install before the shim, plugin and tool wiring ran. The shim is written regardless, the failure is
+  printed last with how to check and fix it (a possible cause named as a possibility only), and the install exits 1.
+- **`connect codex` follows `$CODEX_HOME`, and writes nothing when it points at a directory that is not there.**
+  Approvals, `hooks.json` and the skill went to `~/.codex` while `codex mcp add` wrote under `$CODEX_HOME`. A missing
+  `CODEX_HOME` is now reported as failed with the reason, because codex refuses to start with it.
+- **Token totals for a native session no longer double when two scans read its transcript at once** (2x for two scans,
+  3x for three).
+- **`captain-memo help` lists `queue` and `maintenance` and names every `connect` target** (built from the adapter
+  list). **The `todo_add` description says Codex and Gemini sessions see the open homework at start, like Claude Code
+  ones. The package description no longer says "Voyage-embedded".**
+
+### Notes
+
+- Run `captain-memo restart` after updating: the Codex approvals refresh and the token-count fix live in the worker, and
+  the hook changes need the plugin bundle rebuilt, which this release does.
+- Tests run with their data and config dirs pinned to a scratch home, so an exported `CAPTAIN_MEMO_DATA_DIR` /
+  `CAPTAIN_MEMO_CONFIG_DIR` can no longer point `bun test` at live state; the cross-AI connect tests remove their
+  skill-source temp folders.
+
 ## [0.57.11] — 2026-10-15
 
 ### Added
