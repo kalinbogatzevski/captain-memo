@@ -27,6 +27,8 @@ import { WORKER_ENV_PATH, CONFIG_DIR, LOGS_DIR, DATA_DIR, DEFAULT_WORKER_PORT, D
 import { backupWorkerEnv, restoreWorkerEnvBackup } from '../../shared/worker-env.ts';
 import { summarizerLogins, probeSummarizerLogins, type SummarizerLogins } from '../../shared/summarizer-login.ts';
 import { getServiceManager } from '../../services/service-manager/index.ts';
+import type { ServiceManager, ServiceSpec } from '../../services/service-manager/types.ts';
+import { windowsCliShimPath } from '../../shared/windows-shim.ts';
 import { grantPluginToolPermissions } from './install-hooks.ts';
 import { getEmbedderInstaller } from '../../services/embedder-installer/index.ts';
 import { connectCrossAi, printConnectReport, PROBE_CLEAR } from '../cross-ai.ts';
@@ -1115,6 +1117,93 @@ function grantMcpPermissions(opts: InstallOptions, settingsPath: string): void {
   }
 }
 
+/** What to tell a person whose worker Scheduled Task would not register. The Administrator-shell cause is a HYPOTHESIS
+ *  (a task registered from an elevated shell may not be overwritable from a normal one; seen as `ERROR: Access is denied.`
+ *  in the field) and is worded as one, shown only for a `schtasks /Create` failure (windows-scheduled-task.ts).
+ *  The Principal check shows who the task RUNS as, not who may rewrite it; the security descriptor is the one that tells. */
+export function windowsWorkerTaskFailureLines(message: string): string[] {
+  const lines = [`The worker service step FAILED: ${message}`];
+  if (/schtasks \/Create failed/i.test(message)) {
+    lines.push(
+      'If a captain-memo-worker task already exists, it may have been registered from an Administrator shell, and Windows then',
+      'refuses to overwrite it from a normal one (a possible cause, not confirmed on this machine). To look:',
+      '  Who the task runs as (this does NOT show who may overwrite it):',
+      '    Get-ScheduledTask -TaskName captain-memo-worker | Select -ExpandProperty Principal',
+      '  Who owns it and what your account may do with it:',
+      "    $s=New-Object -ComObject Schedule.Service; $s.Connect(); $s.GetFolder('\\').GetTask('captain-memo-worker').GetSecurityDescriptor(5)",
+      'If it is that: from an Administrator PowerShell run',
+      '    Unregister-ScheduledTask -TaskName captain-memo-worker -Confirm:$false',
+      'then re-run the install from a normal PowerShell.',
+    );
+  }
+  lines.push('The rest of the install (CLI shim, plugin, other AI tools) still ran. When the cause is fixed, run again from the checkout:',
+    '    bun src\\cli\\index.ts install --yes');
+  return lines;
+}
+
+/** The Windows install's service step and CLI-shim step, in one place so neither can take the other down: a worker Scheduled
+ *  Task that will not register (or restart) used to throw out of installWindows and skip the shim, leaving a stale
+ *  copied one on PATH. The task failure is RETURNED (null = fine), the caller reports it last and exits non-zero. */
+export async function installWindowsServiceAndShim(
+  sm: ServiceManager, spec: ServiceSpec, port: number, shim: { path: string; installDir: string },
+): Promise<string | null> {
+  // ----- worker Scheduled Task -----
+  header('Installing worker service');
+  let taskFailure: string | null = null;
+  try {
+    await sm.install(spec);
+    // restart (NOT start): the Scheduled Task is MultipleInstancesPolicy=IgnoreNew, so
+    // Start-ScheduledTask is a NO-OP when the worker is already running (the common
+    // "re-run install to update code" case) — leaving the OLD process serving stale code.
+    // restart force-stops + reclaims the port, then starts, so the new code actually takes
+    // effect. On a fresh install the stop is a harmless no-op before the start.
+    await sm.restart(spec.name, { graceful: true, port, force: true });
+    ok('worker task registered + (re)started (captain-memo-worker)');
+  } catch (e) {
+    taskFailure = e instanceof Error ? e.message : String(e);
+    warn(`worker service step failed: ${taskFailure}`);
+    info('Carrying on with the CLI shim and the other steps; the details come at the end.');
+  }
+
+  // ----- drop the legacy standalone watchdog task (removed in 0.2.17) -----
+  // The separate captain-memo-watchdog task ran `worker-watchdog` every 5 min, but
+  // the Task Scheduler launches bun with an InteractiveToken, so it flashed a
+  // console window each tick — and there's no clean no-admin way to hide a task's
+  // window (S4U needs elevation; conhost --headless breaks the task lifecycle). The
+  // SessionStart/UserPromptSubmit self-heal already reclaims a dead/zombie worker at
+  // session boundaries, so the standalone task isn't worth the recurring flash.
+  // Remove it if an earlier install registered it. (`worker-watchdog` survives as a
+  // manual command for an explicit probe+reclaim.) Best-effort: a cleanup failure
+  // must not abort an otherwise-good install.
+  try {
+    if ((await sm.status('captain-memo-watchdog')) !== 'not-installed') {
+      await sm.remove('captain-memo-watchdog');
+      ok('removed the legacy watchdog task (session self-heal covers recovery)');
+    }
+  } catch { /* best-effort — leave a stray task rather than fail the install */ }
+
+  // ----- CLI shim -----
+  header('Linking CLI shim');
+  try {
+    mkdirSync(dirname(shim.path), { recursive: true });
+    // WRITTEN with the checkout's absolute path, not copied: the checkout's own bin\captain-memo.cmd resolves
+    // the entry point relative to itself (`%~dp0..\src`), which is wrong once it lives under %LOCALAPPDATA% —
+    // every install whose checkout was not at the default folder had a dead `captain-memo` command.
+    writeFileSync(shim.path, windowsCliShim(shim.installDir));
+    ok(`installed ${shim.path} → ${shim.installDir}`);
+    // Don't clobber PATH with setx (it truncates long PATHs and is easy to misuse).
+    // Print one clear, idiot-proof instruction instead.
+    warn(`Add this folder to your PATH so you can run \`captain-memo\` from anywhere:`);
+    info(`  ${dirname(shim.path)}`);
+    info('  (Settings → Edit environment variables for your account → Path → New → paste the line above)');
+    info(`Until then you can run it directly:  bun bin\\captain-memo <cmd>`);
+  } catch (e) {
+    warn(`could not install CLI shim: ${e instanceof Error ? e.message : String(e)}`);
+    info(`Run the CLI directly instead:  bun bin\\captain-memo <cmd>`);
+  }
+  return taskFailure;
+}
+
 async function installWindows(args: string[], opts: InstallOptions): Promise<number> {
   printMiniBanner();
 
@@ -1249,15 +1338,14 @@ async function installWindows(args: string[], opts: InstallOptions): Promise<num
     }
   }
 
-  // ----- worker Scheduled Task -----
-  header('Installing worker service');
+  // ----- worker Scheduled Task + CLI shim (the shim is written even when the task will not register) -----
   // Launch the (console-app) worker through wscript + a hidden VBS wrapper so the
   // Task Scheduler doesn't pop a console window on every start. wscript has no
   // console of its own and the wrapper WAITS on the bun child, so the task still
   // stays "Running" for the worker's lifetime (recovery lifecycle unchanged). The
   // reclaim kills the bun child by port; wscript then exits and the task goes Ready.
   const hiddenLaunchVbs = join(INSTALL_DIR, 'scripts', 'hidden-launch.vbs');
-  await getServiceManager().install({
+  const workerTaskFailure = await installWindowsServiceAndShim(getServiceManager(), {
     name: 'captain-memo-worker',
     description: 'Captain Memo worker',
     exec: ['wscript.exe', '//nologo', '//B', hiddenLaunchVbs, bunPath, 'src/worker/index.ts'],
@@ -1267,53 +1355,7 @@ async function installWindows(args: string[], opts: InstallOptions): Promise<num
     restartOnFailure: true,
     watchdogIntervalSec: 300,
     logDir: LOGS_DIR,
-  });
-  // restart (NOT start): the Scheduled Task is MultipleInstancesPolicy=IgnoreNew, so
-  // Start-ScheduledTask is a NO-OP when the worker is already running (the common
-  // "re-run install to update code" case) — leaving the OLD process serving stale code.
-  // restart force-stops + reclaims the port, then starts, so the new code actually takes
-  // effect. On a fresh install the stop is a harmless no-op before the start.
-  await getServiceManager().restart('captain-memo-worker', { graceful: true, port, force: true });
-  ok('worker task registered + (re)started (captain-memo-worker)');
-
-  // ----- drop the legacy standalone watchdog task (removed in 0.2.17) -----
-  // The separate captain-memo-watchdog task ran `worker-watchdog` every 5 min, but
-  // the Task Scheduler launches bun with an InteractiveToken, so it flashed a
-  // console window each tick — and there's no clean no-admin way to hide a task's
-  // window (S4U needs elevation; conhost --headless breaks the task lifecycle). The
-  // SessionStart/UserPromptSubmit self-heal already reclaims a dead/zombie worker at
-  // session boundaries, so the standalone task isn't worth the recurring flash.
-  // Remove it if an earlier install registered it. (`worker-watchdog` survives as a
-  // manual command for an explicit probe+reclaim.) Best-effort: a cleanup failure
-  // must not abort an otherwise-good install.
-  try {
-    if ((await getServiceManager().status('captain-memo-watchdog')) !== 'not-installed') {
-      await getServiceManager().remove('captain-memo-watchdog');
-      ok('removed the legacy watchdog task (session self-heal covers recovery)');
-    }
-  } catch { /* best-effort — leave a stray task rather than fail the install */ }
-
-  // ----- CLI shim -----
-  header('Linking CLI shim');
-  const binDir = join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'captain-memo', 'bin');
-  if (!existsSync(binDir)) mkdirSync(binDir, { recursive: true });
-  const shimDst = join(binDir, 'captain-memo.cmd');
-  try {
-    // WRITTEN with the checkout's absolute path, not copied: the checkout's own bin\captain-memo.cmd resolves
-    // the entry point relative to itself (`%~dp0..\src`), which is wrong once it lives under %LOCALAPPDATA% —
-    // every install whose checkout was not at the default folder had a dead `captain-memo` command.
-    writeFileSync(shimDst, windowsCliShim(INSTALL_DIR));
-    ok(`installed ${shimDst} → ${INSTALL_DIR}`);
-    // Don't clobber PATH with setx (it truncates long PATHs and is easy to misuse).
-    // Print one clear, idiot-proof instruction instead.
-    warn(`Add this folder to your PATH so you can run \`captain-memo\` from anywhere:`);
-    info(`  ${binDir}`);
-    info('  (Settings → Edit environment variables for your account → Path → New → paste the line above)');
-    info(`Until then you can run it directly:  bun bin\\captain-memo <cmd>`);
-  } catch (e) {
-    warn(`could not install CLI shim: ${e instanceof Error ? e.message : String(e)}`);
-    info(`Run the CLI directly instead:  bun bin\\captain-memo <cmd>`);
-  }
+  }, port, { path: windowsCliShimPath(), installDir: INSTALL_DIR });
 
   // ----- register the plugin with Claude Code (best-effort) -----
   header('Registering Claude Code plugin');
@@ -1333,6 +1375,14 @@ async function installWindows(args: string[], opts: InstallOptions): Promise<num
 
   header('Wiring other AI tools (shared memory)');
   wireCrossAi(opts);
+
+  // Reported LAST, so it is the last thing on screen, and exits non-zero: the install did not finish what it set out to do.
+  if (workerTaskFailure) {
+    console.log();
+    console.log('  \x1b[31m✗\x1b[0m The install finished, but the worker service step FAILED.');
+    for (const line of windowsWorkerTaskFailureLines(workerTaskFailure)) info(line);
+    return 1;
+  }
 
   console.log();
   ok('Captain Memo installed.');
