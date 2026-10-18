@@ -594,8 +594,8 @@ export function parseOllamaList(stdout: string): string[] {
 
 // --- adapters ----------------------------------------------------------------
 
-// Codex CLI (~/.codex). Register: `codex mcp add captain-memo -- bun <path>`.
-// Skill: copy SKILL.md → ~/.codex/skills/captain-memo/SKILL.md.
+// Codex CLI (~/.codex, or $CODEX_HOME - see codexHomeDir). Register: `codex mcp add captain-memo -- bun <path>`.
+// Skill: copy SKILL.md → <codex home>/skills/captain-memo/SKILL.md.
 /** Every tool captain-memo's MCP server exposes. Codex approves MCP tools ONE AT A TIME, so this
  *  list is what `connect codex` pre-approves. Kept as a literal rather than imported from
  *  src/mcp-server.ts so the CLI does not pull in the MCP SDK just to read names — a test asserts it
@@ -630,6 +630,14 @@ export function mergeCodexToolApprovals(existingToml: string, tools: readonly st
     out = `${out.replace(/\n+$/, '')}\n\n${header}\napproval_mode = "approve"\n`;
   }
   return out;
+}
+
+/** Codex's home: $CODEX_HOME when set and non-empty, else <home>/.codex (%USERPROFILE%\.codex on Windows). Codex itself
+ *  treats an empty CODEX_HOME as unset. Observed with codex-cli 0.159.3 in a throwaway CODEX_HOME: config.toml
+ *  (`codex mcp add` writes it there), hooks.json and skills/ are read from it and ~/.codex is ignored; a CODEX_HOME that
+ *  does not exist makes codex refuse to start. `env` is injectable so a test never reads the developer's real one. */
+export function codexHomeDir(home: string = homedir(), env: Record<string, string | undefined> = process.env): string {
+  return env.CODEX_HOME || join(home, '.codex');
 }
 
 export const CAPTAIN_MEMO_CODEX_HOOK_MARKER = 'captain-memo-codex-hook-managed';
@@ -828,11 +836,27 @@ const codexAdapter: ToolAdapter = {
   id: 'codex',
   label: 'Codex CLI',
   detect({ home, run }) {
-    return cliOnPath(run, 'codex') || existsSync(join(home, '.codex'));
+    return cliOnPath(run, 'codex') || existsSync(codexHomeDir(home));
   },
   connect(ctx) {
     let mcp: ConnectResult['mcp'] = 'failed';
     let detail: string | undefined;
+    // Everything below lands where codex READS it: $CODEX_HOME when set, else ~/.codex (codexHomeDir). `codex mcp add`
+    // already wrote its config.toml there, so the approvals and hooks must follow or they sit in a file codex never opens.
+    // ponytail: skill-refresh.ts still refreshes only the ~/.codex copies of the skills, so a copy under $CODEX_HOME
+    // is as fresh as the last `connect codex`; follow CODEX_HOME there if that matters.
+    const codexHome = codexHomeDir(ctx.home);
+    // A CODEX_HOME that is set but not there: codex refuses to start with it (codex-cli 0.159.3: `mcp list` prints "failed to
+    // resolve CODEX_HOME", `mcp add` "failed to load configuration", and both go on "CODEX_HOME points to …, but that path
+    // does not exist"). Writing anything here would make the directory (copySkill's mkdir), and codex would then start
+    // quietly on an empty home with no login instead of telling the user their CODEX_HOME is wrong. So write nothing and
+    // say so. (An unset or empty CODEX_HOME that has no <home>/.codex yet is the normal first run: codex makes that one itself.)
+    if (process.env.CODEX_HOME && !existsSync(codexHome)) {
+      return {
+        tool: 'codex', mcp: 'failed', skill: 'skipped',
+        detail: `CODEX_HOME points to "${codexHome}", but that path does not exist, and codex refuses to start with it. Nothing was registered or written. Create the directory or fix CODEX_HOME, then run \`captain-memo connect codex\` again`,
+      };
+    }
     // `codex mcp add <name> -- <command> [args...]`. The `--` separates the
     // launch command from codex's own flags. Idempotent: re-adding the same
     // name updates in place (codex handles "already added").
@@ -845,7 +869,7 @@ const codexAdapter: ToolAdapter = {
     // Best-effort: a failure here does not undo a successful registration, it just means the user
     // gets the approval prompts interactively, which is codex's own default.
     if (mcp !== 'failed') {
-      const cfgPath = join(ctx.home, '.codex', 'config.toml');
+      const cfgPath = join(codexHome, 'config.toml');
       try {
         const before = existsSync(cfgPath) ? readFileSync(cfgPath, 'utf-8') : '';
         const after = mergeCodexToolApprovals(before);
@@ -858,7 +882,7 @@ const codexAdapter: ToolAdapter = {
       }
     }
 
-    const skill = copySkill(ctx.skillSource, join(ctx.home, '.codex', 'skills', 'captain-memo', 'SKILL.md'));
+    const skill = copySkill(ctx.skillSource, join(codexHome, 'skills', 'captain-memo', 'SKILL.md'));
 
     // Native hooks landed after Captain Memo's rollout reader. Capability-probe
     // them so old CLIs remain untouched and a user-disabled hooks feature is
@@ -867,7 +891,7 @@ const codexAdapter: ToolAdapter = {
     let capture: NonNullable<ConnectResult['capture']> = 'rollout-fallback';
     const featureProbe = ctx.run('codex', ['features', 'list'], PROBE_TIMEOUT_MS);
     if (codexHooksEnabled(featureProbe)) {
-      const hooksPath = join(ctx.home, '.codex', 'hooks.json');
+      const hooksPath = join(codexHome, 'hooks.json');
       const hookBundle = join(dirname(mcpServerPath(ctx.mcpCommand)), 'captain-memo-hook.js');
       try {
         const before = existsSync(hooksPath) ? readFileSync(hooksPath, 'utf-8') : null;

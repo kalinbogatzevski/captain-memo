@@ -2,7 +2,7 @@ import { test, expect, beforeEach, afterEach, describe } from 'bun:test';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { mergeCursorMcpConfig, mergeVibeMcpConfig, mergeKimiConfig, kimiSmallContexts, mergeKimiHooks, kimiHooksSupported, mergeClaudeDesktopConfig, mergeGooseConfig, mergeGeminiHooks, geminiHooksSupported, parseGeminiVersion, geminiHooksToggleRejected, toBlockYaml, mergeCodexToolApprovals, mergeCodexHooks, codexHooksEnabled, CAPTAIN_MEMO_CODEX_HOOK_MARKER, CAPTAIN_MEMO_GEMINI_HOOK_MARKER, CAPTAIN_MEMO_KIMI_HOOK_BEGIN, CODEX_TOOL_NAMES, gooseConfigPath, gooseConfigCandidates, extractGooseEntry, gooseExtensionEntry, parseOllamaList, connectCrossAi, type Runner } from '../../src/cli/cross-ai.ts';
+import { mergeCursorMcpConfig, mergeVibeMcpConfig, mergeKimiConfig, kimiSmallContexts, mergeKimiHooks, kimiHooksSupported, mergeClaudeDesktopConfig, mergeGooseConfig, mergeGeminiHooks, geminiHooksSupported, parseGeminiVersion, geminiHooksToggleRejected, toBlockYaml, mergeCodexToolApprovals, mergeCodexHooks, codexHooksEnabled, CAPTAIN_MEMO_CODEX_HOOK_MARKER, CAPTAIN_MEMO_GEMINI_HOOK_MARKER, CAPTAIN_MEMO_KIMI_HOOK_BEGIN, CODEX_TOOL_NAMES, gooseConfigPath, gooseConfigCandidates, extractGooseEntry, gooseExtensionEntry, parseOllamaList, connectCrossAi, detectCrossAi, type Runner } from '../../src/cli/cross-ai.ts';
 
 // Bun's native YAML, typed locally so this compiles against an @types/bun predating `Bun.YAML`.
 const YAML = (globalThis as { Bun: { YAML: { parse(s: string): any; stringify(v: unknown): string } } }).Bun.YAML;
@@ -250,6 +250,95 @@ test('connectCrossAi — old or hooks-disabled Codex stays on rollout fallback',
   });
   expect(result?.capture).toBe('rollout-fallback');
   expect(existsSync(join(home, '.codex', 'hooks.json'))).toBe(false);
+});
+
+// ---- Codex follows $CODEX_HOME -----------------------------------------------
+// `codex mcp add` writes <CODEX_HOME>/config.toml, and codex reads hooks.json and skills/ from there too (codex-cli
+// 0.159.3, checked against a throwaway CODEX_HOME), so connect has to put the approvals, hooks and skills in the same place.
+
+const codexRun: Runner = (cmd, args) => {
+  if (cmd === 'codex' && args[0] === 'mcp') return { status: 0, stdout: '' };
+  if (cmd === 'codex' && args[0] === 'features') return { status: 0, stdout: 'hooks stable true\n' };
+  return { status: 1, stdout: '' };
+};
+const connectCodex = () => connectCrossAi({ only: ['codex'], mcpCommand: ['bun', MCP_PATH], skillSource, home, run: codexRun });
+
+test('connectCrossAi — CODEX_HOME set: approvals, hooks and the skill land under it, and <home>/.codex is never created', () => {
+  const codexHome = join(home, 'codex-alt');
+  mkdirSync(codexHome);                                   // codex refuses to start on a CODEX_HOME that does not exist
+  const config = 'model = "gpt-5.6-sol"\n\n[mcp_servers.captain-memo]\ncommand = "bun"\n';   // what `codex mcp add` leaves there
+  writeFileSync(join(codexHome, 'config.toml'), config);
+  process.env.CODEX_HOME = codexHome;
+
+  const [result] = connectCodex();
+
+  expect(result?.capture).toBe('native-hooks');
+  expect(result?.skill).toBe('installed');
+  expect(readFileSync(join(codexHome, 'config.toml'), 'utf-8')).toBe(mergeCodexToolApprovals(config));
+  expect(JSON.parse(readFileSync(join(codexHome, 'hooks.json'), 'utf-8')).hooks.SessionStart[0].hooks[0].command).toContain('CodexSessionStart');
+  expect(readFileSync(join(codexHome, 'skills', 'captain-memo', 'SKILL.md'), 'utf-8')).toBe('# skill body\n');
+  expect(existsSync(join(home, '.codex'))).toBe(false);   // nothing went to the default location
+});
+
+test('connectCrossAi — CODEX_HOME set: a config.toml in <home>/.codex is left byte-identical', () => {
+  const decoy = 'model = "not-this-one"\n';
+  mkdirSync(join(home, '.codex'));
+  writeFileSync(join(home, '.codex', 'config.toml'), decoy);
+  process.env.CODEX_HOME = join(home, 'codex-alt');
+  mkdirSync(process.env.CODEX_HOME);
+  connectCodex();
+  expect(readFileSync(join(home, '.codex', 'config.toml'), 'utf-8')).toBe(decoy);
+  expect(readFileSync(join(process.env.CODEX_HOME, 'config.toml'), 'utf-8')).toBe(mergeCodexToolApprovals(''));
+});
+
+test('connectCrossAi — CODEX_HOME set to a directory that is not there: failed with a detail, codex never run, nothing created', () => {
+  // codex refuses to start on it (codex-cli 0.159.3: "CODEX_HOME points to …, but that path does not exist"). `connect` used
+  // to make the directory (copySkill's mkdir), and codex then started quietly on an empty home with no login instead of
+  // telling the user their CODEX_HOME is wrong.
+  const missing = join(home, 'no-such-codex-home');
+  process.env.CODEX_HOME = missing;
+  const calls: string[] = [];
+  const run: Runner = (cmd, args) => { calls.push(`${cmd} ${args.join(' ')}`); return codexRun(cmd, args); };
+
+  const [result] = connectCrossAi({ only: ['codex'], mcpCommand: ['bun', MCP_PATH], skillSource, home, run });
+
+  expect(result?.tool).toBe('codex');
+  expect(result?.mcp).toBe('failed');
+  expect(result?.skill).toBe('skipped');
+  expect(result?.detail).toContain(`CODEX_HOME points to "${missing}"`);
+  expect(result?.detail).toContain('Nothing was registered or written');
+  expect(calls).toEqual([]);                              // not even `codex mcp add`: it cannot succeed
+  expect(existsSync(missing)).toBe(false);                // the directory was not made for the user
+  expect(existsSync(join(home, '.codex'))).toBe(false);
+
+  mkdirSync(missing);                                     // the user fixes it: the very same call now connects
+  const [fixed] = connectCodex();
+  expect(fixed?.mcp).toBe('added');
+  expect(fixed?.skill).toBe('installed');
+  expect(readFileSync(join(missing, 'config.toml'), 'utf-8')).toBe(mergeCodexToolApprovals(''));
+  expect(existsSync(join(missing, 'skills', 'captain-memo', 'SKILL.md'))).toBe(true);
+});
+
+test('connectCrossAi — CODEX_HOME unset or empty: everything stays under <home>/.codex, as before', () => {
+  for (const value of [undefined, '']) {
+    if (value === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = value;   // codex reads '' as unset
+    rmSync(join(home, '.codex'), { recursive: true, force: true });
+    connectCodex();
+    expect(readFileSync(join(home, '.codex', 'config.toml'), 'utf-8')).toBe(mergeCodexToolApprovals(''));
+    expect(existsSync(join(home, '.codex', 'hooks.json'))).toBe(true);
+    expect(existsSync(join(home, '.codex', 'skills', 'captain-memo', 'SKILL.md'))).toBe(true);
+  }
+});
+
+test('detectCrossAi — codex is detected by its CODEX_HOME directory when that is set, by <home>/.codex otherwise', () => {
+  const codexDetected = () => detectCrossAi({ home, run: noopRunner }).find((r) => r.id === 'codex')!.detected;
+  expect(codexDetected()).toBe(false);
+  mkdirSync(join(home, '.codex'));
+  expect(codexDetected()).toBe(true);                     // unset: the default location, as before
+  process.env.CODEX_HOME = join(home, 'codex-alt');
+  expect(codexDetected()).toBe(false);                    // set to a directory that is not there: codex would not start either
+  mkdirSync(process.env.CODEX_HOME);
+  expect(codexDetected()).toBe(true);
 });
 
 test('Gemini hooks — capability probe and merge preserve foreign settings', () => {
@@ -577,7 +666,7 @@ let skillSource: string;
 // run (no `only`) on a box with Claude Desktop or goose installed would otherwise detect the REAL
 // install and write `captain-memo` into the developer's live config (found 2026-09-19 on Windows,
 // where %APPDATA%\Claude exists on any machine running Claude Desktop).
-const PINNED_ENV = ['APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'GOOSE_PATH_ROOT'] as const;
+const PINNED_ENV = ['APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'GOOSE_PATH_ROOT', 'CODEX_HOME'] as const;
 let savedEnv: Partial<Record<(typeof PINNED_ENV)[number], string | undefined>>;
 
 beforeEach(() => {
@@ -587,6 +676,7 @@ beforeEach(() => {
   process.env.LOCALAPPDATA = join(home, 'AppData', 'Local');
   delete process.env.XDG_CONFIG_HOME;
   delete process.env.GOOSE_PATH_ROOT;
+  delete process.env.CODEX_HOME;   // codex's home follows it; the CODEX_HOME tests set their own
   // Make cursor "detected".
   mkdirSync(join(home, '.cursor'), { recursive: true });
   // A real skill source to copy.

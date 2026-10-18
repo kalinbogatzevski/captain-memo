@@ -39,6 +39,9 @@ process.env.CAPTAIN_MEMO_CONFIG_DIR = process.platform === 'win32' ? join(home, 
 process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL = '1';
 // An opted-in developer environment would make every spawned hook run a real update pass (git, bun install, a service restart).
 delete process.env.CAPTAIN_MEMO_AUTO_UPDATE;
+// Codex's home follows $CODEX_HOME, so a developer who has it exported would point `connect codex` at their REAL codex config.
+// A test that wants one sets its own, in a temp dir.
+delete process.env.CODEX_HOME;
 
 const scratchOs = { ...os, homedir: () => home };
 mock.module('os', () => ({ ...scratchOs, default: scratchOs }));

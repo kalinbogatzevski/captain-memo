@@ -40,6 +40,13 @@ transcripts to the same `~/.codex/sessions/`, so `connect codex` wires and obser
 Native-hook auto-injection is guaranteed only where the Codex host executes `~/.codex/hooks.json`;
 the shared rollout reader still observes the other surfaces.
 
+Codex keeps all of that in `$CODEX_HOME` when the variable is set and in `~/.codex` otherwise; every `~/.codex` path
+on this page means that directory. `connect codex` follows it from your shell: the MCP registration, the tool approvals,
+`hooks.json` and the skill all go where Codex reads them. A `CODEX_HOME` that points at a directory that does not exist
+makes `connect codex` report failed and write nothing, because Codex itself refuses to start with it (it does not create the
+directory for you); create the directory or fix the variable, then run it again. Not yet following `CODEX_HOME`: the
+transcript reader (`sessions/`), the skill and memory indexing, and the post-update refresh of the installed skill copies.
+
 It's two pieces per tool:
 
 1. **Register the MCP server** → the tool gets memory recall, `list_skills` / `recommend_skills` / `load_skill`,
