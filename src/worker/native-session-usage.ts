@@ -411,7 +411,8 @@ async function accumulate(
   // double-counted ones, since the per-message dedupe already makes a re-read idempotent.
   //
   // Both racers now start from the same `from` and digest the same contiguous bytes, so
-  // taking the MAX keeps the longer read's real progress and discards the duplicate advance.
+  // taking the MAX keeps the longer read's real progress and discards the duplicate advance. (The racers also
+  // digested those bytes twice, which the dedupe only absorbed within its last 64 ids: see the re-sync after the read.)
   // No lock needed, and an accumulator replaced by a concurrent fresh() is simply orphaned.
   const from = t.offset;
   if (size > from) {
@@ -428,6 +429,12 @@ async function accumulate(
           const buf = Buffer.allocUnsafe(len);
           const { bytesRead } = await fh.read(buf, 0, len, pos);
           if (bytesRead === 0) break;
+          // Re-sync to the shared offset AFTER the await and BEFORE the (synchronous) digest. Another scan of this path may
+          // have digested these very bytes while this read was in flight; digesting them again is only harmless while their
+          // ids are still in the 64-id ring, and a scan that lags by more than 64 messages (every message of a 1 MB piece
+          // beyond the last 64) counted them twice, and id-less records twice however short. t.offset only ever holds a
+          // position some scan really digested into this accumulator, so jumping to it skips nothing undigested.
+          if (t.offset > pos) { pos = t.offset; want = DIGEST_CHUNK; continue; }
           const used = digest(buf.subarray(0, bytesRead), t);
           if (used === 0) {
             if (pos + bytesRead >= size) break;   // only a line still being written: next poll

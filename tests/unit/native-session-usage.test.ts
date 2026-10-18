@@ -166,6 +166,42 @@ test('concurrent scans never advance the offset past what was actually digested'
   expect(acc).not.toMatch(/t\.offset \+=/);                 // never a blind advance
 });
 
+test('scans of one transcript at once never count a message twice, even past the 64-id dedupe memory', async () => {
+  // The dedupe remembers only the last MSG_ID_MEMORY (64) ids. Two scans of one path that start at the same offset (the 10 s
+  // poll and the unawaited all-time scan do, routinely) read the same bytes, and whichever digested them second re-digested
+  // ids the first had already counted and the ring had since evicted: every message beyond the last 64 counted twice, and a
+  // record with no id (nothing to dedupe on) counted twice however short the transcript.
+  const N = 200;                                           // well past 64
+  let body = '';
+  for (let i = 0; i < N; i++) body += msgId(`m${i}`, 10, 1);
+  body += msg(50, 5) + msg(50, 5);                         // id-less: counted on every digest of its bytes
+  const p = writeTranscript(SID, body);
+  const wide = 365 * 24 * 60 * 60_000;
+  const rows = await Promise.all([readNativeSessionUsage(wide), readNativeSessionUsage()]);
+  for (const [s] of rows) {
+    expect(s!.input_tokens).toBe(N * 10 + 100);
+    expect(s!.output_tokens).toBe(N + 10);
+  }
+  appendFileSync(p, msgId('m_late', 7, 1));                // and the offset the scans left is exactly the end of the bytes they digested
+  const [after] = await readNativeSessionUsage();
+  expect(after!.input_tokens).toBe(N * 10 + 100 + 7);
+});
+
+test('scans of a multi-piece transcript at once count every message exactly once', async () => {
+  // Same race across read pieces (DIGEST_CHUNK = 1 MB): a scan that finds the other one already ahead has to jump to where
+  // that one got to, for each piece, not only at its start. ~3 MB, ~100 messages per piece, three scans of different widths.
+  const pad = JSON.stringify({ type: 'user', message: { content: 'x'.repeat(10_000) } }) + '\n';
+  const N = 300;
+  let body = '';
+  for (let i = 0; i < N; i++) body += pad + msgId(`m${i}`, 10, 1);
+  writeTranscript(SID, body);
+  const rows = await Promise.all([readNativeSessionUsage(365 * 24 * 60 * 60_000), readNativeSessionUsage(), readNativeSessionUsage(60_000)]);
+  for (const [s] of rows) {
+    expect(s!.input_tokens).toBe(N * 10);
+    expect(s!.output_tokens).toBe(N);
+  }
+});
+
 test('a transcript past one read piece (1 MB) is summed whole, a line longer than a piece included', async () => {
   // accumulate() digests in 1 MB pieces so a cold transcript never parses in one block; lines that
   // straddle a piece boundary, and a single line longer than a piece, must still count exactly once.
