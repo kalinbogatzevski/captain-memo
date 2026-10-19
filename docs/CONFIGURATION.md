@@ -300,7 +300,8 @@ avoid duplicate observations. No extra environment setting is required.
 | `CAPTAIN_MEMO_CAPTURE_GEMINI` | ON | |
 | `CAPTAIN_MEMO_CAPTURE_GEMINI_DIR` | `~/.gemini/tmp` | |
 | `CAPTAIN_MEMO_CAPTURE_KIMI` | ON | |
-| `CAPTAIN_MEMO_CAPTURE_KIMI_DIR` | `~/.kimi/sessions` | Falls back to `KIMI_SHARE_DIR`. |
+| `CAPTAIN_MEMO_CAPTURE_KIMI_DIR` | `~/.kimi/sessions` | Kimi 1.x (`context.jsonl`). Falls back to `KIMI_SHARE_DIR`. |
+| (`KIMI_CODE_HOME`) | `~/.kimi-code` | Kimi 2.x sessions are captured from `<home>/sessions/*/*/agents/main/wire.jsonl`; sub-agent transcripts are not captured yet. `CAPTAIN_MEMO_CAPTURE_KIMI_DIR` does not move this; Kimi's own `KIMI_CODE_HOME` does. Both layouts are read when both exist. |
 | `CAPTAIN_MEMO_CAPTURE_OPENCODE` | ON | |
 | `CAPTAIN_MEMO_CAPTURE_OPENCODE_DB` | `~/.local/share/opencode/opencode.db` | |
 | `CAPTAIN_MEMO_CAPTURE_TICK_MS` | `60000` | How often sources are polled. |
