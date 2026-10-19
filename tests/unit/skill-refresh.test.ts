@@ -46,6 +46,22 @@ test('refreshes existing copies only — never creates one for a CLI that was no
   expect(fs.copies.length).toBe(2);
 });
 
+// kimi 2.x reads user skills from <kimi home>/skills, and the home is $KIMI_CODE_HOME when that is set (kimi-code 2.2.0). It cannot be
+// a home-relative entry alone, so the refresh adds the relocated one too; the default is the `.kimi-code` entry in the list.
+test('kimi 2.x copies are refreshed in ~/.kimi-code, in $KIMI_CODE_HOME when that is set, and only where they exist', () => {
+  const rel = '.kimi-code/skills/captain-memo/SKILL.md';
+  expect(refreshMemoSkills(SRC, HOME, { ...fakeFs([rel]).deps, env: {} })).toEqual([join(HOME, rel)]);   // once, not twice
+  expect(refreshMemoSkills(SRC, HOME, { ...fakeFs([]).deps, env: {} })).toEqual([]);                      // never created
+
+  const alt = join(HOME, 'kimi-alt');
+  const altDest = join(alt, 'skills', 'captain-memo', 'SKILL.md');
+  const present = new Set([SRC, altDest, join(HOME, rel)]);
+  const copies: string[] = [];
+  const out = refreshMemoSkills(SRC, HOME, { exists: (p) => present.has(p), copy: (_a, b) => { copies.push(b); }, env: { KIMI_CODE_HOME: alt } });
+  expect(out).toEqual([join(HOME, rel), altDest]);                                                        // both, each where it is
+  expect(copies).toEqual(out);
+});
+
 test('a non-checkout install (no source file) is a no-op, not a crash', () => {
   const fs = fakeFs(['.codex/skills/captain-memo/SKILL.md']);
   expect(refreshMemoSkills('/nowhere/SKILL.md', HOME, fs.deps)).toEqual([]);
@@ -67,10 +83,10 @@ test('a failing copy is isolated — the remaining destinations still refresh', 
 test('the refresh list covers every captain-memo destination in cross-ai.ts', () => {
   const src = readFileSync(new URL('../../src/cli/cross-ai.ts', import.meta.url), 'utf8');
   const found = new Set<string>();
-  // connect codex writes under codexHome (= $CODEX_HOME or ~/.codex), the refresh list is ~/.codex-relative
-  const re = /copySkill\(\s*ctx\.skillSource\s*,\s*join\(\s*(ctx\.home|codexHome)\s*,\s*([^)]*)\)/g;
+  // connect codex writes under codexHome (= $CODEX_HOME or ~/.codex), the refresh list is ~/.codex-relative; kimi 2.x likewise under kimiCodeHome (= $KIMI_CODE_HOME or ~/.kimi-code)
+  const re = /copySkill\(\s*ctx\.skillSource\s*,\s*join\(\s*(ctx\.home|codexHome|kimiCodeHome)\s*,\s*([^)]*)\)/g;
   for (const m of src.matchAll(re)) {
-    const segs = [...(m[1] === 'codexHome' ? ['.codex'] : []), ...[...m[2]!.matchAll(/'([^']+)'/g)].map((s) => s[1]!)];
+    const segs = [...(m[1] === 'codexHome' ? ['.codex'] : m[1] === 'kimiCodeHome' ? ['.kimi-code'] : []), ...[...m[2]!.matchAll(/'([^']+)'/g)].map((s) => s[1]!)];
     if (segs.length) found.add(segs.join('/'));
   }
   expect(found.size).toBeGreaterThan(0);

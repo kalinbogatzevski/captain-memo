@@ -44,8 +44,10 @@ const EVENTS: Record<string, () => Promise<void>> = {
   GeminiAfterAgent: () => stop({ emitJson: true }),
   GeminiSessionStart: sessionStartNative,
   // Kimi documents plain successful stdout as added context, but kimi-cli 1.52.0 only reads a
-  // UserPromptSubmit result's block decision (soul/kimisoul.py), so this output does not reach
-  // the model there yet. Kept human-readable for when it does.
+  // UserPromptSubmit result's block decision (soul/kimisoul.py), so on 1.x this output does not reach
+  // the model. kimi 2.x does it: the trimmed plain stdout of a UserPromptSubmit hook becomes a `<hook_result>`
+  // part joined to the user turn (kimi-code 2.2.0, features/externalHooks/internal/userPrompt.ts), so on 2.x
+  // this recall reaches the model.
   KimiUserPromptSubmit: () => userPromptSubmit({ emitOriginalPrompt: false, hostTimeoutMs: NATIVE_PROMPT_HOOK_TIMEOUT_S * 1000 }),
   KimiPostToolUse: () => postToolUse({ originAgent: 'kimi', source: 'hook:kimi' }),
   KimiStop: () => stop(),

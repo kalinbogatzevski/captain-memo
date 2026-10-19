@@ -17,7 +17,7 @@
 // Idempotent: re-running must not error or duplicate. The codex/gemini CLIs handle
 // "already added"; cursor is a read+parse+merge+write that never clobbers.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, renameSync, realpathSync, statSync, unlinkSync } from 'fs';
 import { dirname, isAbsolute, join } from 'path';
 import { homedir } from 'os';
 import { spawnSync } from 'child_process';
@@ -25,6 +25,7 @@ import { isMac, isWindows } from '../shared/platform.ts';
 import { vscodeUserDirFor } from '../shared/vscode-paths.ts';
 import { NATIVE_PROMPT_HOOK_TIMEOUT_S } from '../shared/paths.ts';
 import { compareSemver } from '../shared/self-update.ts';
+import { kimiCodeHomeDir } from '../shared/kimi-home.ts';
 
 /** Return to column 0 and ERASE the line, for the in-place per-tool probe line that `connect` and
  *  `install` both repaint. A bare `\r` is not enough: the line is routinely overwritten by a SHORTER
@@ -125,6 +126,24 @@ function copySkill(skillSource: string, destFile: string): ConnectResult['skill'
     return 'installed';
   } catch {
     return 'failed';
+  }
+}
+
+// Replace <path> with <text> atomically (a tmp file in the same directory, then rename), so a kimi that starts mid-write never
+// reads half a file. A symlinked file (a dotfiles checkout) is written THROUGH to its target; an existing file keeps its mode
+// (an mcp.json can hold other servers' tokens), a new one is 0600.
+function writeFileAtomic(path: string, text: string): void {
+  let target = path;
+  try { target = realpathSync(path); } catch { /* not there yet */ }
+  let mode = 0o600;
+  try { mode = statSync(target).mode & 0o777; } catch { /* a new file */ }
+  const tmp = `${target}.captain-memo-tmp`;
+  try {
+    writeFileSync(tmp, text, { mode });
+    renameSync(tmp, target);
+  } catch (e) {
+    try { unlinkSync(tmp); } catch { /* nothing to clean up */ }
+    throw e;
   }
 }
 
@@ -573,6 +592,99 @@ export function mergeKimiHooks(existingToml: string | null, hookCommand: string,
     '',
   ].join('\n');
   return base ? `${base}\n\n${block}` : block;
+}
+
+// --- kimi 2.x ("kimi-code", home = kimiCodeHomeDir) ---------------------------------------------------------
+// Everything below was read from kimi-code 2.2.0's open source (no 2.x binary was run on the build host): MCP servers are
+// `{"mcpServers":{"<name>":{command,args,env,cwd}}}` in <home>/mcp.json (there is NO `kimi mcp` subcommand), hooks are
+// `[[hooks]]` in <home>/config.toml with exactly event/matcher/command/timeout, and a tool call is approved only by a
+// `[[permission.rules]]` entry (decision, pattern, optional scope/reason) or a mode flag.
+
+/** The major of `kimi --version` (bare `2.2.0` on 2.x, `kimi-cli 1.48.0` on 1.x), or null when it cannot be read. Same triple
+ *  grab as kimiHooksSupported, which stays as it was for 1.x. */
+export function kimiMajorVersion(result: RunResult): number | null {
+  if (result.status !== 0) return null;
+  const match = /(\d+)\.\d+\.\d+/.exec(`${result.stdout ?? ''}\n${result.stderr ?? ''}`);
+  return match ? Number(match[1]) : null;
+}
+
+/** Merge captain-memo into kimi 2.x's mcp.json. Returns the text to write, or null when the entry is already exactly ours (a
+ *  true no-op: the file keeps whatever formatting the user gave it). Every other server and top-level key keeps its value and
+ *  order; the one write is laid out as kimi's own is (2-space JSON, trailing newline). An entry that is already ours by name
+ *  (a `kimi migrate`d 1.x one) is updated IN PLACE: its command and args follow this install, its other fields (env, enabled,
+ *  timeouts) stay. THROWS on what kimi itself rejects (not JSON, not an object, `mcpServers` not an object): it must not be
+ *  papered over with a fresh `{}`, that would delete the user's servers. */
+export function mergeKimiCodeMcp(existingJson: string | null, mcpCommand: string[]): string | null {
+  let root: Record<string, unknown> = {};
+  if (existingJson !== null && existingJson.trim() !== '') {
+    let parsed: unknown;
+    try { parsed = JSON.parse(existingJson); } catch (e) { throw new Error(`not valid JSON (${(e as Error).message})`); }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not a JSON object');
+    root = parsed as Record<string, unknown>;
+  }
+  const rawServers = root.mcpServers;
+  if (rawServers !== undefined && (!rawServers || typeof rawServers !== 'object' || Array.isArray(rawServers))) throw new Error('"mcpServers" is not an object');
+  const servers = (rawServers ?? {}) as Record<string, unknown>;
+  const prev = servers['captain-memo'];
+  const own = prev && typeof prev === 'object' && !Array.isArray(prev) && typeof (prev as { command?: unknown }).command === 'string'
+    ? prev as Record<string, unknown> : {};   // an http/other-shaped entry under our name is replaced, not blended
+  const entry = { ...own, command: mcpCommand[0] ?? 'bun', args: mcpCommand.slice(1) };
+  if (JSON.stringify(entry) === JSON.stringify(prev)) return null;
+  servers['captain-memo'] = entry;
+  root.mcpServers = servers;
+  return JSON.stringify(root, null, 2) + '\n';
+}
+
+/** What `connect kimi` allows in kimi 2.x. Default "Always Ask" approves no MCP tool, so without this every captain-memo call
+ *  (recall, claim, send) waits on a prompt. OUR server only, never a wildcard over MCP. */
+export const KIMI_ALLOW_PATTERN = 'mcp__captain-memo__*';
+
+/** Read kimi's config.toml for permission rules, line by line (this repo has no TOML parser). `allowed`: a
+ *  `[[permission.rules]]` entry already allows KIMI_ALLOW_PATTERN. `inline`: `rules` is written as a static array
+ *  (`[permission] rules = [...]`, `permission.rules = [...]`, `permission = {...}`, a `[permission.rules]` table), where a later `[[permission.rules]]` is a
+ *  TOML error that would stop kimi loading its whole config. */
+function scanKimiPermissionRules(toml: string): { allowed: boolean; inline: boolean } {
+  let table = '', isArray = false, decision = '', pattern = '', allowed = false, inline = false;
+  const flush = () => {
+    if (isArray && table === 'permission.rules' && decision === 'allow' && pattern === KIMI_ALLOW_PATTERN) allowed = true;
+    decision = pattern = '';
+  };
+  for (const raw of toml.split(/\r?\n/)) {
+    const line = raw.trim();
+    const header = /^(\[\[?)\s*([^\]]+?)\s*\]\]?\s*(#.*)?$/.exec(line);
+    if (header) {
+      flush();
+      isArray = header[1] === '[[';
+      table = header[2]!.replace(/["'\s]/g, '');
+      if (table === 'permission.rules' && !isArray) inline = true;   // a plain [permission.rules] table cannot also be an array of tables
+      continue;
+    }
+    if (isArray && table === 'permission.rules') {
+      decision = /^decision\s*=\s*["']([^"']*)["']/.exec(line)?.[1] ?? decision;
+      pattern = /^pattern\s*=\s*["']([^"']*)["']/.exec(line)?.[1] ?? pattern;
+    } else if ((table === '' && /^permission\s*(=|\.\s*rules\s*=)/.test(line)) || (table === 'permission' && /^rules\s*=/.test(line))) {
+      inline = true;
+    }
+  }
+  flush();
+  return { allowed, inline };
+}
+
+/** Append the allow rule for captain-memo's own tools to kimi 2.x's config.toml, unless an equivalent `[[permission.rules]]`
+ *  allow is already there (the input comes back unchanged, whoever wrote the rule). Append-only, like mergeCodexToolApprovals:
+ *  no other rule is touched or reordered. Kimi evaluates a user deny rule, then an ask rule, BEFORE any allow, so those of
+ *  the user still win over this one. THROWS when `rules` is written as a static array (see scanKimiPermissionRules). */
+export function mergeKimiAllowRule(existingToml: string | null): string {
+  const base = existingToml ?? '';
+  const { allowed, inline } = scanKimiPermissionRules(base);
+  if (allowed) return base;
+  if (inline) throw new Error('permission rules are written as a static array');
+  const block = '# captain-memo: lets kimi call the captain-memo MCP tools without asking each time (`captain-memo connect kimi`); your own deny and ask rules still win\n'
+    + '[[permission.rules]]\n'
+    + 'decision = "allow"\n'
+    + `pattern = ${JSON.stringify(KIMI_ALLOW_PATTERN)}\n`
+    + 'reason = "captain-memo MCP tools (added by `captain-memo connect kimi`)"\n';
+  return base.trim() === '' ? block : `${base.replace(/\s+$/, '')}\n\n${block}`;
 }
 
 /** The model bare `kimi` should default to: the first that isn't obviously an embedder (`ollama list` returns
@@ -1204,71 +1316,137 @@ const vibeAdapter: ToolAdapter = {
   },
 };
 
-// kimi (MoonshotAI kimi-cli, ~/.kimi) — the local-first tool (a loopback Ollama in its own config.toml).
-// TWO halves, and BOTH matter:
-//   1. PROVIDER CONFIG (~/.kimi/config.toml) — the LAUNCHABILITY half. Without it bare `kimi` has no
-//      default_model to route to. Written as a managed block (mergeKimiConfig) from the host's own `ollama list`.
-//      No models ⇒ we write NOTHING and say so in `detail` — a base_url-only config would be a lie.
-//   2. MCP registration — `kimi mcp add <name> -- <command...>` (the codex form). VERIFIED on kimi-cli 1.48.0.
-//      MCP servers land in ~/.kimi/mcp.json, SEPARATE from config.toml — the two halves never collide. A failure
-//      soft-lands in `detail` with the CLI's own stderr; nothing is clobbered.
-// Skill best-effort to ~/.kimi/skills (read path unverified upstream, like gemini).
+// kimi (MoonshotAI) — the local-first tool (a loopback Ollama in its own config.toml). TWO generations share the binary name
+// `kimi` and live in different homes, each read only by its own binary:
+//   1.x (kimi-cli, ~/.kimi): TWO halves, and BOTH matter:
+//     1. PROVIDER CONFIG (~/.kimi/config.toml) — the LAUNCHABILITY half. Without it bare `kimi` has no
+//        default_model to route to. Written as a managed block (mergeKimiConfig) from the host's own `ollama list`.
+//        No models ⇒ we write NOTHING and say so in `detail` — a base_url-only config would be a lie.
+//     2. MCP registration — `kimi mcp add <name> -- <command...>` (the codex form). VERIFIED on kimi-cli 1.48.0.
+//        MCP servers land in ~/.kimi/mcp.json, SEPARATE from config.toml — the two halves never collide. A failure
+//        soft-lands in `detail` with the CLI's own stderr; nothing is clobbered.
+//     Skill best-effort to ~/.kimi/skills (read path unverified upstream, like gemini).
+//   2.x (kimi-code, kimiCodeHomeDir = $KIMI_CODE_HOME else ~/.kimi-code): no `kimi mcp` command, so the server is merged into
+//     <home>/mcp.json; the allow rule for our tools and the [[hooks]] go into <home>/config.toml; the skill into <home>/skills.
+//     Connect does NOT write mergeKimiConfig's 1.x provider block there (2.x needs an api_key or api_key_env per provider).
+// Which half runs: 2.x when `kimi --version` says major >= 2 (no readable version: when the 2.x home exists), and ALSO when a 2.x
+// home exists next to a 1.x `kimi` on PATH; 1.x unless `kimi` is 2.x, and ALSO when ~/.kimi exists next to a 2.x `kimi`.
 const kimiAdapter: ToolAdapter = {
   id: 'kimi',
   label: 'Kimi CLI',
   detect({ home, run }) {
-    return cliOnPath(run, 'kimi') || existsSync(join(home, '.kimi'));
+    return cliOnPath(run, 'kimi') || existsSync(join(home, '.kimi')) || existsSync(kimiCodeHomeDir(home));
   },
   connect(ctx) {
-    let mcp: ConnectResult['mcp'] = 'failed';
+    const mcps: ConnectResult['mcp'][] = [];
+    const skills: ConnectResult['skill'][] = [];
     const details: string[] = [];
+    let capture: NonNullable<ConnectResult['capture']> = 'rollout-fallback';
+    const hookBundle = join(dirname(mcpServerPath(ctx.mcpCommand)), 'captain-memo-hook.js');
 
-    // 1. provider/model config — the half that actually makes kimi launchable.
-    const cfgPath = join(ctx.home, '.kimi', 'config.toml');
-    const models = parseOllamaList(ctx.run('ollama', ['list']).stdout ?? '');
-    if (models.length === 0) {
-      details.push('no local Ollama models found (`ollama list` empty or ollama not installed) — ~/.kimi/config.toml NOT written; pull a model (e.g. `ollama pull qwen3:8b`) and re-run `captain-memo connect kimi`');
-    } else {
-      if (!pickChatModel(models)) {
-        details.push('every local Ollama model looks like an embedder (' + models.join(', ') + ') — no default_model written (an embedder cannot chat); pull a chat model (e.g. `ollama pull qwen3:8b`) and re-run `captain-memo connect kimi`');
-      }
-      try {
-        const existing = existsSync(cfgPath) ? readFileSync(cfgPath, 'utf-8') : null;
-        const merged = mergeKimiConfig(existing, { models });
-        if (merged !== existing) {
-          mkdirSync(dirname(cfgPath), { recursive: true });
-          writeFileSync(cfgPath, merged);
+    const versionProbe = ctx.run('kimi', ['--version'], PROBE_TIMEOUT_MS);
+    const major = kimiMajorVersion(versionProbe);
+    const kimiCodeHome = kimiCodeHomeDir(ctx.home);
+    const has2Home = existsSync(kimiCodeHome);
+    const kimiIs2 = major !== null ? major >= 2 : has2Home;   // the `kimi` that runs is 2.x
+    const do2 = kimiIs2 || has2Home;
+    const do1 = !kimiIs2 || existsSync(join(ctx.home, '.kimi'));
+
+    if (do1) {
+      // 1. provider/model config — the half that actually makes kimi launchable.
+      const cfgPath = join(ctx.home, '.kimi', 'config.toml');
+      const models = parseOllamaList(ctx.run('ollama', ['list']).stdout ?? '');
+      if (models.length === 0) {
+        details.push('no local Ollama models found (`ollama list` empty or ollama not installed) — ~/.kimi/config.toml NOT written; pull a model (e.g. `ollama pull qwen3:8b`) and re-run `captain-memo connect kimi`');
+      } else {
+        if (!pickChatModel(models)) {
+          details.push('every local Ollama model looks like an embedder (' + models.join(', ') + ') — no default_model written (an embedder cannot chat); pull a chat model (e.g. `ollama pull qwen3:8b`) and re-run `captain-memo connect kimi`');
         }
-        const small = kimiSmallContexts(merged);
-        if (small.length) details.push(`max_context_size in your own ~/.kimi/config.toml is below about 70,000 for ${small.join(', ')}: kimi compacts before your prompt reaches the model, so raise it there (connect leaves your own tables alone)`);
-      } catch (e) {
-        details.push('config.toml: ' + (e as Error).message);
+        try {
+          const existing = existsSync(cfgPath) ? readFileSync(cfgPath, 'utf-8') : null;
+          const merged = mergeKimiConfig(existing, { models });
+          if (merged !== existing) {
+            mkdirSync(dirname(cfgPath), { recursive: true });
+            writeFileSync(cfgPath, merged);
+          }
+          const small = kimiSmallContexts(merged);
+          if (small.length) details.push(`max_context_size in your own ~/.kimi/config.toml is below about 70,000 for ${small.join(', ')}: kimi compacts before your prompt reaches the model, so raise it there (connect leaves your own tables alone)`);
+        } catch (e) {
+          details.push('config.toml: ' + (e as Error).message);
+        }
+      }
+
+      // 2. MCP registration (unverified argv — soft-fails into `detail`). Only while `kimi` is not 2.x: 2.x has no `mcp` command.
+      if (!kimiIs2) {
+        const r = ctx.run('kimi', ['mcp', 'add', 'captain-memo', '--', ...ctx.mcpCommand]);
+        if (r.status === 0) mcps.push('added');
+        else if (looksAlreadyPresent(r)) mcps.push('present');
+        else { mcps.push('failed'); details.push(errDetail(r, 'kimi mcp add failed')); }
+      } else {
+        details.push('~/.kimi (a kimi 1.x home) also exists, but `kimi` on PATH is 2.x, so MCP and hooks were not set up there');
+      }
+
+      skills.push(copySkill(ctx.skillSource, join(ctx.home, '.kimi', 'skills', 'captain-memo', 'SKILL.md')));
+      if (!kimiIs2 && kimiHooksSupported(versionProbe)) {
+        try {
+          const before = existsSync(cfgPath) ? readFileSync(cfgPath, 'utf-8') : null;
+          const after = mergeKimiHooks(before, ctx.mcpCommand[0] ?? 'bun', hookBundle);
+          if (after !== before) {
+            mkdirSync(dirname(cfgPath), { recursive: true });
+            writeFileSync(cfgPath, after);
+          }
+          capture = 'native-hooks';
+        } catch (e) {
+          capture = 'hook-install-failed';
+          details.push(`native hook install failed (${(e as Error).message}); transcript capture remains active`);
+        }
       }
     }
 
-    // 2. MCP registration (→ ~/.kimi/mcp.json). Soft-fails into `detail`.
-    const r = ctx.run('kimi', ['mcp', 'add', 'captain-memo', '--', ...ctx.mcpCommand]);
-    if (r.status === 0) mcp = 'added';
-    else if (looksAlreadyPresent(r)) mcp = 'present';
-    else details.push(errDetail(r, 'kimi mcp add failed'));
+    if (do2) {
+      try { mkdirSync(kimiCodeHome, { recursive: true, mode: 0o700 }); } catch (e) { details.push(`kimi 2.x: could not create ${kimiCodeHome} (${(e as Error).message})`); }
 
-    const skill = copySkill(ctx.skillSource, join(ctx.home, '.kimi', 'skills', 'captain-memo', 'SKILL.md'));
-    let capture: NonNullable<ConnectResult['capture']> = 'rollout-fallback';
-    if (kimiHooksSupported(ctx.run('kimi', ['--version'], PROBE_TIMEOUT_MS))) {
-      const hookBundle = join(dirname(mcpServerPath(ctx.mcpCommand)), 'captain-memo-hook.js');
+      // MCP → <home>/mcp.json. An unreadable or invalid file is left exactly as it is.
+      const mcpPath = join(kimiCodeHome, 'mcp.json');
       try {
-        const before = existsSync(cfgPath) ? readFileSync(cfgPath, 'utf-8') : null;
-        const after = mergeKimiHooks(before, ctx.mcpCommand[0] ?? 'bun', hookBundle);
-        if (after !== before) {
-          mkdirSync(dirname(cfgPath), { recursive: true });
-          writeFileSync(cfgPath, after);
+        const after = mergeKimiCodeMcp(existsSync(mcpPath) ? readFileSync(mcpPath, 'utf-8') : null, ctx.mcpCommand);
+        if (after === null) mcps.push('present');
+        else {
+          writeFileAtomic(mcpPath, after);
+          mcps.push('added');
+          details.push(`kimi 2.x: captain-memo registered in ${mcpPath}`);
         }
-        capture = 'native-hooks';
+      } catch (e) {
+        mcps.push('failed');
+        details.push(`kimi 2.x: ${mcpPath} was NOT changed: ${(e as Error).message}; fix it and re-run \`captain-memo connect kimi\``);
+      }
+
+      // config.toml: the allow rule FIRST, then the hooks block. mergeKimiHooks cuts its block out and appends it again at the
+      // end, so a rule appended after it would be moved behind it by every re-run (a rewrite each time).
+      const cfg2 = join(kimiCodeHome, 'config.toml');
+      try {
+        const before = existsSync(cfg2) ? readFileSync(cfg2, 'utf-8') : null;
+        let toml = before;
+        try {
+          const withRule = mergeKimiAllowRule(toml);
+          if (withRule !== (toml ?? '')) details.push(`kimi 2.x: allow rule for ${KIMI_ALLOW_PATTERN} added to ${cfg2} (kimi otherwise asks before every captain-memo tool call; your own deny and ask rules still win)`);
+          toml = withRule;
+        } catch {
+          details.push(`kimi 2.x: ${cfg2} writes its permission rules as a static array, so connect did not add the allow rule: add it yourself as [[permission.rules]] with decision = "allow" and pattern = "${KIMI_ALLOW_PATTERN}", or kimi will ask before every captain-memo tool call`);
+        }
+        toml = mergeKimiHooks(toml, ctx.mcpCommand[0] ?? 'bun', hookBundle);
+        if (toml !== before) writeFileAtomic(cfg2, toml);
+        if (capture !== 'hook-install-failed') capture = 'native-hooks';
       } catch (e) {
         capture = 'hook-install-failed';
-        details.push(`native hook install failed (${(e as Error).message}); transcript capture remains active`);
+        details.push(`kimi 2.x: could not update ${cfg2} (${(e as Error).message}), so neither the allow rule nor the native hooks were written; transcript capture remains active`);
       }
+
+      skills.push(copySkill(ctx.skillSource, join(kimiCodeHome, 'skills', 'captain-memo', 'SKILL.md')));
     }
+
+    const mcp: ConnectResult['mcp'] = mcps.includes('added') ? 'added' : mcps.includes('present') ? 'present' : 'failed';
+    const skill: ConnectResult['skill'] = skills.every((r) => r === 'installed') ? 'installed' : 'failed';
     return withDetail({ tool: 'kimi', mcp, skill, capture }, details.length ? details.join('; ') : undefined);
   },
 };
