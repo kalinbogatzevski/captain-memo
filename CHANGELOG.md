@@ -7,6 +7,28 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.57.13] — 2026-10-19
+
+### Changed
+
+- **The README and `docs/CONFIGURATION.md` now say whose store the clustering and IVF figures were measured on.** The
+  143,720-vector store behind the 477 centroids and the 1166 ms median is the author's own working store, not a
+  benchmark. No number changed.
+
+### Fixed
+
+- **`captain-memo doctor` and the update notice, when they find a stale Windows PATH command, now also say how to run
+  doctor while the command is dead.** A copy left by an install older than 0.44.0, or one naming a checkout that is
+  gone, makes `captain-memo <anything>` fail with "Module not found", so `captain-memo doctor` cannot start either. The
+  fix line now says `bun src\cli\index.ts doctor` to see the row, then `bun src\cli\index.ts install --yes` from the
+  checkout to repair it, and the README's Windows section names the symptom and both commands.
+
+### Notes
+
+- The plugin bundle is rebuilt: the update notice text lives in the hook bundle. `doctor` runs from source and picks the
+  new line up at once.
+- Unproven here: a real Windows run. The Windows branch is tested through injected paths and bodies.
+
 ## [0.57.12] — 2026-10-18
 
 ### Added

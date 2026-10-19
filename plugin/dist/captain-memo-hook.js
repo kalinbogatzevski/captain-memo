@@ -975,7 +975,7 @@ var package_default;
 var init_package = __esm(() => {
   package_default = {
     name: "captain-memo",
-    version: "0.57.12",
+    version: "0.57.13",
     description: "Cross-AI local memory layer for Claude Code, Codex, Gemini CLI, Antigravity, goose, Cursor, opencode, Kimi CLI and more: hybrid search, six summarizer providers, hosted or local embedder. Replaces claude-mem.",
     type: "module",
     private: true,
@@ -1895,7 +1895,7 @@ var isLinux = process.platform === "linux";
 function windowsCliShimPath(env = process.env, home = homedir5()) {
   return join11(env.LOCALAPPDATA ?? join11(home, "AppData", "Local"), "captain-memo", "bin", "captain-memo.cmd");
 }
-var WINDOWS_SHIM_FIX = "bun src\\cli\\index.ts install --yes   (run it from the captain-memo checkout)";
+var WINDOWS_SHIM_FIX = "bun src\\cli\\index.ts install --yes   (run it from the captain-memo checkout; `captain-memo doctor` cannot start while the shim is stale, use `bun src\\cli\\index.ts doctor` there)";
 function windowsShimState(body, exists = existsSync5) {
   const entry = /^\s*bun\s+"([^"]+)"/im.exec(body)?.[1];
   if (!entry)
