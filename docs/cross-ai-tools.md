@@ -339,6 +339,11 @@ configures a 2.x home that sits beside a 1.x `kimi`. In that home it edits three
   prints the rule to add by hand.
 - `skills/captain-memo/SKILL.md`.
 
+Coming from 1.x: run `kimi` once first (it offers `kimi migrate`), then `connect kimi`. Connect puts its `[[hooks]]` block into the
+2.x `config.toml`, and kimi's migration keeps that file's own `hooks` when it already has some, so hooks of your own in the 1.x
+config would not be carried over (kimi records it as a config conflict). Providers, models and MCP servers are unaffected: the
+migration merges them into the existing `config.toml` and `mcp.json`, and our `captain-memo` entry wins on a name clash.
+
 On 2.x a `UserPromptSubmit` hook's plain stdout is added to the user turn, so recall reaches the model there (1.x drops it). Not done
 yet: reading 2.x session files for capture, and the 1.x provider block (2.x needs an `api_key` or `api_key_env` per provider, so
 pick its model inside kimi). Every shape above comes from kimi-code 2.2.0's source; nothing has been run against a real 2.x yet.
