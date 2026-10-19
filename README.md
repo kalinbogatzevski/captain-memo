@@ -704,7 +704,7 @@ environment. Vectors with no direction (all zeros) are kept in a cluster no quer
 `doctor` warns when a cluster centre is all zeros; the worker repairs such an index itself, after an
 update and a restart.
 
-The trade is recall, so it is measured rather than asserted. On a live 143,720-vector store, with an
+The trade is recall, so it is measured rather than asserted. On the author's own live 143,720-vector store, with an
 exhaustive scan as ground truth and 50 probe vectors drawn at a fixed stride:
 
 | clusters probed | p50 | recall@10 |
