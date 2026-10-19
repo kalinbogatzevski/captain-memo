@@ -299,7 +299,9 @@ models simply appear). Skill copied to `~/.kimi/skills/captain-memo/SKILL.md`.
 Kimi 1.28.0 and newer also receive a managed `[[hooks]]` block for immediate PostToolUse observation
 capture and Stop flushing. It includes a UserPromptSubmit hook too, but as of Kimi CLI 1.52.0 only a block
 decision from a prompt hook is read, so its recall output does not reach the model: Kimi recalls through the MCP tools. Older Kimi releases keep the transcript reader;
-re-running `connect kimi` after an upgrade adds the native path automatically.
+re-running `connect kimi` after an upgrade adds the native path automatically. The transcript reader also
+reads Kimi 2.x sessions, from `<home>/sessions/*/*/agents/main/wire.jsonl` (`~/.kimi-code`, or `$KIMI_CODE_HOME`);
+sub-agent transcripts are not captured yet.
 
 The managed block writes `max_context_size = 131072` for the models it manages (kimi compacts its
 conversation when its tokens plus a 50,000-token reserve reach that size, so a small value leaves no room
