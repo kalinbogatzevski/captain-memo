@@ -1,8 +1,8 @@
 import { test, expect, beforeEach, afterEach, describe } from 'bun:test';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync, lstatSync, symlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { mergeCursorMcpConfig, mergeVibeMcpConfig, mergeKimiConfig, kimiSmallContexts, mergeKimiHooks, kimiHooksSupported, mergeClaudeDesktopConfig, mergeGooseConfig, mergeGeminiHooks, geminiHooksSupported, parseGeminiVersion, geminiHooksToggleRejected, toBlockYaml, mergeCodexToolApprovals, mergeCodexHooks, codexHooksEnabled, CAPTAIN_MEMO_CODEX_HOOK_MARKER, CAPTAIN_MEMO_GEMINI_HOOK_MARKER, CAPTAIN_MEMO_KIMI_HOOK_BEGIN, CODEX_TOOL_NAMES, gooseConfigPath, gooseConfigCandidates, extractGooseEntry, gooseExtensionEntry, parseOllamaList, connectCrossAi, detectCrossAi, type Runner } from '../../src/cli/cross-ai.ts';
+import { mergeCursorMcpConfig, mergeVibeMcpConfig, mergeKimiConfig, kimiSmallContexts, mergeKimiHooks, kimiHooksSupported, kimiMajorVersion, mergeKimiCodeMcp, mergeKimiAllowRule, KIMI_ALLOW_PATTERN, mergeClaudeDesktopConfig, mergeGooseConfig, mergeGeminiHooks, geminiHooksSupported, parseGeminiVersion, geminiHooksToggleRejected, toBlockYaml, mergeCodexToolApprovals, mergeCodexHooks, codexHooksEnabled, CAPTAIN_MEMO_CODEX_HOOK_MARKER, CAPTAIN_MEMO_GEMINI_HOOK_MARKER, CAPTAIN_MEMO_KIMI_HOOK_BEGIN, CODEX_TOOL_NAMES, gooseConfigPath, gooseConfigCandidates, extractGooseEntry, gooseExtensionEntry, parseOllamaList, connectCrossAi, detectCrossAi, type Runner } from '../../src/cli/cross-ai.ts';
 
 // Bun's native YAML, typed locally so this compiles against an @types/bun predating `Bun.YAML`.
 const YAML = (globalThis as { Bun: { YAML: { parse(s: string): any; stringify(v: unknown): string } } }).Bun.YAML;
@@ -667,7 +667,7 @@ let srcDir: string;   // the skill source's folder, removed with the home (it wa
 // run (no `only`) on a box with Claude Desktop or goose installed would otherwise detect the REAL
 // install and write `captain-memo` into the developer's live config (found 2026-09-19 on Windows,
 // where %APPDATA%\Claude exists on any machine running Claude Desktop).
-const PINNED_ENV = ['APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'GOOSE_PATH_ROOT', 'CODEX_HOME'] as const;
+const PINNED_ENV = ['APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'GOOSE_PATH_ROOT', 'CODEX_HOME', 'KIMI_CODE_HOME'] as const;
 let savedEnv: Partial<Record<(typeof PINNED_ENV)[number], string | undefined>>;
 
 beforeEach(() => {
@@ -678,6 +678,7 @@ beforeEach(() => {
   delete process.env.XDG_CONFIG_HOME;
   delete process.env.GOOSE_PATH_ROOT;
   delete process.env.CODEX_HOME;   // codex's home follows it; the CODEX_HOME tests set their own
+  delete process.env.KIMI_CODE_HOME;   // so does kimi 2.x's; the KIMI_CODE_HOME tests set their own
   // Make cursor "detected".
   mkdirSync(join(home, '.cursor'), { recursive: true });
   // A real skill source to copy.
@@ -991,6 +992,279 @@ test('connectCrossAi — only:[kimi] with NO local models writes NOTHING and say
   const r = connectCrossAi({ only: ['kimi'], mcpCommand: ['bun', MCP_PATH], skillSource, home, run: noopRunner });
   expect(existsSync(join(home, '.kimi', 'config.toml'))).toBe(false);
   expect(r[0]!.detail).toContain('no local Ollama models found');
+});
+
+// ---- kimi 2.x ("kimi-code": home <home>/.kimi-code, or $KIMI_CODE_HOME) ---------------------------------------------------
+// Every shape below was read from kimi-code 2.2.0's source (wave 5b); no 2.x binary was run. There `kimi --version` is the bare
+// `2.2.0`, there is no `kimi mcp` command, MCP servers are `{"mcpServers":{…}}` in <home>/mcp.json, hooks are `[[hooks]]` in
+// <home>/config.toml (event/matcher/command/timeout only) and a tool call needs a `[[permission.rules]]` allow or a mode flag.
+
+/** A runner for the kimi adapter: `kimi --version` answers `version` (null = no kimi on PATH), `kimi mcp add` answers `mcpAdd`, and
+ *  everything else (`ollama list`) finds nothing. Every call is recorded. */
+const kimiRun = (version: string | null, calls: string[] = [], mcpAdd = false): Runner => (cmd, args) => {
+  calls.push(`${cmd} ${args.join(' ')}`);
+  if (cmd === 'kimi' && args[0] === '--version') return version === null ? { status: 1, stdout: '', stderr: 'not found' } : { status: 0, stdout: version + '\n' };
+  if (cmd === 'kimi' && args[0] === 'mcp') return mcpAdd ? { status: 0, stdout: '' } : { status: 2, stdout: '', stderr: 'error: unknown command' };
+  return { status: 1, stdout: '', stderr: 'no such command' };
+};
+const connectKimi = (run: Runner) => connectCrossAi({ only: ['kimi'], mcpCommand: ['bun', MCP_PATH], skillSource, home, run })[0]!;
+const kimi2Home = () => join(home, '.kimi-code');
+const KIMI_ENTRY = { command: 'bun', args: [MCP_PATH] };
+const writeKimi2 = (file: string, text: string) => { mkdirSync(kimi2Home(), { recursive: true }); writeFileSync(join(kimi2Home(), file), text); };
+const readKimi2 = (file: string) => readFileSync(join(kimi2Home(), file), 'utf-8');
+const kimiMcpAdd = (calls: string[]) => calls.some((c) => c.startsWith('kimi mcp'));
+
+test('kimiMajorVersion — the bare 2.x output, the 1.x prefix, and anything unreadable', () => {
+  expect(kimiMajorVersion({ status: 0, stdout: '2.2.0\n' })).toBe(2);
+  expect(kimiMajorVersion({ status: 0, stdout: 'kimi, version 1.48.0\n' })).toBe(1);
+  expect(kimiMajorVersion({ status: 0, stdout: '', stderr: 'kimi-cli 2.0.1' })).toBe(2);
+  expect(kimiMajorVersion({ status: 1, stdout: '2.2.0' })).toBeNull();            // a failed probe says nothing
+  expect(kimiMajorVersion({ status: 0, stdout: 'no version here' })).toBeNull();
+});
+
+test('connect kimi on a kimi 2.x machine: mcp.json, the allow rule, the hooks and the skill land in ~/.kimi-code, nothing in ~/.kimi, and `kimi mcp add` is never run', () => {
+  const calls: string[] = [];
+  const r = connectKimi(kimiRun('2.2.0', calls));
+  expect(r).toMatchObject({ tool: 'kimi', mcp: 'added', skill: 'installed', capture: 'native-hooks' });
+  expect(JSON.parse(readKimi2('mcp.json'))).toEqual({ mcpServers: { 'captain-memo': KIMI_ENTRY } });
+  const cfg = readKimi2('config.toml');
+  expect(cfg).toContain(`[[permission.rules]]\ndecision = "allow"\npattern = ${JSON.stringify(KIMI_ALLOW_PATTERN)}\n`);
+  // kimi 2.x loads the WHOLE config.toml strictly: a [[hooks]] entry may carry event, matcher, command and timeout, nothing else.
+  const hookKeys = [...cfg.matchAll(/\[\[hooks\]\]\n((?:[a-z_]+ = .*\n)+)/g)].map((m) => [...m[1]!.matchAll(/^([a-z_]+) =/gm)].map((k) => k[1]));
+  expect(hookKeys).toEqual([['event', 'command', 'timeout'], ['event', 'command', 'timeout'], ['event', 'command', 'timeout']]);
+  expect(cfg).toContain('KimiUserPromptSubmit');
+  expect(readKimi2(join('skills', 'captain-memo', 'SKILL.md'))).toBe('# skill body\n');
+  expect(existsSync(join(home, '.kimi'))).toBe(false);          // 2.x never reads it: connect must not create it
+  expect(kimiMcpAdd(calls)).toBe(false);                         // 2.x has no `mcp` command
+  expect(r.detail).toContain(`captain-memo registered in ${join(kimi2Home(), 'mcp.json')}`);
+  expect(r.detail).toContain(`allow rule for ${KIMI_ALLOW_PATTERN} added to ${join(kimi2Home(), 'config.toml')}`);
+  expect(r.detail).toContain('your own deny and ask rules still win');
+  expect(readdirSync(kimi2Home()).filter((f) => f.includes('tmp'))).toEqual([]);   // the atomic write left no temp file
+  if (process.platform !== 'win32') expect(statSync(kimi2Home()).mode & 0o777).toBe(0o700);
+});
+
+test('kimi 2.x mcp.json — other servers and every unknown top-level key keep their values and their order; only our entry is added', () => {
+  const orig = {
+    theme: 'dusk',
+    mcpServers: { zed: { command: 'node', args: ['a.js'], env: { K: 'v' } }, web: { url: 'https://example.invalid/mcp', headers: { A: 'b' } } },
+    extra: { n: [1, 2, { deep: true }], s: 'x' },
+  };
+  writeKimi2('mcp.json', JSON.stringify(orig, null, 2) + '\n');      // kimi's own layout
+  expect(connectKimi(kimiRun('2.2.0')).mcp).toBe('added');
+  const out = readKimi2('mcp.json');
+  expect(out).toBe(JSON.stringify({ ...orig, mcpServers: { ...orig.mcpServers, 'captain-memo': KIMI_ENTRY } }, null, 2) + '\n');
+  expect(Object.keys(JSON.parse(out))).toEqual(['theme', 'mcpServers', 'extra']);
+});
+
+test('kimi 2.x mcp.json — a migrated 1.x entry is updated in place (command and args follow this install, its own fields stay)', () => {
+  const migrated = { command: 'bun', args: ['/old/checkout/plugin/dist/mcp-server.js'], transport: 'stdio', env: { CAPTAIN_MEMO_X: '1' } };
+  writeKimi2('mcp.json', JSON.stringify({ mcpServers: { 'captain-memo': migrated, zed: { command: 'node' } } }, null, 2) + '\n');
+  expect(connectKimi(kimiRun('2.2.0')).mcp).toBe('added');
+  const servers = JSON.parse(readKimi2('mcp.json')).mcpServers;
+  expect(Object.keys(servers)).toEqual(['captain-memo', 'zed']);   // not moved
+  expect(servers['captain-memo']).toEqual({ ...KIMI_ENTRY, transport: 'stdio', env: { CAPTAIN_MEMO_X: '1' } });
+  expect(connectKimi(kimiRun('2.2.0')).mcp).toBe('present');
+  // an entry of another shape under our name (a remote one) is replaced, not blended into a half-stdio, half-http one
+  writeKimi2('mcp.json', JSON.stringify({ mcpServers: { 'captain-memo': { url: 'https://example.invalid/mcp' } } }));
+  connectKimi(kimiRun('2.2.0'));
+  expect(JSON.parse(readKimi2('mcp.json')).mcpServers['captain-memo']).toEqual(KIMI_ENTRY);
+});
+
+test('kimi 2.x mcp.json — an entry that is already ours is a no-op: the file keeps the user\'s own formatting, byte for byte', () => {
+  const compact = JSON.stringify({ mcpServers: { 'captain-memo': KIMI_ENTRY } });   // one line, no trailing newline: not kimi's layout
+  writeKimi2('mcp.json', compact);
+  const before = statSync(join(kimi2Home(), 'mcp.json')).ino;
+  expect(connectKimi(kimiRun('2.2.0')).mcp).toBe('present');
+  expect(readKimi2('mcp.json')).toBe(compact);
+  expect(statSync(join(kimi2Home(), 'mcp.json')).ino).toBe(before);   // not even rewritten
+});
+
+test('kimi 2.x mcp.json — a file kimi itself would reject is REFUSED and left untouched, and the rest of connect still happens', () => {
+  for (const bad of ['{ "mcpServers": ', '[]', '"x"', '{"mcpServers":[]}', '{"mcpServers":null}']) {
+    rmSync(kimi2Home(), { recursive: true, force: true });
+    writeKimi2('mcp.json', bad);
+    const r = connectKimi(kimiRun('2.2.0'));
+    expect(r.mcp).toBe('failed');
+    expect(r.detail).toContain(`${join(kimi2Home(), 'mcp.json')} was NOT changed`);
+    expect(readKimi2('mcp.json')).toBe(bad);                        // not a byte of it
+    expect(readdirSync(kimi2Home()).filter((f) => f.includes('tmp'))).toEqual([]);
+    expect(readKimi2('config.toml')).toContain('[[permission.rules]]');   // the halves are independent
+    expect(r.skill).toBe('installed');
+  }
+  // an empty file is fine for kimi (no servers) and is filled in
+  writeKimi2('mcp.json', '  \n');
+  expect(connectKimi(kimiRun('2.2.0')).mcp).toBe('added');
+});
+
+test('kimi 2.x mcp.json — a symlinked file (a dotfiles checkout) is written through, the link stays', () => {
+  if (process.platform === 'win32') return;                        // symlinks need a privilege there
+  const real = join(home, 'dotfiles-mcp.json');
+  writeFileSync(real, '{"keep":1}\n');
+  mkdirSync(kimi2Home(), { recursive: true });
+  symlinkSync(real, join(kimi2Home(), 'mcp.json'));
+  expect(connectKimi(kimiRun('2.2.0')).mcp).toBe('added');
+  expect(JSON.parse(readFileSync(real, 'utf-8'))).toEqual({ keep: 1, mcpServers: { 'captain-memo': KIMI_ENTRY } });
+  expect(lstatSync(join(kimi2Home(), 'mcp.json')).isSymbolicLink()).toBe(true);
+});
+
+test('connect kimi on 2.x is idempotent: a second run reports "already registered" and rewrites nothing', () => {
+  expect(connectKimi(kimiRun('2.2.0')).mcp).toBe('added');
+  const ino = (f: string) => statSync(join(kimi2Home(), f)).ino;
+  const snap = () => [readKimi2('mcp.json'), ino('mcp.json'), readKimi2('config.toml'), ino('config.toml'), readKimi2(join('skills', 'captain-memo', 'SKILL.md'))];
+  const first = snap();
+  const again = connectKimi(kimiRun('2.2.0'));
+  expect(again).toMatchObject({ mcp: 'present', skill: 'installed', capture: 'native-hooks' });
+  expect(again.detail).toBeUndefined();                              // nothing to report: nothing was written
+  expect(snap()).toEqual(first);                                     // same bytes, and the same inodes (no rewrite) for the two files we edit
+});
+
+test('kimi 2.x allow rule — appended after the user\'s own rules, which are never touched or reordered; a re-run changes nothing', () => {
+  const own = '# my kimi\ndefault_model = "m"\n\n[providers.p]\ntype = "openai"\napi_key_env = "K"\n\n[permission]\ndangerous_command_guard = true\n\n'
+    + '[[permission.rules]]\ndecision = "deny"\npattern = "mcp__captain-memo__remember"\nreason = "no writes"\n\n'
+    + '[[permission.rules]]\ndecision = "allow"\npattern = "Read"\n';
+  writeKimi2('config.toml', own);
+  const r = connectKimi(kimiRun('2.2.0'));
+  expect(r.detail).toContain('allow rule for');
+  const cfg = readKimi2('config.toml');
+  expect(cfg.startsWith(own)).toBe(true);                            // every line of the user's file, in place
+  expect(cfg.match(/pattern = "mcp__captain-memo__\*"/g)).toHaveLength(1);
+  expect(cfg.indexOf('pattern = "mcp__captain-memo__*"')).toBeGreaterThan(cfg.indexOf('pattern = "Read"'));   // appended LAST: user rules match first
+  expect(cfg).toContain('decision = "deny"\npattern = "mcp__captain-memo__remember"\nreason = "no writes"\n');
+  expect(cfg.indexOf('[[hooks]]')).toBeGreaterThan(cfg.indexOf('pattern = "mcp__captain-memo__*"'));
+  connectKimi(kimiRun('2.2.0'));
+  expect(readKimi2('config.toml')).toBe(cfg);
+});
+
+test('kimi 2.x allow rule — an equivalent rule the user wrote themselves (any quoting, any key order) is respected: no second one', () => {
+  const own = "[[permission.rules]]\npattern = 'mcp__captain-memo__*'\nreason = \"mine\"\ndecision = 'allow'\n";
+  writeKimi2('config.toml', own);
+  const r = connectKimi(kimiRun('2.2.0'));
+  expect(r.detail ?? '').not.toContain('allow rule for');
+  const cfg = readKimi2('config.toml');
+  expect(cfg.startsWith(own)).toBe(true);
+  expect(cfg.match(/mcp__captain-memo__\*/g)).toHaveLength(1);
+  expect(cfg).toContain('KimiStop');                                 // the hooks are still added
+  // a rule for the same pattern that DENIES is not an allow: ours is still added (kimi evaluates deny first, so theirs wins)
+  writeKimi2('config.toml', '[[permission.rules]]\ndecision = "deny"\npattern = "mcp__captain-memo__*"\n');
+  connectKimi(kimiRun('2.2.0'));
+  expect(readKimi2('config.toml')).toContain('decision = "allow"\npattern = "mcp__captain-memo__*"');
+  expect(readKimi2('config.toml').startsWith('[[permission.rules]]\ndecision = "deny"\npattern = "mcp__captain-memo__*"\n')).toBe(true);
+});
+
+test('kimi 2.x allow rule — rules written as a static array are never extended (kimi would stop loading its whole config): connect says what to add', () => {
+  for (const own of [
+    '[permission]\nrules = [{ decision = "allow", pattern = "Read" }]\n',
+    'permission.rules = [{ decision = "allow", pattern = "Read" }]\n',
+    'permission = { rules = [] }\n',
+    '[permission.rules]\nx = 1\n',
+  ]) {
+    writeKimi2('config.toml', own);
+    const r = connectKimi(kimiRun('2.2.0'));
+    const cfg = readKimi2('config.toml');
+    expect(cfg.startsWith(own)).toBe(true);
+    expect(cfg).not.toContain('[[permission.rules]]');
+    expect(r.detail).toContain('static array');
+    expect(r.detail).toContain(`pattern = "${KIMI_ALLOW_PATTERN}"`);
+    expect(r.capture).toBe('native-hooks');                          // the hooks do not depend on the rule
+  }
+});
+
+test('mergeKimiAllowRule / mergeKimiCodeMcp — the pure cases', () => {
+  const rule = mergeKimiAllowRule(null);
+  expect(rule.startsWith('# captain-memo:')).toBe(true);
+  expect(rule).toContain('[[permission.rules]]\ndecision = "allow"\npattern = "mcp__captain-memo__*"\n');
+  expect(mergeKimiAllowRule(rule)).toBe(rule);                       // present: unchanged
+  expect(mergeKimiAllowRule('theme = "x"')).toBe(`theme = "x"\n\n${rule}`);
+  expect(mergeKimiAllowRule(rule.replace(/\n/g, '\r\n'))).toBe(rule.replace(/\n/g, '\r\n'));   // a CRLF file (Windows) is read the same way
+  // a `rules` key in another table is not kimi's permission array
+  expect(() => mergeKimiAllowRule('[tui]\nrules = ["x"]\n')).not.toThrow();
+  expect(() => mergeKimiAllowRule('[permission]\nrules = []\n')).toThrow('static array');
+  // mcp.json
+  expect(JSON.parse(mergeKimiCodeMcp(null, ['bun', MCP_PATH])!)).toEqual({ mcpServers: { 'captain-memo': KIMI_ENTRY } });
+  expect(JSON.parse(mergeKimiCodeMcp('', ['node', '/x/a.js', '--flag'])!).mcpServers['captain-memo']).toEqual({ command: 'node', args: ['/x/a.js', '--flag'] });
+  expect(() => mergeKimiCodeMcp('{', ['bun', MCP_PATH])).toThrow('not valid JSON');
+  expect(() => mergeKimiCodeMcp('[1]', ['bun', MCP_PATH])).toThrow('not a JSON object');
+  expect(() => mergeKimiCodeMcp('{"mcpServers":"x"}', ['bun', MCP_PATH])).toThrow('"mcpServers" is not an object');
+});
+
+test('connect kimi on a kimi 1.x machine behaves exactly as before: `kimi mcp add`, ~/.kimi, no ~/.kimi-code', () => {
+  const calls: string[] = [];
+  const r = connectKimi(kimiRun('kimi-cli 1.48.0', calls, true));
+  expect(r).toMatchObject({ tool: 'kimi', mcp: 'added', skill: 'installed', capture: 'native-hooks' });
+  expect(calls).toContain(`kimi mcp add captain-memo -- bun ${MCP_PATH}`);
+  expect(readFileSync(join(home, '.kimi', 'config.toml'), 'utf-8')).toContain('KimiPostToolUse');
+  expect(readFileSync(join(home, '.kimi', 'config.toml'), 'utf-8')).not.toContain('[[permission.rules]]');   // the allow rule is a 2.x thing
+  expect(existsSync(join(home, '.kimi', 'skills', 'captain-memo', 'SKILL.md'))).toBe(true);
+  expect(existsSync(kimi2Home())).toBe(false);
+  expect(r.detail).not.toContain('kimi 2.x');
+});
+
+test('connect kimi with no readable version and no 2.x home stays on the 1.x path (kimi not on PATH, as in a minimal-PATH install)', () => {
+  const calls: string[] = [];
+  const r = connectKimi(kimiRun(null, calls));
+  expect(calls).toContain(`kimi mcp add captain-memo -- bun ${MCP_PATH}`);
+  expect(r).toMatchObject({ mcp: 'failed', capture: 'rollout-fallback' });
+  expect(existsSync(kimi2Home())).toBe(false);
+});
+
+test('connect kimi with no readable version but a 2.x home present takes it for 2.x', () => {
+  mkdirSync(kimi2Home());
+  const calls: string[] = [];
+  const r = connectKimi(kimiRun(null, calls));
+  expect(r).toMatchObject({ mcp: 'added', skill: 'installed', capture: 'native-hooks' });
+  expect(kimiMcpAdd(calls)).toBe(false);
+  expect(existsSync(join(home, '.kimi'))).toBe(false);
+});
+
+test('connect kimi with BOTH homes and a 1.x `kimi` on PATH configures each home for its own binary', () => {
+  mkdirSync(kimi2Home());
+  const calls: string[] = [];
+  const r = connectKimi(kimiRun('kimi-cli 1.48.0', calls, true));
+  expect(r).toMatchObject({ mcp: 'added', skill: 'installed', capture: 'native-hooks' });
+  expect(calls).toContain(`kimi mcp add captain-memo -- bun ${MCP_PATH}`);                  // 1.x: through its CLI
+  expect(readFileSync(join(home, '.kimi', 'config.toml'), 'utf-8')).toContain('KimiStop');
+  expect(readFileSync(join(home, '.kimi', 'config.toml'), 'utf-8')).not.toContain('permission');
+  expect(JSON.parse(readKimi2('mcp.json'))).toEqual({ mcpServers: { 'captain-memo': KIMI_ENTRY } });   // 2.x: the file
+  expect(readKimi2('config.toml')).toContain('[[permission.rules]]');
+  expect(existsSync(join(home, '.kimi', 'skills', 'captain-memo', 'SKILL.md'))).toBe(true);
+  expect(existsSync(join(kimi2Home(), 'skills', 'captain-memo', 'SKILL.md'))).toBe(true);
+});
+
+test('connect kimi with a 1.x home left beside a 2.x `kimi`: the 1.x home gets its skill, never `kimi mcp add` or hooks (that kimi is not the one that reads it)', () => {
+  mkdirSync(join(home, '.kimi'));
+  const calls: string[] = [];
+  const r = connectKimi(kimiRun('2.2.0', calls));
+  expect(r.mcp).toBe('added');
+  expect(kimiMcpAdd(calls)).toBe(false);
+  expect(existsSync(join(home, '.kimi', 'config.toml'))).toBe(false);
+  expect(existsSync(join(home, '.kimi', 'skills', 'captain-memo', 'SKILL.md'))).toBe(true);
+  expect(r.detail).toContain('~/.kimi (a kimi 1.x home) also exists');
+  expect(readKimi2('config.toml')).toContain('KimiStop');
+});
+
+test('connect kimi on 2.x follows $KIMI_CODE_HOME (and an empty one counts as unset)', () => {
+  const alt = join(home, 'kimi-alt');
+  process.env.KIMI_CODE_HOME = alt;                                  // does not exist yet: 2.x makes it on first run, so connect may too
+  const r = connectKimi(kimiRun('2.2.0'));
+  expect(r).toMatchObject({ mcp: 'added', skill: 'installed', capture: 'native-hooks' });
+  expect(JSON.parse(readFileSync(join(alt, 'mcp.json'), 'utf-8'))).toEqual({ mcpServers: { 'captain-memo': KIMI_ENTRY } });
+  expect(readFileSync(join(alt, 'config.toml'), 'utf-8')).toContain('[[permission.rules]]');
+  expect(readFileSync(join(alt, 'skills', 'captain-memo', 'SKILL.md'), 'utf-8')).toBe('# skill body\n');
+  expect(existsSync(kimi2Home())).toBe(false);                       // nothing went to the default location
+  process.env.KIMI_CODE_HOME = '';
+  connectKimi(kimiRun('2.2.0'));
+  expect(existsSync(join(kimi2Home(), 'mcp.json'))).toBe(true);
+});
+
+test('detectCrossAi — kimi is also detected by its 2.x home (the default one, or $KIMI_CODE_HOME)', () => {
+  const detected = () => detectCrossAi({ home, run: noopRunner }).find((row) => row.id === 'kimi')!.detected;
+  expect(detected()).toBe(false);
+  mkdirSync(kimi2Home());
+  expect(detected()).toBe(true);
+  process.env.KIMI_CODE_HOME = join(home, 'kimi-alt');
+  expect(detected()).toBe(false);                                    // relocated to a directory that is not there
+  mkdirSync(process.env.KIMI_CODE_HOME);
+  expect(detected()).toBe(true);
 });
 
 // ---- probe must not be able to hang the installer ------------------------------------

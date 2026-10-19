@@ -8,6 +8,7 @@
 import { existsSync, copyFileSync } from 'fs';
 import { join } from 'path';
 import { VSCODE_OSES, vscodeUserDirSegments } from '../shared/vscode-paths.ts';
+import { kimiCodeHomeDir } from '../shared/kimi-home.ts';
 
 /** Home-relative destinations the cross-AI adapters write the skill to. Duplicated from cross-ai.ts on
  *  purpose and locked to it by a test that parses the adapter source, so a new adapter without a refresh
@@ -19,6 +20,7 @@ export const MEMO_SKILL_RELPATHS: readonly string[] = [
   '.config/opencode/skills/captain-memo/SKILL.md',
   '.vibe/skills/captain-memo/SKILL.md',
   '.kimi/skills/captain-memo/SKILL.md',
+  '.kimi-code/skills/captain-memo/SKILL.md',                  // kimi 2.x; $KIMI_CODE_HOME is added in refreshMemoSkills
   '.config/JetBrains/captain-memo.md',
 ];
 
@@ -39,6 +41,8 @@ export function resolveMemoSkillSource(base: string = import.meta.dir): string |
 export interface RefreshDeps {
   exists?: (p: string) => boolean;
   copy?: (from: string, to: string) => void;
+  /** Read for KIMI_CODE_HOME only (default process.env). */
+  env?: Record<string, string | undefined>;
 }
 
 /** Overwrite every EXISTING copy with the current skill. Best-effort per destination; returns what was refreshed. */
@@ -47,8 +51,10 @@ export function refreshMemoSkills(source: string, home: string, deps: RefreshDep
   const copy = deps.copy ?? copyFileSync;
   if (!exists(source)) return [];                       // nothing to copy FROM (non-checkout install)
   const refreshed: string[] = [];
-  for (const rel of [...MEMO_SKILL_RELPATHS, ...VSCODE_SKILL_RELPATHS]) {
-    const dest = join(home, ...rel.split('/'));
+  // kimi 2.x's skills dir moves with $KIMI_CODE_HOME, which a home-relative entry cannot say; unset, this is the .kimi-code entry again (a Set drops it).
+  // ponytail: the SessionStart hook sees Claude Code's environment, so a KIMI_CODE_HOME exported only in kimi's own shell is not seen here.
+  const dests = new Set([...[...MEMO_SKILL_RELPATHS, ...VSCODE_SKILL_RELPATHS].map((rel) => join(home, ...rel.split('/'))), join(kimiCodeHomeDir(home, deps.env), 'skills', 'captain-memo', 'SKILL.md')]);
+  for (const dest of dests) {
     if (!exists(dest)) continue;                        // that AI was never connected here — do not create
     try { copy(source, dest); refreshed.push(dest); } catch { /* best-effort, per destination */ }
   }

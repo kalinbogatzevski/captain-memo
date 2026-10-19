@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { mkdtempSync, mkdirSync } from 'fs';
+import { mkdtempSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -36,4 +36,20 @@ test('skillToolFromPath records cross-AI provenance', () => {
   expect(skillToolFromPath('/h/.agents/skills/review/SKILL.md')).toBe('codex');
   expect(skillToolFromPath('/h/.gemini/skills/review/SKILL.md')).toBe('gemini');
   expect(skillToolFromPath('/srv/shared/review/SKILL.md')).toBe('other');
+});
+
+test('kimi 2.x skills are discovered in ~/.kimi-code (or $KIMI_CODE_HOME) and attributed to kimi', () => {
+  const home = mkdtempSync(join(tmpdir(), 'captain-memo-skill-home-'));
+  try {
+    const kimi2 = join(home, '.kimi-code');
+    mkdirSync(join(kimi2, 'skills'), { recursive: true });
+    expect(discoverSkillGlobs(home, {})).toEqual([`${kimi2}/skills/*/SKILL.md`]);
+    expect(skillToolFromPath(`${home}/.kimi-code/skills/x/SKILL.md`, {})).toBe('kimi');
+
+    const alt = join(home, 'kimi-alt');
+    mkdirSync(join(alt, 'skills'), { recursive: true });
+    expect(discoverSkillGlobs(home, { KIMI_CODE_HOME: alt })).toEqual([`${alt}/skills/*/SKILL.md`]);   // the relocated home replaces the default one
+    expect(skillToolFromPath(join(alt, 'skills', 'x', 'SKILL.md'), { KIMI_CODE_HOME: alt })).toBe('kimi');
+    expect(skillToolFromPath('/srv/shared/x/SKILL.md', { KIMI_CODE_HOME: alt })).toBe('other');
+  } finally { rmSync(home, { recursive: true, force: true }); }
 });

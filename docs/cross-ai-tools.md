@@ -321,6 +321,28 @@ Honest about capability, by design:
 > Note: `default_model` is a **root** TOML key — it must precede every `[section]`, or TOML makes it a key of
 > the preceding table and Kimi reports *"LLM not set"*. `connect kimi` always emits it in the right place.
 
+### Kimi 2.x (kimi-code)
+
+kimi 2.x (`kimi --version` prints `2.x.y`) is a rewrite that keeps the command name `kimi` but not the 1.x files: its home is
+`$KIMI_CODE_HOME`, else `~/.kimi-code`; it has no `kimi mcp` command and never reads `~/.kimi`. `captain-memo connect kimi` takes
+the machine for 2.x when `kimi --version` reports major 2 or higher (when no version can be read, when that home exists), and also
+configures a 2.x home that sits beside a 1.x `kimi`. In that home it edits three things and prints each write with its reason:
+
+- `mcp.json`: merges the `captain-memo` stdio server into `mcpServers`. Every other server and top-level key keeps its value and
+  order, an entry `kimi migrate` copied from 1.x is updated in place, and a file kimi itself would reject (not JSON, not an object)
+  is refused and left untouched.
+- `config.toml`: appends the managed `[[hooks]]` block (kimi 2.x accepts exactly `event`, `matcher`, `command`, `timeout` per hook)
+  and **one allow rule for our server only**: `[[permission.rules]]`, `decision = "allow"`, `pattern = "mcp__captain-memo__*"`. Kimi's
+  default mode asks before every MCP tool call, so without the rule each recall waits on a prompt, the same reason
+  `connect codex` writes Codex's per-tool approvals. It is idempotent, no other rule is touched, and your own **deny and ask rules
+  still win**: kimi evaluates them before any allow. If your file writes `rules` as a static array, connect leaves it alone and
+  prints the rule to add by hand.
+- `skills/captain-memo/SKILL.md`.
+
+On 2.x a `UserPromptSubmit` hook's plain stdout is added to the user turn, so recall reaches the model there (1.x drops it). Not done
+yet: reading 2.x session files for capture, and the 1.x provider block (2.x needs an `api_key` or `api_key_env` per provider, so
+pick its model inside kimi). Every shape above comes from kimi-code 2.2.0's source; nothing has been run against a real 2.x yet.
+
 ## VS Code (Copilot agent mode)
 
 VS Code's MCP support is GA and auto-wireable. `captain-memo connect vscode` merges `mcp.json` in VS Code's

@@ -42,6 +42,8 @@ delete process.env.CAPTAIN_MEMO_AUTO_UPDATE;
 // Codex's home follows $CODEX_HOME, so a developer who has it exported would point `connect codex` at their REAL codex config.
 // A test that wants one sets its own, in a temp dir.
 delete process.env.CODEX_HOME;
+// kimi 2.x's home follows $KIMI_CODE_HOME the same way: a developer who has it exported would point `connect kimi` at their REAL kimi home.
+delete process.env.KIMI_CODE_HOME;
 
 const scratchOs = { ...os, homedir: () => home };
 mock.module('os', () => ({ ...scratchOs, default: scratchOs }));
