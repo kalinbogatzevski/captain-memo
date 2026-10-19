@@ -350,7 +350,7 @@ query still answers; a bare two-letter identifier matches only through the vecto
 **On by default.** Switch off with `CAPTAIN_MEMO_IVF_ENABLED=0` if you need an exhaustive scan.
 
 Without it, every vector query compares the query against **every** stored embedding — exact, and
-linear in corpus size. Measured on a 143,720-vector store that is **1166 ms p50**, for one leg of
+linear in corpus size. Measured on the author's own 143,720-vector store that is **1166 ms p50**, for one leg of
 one search, before anything is ranked. With it, the corpus is grouped into clusters (one centroid
 per ~300 vectors) and a query reads only the nearest few.
 
