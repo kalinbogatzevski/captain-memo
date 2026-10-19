@@ -14,8 +14,9 @@ export function windowsCliShimPath(env: Record<string, string | undefined> = pro
   return join(env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), 'captain-memo', 'bin', 'captain-memo.cmd');
 }
 
-/** The repair, as typed: it rewrites the shim (and registers the worker task) from the checkout. */
-export const WINDOWS_SHIM_FIX = 'bun src\\cli\\index.ts install --yes   (run it from the captain-memo checkout)';
+/** The repair, as typed: it rewrites the shim (and registers the worker task) from the checkout. A stale shim cannot start
+ *  `captain-memo doctor` either, so the line also says how to run doctor until the repair is done. */
+export const WINDOWS_SHIM_FIX = 'bun src\\cli\\index.ts install --yes   (run it from the captain-memo checkout; `captain-memo doctor` cannot start while the shim is stale, use `bun src\\cli\\index.ts doctor` there)';
 
 export type WindowsShimState = { state: 'ok'; entry: string } | { state: 'stale'; reason: string } | { state: 'unknown' };
 

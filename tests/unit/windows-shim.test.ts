@@ -32,6 +32,27 @@ test('the pre-0.44.0 copy (and the checkout\'s own bin file) is stale by its %~d
   }
 });
 
+// The file the old installer really copied (git show b683be0f:bin/captain-memo.cmd): LF endings and longer REM lines than COPIED above;
+// a checkout with autocrlf carries it with CRLF. Either way the %~dp0 line must be read as stale, never as "not ours to judge".
+const HISTORIC = [
+  '@echo off',
+  'REM Windows CLI shim for captain-memo. Invokes Bun directly on the TypeScript',
+  'REM entry point so there is no dependency on shebang dispatch (which cmd/PowerShell',
+  "REM cannot honor). %~dp0 is this file's directory (\u2026\\bin\\); the source sits one",
+  'REM level up. Quotes guard against spaces in the install path. Requires bun on PATH.',
+  'bun "%~dp0..\\src\\cli\\index.ts" %*',
+  '',
+].join('\n');
+
+test('the real pre-0.44.0 file, with LF or CRLF endings, is stale: the doctor row WARNs with the fix, even where the path exists', () => {
+  for (const body of [HISTORIC, HISTORIC.replace(/\n/g, '\r\n')]) {
+    expect(windowsShimState(body, () => true).state).toBe('stale');
+    const row = windowsShimCheck('C:\\Users\\x\\AppData\\Local\\captain-memo\\bin\\captain-memo.cmd', body, () => true)!;
+    expect(row.status).toBe('WARN');
+    expect(row.remedy).toContain('install --yes');
+  }
+});
+
 test('a body that is not `bun "<path>"` is not ours to judge', () => {
   expect(windowsShimState('@echo off\r\nC:\\tools\\bun.exe C:\\mine\\cm.ts %*\r\n', () => false)).toEqual({ state: 'unknown' });
   expect(windowsShimState('', () => false)).toEqual({ state: 'unknown' });
@@ -45,6 +66,7 @@ test('doctor row: WARN with the install fix for a stale shim, PASS for a good on
   expect(stale.detail).toContain('%~dp0');
   expect(stale.detail).toContain('Module not found');
   expect(stale.remedy).toBe(WINDOWS_SHIM_FIX);
+  expect(stale.remedy).toContain('bun src\\cli\\index.ts doctor');   // the stale command cannot start `captain-memo doctor`: the line says how to run it
   expect(WINDOWS_SHIM_FIX).toContain('bun src\\cli\\index.ts install --yes');
   expect(windowsShimCheck(P, windowsCliShim(DIR), () => false)!.status).toBe('WARN');   // names a checkout that is gone
   const good = windowsShimCheck(P, windowsCliShim(DIR), () => true)!;
@@ -62,6 +84,7 @@ test('the update notice: the stale file gives one line with the fix; a good, mis
   expect(note).toContain(stale);
   expect(note).toContain('stale');
   expect(note).toContain(WINDOWS_SHIM_FIX);
+  expect(note).toContain('bun src\\cli\\index.ts doctor');
   expect(note).not.toContain('\n');
   expect(staleWindowsShimNotice(good, () => true)).toBeNull();
   expect(staleWindowsShimNotice(good, () => false)).toContain('does not exist');
