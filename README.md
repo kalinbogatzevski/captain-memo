@@ -297,7 +297,7 @@ captain-memo doctor               # all green; worker healthy on :39888
 captain-memo stats                # the `Summarizer` line shows which provider is live
 ```
 
-The Windows CLI shim runs the TypeScript source directly (`captain-memo.cmd` → `bun "<repo>\src\cli\index.ts"`), so `git pull` makes the new CLI live **with no rebuild** — `captain-memo help` then prints the new version. Re-running `bun .\bin\captain-memo install` is an equivalent, idempotent alternative: it replaces the Scheduled Task in place (`schtasks … /F`) and re-grants permissions. **If `captain-memo` isn't on PATH, prefix every command with `bun bin\captain-memo`** from the checkout (e.g. `bun bin\captain-memo upgrade`).
+The Windows CLI shim runs the TypeScript source directly (`captain-memo.cmd` → `bun "<repo>\src\cli\index.ts"`), so `git pull` makes the new CLI live **with no rebuild** — `captain-memo help` then prints the new version. Re-running `bun .\bin\captain-memo install` is an equivalent, idempotent alternative: it replaces the Scheduled Task in place (`schtasks … /F`) and re-grants permissions. **If `captain-memo` isn't on PATH, prefix every command with `bun bin\captain-memo`** from the checkout (e.g. `bun bin\captain-memo upgrade`). A command left by an install older than 0.44.0 is a copy that cannot find the source (`captain-memo <anything>` fails with `Module not found ...\captain-memo\bin\..\src\cli\index.ts`): run `bun src\cli\index.ts doctor` from the checkout, whose `cli shim` row WARNs about it, and `bun src\cli\index.ts install --yes` to rewrite it.
 
 **Skip all of this next time — turn on auto-upgrade** (from this version on). Set it once, then fully restart Claude Code:
 
