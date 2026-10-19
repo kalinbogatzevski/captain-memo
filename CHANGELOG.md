@@ -7,6 +7,32 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.58.0] — 2026-10-19
+
+### Added
+
+- **`captain-memo connect kimi` now sets up kimi 2.x (kimi-code).** kimi 2.x keeps no `~/.kimi`: its home is
+  `$KIMI_CODE_HOME`, else `~/.kimi-code`, and it has no `kimi mcp` command, so `connect` used to fail there and write
+  files kimi 2.x never reads. It now merges the MCP server into `<home>/mcp.json` (every other server and key kept as
+  they were, an invalid file refused and left untouched), appends the native hooks and one allow rule for
+  `mcp__captain-memo__*` to `<home>/config.toml` (our server only: without it kimi 2.x asks before every captain-memo
+  tool call; your own deny and ask rules still win), and copies the skill into `<home>/skills`. Skill refresh and
+  discovery follow the 2.x home. kimi 1.x setups are unchanged, and a machine with both homes is wired in both.
+- **Capture reads kimi 2.x sessions.** Captain Memo reads `<home>/sessions/*/*/agents/main/wire.jsonl` next to the 1.x
+  `context.jsonl`, honouring undo and `/clear`, without re-ingesting its own recall. Sub-agent transcripts are not
+  captured yet.
+
+### Notes
+
+- Run `captain-memo restart` after updating: capture and skill discovery live in the worker; the plugin bundle is
+  rebuilt.
+- Built from kimi-code 2.2.0's source and one names-only record listing from a real 2.2.0 machine; not yet run end to
+  end against a real kimi 2.x. Unproven: that a hand-written `captain-memo` entry starts, that kimi keeps our hook
+  markers when it rewrites `config.toml`, the exact shape of `origin` and of a prompt hook's text in `wire.jsonl`.
+- Good to know: a host that ever ran kimi 1.x has an older capture cutoff, so the first tick after updating ingests the
+  kimi 2.x sessions since then in one burst; sessions `kimi migrate` copied from 1.x are captured again; connecting
+  before `kimi migrate` keeps a user's own 1.x hooks from carrying over (our own block is the same).
+
 ## [0.57.13] — 2026-10-19
 
 ### Changed

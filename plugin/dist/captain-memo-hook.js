@@ -975,7 +975,7 @@ var package_default;
 var init_package = __esm(() => {
   package_default = {
     name: "captain-memo",
-    version: "0.57.13",
+    version: "0.58.0",
     description: "Cross-AI local memory layer for Claude Code, Codex, Gemini CLI, Antigravity, goose, Cursor, opencode, Kimi CLI and more: hybrid search, six summarizer providers, hosted or local embedder. Replaces claude-mem.",
     type: "module",
     private: true,
@@ -1574,13 +1574,21 @@ var init_vscode_paths = __esm(() => {
   VSCODE_OSES = ["win32", "darwin", "linux"];
 });
 
+// src/shared/kimi-home.ts
+import { homedir as homedir8 } from "os";
+import { join as join14 } from "path";
+function kimiCodeHomeDir(home = homedir8(), env = process.env) {
+  return env.KIMI_CODE_HOME || join14(home, ".kimi-code");
+}
+var init_kimi_home = () => {};
+
 // src/cli/skill-refresh.ts
 import { existsSync as existsSync8, copyFileSync } from "fs";
-import { join as join14 } from "path";
+import { join as join15 } from "path";
 function resolveMemoSkillSource(base = import.meta.dir) {
   return [
-    join14(base, "..", "..", "skills", "captain-memo", "SKILL.md"),
-    join14(base, "..", "portable", "captain-memo", "SKILL.md")
+    join15(base, "..", "..", "skills", "captain-memo", "SKILL.md"),
+    join15(base, "..", "portable", "captain-memo", "SKILL.md")
   ].find((p) => existsSync8(p)) ?? null;
 }
 function refreshMemoSkills(source, home, deps = {}) {
@@ -1589,8 +1597,8 @@ function refreshMemoSkills(source, home, deps = {}) {
   if (!exists(source))
     return [];
   const refreshed = [];
-  for (const rel of [...MEMO_SKILL_RELPATHS, ...VSCODE_SKILL_RELPATHS]) {
-    const dest = join14(home, ...rel.split("/"));
+  const dests = new Set([...[...MEMO_SKILL_RELPATHS, ...VSCODE_SKILL_RELPATHS].map((rel) => join15(home, ...rel.split("/"))), join15(kimiCodeHomeDir(home, deps.env), "skills", "captain-memo", "SKILL.md")]);
+  for (const dest of dests) {
     if (!exists(dest))
       continue;
     try {
@@ -1603,6 +1611,7 @@ function refreshMemoSkills(source, home, deps = {}) {
 var MEMO_SKILL_RELPATHS, VSCODE_SKILL_RELPATHS;
 var init_skill_refresh = __esm(() => {
   init_vscode_paths();
+  init_kimi_home();
   MEMO_SKILL_RELPATHS = [
     ".codex/skills/captain-memo/SKILL.md",
     ".gemini/skills/captain-memo/SKILL.md",
@@ -1610,6 +1619,7 @@ var init_skill_refresh = __esm(() => {
     ".config/opencode/skills/captain-memo/SKILL.md",
     ".vibe/skills/captain-memo/SKILL.md",
     ".kimi/skills/captain-memo/SKILL.md",
+    ".kimi-code/skills/captain-memo/SKILL.md",
     ".config/JetBrains/captain-memo.md"
   ];
   VSCODE_SKILL_RELPATHS = VSCODE_OSES.map((os) => [...vscodeUserDirSegments(os), "prompts", "captain-memo.instructions.md"].join("/"));
@@ -1847,8 +1857,8 @@ if (isMainModule(import.meta)) {
 
 // src/hooks/session-start.ts
 init_shared();
-import { join as join15 } from "path";
-import { homedir as homedir8 } from "os";
+import { join as join16 } from "path";
+import { homedir as homedir9 } from "os";
 
 // src/hooks/local-articles.ts
 var LOCAL_ARTICLES = [
@@ -2200,7 +2210,7 @@ async function main2() {
   }
   try {
     await Promise.resolve().then(() => init_plugin_cache_refresh());
-    const lock = join15(DATA_DIR, CACHE_REFRESH_LOCK);
+    const lock = join16(DATA_DIR, CACHE_REFRESH_LOCK);
     if (acquireHealLock(lock)) {
       try {
         const r = refreshPluginCacheIfStale(VERSION);
@@ -2220,7 +2230,7 @@ async function main2() {
     await Promise.resolve().then(() => init_skill_refresh());
     const memoSource = resolveMemoSkillSource();
     if (memoSource)
-      refreshMemoSkills(memoSource, homedir8());
+      refreshMemoSkills(memoSource, homedir9());
   } catch (err) {
     logHookError("SessionStart", err);
   }
@@ -2576,9 +2586,9 @@ function parseWrittenPaths(command, cwd, shell = "posix") {
 }
 
 // src/hooks/deploy-guard.ts
-import { resolve as resolve5, basename, dirname as dirname3, join as join16, relative } from "path";
+import { resolve as resolve5, basename, dirname as dirname3, join as join17, relative } from "path";
 import { createHash } from "crypto";
-import { homedir as homedir9 } from "os";
+import { homedir as homedir10 } from "os";
 import { existsSync as existsSync9, statSync as statSync6, readFileSync as readFileSync11, writeFileSync as writeFileSync9, mkdirSync as mkdirSync9 } from "fs";
 import { spawnSync as spawnSync5 } from "child_process";
 init_paths();
@@ -2621,7 +2631,7 @@ var RSYNC_VALUE_FLAGS = new Set([
 ]);
 var SSH_VALUE_FLAGS = new Set(["-p", "-i", "-o", "-J", "-F", "-l", "-L", "-R", "-D", "-b", "-c", "-E", "-e", "-m", "-O", "-Q", "-S", "-W", "-w", "-B"]);
 var SSH_PASS = new Set(["-p", "-i", "-o", "-J", "-F", "-l"]);
-var tilde = (p) => p === "~" || p.startsWith("~/") ? homedir9() + p.slice(1) : p;
+var tilde = (p) => p === "~" || p.startsWith("~/") ? homedir10() + p.slice(1) : p;
 function sshPassArgs(toks) {
   const out = [];
   for (let i = 0;i < toks.length; i++) {
@@ -2795,7 +2805,7 @@ function parseTransfers(command, cwd, isDir = defaultIsDir) {
               if (!r || !r.path || r.path.includes("*") || src.includes("$"))
                 continue;
               const destAbs = resolve5(dir, tilde(destTok));
-              const local = destTok.endsWith("/") || destTok === "." || isDir(destAbs) ? join16(destAbs, basename(r.path)) : destAbs;
+              const local = destTok.endsWith("/") || destTok === "." || isDir(destAbs) ? join17(destAbs, basename(r.path)) : destAbs;
               downloads.push({ local, userhost: r.userhost, path: r.path, sshArgs: [...sshArgs] });
             }
           }
@@ -2937,7 +2947,7 @@ function committedMd5s(file, remotePath, cwd) {
     if (rel.startsWith("..") && remotePath && cwd) {
       root = detectRepoRootSync(cwd);
       const parts = remotePath.split("/").filter(Boolean);
-      const i = root ? parts.findIndex((_, k) => existsSync9(join16(root, ...parts.slice(k)))) : -1;
+      const i = root ? parts.findIndex((_, k) => existsSync9(join17(root, ...parts.slice(k)))) : -1;
       rel = i >= 0 ? parts.slice(i).join("/") : "..";
     }
     if (!root || rel.startsWith(".."))
@@ -2976,7 +2986,7 @@ function committedMd5s(file, remotePath, cwd) {
   } catch {}
   return out;
 }
-var baseFile = (sid) => join16(process.env.CAPTAIN_MEMO_DATA_DIR ?? DATA_DIR, "deploy-base", `${sid.replace(/[^A-Za-z0-9_.-]/g, "_")}.json`);
+var baseFile = (sid) => join17(process.env.CAPTAIN_MEMO_DATA_DIR ?? DATA_DIR, "deploy-base", `${sid.replace(/[^A-Za-z0-9_.-]/g, "_")}.json`);
 function readBaselines(sid) {
   try {
     return JSON.parse(readFileSync11(baseFile(sid), "utf-8"));
