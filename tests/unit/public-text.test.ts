@@ -26,6 +26,13 @@ test('captain-memo help lists queue and maintenance, both of which index.ts disp
   expect(helpLine('maintenance')).toMatch(/--apply/);
 });
 
+test('captain-memo help has a line for every command index.ts dispatches (the watchdog action is internal, by design)', () => {
+  const src = readFileSync(join(ROOT, 'src/cli/index.ts'), 'utf-8');
+  const dispatched = [...src.matchAll(/^    case '([a-z][a-z-]*)':/gm)].map((m) => m[1]!).filter((c) => c !== 'worker-watchdog');
+  expect(dispatched.length).toBeGreaterThan(30);
+  expect(dispatched.filter((c) => helpLine(c) === '')).toEqual([]);
+});
+
 test('captain-memo help names every target `connect` really supports (ADAPTERS), not a hand-kept subset', () => {
   const line = helpLine('connect');
   expect(line).not.toBe('');

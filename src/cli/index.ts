@@ -55,6 +55,7 @@ Commands:
   vacuum       Reclaim disk after deletions/reindex (SQLite VACUUM; worker must be stopped)
   upgrade      Bring the corpus up to the current chunker shape (reindex + vacuum, end-to-end)
   observation  list|sunk|flush — manage observations (sunk: list dormant/archived; --archived)
+  capture      status | backfill — cross-AI capture: which tools' sessions are being ingested; backfill ingests the history from before capture was on
   queue        dedupe | retry — repair the observation queue (dry run; --apply, --limit N)
   maintenance  Report, and with --apply remove, what the databases and plugin cache carry that nothing needs (--retention-days N, --grace-days N)
   restore      Re-surface a sunk (dormant/archived) observation: restore <id>
