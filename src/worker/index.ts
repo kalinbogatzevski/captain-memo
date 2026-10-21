@@ -1376,6 +1376,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // so `captain-memo capture backfill` can ingest pre-cutoff history on demand.
   let captureBackfill: (() => Promise<{ ingested: number; events: number }>) | null = null;
   const captureSourceIds: string[] = [];
+  // The directory each active source watches, for /stats and doctor: the id alone cannot say whether codex is read from
+  // ~/.codex/sessions or from a CODEX_HOME. Refreshed with captureSourceIds.
+  const captureDirs: Record<string, string> = {};
   // Per-source count of sessions newer than that source's cutoff, refreshed every tick.
   // Distinguishes "this tool is not used here" from "this tool is used and capture missed it".
   const captureRecent: Record<string, number> = {};
@@ -1407,7 +1410,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       // /stats closure sees the live set) → doctor/stats reflect a newly-appeared tool within one tick.
       const refreshActiveIds = () => {
         captureSourceIds.length = 0;
-        for (const s of captureSources) if (s.available()) captureSourceIds.push(s.id);
+        for (const id of Object.keys(captureDirs)) delete captureDirs[id];
+        for (const s of captureSources) if (s.available()) { captureSourceIds.push(s.id); captureDirs[s.id] = s.describe(); }
       };
       const runTick = async (
         ignoreCutoff: boolean,
@@ -2959,6 +2963,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           // so `doctor` / `config show` can report which non-Claude tools feed observations.
           capture: {
             sources: captureSourceIds,
+            dirs: { ...captureDirs },
             // Per-source ingested totals. doctor reads THIS rather than opening
             // capture-state.db behind the worker's back.
             ingested: Object.fromEntries(

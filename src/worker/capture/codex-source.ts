@@ -1,5 +1,5 @@
 // codex CaptureSource — reads the plain-JSONL rollout transcripts codex persists
-// under ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl.
+// under <codex home>/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl (codex home = $CODEX_HOME, else ~/.codex).
 //
 // Verified line shapes (codex-cli 0.144.6):
 //   session_meta                → { payload.id, payload.cwd }
@@ -18,6 +18,7 @@
 import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import { codexHomeDir } from '../../shared/codex-home.ts';
 import type { RawObservationEvent } from '../../shared/types.ts';
 import type { CaptureSource, IncrementalExtract, SessionRef } from './types.ts';
 
@@ -31,6 +32,8 @@ export interface CodexSourceOptions {
   /** Corpus this worker owns — stamped as project_id on every captured event. */
   projectId: string;
   dir?: string;
+  /** Home folder the default directory hangs off (default: the OS home). For tests. */
+  home?: string;
   quiesceMs?: number;
   now?: () => number;
   env?: Record<string, string | undefined>;
@@ -120,7 +123,18 @@ function parseResume(resume: string | null): { size: number; offset: number; eve
 
 export function createCodexSource(opts: CodexSourceOptions): CaptureSource {
   const env = opts.env ?? process.env;
-  const dir = opts.dir ?? env.CAPTAIN_MEMO_CAPTURE_CODEX_DIR ?? join(homedir(), '.codex', 'sessions');
+  // Codex writes its rollouts under $CODEX_HOME/sessions when that is set. CAPTAIN_MEMO_CAPTURE_CODEX_DIR (and opts.dir)
+  // is the explicit override and wins; it keeps the cutoff key 'codex' it has always had.
+  const home = opts.home ?? homedir();
+  const followed = join(codexHomeDir(home, env), 'sessions');
+  const override = opts.dir ?? env.CAPTAIN_MEMO_CAPTURE_CODEX_DIR;
+  const dir = override ?? followed;
+  // The backfill cutoff is keyed per source, and a stored 'codex' cutoff belongs to ~/.codex/sessions: reusing it for a
+  // CODEX_HOME directory would summarise every rollout there newer than it (unbounded summarizer cost). So a followed
+  // directory other than the default gets its own key and seeds "now" on its first tick; the default keeps 'codex'.
+  // ponytail: keyed by the spelled path, so the same directory reached by another spelling (a symlink) seeds "now" again:
+  // that skips its history, it never floods the summarizer.
+  const cutoffKey = override === undefined && followed !== join(home, '.codex', 'sessions') ? `codex:${followed}` : undefined;
   const quiesceMs = opts.quiesceMs ?? Number(env.CAPTAIN_MEMO_CAPTURE_QUIESCE_MS ?? DEFAULT_QUIESCE_MS);
   const now = opts.now ?? (() => Date.now());
   const warn = opts.warn ?? ((m: string) => console.error(m));
@@ -328,6 +342,7 @@ export function createCodexSource(opts: CodexSourceOptions): CaptureSource {
 
   return {
     id: 'codex',
+    ...(cutoffKey && { cutoffKey }),
     available: () => existsSync(dir),
     describe: () => dir,
     enabled: () => (env.CAPTAIN_MEMO_CAPTURE_CODEX ?? '1') !== '0',

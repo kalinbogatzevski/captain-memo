@@ -8,6 +8,7 @@
 import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import { codexHomeDir } from './codex-home.ts';
 
 export interface AiCapabilitySource {
   tool: string;
@@ -43,19 +44,19 @@ function claudeInstalledManifests(home: string): AiCapabilitySource[] {
   }
 }
 
-export function allCapabilitySources(home: string = homedir()): AiCapabilitySource[] {
+export function allCapabilitySources(home: string = homedir(), env: Record<string, string | undefined> = process.env): AiCapabilitySource[] {
   return [
     { tool: 'gemini', glob: join(home, '.gemini', 'extensions', '*', 'gemini-extension.json') },
     { tool: 'agy', glob: join(home, '.agents', 'plugins', '*', 'plugin.json') },
-    { tool: 'codex', glob: join(home, '.codex', 'plugins', 'cache', '*', '*', '*', '.codex-plugin', 'plugin.json') },
+    { tool: 'codex', glob: join(codexHomeDir(home, env), 'plugins', 'cache', '*', '*', '*', '.codex-plugin', 'plugin.json') },
     ...claudeInstalledManifests(home),
   ];
 }
 
-export function discoverCapabilityGlobs(home: string = homedir()): string[] {
+export function discoverCapabilityGlobs(home: string = homedir(), env: Record<string, string | undefined> = process.env): string[] {
   const seen = new Set<string>();
   const globs: string[] = [];
-  for (const source of allCapabilitySources(home)) {
+  for (const source of allCapabilitySources(home, env)) {
     // Keep wildcard roots even when currently empty: the watcher can observe a
     // newly-created manifest when the concrete parent already exists.
     const probe = source.glob.slice(0, source.glob.indexOf('*') >= 0 ? source.glob.indexOf('*') : source.glob.length);

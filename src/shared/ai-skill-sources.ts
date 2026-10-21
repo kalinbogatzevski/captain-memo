@@ -8,6 +8,7 @@ import { existsSync } from 'fs';
 import { homedir } from 'os';
 import { probeDir } from './ai-memory-sources.ts';
 import { kimiCodeHomeDir } from './kimi-home.ts';
+import { codexHomeGlobBase, isInCodexHome } from './codex-home.ts';
 
 export interface AiSkillSource {
   /** Provenance recorded on the imported skill snapshot. */
@@ -26,12 +27,13 @@ export function resolveSkillWatchSetting(value: string | undefined): string {
  *  a global worker cannot infer which repositories/plugins the user wants to
  *  publish to every connected AI, and caches contain many duplicate versions. */
 export function allSkillSources(home: string = homedir(), env: Record<string, string | undefined> = process.env): AiSkillSource[] {
+  const codexHome = codexHomeGlobBase(home, env);
   return [
     { tool: 'claude-code', glob: `${home}/.claude/skills/*/SKILL.md` },
     { tool: 'codex', glob: `${home}/.agents/skills/*/SKILL.md` },
-    // Legacy Codex location, still used by existing Captain Memo installs.
-    { tool: 'codex', glob: `${home}/.codex/skills/*/SKILL.md` },
-    { tool: 'codex', glob: `${home}/.codex/skills/.system/*/SKILL.md` },
+    // Legacy Codex location, still used by existing Captain Memo installs: $CODEX_HOME when set, else ~/.codex (the one skills dir codex reads).
+    { tool: 'codex', glob: `${codexHome}/skills/*/SKILL.md` },
+    { tool: 'codex', glob: `${codexHome}/skills/.system/*/SKILL.md` },
     { tool: 'gemini', glob: `${home}/.gemini/skills/*/SKILL.md` },
     { tool: 'cursor', glob: `${home}/.cursor/skills/*/SKILL.md` },
     { tool: 'opencode', glob: `${home}/.config/opencode/skills/*/SKILL.md` },
@@ -60,6 +62,7 @@ export function skillToolFromPath(path: string, env: Record<string, string | und
   if (normalized.includes('/opencode/')) return 'opencode';
   if (normalized.includes('/.vibe/')) return 'vibe';
   if (normalized.includes('/.kimi/') || normalized.includes('/.kimi-code/')) return 'kimi';
+  if (isInCodexHome(path, undefined, env)) return 'codex';   // a relocated $CODEX_HOME
   if (env.KIMI_CODE_HOME && normalized.startsWith(env.KIMI_CODE_HOME.replace(/\\/g, '/').replace(/\/+$/, '') + '/')) return 'kimi';   // a relocated kimi 2.x home
   return 'other';
 }

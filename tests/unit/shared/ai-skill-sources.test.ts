@@ -53,3 +53,19 @@ test('kimi 2.x skills are discovered in ~/.kimi-code (or $KIMI_CODE_HOME) and at
     expect(skillToolFromPath('/srv/shared/x/SKILL.md', { KIMI_CODE_HOME: alt })).toBe('other');
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
+
+test('codex skills are discovered in ~/.codex (or $CODEX_HOME, which replaces it) and attributed to codex', () => {
+  const home = mkdtempSync(join(tmpdir(), 'cm-skill-home-'));
+  try {
+    const dflt = join(home, '.codex');
+    mkdirSync(join(dflt, 'skills', '.system'), { recursive: true });
+    expect(discoverSkillGlobs(home, {})).toEqual([`${home}/.codex/skills/*/SKILL.md`, `${home}/.codex/skills/.system/*/SKILL.md`]);
+    expect(discoverSkillGlobs(home, { CODEX_HOME: '' })).toEqual(discoverSkillGlobs(home, {}));   // blank = unset
+
+    const alt = join(home, 'codex-alt');
+    mkdirSync(join(alt, 'skills'), { recursive: true });
+    expect(discoverSkillGlobs(home, { CODEX_HOME: alt })).toEqual([`${alt}/skills/*/SKILL.md`]);   // codex ignores ~/.codex once it is set
+    expect(skillToolFromPath(join(alt, 'skills', 'x', 'SKILL.md'), { CODEX_HOME: alt })).toBe('codex');
+    expect(skillToolFromPath('/srv/shared/x/SKILL.md', { CODEX_HOME: alt })).toBe('other');
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});

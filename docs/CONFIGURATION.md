@@ -294,7 +294,7 @@ avoid duplicate observations. No extra environment setting is required.
 | Setting | Default | Notes |
 |---|---|---|
 | `CAPTAIN_MEMO_CAPTURE_CODEX` | ON | |
-| `CAPTAIN_MEMO_CAPTURE_CODEX_DIR` | `~/.codex/sessions` | |
+| `CAPTAIN_MEMO_CAPTURE_CODEX_DIR` | `$CODEX_HOME/sessions` when `CODEX_HOME` is set, else `~/.codex/sessions` | Overrides the directory. A `CODEX_HOME` directory other than `~/.codex` starts capturing from the first tick (its older rollouts are skipped, like any new source); `captain-memo capture backfill` ingests them. |
 | `CAPTAIN_MEMO_CAPTURE_AGY` | ON | Antigravity CLI. |
 | `CAPTAIN_MEMO_CAPTURE_AGY_DIR` | `~/.gemini/antigravity-cli/conversations` | |
 | `CAPTAIN_MEMO_CAPTURE_GEMINI` | ON | |

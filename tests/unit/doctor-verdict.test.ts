@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { embedderSpendCheck, nonMarkdownMemoryCheck, schemaDrift, migrationVerdict, workerVerdict, embedderVerdict, embedCoverageCheck, ivfHealthCheck, sidecarHealthVerdict, injectLatencyVerdict, INJECT_MIN_SAMPLES, captureSourceVerdict, summarizerVerdict } from '../../src/cli/commands/doctor.ts';
+import { embedderSpendCheck, nonMarkdownMemoryCheck, schemaDrift, migrationVerdict, workerVerdict, embedderVerdict, embedCoverageCheck, ivfHealthCheck, sidecarHealthVerdict, injectLatencyVerdict, INJECT_MIN_SAMPLES, captureSourceVerdict, captureSourcesDetail, summarizerVerdict } from '../../src/cli/commands/doctor.ts';
 
 // ---------------------------------------------------------------------------
 // schemaDrift — does the live DB actually HAVE what the migrations promise?
@@ -148,6 +148,13 @@ test('embedderVerdict cannot confirm a hosted endpoint when the worker did not a
 // `captain-memo capture backfill` — the actual fix for pre-existing sessions —
 // instead of pointing straight at worker.log as if something were broken.
 // ---------------------------------------------------------------------------
+
+test('captureSourcesDetail: each source shows the directory the worker watches; an older worker (no dirs) gets the plain list', () => {
+  expect(captureSourcesDetail(['codex', 'gemini'], { codex: '/srv/codex-alt/sessions', gemini: '/h/.gemini/tmp' }))
+    .toBe('codex (/srv/codex-alt/sessions), gemini (/h/.gemini/tmp)');
+  expect(captureSourcesDetail(['codex', 'gemini'], { codex: '/srv/codex-alt/sessions' })).toBe('codex (/srv/codex-alt/sessions), gemini');
+  expect(captureSourcesDetail(['codex', 'gemini'])).toBe('codex, gemini');
+});
 
 test('captureSourceVerdict: active source with zero ingested sessions WARNs (benign on a fresh install)', () => {
   const checks = captureSourceVerdict(['codex'], { codex: 0 }, { codex: 3 });

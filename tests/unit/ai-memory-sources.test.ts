@@ -1,4 +1,7 @@
 import { test, expect } from 'bun:test';
+import { mkdtempSync, mkdirSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { allMemorySources, discoverMemoryGlobs, probeDir, toolFromPath } from '../../src/shared/ai-memory-sources.ts';
 
 // ─── The two invariants. These are the whole safety story for `auto`. ───
@@ -71,4 +74,22 @@ test('REGRESSION: a filename-wildcard glob is actually discovered when its dir e
   for (const s of allMemorySources()) {
     if (existsSync(probeDir(s.glob))) expect(found.has(s.glob)).toBe(true);
   }
+});
+
+test('codex memory globs follow $CODEX_HOME (replacing ~/.codex) and its files are tagged codex', () => {
+  const codexGlobs = (env: Record<string, string>) => allMemorySources(env).filter((s) => s.tool === 'codex').map((s) => s.glob);
+  const H = process.env.HOME ?? '/home/x';
+  expect(codexGlobs({})).toEqual([`${H}/.codex/memories/*.md`, `${H}/.codex/AGENTS*.md`]);
+  expect(codexGlobs({ CODEX_HOME: '' })).toEqual(codexGlobs({}));                   // blank = unset
+
+  const alt = mkdtempSync(join(tmpdir(), 'cm-memory-codex-alt-'));
+  try {
+    mkdirSync(join(alt, 'memories'));
+    expect(codexGlobs({ CODEX_HOME: alt })).toEqual([`${alt}/memories/*.md`, `${alt}/AGENTS*.md`]);
+    expect(discoverMemoryGlobs({ CODEX_HOME: alt })).toEqual(expect.arrayContaining([`${alt}/memories/*.md`, `${alt}/AGENTS*.md`]));
+    expect(discoverMemoryGlobs({ CODEX_HOME: alt })).not.toContain(`${H}/.codex/memories/*.md`);
+    expect(toolFromPath(join(alt, 'memories', 'a.md'), { CODEX_HOME: alt })).toBe('codex');
+    expect(toolFromPath(join(alt, 'AGENTS.md'), { CODEX_HOME: alt })).toBe('codex');   // not 'agents'
+    expect(toolFromPath(join(alt, 'AGENTS.md'), {})).toBe('agents');
+  } finally { rmSync(alt, { recursive: true, force: true }); }
 });
