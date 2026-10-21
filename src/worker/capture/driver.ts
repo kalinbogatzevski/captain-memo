@@ -39,7 +39,7 @@ export async function runCaptureTick(
 
   for (const src of deps.sources) {
     if (!src.available() || !src.enabled()) continue;
-    const cutoff = deps.state.ensureCutoff(src.id, nowEpoch);
+    const cutoff = deps.state.ensureCutoff(src.cutoffKey ?? src.id, nowEpoch);
 
     let refs: SessionRef[];
     try { refs = src.discover(); } catch (e) { log(`[capture:${src.id}] discover failed: ${(e as Error).message}`); continue; }

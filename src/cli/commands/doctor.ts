@@ -650,11 +650,17 @@ export function summarizerVerdict(sm: {
   };
 }
 
+/** The sources doctor lists as capturing, each with the directory the worker actually watches (/stats capture.dirs), so a
+ *  tool reading from a relocated home shows where. An older worker sends no `dirs`: the plain list, as before. */
+export function captureSourcesDetail(sources: string[], dirs?: Record<string, string>): string {
+  return sources.map((id) => (dirs?.[id] ? `${id} (${dirs[id]})` : id)).join(', ');
+}
+
 async function checkCapture(): Promise<void> {
   const s = await fetchJson(`http://127.0.0.1:${WORKER_PORT}/stats`);
   if (!s.ok) return; // worker unreachable — the `worker service` check owns that
   const b = s.body as {
-    capture?: { sources?: string[]; ingested?: Record<string, number>; recent?: Record<string, number>; native?: Record<string, number> };
+    capture?: { sources?: string[]; dirs?: Record<string, string>; ingested?: Record<string, number>; recent?: Record<string, number>; native?: Record<string, number> };
     summarizer?: { provider?: string; enabled?: boolean; cooling_down?: boolean;
                    skipped?: Array<{ provider: string; reason: string }>;
                    demoted?: Array<{ provider: string; reason: string; at_epoch: number }> };
@@ -688,7 +694,7 @@ async function checkCapture(): Promise<void> {
     name: 'cross-AI capture',
     status: 'PASS',
     detail: sources.length > 0
-      ? `capturing obs from ${sources.join(', ')}`
+      ? `capturing obs from ${captureSourcesDetail(sources, b.capture?.dirs)}`
       : summarizerOff
         ? 'gated OFF — the summarizer is not running (fix the summarizer check above first)'
         : 'on — no non-Claude tool sessions detected on this host',

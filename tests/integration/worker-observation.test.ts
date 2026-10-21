@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync } from 'fs';
+import { mkdirSync, mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
@@ -94,6 +94,38 @@ test('native session accounting recognizes Gemini and Kimi hook sources', async 
   const stats = await fetch(`http://localhost:${port}/stats`).then((response) => response.json()) as any;
   expect(stats.capture.native.gemini).toBe(1);
   expect(stats.capture.native.kimi).toBe(1);
+});
+
+// The worker builds its codex capture source from its own environment, so a CODEX_HOME that has a sessions folder makes /stats say
+// where codex is read from (doctor prints it). This boots a second worker with CODEX_HOME set around startWorker and restores it.
+test('/stats capture.dirs names the directory a CODEX_HOME makes the codex source watch', async () => {
+  const codexHome = mkdtempSync(join(tmpdir(), 'captain-memo-codexhome-'));
+  mkdirSync(join(codexHome, 'sessions'));
+  const dir = mkdtempSync(join(tmpdir(), 'captain-memo-obs-dirs-'));
+  const before = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = codexHome;
+  let second: WorkerHandle | undefined;
+  try {
+    second = await startWorker({
+      port: 0, projectId: 'obs-test', metaDbPath: ':memory:', embedderEndpoint: 'http://localhost:0/unused', embedderModel: 'voyage-4-nano',
+      vectorDbPath: join(dir, 'vec.db'), embeddingDimension: 8, skipEmbed: true,
+      observationQueueDbPath: join(dir, 'queue.db'), observationsDbPath: join(dir, 'obs.db'), pendingEmbedDbPath: join(dir, 'pending.db'),
+      summarize: async () => ({ type: 'change', title: 't', narrative: 'n', facts: [], concepts: [] }),
+      observationTickMs: 0,
+    });
+    let capture: { sources: string[]; dirs: Record<string, string> } | undefined;
+    for (let i = 0; i < 60 && !capture?.sources.includes('codex'); i++) {      // the boot tick fills it in asynchronously
+      capture = (await fetch(`http://localhost:${second.port}/stats`).then((r) => r.json()) as any).capture;
+      if (!capture?.sources.includes('codex')) await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(capture?.sources).toContain('codex');
+    expect(capture?.dirs.codex).toBe(join(codexHome, 'sessions'));
+  } finally {
+    if (before === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = before;
+    await second?.stop();
+    rmWorkDir(dir);
+    rmWorkDir(codexHome);
+  }
 });
 
 test('POST /observation/flush drains queued events into observations', async () => {

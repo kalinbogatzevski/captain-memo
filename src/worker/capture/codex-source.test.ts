@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { appendFileSync, mkdtempSync, writeFileSync } from 'fs';
+import { appendFileSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { createCodexSource } from './codex-source.ts';
@@ -316,4 +316,79 @@ test('codex through the driver: incremental ticks enqueue exactly what full-extr
     expect(inc.cursor.eventsIngested).toBe(full.cursor.eventsIngested);
     expect(inc.cursor.resume).not.toBeNull();
   }
+});
+
+// ── CODEX_HOME: which directory capture watches, and which backfill cutoff that directory uses ──
+// Codex writes rollouts under $CODEX_HOME/sessions when it is set. The cutoff is stored per source, so a directory other than
+// the default needs a key of its own: with the stored 'codex' cutoff of an existing user, following CODEX_HOME would summarise
+// every rollout there newer than it. Every test passes `home` and `env` explicitly: nothing reads the real ~/.codex or process.env.
+function rolloutAt(sessions: string, n: number, mtimeSec: number): string {
+  const day = join(sessions, '2026', '10', '21');
+  mkdirSync(day, { recursive: true });
+  const id = `aaaaaaaa-bbbb-cccc-dddd-${String(n).padStart(12, '0')}`;
+  const path = join(day, `rollout-2026-10-21T10-00-00-${id}.jsonl`);
+  writeFileSync(path, ROLLOUT.replaceAll(UUID, id));
+  utimesSync(path, mtimeSec, mtimeSec);
+  return path;
+}
+const tickAt = async (src: CaptureSource, state: CaptureState, nowSec: number): Promise<number> =>
+  (await runCaptureTick({ sources: [src], state, enqueue: () => {}, now: () => nowSec * 1000 })).ingested;
+const codexCase = () => ({
+  home: mkdtempSync(join(tmpdir(), 'cm-codex-capture-home-')),
+  state: new CaptureState(join(mkdtempSync(join(tmpdir(), 'cm-codex-capture-state-')), 's.db')),
+});
+
+test('capture, CODEX_HOME unset: watches <home>/.codex/sessions and keeps the cutoff key codex, honouring the stored cutoff', async () => {
+  const { home, state } = codexCase();
+  const sessions = join(home, '.codex', 'sessions');
+  const src = createCodexSource({ projectId: 'proj', home, env: {}, quiesceMs: 0, warn: () => {} });
+  expect(src.describe()).toBe(sessions);
+  expect(src.cutoffKey).toBeUndefined();                        // the driver then uses id 'codex', as it always did
+  state.ensureCutoff('codex', 1000);                            // an existing user's stored cutoff
+  rolloutAt(sessions, 1, 500);                                  // older than it: skipped
+  rolloutAt(sessions, 2, 2000);                                 // newer than it: captured
+  expect(await tickAt(src, state, 5000)).toBe(1);
+  expect(state.ensureCutoff('codex', 99_999)).toBe(1000);       // untouched, and nothing was seeded under another key
+});
+
+test('capture, CODEX_HOME set: follows $CODEX_HOME/sessions, and that directory seeds "now" under its own key instead of inheriting the codex cutoff', async () => {
+  const { home, state } = codexCase();
+  const alt = join(home, 'alt-codex-home');
+  const sessions = join(alt, 'sessions');
+  const src = createCodexSource({ projectId: 'proj', home, env: { CODEX_HOME: alt }, quiesceMs: 0, warn: () => {} });
+  expect(src.describe()).toBe(sessions);
+  expect(src.cutoffKey).toBe(`codex:${sessions}`);
+  expect(src.id).toBe('codex');                                 // dedup, native-session suppression and /stats still key on the id
+  state.ensureCutoff('codex', 1000);                            // the cutoff of an earlier ~/.codex/sessions
+  rolloutAt(sessions, 3, 2000);                                 // newer than THAT cutoff, older than now: must not be summarised
+  expect(await tickAt(src, state, 5000)).toBe(0);
+  expect(state.ensureCutoff(`codex:${sessions}`, 99_999)).toBe(5000);   // seeded now, by the first tick
+  expect(state.ensureCutoff('codex', 99_999)).toBe(1000);       // the default directory's cutoff is untouched
+  rolloutAt(sessions, 4, 6000);                                 // finished after the seeding: captured
+  expect(await tickAt(src, state, 7000)).toBe(1);
+});
+
+test('capture: CAPTAIN_MEMO_CAPTURE_CODEX_DIR wins over CODEX_HOME and keeps the cutoff key codex', async () => {
+  const { home, state } = codexCase();
+  const override = join(home, 'explicit-rollouts');
+  const src = createCodexSource({
+    projectId: 'proj', home, quiesceMs: 0, warn: () => {},
+    env: { CODEX_HOME: join(home, 'alt-codex-home'), CAPTAIN_MEMO_CAPTURE_CODEX_DIR: override },
+  });
+  expect(src.describe()).toBe(override);
+  expect(src.cutoffKey).toBeUndefined();
+  state.ensureCutoff('codex', 1000);
+  rolloutAt(override, 5, 2000);
+  expect(await tickAt(src, state, 5000)).toBe(1);               // the stored codex cutoff applies, as it did before CODEX_HOME was followed
+});
+
+test('capture: a blank CODEX_HOME is the default directory, and the default directory spelled through CODEX_HOME keeps the key codex', () => {
+  const { home } = codexCase();
+  const make = (env: Record<string, string>) => createCodexSource({ projectId: 'proj', home, env });
+  const blank = make({ CODEX_HOME: '' });
+  expect(blank.describe()).toBe(join(home, '.codex', 'sessions'));
+  expect(blank.cutoffKey).toBeUndefined();
+  const spelled = make({ CODEX_HOME: join(home, '.codex') + '/' });
+  expect(spelled.describe()).toBe(join(home, '.codex', 'sessions'));
+  expect(spelled.cutoffKey).toBeUndefined();
 });
