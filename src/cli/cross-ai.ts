@@ -451,13 +451,133 @@ function jetbrainsMcpSnippet(mcpServerPath: string): string {
   return JSON.stringify({ mcpServers: { 'captain-memo': { command: 'bun', args: [mcpServerPath] } } }, null, 2) + '\n';
 }
 
-// --- Mistral Vibe config.toml MCP block (append-if-absent; TOML) ----------------
-// Vibe reads MCP servers from ~/.vibe/config.toml as `[[mcp_servers]]`. With no TOML parser we APPEND a single
-// managed block (idempotent on a marker comment) and NEVER rewrite the user's TOML.
+// --- Mistral Vibe config.toml MCP block (append-if-absent; TOML, not JSON) -----
+// Vibe (github.com/mistralai/mistral-vibe) reads MCP servers from ~/.vibe/config.toml as `[[mcp_servers]]`
+// array-of-tables. With no TOML parser here we APPEND a single managed block and NEVER rewrite the user's TOML, so
+// foreign config + formatting are untouched. "Already there" is decided by the TABLE (an [[mcp_servers]] named
+// captain-memo), not by our marker comment: Vibe re-serialises config.toml when it saves and drops every comment,
+// so after that the marker is gone and a marker-only check appended a second block (Windows report, 2026-10-21).
+// The marker still counts (a marked block whose table was since renamed is left alone, as before).
 const VIBE_MCP_MARKER = '# captain-memo (managed by `captain-memo connect`)';
-export function mergeVibeMcpConfig(existingToml: string | null, mcpServerPath: string): string {
+
+/** End of the quoted TOML string that starts at s[i] (basic or literal, single- or multi-line), or the end of the
+ *  line for an unterminated one. */
+function tomlSkipString(s: string, i: number): number {
+  const q = s[i]!;
+  const close = s.startsWith(q.repeat(3), i) ? q.repeat(3) : q;
+  i += close.length;
+  while (i < s.length) {
+    if (q === '"' && s[i] === '\\') { i += 2; continue; }
+    if (s.startsWith(close, i)) { i += close.length; while (close.length === 3 && s[i] === q) i++; return i; }
+    if (close.length === 1 && s[i] === '\n') return i;
+    i++;
+  }
+  return s.length;
+}
+
+/** The text of a TOML value starting at s[i]: a string, a (possibly multi-line, nested) array or inline table,
+ *  or a bare scalar up to the end of its line or its comment. */
+function tomlSkipValue(s: string, i: number): number {
+  if (s[i] === '"' || s[i] === "'") return tomlSkipString(s, i);
+  if (s[i] !== '[' && s[i] !== '{') { while (i < s.length && s[i] !== '\n' && s[i] !== '#') i++; return i; }
+  for (let depth = 0; i < s.length;) {
+    const c = s[i]!;
+    if (c === '"' || c === "'") { i = tomlSkipString(s, i); continue; }
+    if (c === '#') { while (i < s.length && s[i] !== '\n') i++; continue; }
+    i++;
+    if (c === '[' || c === '{') depth++;
+    else if ((c === ']' || c === '}') && --depth === 0) return i;
+  }
+  return i;
+}
+
+/** Table headers and key = value statements of a TOML text, in order. Strings, arrays and comments are skipped
+ *  as units, so a `[[header]]` or `name = ...` line INSIDE a multi-line string or array is not mistaken for one. */
+function* tomlStatements(s: string): Generator<{ header: string; array: boolean } | { key: string; value: string }> {
+  for (let i = 0; i < s.length;) {
+    const c = s[i]!;
+    if (c === '#') { while (i < s.length && s[i] !== '\n') i++; continue; }
+    if (c === '[') {
+      const array = s[i + 1] === '[';
+      const from = (i += array ? 2 : 1);
+      while (i < s.length && s[i] !== '\n' && s[i] !== ']') i = s[i] === '"' || s[i] === "'" ? tomlSkipString(s, i) : i + 1;
+      yield { header: s.slice(from, i).replace(/["'\s]/g, ''), array };
+      while (i < s.length && s[i] !== '\n') i++;
+      continue;
+    }
+    if (c === ' ' || c === '\t' || c === '\r' || c === '\n') { i++; continue; }
+    const from = i;
+    while (i < s.length && s[i] !== '=' && s[i] !== '\n') i = s[i] === '"' || s[i] === "'" ? tomlSkipString(s, i) : i + 1;
+    if (s[i] !== '=') continue;
+    const key = s.slice(from, i).trim().replace(/^(["'])(.*)\1$/, '$2');
+    i++;
+    while (s[i] === ' ' || s[i] === '\t') i++;
+    const start = i;
+    i = tomlSkipValue(s, i);
+    yield { key, value: s.slice(start, i).trim() };
+  }
+}
+
+/** The string a single-line TOML string value holds (basic strings decoded), else null. */
+function tomlString(value: string): string | null {
+  if (/^'[^']*'$/.test(value)) return value.slice(1, -1);
+  if (!/^"(?:[^"\\\n]|\\.)*"$/.test(value)) return null;
+  try { return JSON.parse(value) as string; } catch { return null; }   // TOML escapes JSON lacks (\e, \xHH) read as "unknown"
+}
+
+/** The elements of a TOML array of strings (any layout, comments and trailing comma allowed), or null when it holds
+ *  anything else. */
+function tomlStringList(value: string): string[] | null {
+  if (value[0] !== '[') return null;
+  const out: string[] = [];
+  for (let i = 1; i < value.length;) {
+    const c = value[i]!;
+    if (c === ']') return out;
+    if (c === '#') { while (i < value.length && value[i] !== '\n') i++; continue; }
+    if (c === ',' || c === ' ' || c === '\t' || c === '\r' || c === '\n') { i++; continue; }
+    if (c !== '"' && c !== "'") return null;
+    const end = tomlSkipString(value, i);
+    const str = tomlString(value.slice(i, end));
+    if (str === null) return null;
+    out.push(str);
+    i = end;
+  }
+  return null;
+}
+
+/** The `args` of every `[[mcp_servers]]` table named "captain-memo" in a Vibe config.toml (null for a table whose
+ *  args are missing or not a plain list of strings). A `name = "captain-memo"` inside any other table ([[models]],
+ *  [providers.x], [mcp_servers.env]) is not one. Read-only: the text is never rewritten. */
+export function vibeCaptainMemoTables(toml: string): (string[] | null)[] {
+  const found: (string[] | null)[] = [];
+  let entry: { name: string | null; args: string[] | null } | null = null;
+  const flush = () => { if (entry?.name === 'captain-memo') found.push(entry.args); entry = null; };
+  for (const st of tomlStatements(toml)) {
+    if ('header' in st) { flush(); if (st.array && st.header === 'mcp_servers') entry = { name: null, args: null }; }
+    else if (entry && st.key === 'name') entry.name = tomlString(st.value);
+    else if (entry && st.key === 'args') entry.args = tomlStringList(st.value);
+  }
+  flush();
+  return found;
+}
+
+/** What `connect vibe` does to Vibe's config.toml: `text` is what to write (the input itself when captain-memo is
+ *  already there), `added` whether a block was appended, `note` a plain sentence for the connect report when the
+ *  existing entry needs the owner's eye. An existing entry is NEVER edited, whatever its args say: rewriting the
+ *  path would silently change which install Vibe runs (both checkouts can exist), and with two entries there is no
+ *  single right one. So a path that differs from this install's is reported, and left. */
+export function planVibeMcpConfig(existingToml: string | null, mcpServerPath: string): { text: string; added: boolean; note?: string } {
   const base = existingToml ?? '';
-  if (base.includes(VIBE_MCP_MARKER)) return base;
+  const tables = vibeCaptainMemoTables(base);
+  if (tables.length > 0 || base.includes(VIBE_MCP_MARKER)) {
+    const notes: string[] = [];
+    const norm = (p: string) => p.replace(/\\/g, '/');   // exact otherwise: a case-only difference reads as "differs", which only costs a sentence
+    if (tables.length > 0 && !tables.some((args) => args?.some((a) => norm(a) === norm(mcpServerPath)))) {
+      notes.push(`its captain-memo entry points at ${tables[0]?.join(' ') || 'args this scan cannot read'}, this install is ${mcpServerPath}; left as it is (edit that args line to switch)`);
+    }
+    if (tables.length > 1) notes.push(`${tables.length} [[mcp_servers]] entries are named captain-memo; keep one and delete the others by hand`);
+    return { text: base, added: false, ...(notes.length ? { note: notes.join('; ') } : {}) };
+  }
   const block = VIBE_MCP_MARKER + '\n'
     + '[[mcp_servers]]\n'
     + 'name = "captain-memo"\n'
@@ -465,7 +585,11 @@ export function mergeVibeMcpConfig(existingToml: string | null, mcpServerPath: s
     + 'command = "bun"\n'
     + 'args = [' + JSON.stringify(mcpServerPath) + ']\n';
   const sep = base === '' ? '' : (base.endsWith('\n') ? '\n' : '\n\n');
-  return base + sep + block;
+  return { text: base + sep + block, added: true };
+}
+
+export function mergeVibeMcpConfig(existingToml: string | null, mcpServerPath: string): string {
+  return planVibeMcpConfig(existingToml, mcpServerPath).text;
 }
 
 // --- kimi config.toml merge (PURE — unit-tested without disk) -----------------
@@ -1303,11 +1427,13 @@ const vibeAdapter: ToolAdapter = {
     let detail: string | undefined;
     try {
       const existing = existsSync(cfgPath) ? readFileSync(cfgPath, 'utf-8') : null;
-      const already = !!existing && existing.includes(VIBE_MCP_MARKER);
-      const merged = mergeVibeMcpConfig(existing, serverPath);
-      mkdirSync(dirname(cfgPath), { recursive: true });
-      writeFileSync(cfgPath, merged);
-      mcp = already ? 'present' : 'added';
+      const plan = planVibeMcpConfig(existing, serverPath);
+      if (plan.text !== existing) {   // an entry that is already there leaves the file untouched, byte for byte
+        mkdirSync(dirname(cfgPath), { recursive: true });
+        writeFileSync(cfgPath, plan.text);
+      }
+      mcp = plan.added ? 'added' : 'present';
+      if (plan.note) detail = `${cfgPath}: ${plan.note}`;
     } catch (e) {
       detail = (e as Error).message;
     }
