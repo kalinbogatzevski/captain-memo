@@ -7,6 +7,27 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.58.2] — 2026-10-21
+
+### Added
+
+- **`captain-memo connect vibe` now also sets the captain-memo tools to "always"** in `~/.vibe/config.toml` (one
+  `[tools.captain-memo_<tool>]` table each: the 22 search, read and memory/todo tools), so Mistral Vibe no longer asks
+  for approval on every call. `reindex` still asks. It only appends: a permission you already set (including `ask` or
+  `never`) is left as it is, nothing is rewritten when nothing is missing, and the connect report says how many tools
+  were set and which still ask. The key spelling is read from Vibe's source; it has not yet been confirmed by clicking
+  "approve permanently" once, and a wrong key does nothing (Vibe keeps asking).
+
+### Fixed
+
+- **Codex capture, the skill refresh and discovery now follow `CODEX_HOME`.** When it is set, the worker captures
+  Codex sessions from `$CODEX_HOME/sessions` (a directory other than `~/.codex/sessions` keeps its own backfill cutoff
+  and starts from the first tick instead of summarising its history; `CAPTAIN_MEMO_CAPTURE_CODEX_DIR` still wins), the
+  SessionStart refresh of the captain-memo skill also updates `$CODEX_HOME/skills`, and skills, AGENTS.md, memories
+  and plugin manifests are indexed from `$CODEX_HOME` instead of `~/.codex`. Nothing changes when `CODEX_HOME` is
+  unset. `captain-memo doctor` shows the directory each captured tool is read from. Needs a worker restart (it reads
+  `CODEX_HOME` from worker.env, not your shell).
+
 ## [0.58.1] — 2026-10-21
 
 ### Fixed
