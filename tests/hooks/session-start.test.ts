@@ -325,3 +325,34 @@ test('sanitizeGreeting — control characters out, 80 code points at most, nothi
   expect(sanitizeGreeting('y'.repeat(79) + 'é!!!')).toBe('y'.repeat(79) + 'é');
   for (const none of [undefined, '', '   ', '\n\x1b\t', 42, null, {}]) expect(sanitizeGreeting(none)).toBe('');
 });
+
+// #913(4): the prompt hook cannot announce a refused or rolled-back check and has used the hourly slot, so it leaves the result
+// (`.auto-update-unshown`) and the stamp fresh; SessionStart's own pass is then not due, and announces the left result, once.
+test('SessionStart — with auto-update on, a check the prompt hook found blocked or rolled back is announced once, though its own pass is not due', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'cm-autoupd-unshown-'));
+  const left = join(dataDir, '.auto-update-unshown');
+  const env = { CAPTAIN_MEMO_DATA_DIR: dataDir, GIT_DIR: join(dataDir, 'no-such-git-dir') };   // git cannot touch this checkout
+  const banner = async (extra: Record<string, string> = { CAPTAIN_MEMO_AUTO_UPDATE: '1' }): Promise<string> => JSON.parse((await runHook({ ...env, ...extra })).stdout).systemMessage as string;
+  try {
+    writeFileSync(join(dataDir, '.last-update-check'), `${new Date().toISOString()} delay_ms=3600000 failures=0\n`);   // the slot is used
+    const res = { ok: false, from: VERSION, code: 'dirty_tree', reason: 'working tree not clean — refusing to auto-update over local edits' };
+    writeFileSync(left, JSON.stringify({ kind: 'blocked', res }));
+    expect(await banner({ CAPTAIN_MEMO_AUTO_UPDATE: '' })).not.toContain('BLOCKED');      // not opted in: nothing said, nothing consumed
+    expect(existsSync(left)).toBe(true);
+    const first = await banner();
+    expect(first).toContain('auto-update is BLOCKED');
+    expect(first).toContain('working tree not clean');
+    expect(first).toContain(`stays on v${VERSION}`);
+    expect(existsSync(left)).toBe(false);
+    expect(await banner()).not.toContain('BLOCKED');                                       // once
+
+    writeFileSync(left, JSON.stringify({ kind: 'rolled-back', rolled: true, res: { ok: true, from: VERSION, to: '99.0.0' } }));
+    const rolled = await banner();
+    expect(rolled).toContain('auto-update to v99.0.0 FAILED to start');
+    expect(rolled).toContain(`rolled back to v${VERSION}`);
+
+    writeFileSync(left, JSON.stringify({ kind: 'blocked', res: { ...res, from: '0.0.1' } }));   // written by another version: the checkout moved on
+    expect(await banner()).not.toContain('BLOCKED');
+    expect(existsSync(left)).toBe(false);
+  } finally { rmSync(dataDir, { recursive: true, force: true }); }
+});

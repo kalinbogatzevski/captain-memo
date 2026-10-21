@@ -278,6 +278,22 @@ test('injectLatencyVerdict — WARN when the median is within 20% of the deadlin
   expect(v?.detail).toMatch(/within 20%/);
 });
 
+// #737: a search slower than the hook's timeout (a first build, a repair, an IVF rebuild) times the injection out with no sign.
+// The median AT the deadline already counts (over_deadline is elapsed >= deadline); one ms under it is still the headroom wording.
+test('injectLatencyVerdict — a median at or above the deadline says the injection is timing out, not "within 20%"', () => {
+  for (const p50 of [1500, 1800, 6000]) {
+    const v = injectLatencyVerdict({ n: 100, p50_ms: p50, p95_ms: 9000, over_deadline_n: 70, deadline_ms: 1500 }, 1500);
+    expect(v?.status).toBe('WARN');
+    expect(v?.detail).toMatch(/median is above the hook's timeout: memory injection is timing out/);
+    expect(v?.detail).not.toMatch(/within 20%/);
+    expect(v?.remedy).toMatch(/index build, a repair or an IVF rebuild/);
+    expect(v?.remedy).toMatch(/do NOT raise the timeout/);
+  }
+  const under = injectLatencyVerdict({ n: 100, p50_ms: 1499, p95_ms: 1700, over_deadline_n: 10, deadline_ms: 1500 }, 1500);
+  expect(under?.detail).toMatch(/within 20%/);
+  expect(under?.detail).not.toMatch(/timing out/);
+});
+
 test('injectLatencyVerdict — WARN on a bimodal shape the median hides', () => {
   // p50 1200 of 2000 looks survivable; 30% of calls are still missing. This clause is why the
   // median alone is not enough.
