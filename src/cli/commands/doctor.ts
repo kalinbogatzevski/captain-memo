@@ -159,6 +159,16 @@ export function injectLatencyVerdict(
   const remedy = 'profile the local search (channel counts, corpus size) and check for engine stalls; '
                + 'do NOT raise the timeout — that hides the miss instead of fixing it';
 
+  // A median AT or past the deadline (>=, as over_deadline is counted): most prompts are already losing their memory. "Within
+  // 20%" understates that (6000 ms against a 1500 ms deadline is 4x), and it is the state a first build of a large store, a
+  // repair or an IVF rebuild puts the search in (worker/ivf.ts: 4.8-9.3 s a search while a rebuild drains).
+  if (p50 >= deadlineMs) {
+    return {
+      name, status: 'WARN',
+      detail: `${detail} — median is above the hook's timeout: memory injection is timing out on most prompts`,
+      remedy: `if an index build, a repair or an IVF rebuild is running, search stays this slow until it finishes; otherwise ${remedy}`,
+    };
+  }
   if (p50 >= INJECT_P50_FRACTION * deadlineMs) {
     return { name, status: 'WARN', detail: `${detail} — median is within 20% of the deadline`, remedy };
   }
