@@ -9,12 +9,13 @@ import { existsSync, copyFileSync } from 'fs';
 import { join } from 'path';
 import { VSCODE_OSES, vscodeUserDirSegments } from '../shared/vscode-paths.ts';
 import { kimiCodeHomeDir } from '../shared/kimi-home.ts';
+import { codexHomeDir } from '../shared/codex-home.ts';
 
 /** Home-relative destinations the cross-AI adapters write the skill to. Duplicated from cross-ai.ts on
  *  purpose and locked to it by a test that parses the adapter source, so a new adapter without a refresh
  *  entry fails the suite instead of freezing silently. */
 export const MEMO_SKILL_RELPATHS: readonly string[] = [
-  '.codex/skills/captain-memo/SKILL.md',
+  '.codex/skills/captain-memo/SKILL.md',                      // $CODEX_HOME is added in refreshMemoSkills
   '.gemini/skills/captain-memo/SKILL.md',                     // gemini AND agy share this one
   '.cursor/rules/captain-memo.md',
   '.config/opencode/skills/captain-memo/SKILL.md',
@@ -41,7 +42,7 @@ export function resolveMemoSkillSource(base: string = import.meta.dir): string |
 export interface RefreshDeps {
   exists?: (p: string) => boolean;
   copy?: (from: string, to: string) => void;
-  /** Read for KIMI_CODE_HOME only (default process.env). */
+  /** Read for CODEX_HOME and KIMI_CODE_HOME only (default process.env). */
   env?: Record<string, string | undefined>;
 }
 
@@ -51,9 +52,14 @@ export function refreshMemoSkills(source: string, home: string, deps: RefreshDep
   const copy = deps.copy ?? copyFileSync;
   if (!exists(source)) return [];                       // nothing to copy FROM (non-checkout install)
   const refreshed: string[] = [];
-  // kimi 2.x's skills dir moves with $KIMI_CODE_HOME, which a home-relative entry cannot say; unset, this is the .kimi-code entry again (a Set drops it).
-  // ponytail: the SessionStart hook sees Claude Code's environment, so a KIMI_CODE_HOME exported only in kimi's own shell is not seen here.
-  const dests = new Set([...[...MEMO_SKILL_RELPATHS, ...VSCODE_SKILL_RELPATHS].map((rel) => join(home, ...rel.split('/'))), join(kimiCodeHomeDir(home, deps.env), 'skills', 'captain-memo', 'SKILL.md')]);
+  // kimi 2.x's and codex's skills dirs move with $KIMI_CODE_HOME / $CODEX_HOME, which a home-relative entry cannot say; unset, each is its
+  // ~/.kimi-code / ~/.codex entry again (a Set drops it). Both homes are refreshed when CODEX_HOME is set: a copy in ~/.codex is refresh-only too.
+  // ponytail: the SessionStart hook sees Claude Code's environment, so a KIMI_CODE_HOME or CODEX_HOME exported only in that tool's own shell is not seen here.
+  const dests = new Set([
+    ...[...MEMO_SKILL_RELPATHS, ...VSCODE_SKILL_RELPATHS].map((rel) => join(home, ...rel.split('/'))),
+    join(kimiCodeHomeDir(home, deps.env), 'skills', 'captain-memo', 'SKILL.md'),
+    join(codexHomeDir(home, deps.env), 'skills', 'captain-memo', 'SKILL.md'),
+  ]);
   for (const dest of dests) {
     if (!exists(dest)) continue;                        // that AI was never connected here — do not create
     try { copy(source, dest); refreshed.push(dest); } catch { /* best-effort, per destination */ }

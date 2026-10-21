@@ -1121,8 +1121,6 @@ const codexAdapter: ToolAdapter = {
     let detail: string | undefined;
     // Everything below lands where codex READS it: $CODEX_HOME when set, else ~/.codex (codexHomeDir). `codex mcp add`
     // already wrote its config.toml there, so the approvals and hooks must follow or they sit in a file codex never opens.
-    // ponytail: skill-refresh.ts still refreshes only the ~/.codex copies of the skills, so a copy under $CODEX_HOME
-    // is as fresh as the last `connect codex`; follow CODEX_HOME there if that matters.
     const codexHome = codexHomeDir(ctx.home);
     // A CODEX_HOME that is set but not there: codex refuses to start with it (codex-cli 0.159.3: `mcp list` prints "failed to
     // resolve CODEX_HOME", `mcp add` "failed to load configuration", and both go on "CODEX_HOME points to …, but that path

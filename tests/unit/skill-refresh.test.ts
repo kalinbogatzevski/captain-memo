@@ -62,6 +62,25 @@ test('kimi 2.x copies are refreshed in ~/.kimi-code, in $KIMI_CODE_HOME when tha
   expect(copies).toEqual(out);
 });
 
+// codex reads user skills from $CODEX_HOME/skills when that is set, else ~/.codex/skills. Like kimi's, the relocated copy is refreshed
+// next to the default one, only where it exists; a blank CODEX_HOME is unset (codexHomeDir), so the default entry is not doubled.
+test('codex copies are refreshed in ~/.codex, in $CODEX_HOME when that is set, and only where they exist', () => {
+  const rel = '.codex/skills/captain-memo/SKILL.md';
+  for (const env of [{}, { CODEX_HOME: '' }]) {
+    expect(refreshMemoSkills(SRC, HOME, { ...fakeFs([rel]).deps, env })).toEqual([join(HOME, rel)]);   // once, not twice
+    expect(refreshMemoSkills(SRC, HOME, { ...fakeFs([]).deps, env })).toEqual([]);                      // never created
+  }
+
+  const alt = join(HOME, 'codex-alt');
+  const altDest = join(alt, 'skills', 'captain-memo', 'SKILL.md');
+  const copies: string[] = [];
+  const present = new Set([SRC, altDest, join(HOME, rel)]);
+  const deps = { exists: (p: string) => present.has(p), copy: (_a: string, b: string) => { copies.push(b); }, env: { CODEX_HOME: alt } };
+  expect(refreshMemoSkills(SRC, HOME, deps)).toEqual([join(HOME, rel), altDest]);                       // both, each where it is
+  expect(copies).toEqual([join(HOME, rel), altDest]);
+  expect(refreshMemoSkills(SRC, HOME, { ...fakeFs([]).deps, env: { CODEX_HOME: alt } })).toEqual([]);   // the relocated one is never created either
+});
+
 test('a non-checkout install (no source file) is a no-op, not a crash', () => {
   const fs = fakeFs(['.codex/skills/captain-memo/SKILL.md']);
   expect(refreshMemoSkills('/nowhere/SKILL.md', HOME, fs.deps)).toEqual([]);
