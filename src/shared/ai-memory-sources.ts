@@ -29,6 +29,7 @@
 import { existsSync } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join } from 'path';
+import { codexHomeGlobBase, isInCodexHome } from './codex-home.ts';
 
 export interface AiMemorySource {
   /** Provenance tag stored on the indexed doc — which assistant's memory this is. */
@@ -56,7 +57,8 @@ const REPO_PATTERNS: ReadonlyArray<readonly [tool: string, pattern: string]> = [
 
 /** Every known memory location, whether or not it exists here. Flat table on purpose —
  *  a new assistant is a new row, not a plugin. */
-export function allMemorySources(): AiMemorySource[] {
+export function allMemorySources(env: Record<string, string | undefined> = process.env): AiMemorySource[] {
+  const codexHome = codexHomeGlobBase(H, env);   // $CODEX_HOME when set, else ~/.codex
   const sources: AiMemorySource[] = [
     { tool: 'claude', glob: `${H}/.claude/CLAUDE*.md` },
     { tool: 'claude', glob: `${H}/.claude/memory/*.md` },
@@ -64,8 +66,8 @@ export function allMemorySources(): AiMemorySource[] {
     // ~/.codex/memories/ exists but Codex currently persists memory in
     // memories_*.sqlite, not markdown — this glob is a harmless 0-hit today and
     // picks them up for free if Codex ever writes .md there.
-    { tool: 'codex', glob: `${H}/.codex/memories/*.md` },
-    { tool: 'codex', glob: `${H}/.codex/AGENTS*.md` },
+    { tool: 'codex', glob: `${codexHome}/memories/*.md` },
+    { tool: 'codex', glob: `${codexHome}/AGENTS*.md` },
     { tool: 'gemini', glob: `${H}/.gemini/GEMINI*.md` },
     { tool: 'cursor', glob: `${H}/.cursor/rules/*.md` },
     { tool: 'cursor', glob: `${H}/.cursor/rules/*.mdc` },
@@ -100,16 +102,17 @@ export function probeDir(glob: string): string {
  * Probing the static prefix (not scanning) keeps this cheap enough to run at
  * worker boot: it's one existsSync per row, no filesystem walk.
  */
-export function discoverMemoryGlobs(): string[] {
+export function discoverMemoryGlobs(env: Record<string, string | undefined> = process.env): string[] {
   const seen = new Set<string>();
-  for (const s of allMemorySources()) {
+  for (const s of allMemorySources(env)) {
     if (existsSync(probeDir(s.glob))) seen.add(s.glob);
   }
   return [...seen];
 }
 
 /** Which assistant a discovered file belongs to — stored as provenance on the doc. */
-export function toolFromPath(p: string): string {
+export function toolFromPath(p: string, env: Record<string, string | undefined> = process.env): string {
+  if (isInCodexHome(p, H, env)) return 'codex';   // a relocated $CODEX_HOME too
   for (const dir of ['codex', 'gemini', 'cursor', 'claude'] as const) {
     if (p.includes(`/.${dir}/`)) return dir;
   }

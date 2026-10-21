@@ -25,3 +25,16 @@ test('capability auto-discovery includes installed runtime roots', () => {
   expect(globs).toContain(join(home, '.gemini', 'extensions', '*', 'gemini-extension.json'));
   expect(globs.some(g => g.split(/[\\/]/).includes('.codex'))).toBe(false);
 });
+
+test('codex plugin manifests are discovered in ~/.codex (or $CODEX_HOME, which replaces it)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'captain-cap-home-'));
+  const codexGlob = (env: Record<string, string>) => allCapabilitySources(home, env).filter((s) => s.tool === 'codex').map((s) => s.glob);
+  const rest = ['plugins', 'cache', '*', '*', '*', '.codex-plugin', 'plugin.json'];
+  expect(codexGlob({})).toEqual([join(home, '.codex', ...rest)]);
+  expect(codexGlob({ CODEX_HOME: '' })).toEqual(codexGlob({}));                     // blank = unset
+  const alt = join(home, 'codex-alt');
+  expect(codexGlob({ CODEX_HOME: alt })).toEqual([join(alt, ...rest)]);
+  mkdirSync(join(alt, 'plugins', 'cache'), { recursive: true });
+  expect(discoverCapabilityGlobs(home, { CODEX_HOME: alt })).toEqual([join(alt, ...rest)]);
+  expect(discoverCapabilityGlobs(home, {})).toEqual([]);                            // ~/.codex has no plugins here
+});
