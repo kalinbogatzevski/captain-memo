@@ -7,6 +7,12 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.58.3] — 2026-10-21
+
+### Fixed
+
+- **`bun audit` is clean again.** Five advisories published after the last green run made the audit job fail on an unchanged lockfile: four in the MCP SDK (`@modelcontextprotocol/sdk` 1.31.0: experimental tasks not tied to their session, request-validation memory use, cross-origin redirects in the client transports, bearer audience in the server auth helper) and one in `hono` 4.13.7 (`serveStatic` double-decodes the path). The SDK floor is now `^1.32.0` (locked 1.32.1) and the `hono` override `^4.13.11` (locked 4.13.13); no other package moved and no package was added. Captain Memo uses the SDK's stdio server and its web-standard HTTP transport (the device-pairing gateway inside the worker) only, and none of the affected features (tasks, the bearer helper, the client transports, `serveStatic`), so no behaviour changes. The plugin bundle is rebuilt with the new SDK. A machine that cannot reach the package registry keeps the old SDK in `node_modules` until its next successful `bun install`.
+
 ## [0.58.2] — 2026-10-21
 
 ### Added

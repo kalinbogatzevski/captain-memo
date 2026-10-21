@@ -975,7 +975,7 @@ var package_default;
 var init_package = __esm(() => {
   package_default = {
     name: "captain-memo",
-    version: "0.58.2",
+    version: "0.58.3",
     description: "Cross-AI local memory layer for Claude Code, Codex, Gemini CLI, Antigravity, goose, Cursor, opencode, Kimi CLI and more: hybrid search, six summarizer providers, hosted or local embedder. Replaces claude-mem.",
     type: "module",
     private: true,
@@ -1024,7 +1024,7 @@ var init_package = __esm(() => {
     },
     dependencies: {
       "@anthropic-ai/sdk": "^0.95.0",
-      "@modelcontextprotocol/sdk": "^1.25.1",
+      "@modelcontextprotocol/sdk": "^1.32.0",
       chokidar: "^4.0.3",
       "gpt-tokenizer": "^2.5.1",
       nanoid: "^5.1.16",
@@ -1033,7 +1033,7 @@ var init_package = __esm(() => {
     },
     overrides: {
       qs: "^6.16.0",
-      hono: "^4.13.5",
+      hono: "^4.13.11",
       "body-parser": "^2.3.0",
       "@hono/node-server": "^2.0.5",
       "fast-uri": "^3.1.6",
