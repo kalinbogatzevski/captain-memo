@@ -29,7 +29,7 @@ export interface UserPromptSubmitOptions {
  *  ponytail: a fixed margin measured on Linux (bun 1.4.2, load 3-9); not measured on Windows. */
 const HOST_EXIT_MARGIN_MS = 750;
 
-/** How long homework capture may wait for the worker. 6 s under Claude Code (its hook timeout is 60 s);
+/** How long homework capture may wait for the worker. 6 s under Claude Code (its default hook timeout for this event is 30 s, see HOOK TIMEOUT below);
  *  under a native CLI, whatever is left of the host's kill budget, so a slow worker still gets the
  *  "did not confirm" line to the model instead of the hook dying with nothing said. */
 export function homeworkWaitMs(hostTimeoutMs: number | undefined, elapsedMs: number): number {
@@ -187,6 +187,14 @@ export async function main(options: UserPromptSubmitOptions = {}): Promise<void>
   // `git fetch` 3.3 s plus `git ls-remote` 3.1 s, hourly with jitter. Both are held to 8 s here (20 s at SessionStart), so a
   // dead origin costs one prompt at most 16 s and then backs off 2 h, 4 h, 6 h. An apply adds `bun install` (own 300 s cap),
   // the restart and up to 30 s waiting for the new worker process; against a local origin the whole apply took 1.7 s.
+  // HOOK TIMEOUT (#913): Claude Code's default for a UserPromptSubmit command hook is 30 s, not the 600 s of other events
+  // (code.claude.com/docs/en/hooks), and a hook that reaches it is cancelled with its output discarded, the memory envelope
+  // included. MEASURED 2026-10-21 on Claude Code 2.1.306 (claude -p, a throwaway hook, default timeout): the hook process is
+  // KILLED at about 30 s. Not measured: its children, or an interactive session. A check that finds nothing fits (16 s of network at
+  // most); an apply does not: merge + `bun install` (300 s cap) + restart + up to 30 s for the new worker add up to 367.5 s
+  // (16 fetch and ls-remote + 20 merge + 300 install + 1.5 + 30) of caps, so an apply on this path
+  // that runs past 30 s is cut off midway. Known and tracked: the fix is a separate update-only hook entry with its own timeout,
+  // not a timeout key on this hook (a key is per entry, so it would raise the ceiling of every prompt of every user from 30 s).
   if (result.ok && process.env.CAPTAIN_MEMO_AUTO_UPDATE === '1' && options.hostTimeoutMs === undefined) {
     try {
       const { runAutoUpdatePass, recordUnshownOutcome } = await import('./auto-update.ts');
