@@ -5,7 +5,7 @@
 // Why a hook and not a worker timer: the updater is synchronous (a check is two network round trips, a `bun install`
 // can run minutes) and would stall the worker's event loop; and only a process OUTSIDE the worker survives its restart
 // to confirm the new code boots and roll the checkout back if it does not.
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { DATA_DIR, DEFAULT_WORKER_PORT } from '../shared/paths.ts';
 import { VERSION } from '../shared/version.ts';
@@ -76,6 +76,33 @@ async function awaitNewProcess(
     await new Promise((r) => setTimeout(r, pollMs));
   }
   return false;
+}
+
+/** A `blocked` or `rolled-back` result the PROMPT hook consumed, left for the next SessionStart (recordUnshownOutcome). */
+export const UNSHOWN_OUTCOME_FILE = join(DATA_DIR, '.auto-update-unshown');
+type UnshownOutcome = Extract<AutoUpdateOutcome, { kind: 'blocked' | 'rolled-back' }>;
+
+/** The prompt hook cannot announce what its pass found: its stdout reaches the model as context (Claude Code shows the user no
+ *  entry for it), and the pass has already used the hourly slot, so the next SessionStart finds no check due and says nothing.
+ *  While sessions keep prompting, a dirty checkout or a release that would not boot was never reported. So the prompt hook
+ *  leaves the result here and SessionStart announces it (takeUnshownOutcome). A pass that updated clears an older one. */
+export function recordUnshownOutcome(out: AutoUpdateOutcome): void {
+  try {
+    if (out.kind === 'blocked' || out.kind === 'rolled-back') writeFileSync(UNSHOWN_OUTCOME_FILE, JSON.stringify(out));
+    else if (out.kind === 'updated') rmSync(UNSHOWN_OUTCOME_FILE, { force: true });
+  } catch { /* best-effort, like the stamp: the log line the pass wrote stays */ }
+}
+
+/** Read and remove what the prompt hook left. Null when there is nothing or it is unreadable, and when it was written by
+ *  another version than `version` (the checkout was updated by hand since, so the block it reports is gone). */
+export function takeUnshownOutcome(version: string = VERSION): UnshownOutcome | null {
+  let raw: string;
+  try { raw = readFileSync(UNSHOWN_OUTCOME_FILE, 'utf-8'); } catch { return null; }
+  try { rmSync(UNSHOWN_OUTCOME_FILE, { force: true }); } catch { /* announced again next session at worst */ }
+  try {
+    const out = JSON.parse(raw) as UnshownOutcome;
+    return (out.kind === 'blocked' || out.kind === 'rolled-back') && out.res?.from === version ? out : null;
+  } catch { return null; }
 }
 
 function readSkippedRelease(): string | null {

@@ -8,7 +8,7 @@ import { VERSION } from '../shared/version.ts';
 import { consumeUpgrade, formatUpgradeBanner, formatAutoUpdateBanner, formatAutoUpdateBlockedBanner, formatRollbackBanner, writeMarker, compareSemver } from '../shared/self-update.ts';
 import { staleWindowsShimNotice } from '../shared/windows-shim.ts';
 import { newsLines, type NewsItem } from '../shared/whats-new.ts';
-import { runAutoUpdatePass } from './auto-update.ts';
+import { runAutoUpdatePass, takeUnshownOutcome } from './auto-update.ts';
 import { ensureWorkerHealthy } from '../shared/worker-health.ts';
 import { readTransition, markSessionDegraded, type WorkerTransition } from '../shared/worker-transition.ts';
 import { restartWorker } from '../shared/worker-control.ts';
@@ -249,6 +249,8 @@ export async function main(): Promise<void> {
   if (process.env.CAPTAIN_MEMO_AUTO_UPDATE === '1') {
     // One pass, shared with the UserPromptSubmit hook (hooks/auto-update.ts): same stamp, same lock, same gates.
     const out = await runAutoUpdatePass({ event: 'SessionStart', afterBoot: waitWorkerHealthy });
+    // What the PROMPT hook found and could not announce (it used the slot, so this pass is not due): this pass's own result wins.
+    const unshown = takeUnshownOutcome();
     if (out.kind === 'updated') {
       updatedThisSession = true;   // suppress the self-heal restart below (VERSION is now frozen-stale)
       if (out.res.to) writeMarker(DATA_DIR, out.res.to);
@@ -261,6 +263,10 @@ export async function main(): Promise<void> {
       // Expected, not an error, but it repeats at every check, so say it in the banner: logged only (by the pass), the
       // checkout never updated and nobody knew.
       autoUpdateNotice = formatAutoUpdateBlockedBanner(out.res.from, out.res.code, out.res.reason);
+    } else if (unshown) {
+      autoUpdateNotice = unshown.kind === 'blocked'
+        ? formatAutoUpdateBlockedBanner(unshown.res.from, unshown.res.code, unshown.res.reason)
+        : formatRollbackBanner(unshown.res.from, unshown.res.to ?? '?', unshown.rolled);
     }
   }
 

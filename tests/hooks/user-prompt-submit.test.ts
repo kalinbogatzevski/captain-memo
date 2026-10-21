@@ -7,6 +7,7 @@ import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
 import { homeworkWaitMs } from '../../src/hooks/user-prompt-submit.ts';
 import { parseUpdateStamp } from '../../src/worker/self-updater.ts';
 import { BOOT_SLACK_MS } from '../support/worker-boot.ts';
+import { makeDirtyCloneBehindOrigin } from '../support/dirty-clone-behind-origin.ts';
 
 const FIXTURE = readFileSync(
   join(import.meta.dir, '../fixtures/hooks/user-prompt-submit.input.json'),
@@ -129,6 +130,26 @@ test('UserPromptSubmit — a due check is made from this hook (stamp rewritten),
   expect((await runHook(FIXTURE, { ...env, CAPTAIN_MEMO_WORKER_PORT: '1' })).exitCode).toBe(0);
   expect(readFileSync(stamp, 'utf-8')).toBe(before);                           // worker down: left for SessionStart / the next prompt
   rmSync(dataDir, { recursive: true, force: true });
+});
+
+// #913(4): this hook's stdout is model context, not the SessionStart banner, and the check it makes uses the hourly slot, so a refused
+// check (REAL git: a newer tag on a local origin, a dirty clone) is left for the next SessionStart to announce. Nothing is printed here.
+test('UserPromptSubmit — a due check refused by the dirty-tree gate uses the slot, prints nothing, and is left for SessionStart', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'captain-memo-hook-autoupdate-unshown-'));
+  try {
+    const { env: gitEnv, head, git } = makeDirtyCloneBehindOrigin(root);
+    const dataDir = join(root, 'data'); mkdirSync(dataDir);
+    const stamp = join(dataDir, '.last-update-check');
+    writeFileSync(stamp, '2020-01-01T00:00:00.000Z delay_ms=3600000 failures=0\n'); utimesSync(stamp, new Date('2020-01-01'), new Date('2020-01-01'));
+    const before = readFileSync(stamp, 'utf-8');
+    const r = await runHook(FIXTURE, { ...gitEnv, CAPTAIN_MEMO_AUTO_UPDATE: '1', CAPTAIN_MEMO_DATA_DIR: dataDir, CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1' });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain('<memory-context');
+    expect(r.stdout).not.toContain('BLOCKED');
+    expect(readFileSync(stamp, 'utf-8')).not.toBe(before);                     // the pass ran and used the slot
+    expect(git(join(root, 'work'), 'rev-parse', 'HEAD')).toBe(head);          // nothing was applied
+    expect(JSON.parse(readFileSync(join(dataDir, '.auto-update-unshown'), 'utf-8'))).toMatchObject({ kind: 'blocked', res: { code: 'dirty_tree' } });
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test('UserPromptSubmit — the self-update pass runs only for an opted-in, healthy, Claude Code (no host timeout) prompt', () => {

@@ -189,11 +189,13 @@ export async function main(options: UserPromptSubmitOptions = {}): Promise<void>
   // the restart and up to 30 s waiting for the new worker process; against a local origin the whole apply took 1.7 s.
   if (result.ok && process.env.CAPTAIN_MEMO_AUTO_UPDATE === '1' && options.hostTimeoutMs === undefined) {
     try {
-      const { runAutoUpdatePass } = await import('./auto-update.ts');
+      const { runAutoUpdatePass, recordUnshownOutcome } = await import('./auto-update.ts');
       const out = await runAutoUpdatePass({ event: 'UserPromptSubmit', networkTimeoutMs: 8_000 });
       // No banner on this path (the hook's stdout is the prompt's context). The version marker is left alone, so the next
-      // SessionStart announces the upgrade; the log is where this one shows.
+      // SessionStart announces the upgrade; the log is where this one shows. A blocked or rolled-back check has no marker, and
+      // it has used the hourly slot: it is left for the next SessionStart to announce (recordUnshownOutcome).
       if (out.kind === 'updated') logHookError('UserPromptSubmit', new Error(`auto-updated v${out.res.from} -> v${out.res.to ?? '?'}`));
+      recordUnshownOutcome(out);
     } catch (err) {
       logHookError('UserPromptSubmit', err);
     }

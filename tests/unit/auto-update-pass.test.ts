@@ -1,7 +1,8 @@
 import { test, expect, beforeEach } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { join } from 'path';
 import { DATA_DIR } from '../../src/shared/paths.ts';
-import { runAutoUpdatePass, gitTimeoutFor, AUTO_UPDATE_LOCK, UPDATE_STAMP, SKIPPED_RELEASE_FILE } from '../../src/hooks/auto-update.ts';
+import { runAutoUpdatePass, gitTimeoutFor, recordUnshownOutcome, takeUnshownOutcome, AUTO_UPDATE_LOCK, UPDATE_STAMP, SKIPPED_RELEASE_FILE, UNSHOWN_OUTCOME_FILE } from '../../src/hooks/auto-update.ts';
 import { readTransition, clearTransition } from '../../src/shared/worker-transition.ts';
 import { parseUpdateStamp, formatUpdateStamp, type UpdaterPort, type ExecResult } from '../../src/worker/self-updater.ts';
 
@@ -42,7 +43,7 @@ beforeEach(() => {
   restarts = [];
   afterBootCalls = 0;
   mkdirSync(DATA_DIR, { recursive: true });
-  for (const f of [UPDATE_STAMP, AUTO_UPDATE_LOCK, SKIPPED_RELEASE_FILE]) rmSync(f, { force: true });
+  for (const f of [UPDATE_STAMP, AUTO_UPDATE_LOCK, SKIPPED_RELEASE_FILE, UNSHOWN_OUTCOME_FILE]) rmSync(f, { force: true });
   clearTransition();
 });
 
@@ -174,4 +175,49 @@ test('the stamp, lock and skip files the pass uses sit in the data dir under the
   expect(UPDATE_STAMP.endsWith('.last-update-check')).toBe(true);
   expect(AUTO_UPDATE_LOCK.endsWith('.auto-update.lock')).toBe(true);
   expect(SKIPPED_RELEASE_FILE.startsWith(DATA_DIR)).toBe(true);
+});
+
+// #913(4): the prompt hook cannot announce a refused or rolled-back check (its stdout is model context, not the SessionStart banner)
+// and the check has already used the hourly slot, so SessionStart's own pass is not due and said nothing. The prompt hook leaves
+// the result for SessionStart (recordUnshownOutcome / takeUnshownOutcome).
+test('a refused check the prompt hook consumed is not lost: the slot is used, so SessionStart\'s own pass says nothing, and the left record is announced once', async () => {
+  const blocked = await runAutoUpdatePass(deps(scriptPort({ ...NEWER, 'git status --porcelain': ok(' M src/x.ts\n') }).port));
+  expect(blocked.kind).toBe('blocked');
+  recordUnshownOutcome(blocked);
+  expect(await runAutoUpdatePass(deps(scriptPort(NEWER).port))).toEqual({ kind: 'none' });   // the reason the record is needed
+  expect(takeUnshownOutcome('0.54.0')).toMatchObject({ kind: 'blocked', res: { code: 'dirty_tree', from: '0.54.0' } });
+  expect(takeUnshownOutcome('0.54.0')).toBeNull();                                           // read once
+  expect(existsSync(UNSHOWN_OUTCOME_FILE)).toBe(false);
+});
+
+test('a rolled-back check is left the same way, with the release that failed and whether the checkout went back', async () => {
+  const out = await runAutoUpdatePass(deps(scriptPort(NEWER).port, { newBoots: false, oldBoots: true }));
+  expect(out.kind).toBe('rolled-back');
+  recordUnshownOutcome(out);
+  expect(takeUnshownOutcome('0.54.0')).toMatchObject({ kind: 'rolled-back', rolled: true, res: { from: '0.54.0', to: '0.99.0' } });
+});
+
+test('nothing is left for a pass that found nothing, an update clears an older record, and a record from another version is dropped', async () => {
+  recordUnshownOutcome({ kind: 'none' });
+  expect(existsSync(UNSHOWN_OUTCOME_FILE)).toBe(false);
+  const blocked: Parameters<typeof recordUnshownOutcome>[0] = { kind: 'blocked', res: { ok: false, from: '0.54.0', code: 'dirty_tree', reason: 'working tree not clean' } };
+  recordUnshownOutcome(blocked);
+  recordUnshownOutcome({ kind: 'none' });
+  expect(existsSync(UNSHOWN_OUTCOME_FILE)).toBe(true);                                       // "not due" must not wipe what an earlier check left
+  recordUnshownOutcome({ kind: 'updated', res: { ok: true, from: '0.54.0', to: '0.99.0' } });
+  expect(existsSync(UNSHOWN_OUTCOME_FILE)).toBe(false);
+  recordUnshownOutcome(blocked);
+  expect(takeUnshownOutcome('0.60.0')).toBeNull();                                           // the checkout moved on since: the block it reports is gone
+  expect(existsSync(UNSHOWN_OUTCOME_FILE)).toBe(false);                                      // and it is not kept to say so again
+});
+
+test('an unreadable or foreign record is ignored', () => {
+  writeFileSync(UNSHOWN_OUTCOME_FILE, '{not json');
+  expect(takeUnshownOutcome('0.54.0')).toBeNull();
+  writeFileSync(UNSHOWN_OUTCOME_FILE, JSON.stringify({ kind: 'updated', res: { ok: true, from: '0.54.0' } }));
+  expect(takeUnshownOutcome('0.54.0')).toBeNull();
+});
+
+test('the record sits in the data dir under its name', () => {
+  expect(UNSHOWN_OUTCOME_FILE).toBe(join(DATA_DIR, '.auto-update-unshown'));
 });
