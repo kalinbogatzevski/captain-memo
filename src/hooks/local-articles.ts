@@ -9,7 +9,7 @@
 // SessionStart hook wired: they get the work-board rules, not articles 1 to 7, through the portable captain-memo
 // skill (skills/captain-memo/SKILL.md), and only when the model loads it. SessionStart keeps those copies refreshed.
 //
-// Why the work board comes first: on 2026-09-30 two sessions in one checkout never looked at the board, one never
+// Why the work board comes first: once, two sessions in one checkout never looked at the board, one never
 // claimed, the other claimed relative paths and cleared mid-work, and each deployed "HEAD + my hunk" over the other.
 export const LOCAL_ARTICLES = [
   '## Captain Memo articles: you are one AI among several sessions on this machine',
@@ -22,7 +22,7 @@ export const LOCAL_ARTICLES = [
   '- RELEASE with `work_clear` only once committed AND deployed; re-`work_set` after a long pause.',
   '- ONE TREE PER SESSION: your own `git worktree add ../<n>`; in a shared tree `git add <paths>`, never -A.',
   '- AUTO-CLAIM (Claude Code, Codex, Gemini) records touched files but INFERS the why and can miss: state intent yourself with `work_set`. Elsewhere nothing claims for you.',
-  'Why: 2026-09-30, two sessions in one checkout skipped these and each deployed over the other.',
+  'Why: once, two sessions in one checkout skipped these and each deployed over the other.',
   '',
   '1. SEARCH BEFORE YOU ACT: `search_all` first, grep second; `remember` the non-obvious, with the WHY.',
   '2. NEVER GUESS: verify against memory, the repo\'s docs, the code path INCLUDING its call sites, and the live data; else say "I have not verified X".',
