@@ -26,6 +26,7 @@ import { vscodeUserDirFor } from '../shared/vscode-paths.ts';
 import { NATIVE_PROMPT_HOOK_TIMEOUT_S } from '../shared/paths.ts';
 import { compareSemver } from '../shared/self-update.ts';
 import { kimiCodeHomeDir } from '../shared/kimi-home.ts';
+import { codexHomeDir } from '../shared/codex-home.ts';
 
 /** Return to column 0 and ERASE the line, for the in-place per-tool probe line that `connect` and
  *  `install` both repaint. A bare `\r` is not enough: the line is routinely overwritten by a SHORTER
@@ -744,13 +745,8 @@ export function mergeCodexToolApprovals(existingToml: string, tools: readonly st
   return out;
 }
 
-/** Codex's home: $CODEX_HOME when set and non-empty, else <home>/.codex (%USERPROFILE%\.codex on Windows). Codex itself
- *  treats an empty CODEX_HOME as unset. Observed with codex-cli 0.159.3 in a throwaway CODEX_HOME: config.toml
- *  (`codex mcp add` writes it there), hooks.json and skills/ are read from it and ~/.codex is ignored; a CODEX_HOME that
- *  does not exist makes codex refuse to start. `env` is injectable so a test never reads the developer's real one. */
-export function codexHomeDir(home: string = homedir(), env: Record<string, string | undefined> = process.env): string {
-  return env.CODEX_HOME || join(home, '.codex');
-}
+// Codex's home lives in shared/codex-home.ts so the other readers use the same resolution; re-exported for doctor and the tests.
+export { codexHomeDir };
 
 /** Codex's config.toml — the one file connect, `doctor` and the worker's boot refresh all look at. */
 export function codexConfigPath(home: string = homedir(), env: Record<string, string | undefined> = process.env): string {

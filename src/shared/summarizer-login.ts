@@ -5,7 +5,7 @@
 // credentials"). This is the cheap local signal the wizard needs to recommend, and headless installs to
 // pick, the first provider that can run right now. Mirrors the worker's login checks (ai-capacity.ts,
 // federation-only code the shared CLI must not import): Claude = env token or ~/.claude/.credentials.json
-// with an access token; Codex = codex on PATH + ~/.codex/auth.json (api key or tokens); agy = agy on PATH +
+// with an access token; Codex = codex on PATH + auth.json in $CODEX_HOME, else ~/.codex (api key or tokens); agy = agy on PATH +
 // either its OAuth token file under the Gemini dir or, on a desktop where agy keeps its login in the OS keyring
 // instead (Linux Secret Service, Windows Credential Manager), a keyring item. Read-only. summarizerLogins() is
 // pure over its inputs and spawns nothing; only probeSummarizerLogins() asks the keyring, with the one bounded,
@@ -15,6 +15,7 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { AGY_KEYRING_ATTRS, probeSecretStore, type SecretStoreState } from './secret-store.ts';
+import { codexHomeDir } from './codex-home.ts';
 
 export type LoginProbeEnv = {
   env: Record<string, string | undefined>;
@@ -48,8 +49,7 @@ export function claudeOauthLoggedIn(env: LoginProbeEnv = realLoginProbeEnv()): b
 
 export function codexLoggedIn(env: LoginProbeEnv = realLoginProbeEnv()): boolean {
   if (!env.which('codex')) return false;
-  const dir = str(env.env.CODEX_HOME) ? env.env.CODEX_HOME : join(env.home, '.codex');
-  const auth = json(env, join(dir, 'auth.json'));
+  const auth = json(env, join(codexHomeDir(env.home, env.env), 'auth.json'));
   return !!auth && (str(auth.OPENAI_API_KEY) || (!!auth.tokens && typeof auth.tokens === 'object'));
 }
 
