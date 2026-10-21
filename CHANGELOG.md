@@ -7,6 +7,46 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.58.1] — 2026-10-21
+
+### Fixed
+
+- **`captain-memo connect vibe` no longer adds a second captain-memo MCP block to `~/.vibe/config.toml` after Vibe has
+  re-saved the file.** Vibe drops comments when it saves, so the marker comment the check relied on was gone; connect
+  now recognises an existing `[[mcp_servers]]` entry named captain-memo and leaves the file byte-for-byte alone. If
+  that entry points at a different checkout, the connect output says so and leaves it; if the file already holds
+  several, it says that too.
+- **The recall counters (`injected_tokens`, `injections`, `memory_share_pct`) no longer double when two clients poll
+  `GET /sessions/usage` at once** (two `captain-memo top` windows, for example). Before, two overlapping calls tallied
+  the same new audit lines and the total stayed doubled until the worker restarted. Needs a worker restart.
+- **Codex's home folder is resolved in one place** (`src/shared/codex-home.ts`) for `connect`, `doctor` and the
+  install wizard's Codex login check. One visible difference: a blank (whitespace-only) `CODEX_HOME` no longer makes
+  the wizard report a Codex login from `~/.codex`; Codex itself refuses to start on it.
+- **`doctor` says when the memory injection is timing out.** `hook retrieval latency` already watched the hook's
+  search time; when the median is at or past the hook's timeout it now says "median is above the hook's timeout:
+  memory injection is timing out on most prompts" and names a running index build or repair as the usual cause
+  (before, it said "within 20% of the deadline").
+- **The opt-in auto-update no longer keeps quiet about a check it could not finish.** A newer release refused by the
+  dirty-tree/detached-HEAD/fast-forward gate, or one that failed to start and was rolled back, was only logged when
+  the check happened on a prompt, and because that check used the hour's slot the next session start said nothing
+  either; the prompt hook now leaves the result for the next session start to announce, once.
+- **`captain-memo help` lists `capture`**, and a test ties the help list to the dispatch table so it cannot drift
+  again.
+
+### Changed
+
+- **The conduct rules a session reads at start (and the `work_active` tool text) no longer date one of the
+  maintainer's own incidents** ("Why: 2026-09-30, two sessions in one checkout ..." is now "Why: once, ..."); the rule
+  and its reason are unchanged. A test now fails on any date or maintainer name in either text. The plugin bundle is
+  rebuilt for it.
+
+### Known
+
+- Claude Code kills a `UserPromptSubmit` command hook at its timeout (30 s by default; measured on Claude Code
+  2.1.306), so an opt-in auto-update (`CAPTAIN_MEMO_AUTO_UPDATE=1`) that runs past 30 s on the prompt path is cut off
+  midway and that prompt's memory is lost. The plugin does not raise the hook's timeout (a `timeout` key applies to
+  every prompt of every user); the fix is a separate update-only hook entry, tracked as homework.
+
 ## [0.58.0] — 2026-10-19
 
 ### Added

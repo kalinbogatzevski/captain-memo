@@ -975,7 +975,7 @@ var package_default;
 var init_package = __esm(() => {
   package_default = {
     name: "captain-memo",
-    version: "0.58.0",
+    version: "0.58.1",
     description: "Cross-AI local memory layer for Claude Code, Codex, Gemini CLI, Antigravity, goose, Cursor, opencode, Kimi CLI and more: hybrid search, six summarizer providers, hosted or local embedder. Replaces claude-mem.",
     type: "module",
     private: true,
@@ -1293,7 +1293,7 @@ var init_self_updater = __esm(() => {
 });
 
 // src/hooks/auto-update.ts
-import { mkdirSync as mkdirSync7, readFileSync as readFileSync7, statSync as statSync4, writeFileSync as writeFileSync7 } from "fs";
+import { mkdirSync as mkdirSync7, readFileSync as readFileSync7, rmSync as rmSync4, statSync as statSync4, writeFileSync as writeFileSync7 } from "fs";
 import { join as join10 } from "path";
 function readPkgField(dir, field) {
   try {
@@ -1319,6 +1319,31 @@ async function awaitNewProcess(before, port, read, o) {
     await new Promise((r) => setTimeout(r, pollMs));
   }
   return false;
+}
+function recordUnshownOutcome(out) {
+  try {
+    if (out.kind === "blocked" || out.kind === "rolled-back")
+      writeFileSync7(UNSHOWN_OUTCOME_FILE, JSON.stringify(out));
+    else if (out.kind === "updated")
+      rmSync4(UNSHOWN_OUTCOME_FILE, { force: true });
+  } catch {}
+}
+function takeUnshownOutcome(version = VERSION) {
+  let raw;
+  try {
+    raw = readFileSync7(UNSHOWN_OUTCOME_FILE, "utf-8");
+  } catch {
+    return null;
+  }
+  try {
+    rmSync4(UNSHOWN_OUTCOME_FILE, { force: true });
+  } catch {}
+  try {
+    const out = JSON.parse(raw);
+    return (out.kind === "blocked" || out.kind === "rolled-back") && out.res?.from === version ? out : null;
+  } catch {
+    return null;
+  }
 }
 function readSkippedRelease() {
   try {
@@ -1426,7 +1451,7 @@ async function runAutoUpdatePass(o) {
     return { kind: "none" };
   }
 }
-var AUTO_UPDATE_LOCK, UPDATE_STAMP, SKIPPED_RELEASE_FILE;
+var AUTO_UPDATE_LOCK, UPDATE_STAMP, SKIPPED_RELEASE_FILE, UNSHOWN_OUTCOME_FILE;
 var init_auto_update = __esm(() => {
   init_paths();
   init_version();
@@ -1439,6 +1464,7 @@ var init_auto_update = __esm(() => {
   AUTO_UPDATE_LOCK = join10(DATA_DIR, ".auto-update.lock");
   UPDATE_STAMP = join10(DATA_DIR, ".last-update-check");
   SKIPPED_RELEASE_FILE = join10(DATA_DIR, ".auto-update-skip");
+  UNSHOWN_OUTCOME_FILE = join10(DATA_DIR, ".auto-update-unshown");
 });
 
 // src/shared/plugin-cache.ts
@@ -1497,7 +1523,7 @@ var init_plugin_cache = __esm(() => {
 
 // src/cli/plugin-cache-refresh.ts
 import { spawnSync as spawnSync4 } from "child_process";
-import { existsSync as existsSync7, mkdirSync as mkdirSync8, readFileSync as readFileSync10, readdirSync as readdirSync3, rmSync as rmSync4, writeFileSync as writeFileSync8 } from "fs";
+import { existsSync as existsSync7, mkdirSync as mkdirSync8, readFileSync as readFileSync10, readdirSync as readdirSync3, rmSync as rmSync5, writeFileSync as writeFileSync8 } from "fs";
 import { homedir as homedir7 } from "os";
 import { join as join13 } from "path";
 function marketplacePointsAtCheckout(repoRoot, home = homedir7()) {
@@ -1841,6 +1867,7 @@ async function main(options = {}) {
       const out = await runAutoUpdatePass({ event: "UserPromptSubmit", networkTimeoutMs: 8000 });
       if (out.kind === "updated")
         logHookError("UserPromptSubmit", new Error(`auto-updated v${out.res.from} -> v${out.res.to ?? "?"}`));
+      recordUnshownOutcome(out);
     } catch (err) {
       logHookError("UserPromptSubmit", err);
     }
@@ -1872,7 +1899,7 @@ var LOCAL_ARTICLES = [
   "- RELEASE with `work_clear` only once committed AND deployed; re-`work_set` after a long pause.",
   "- ONE TREE PER SESSION: your own `git worktree add ../<n>`; in a shared tree `git add <paths>`, never -A.",
   "- AUTO-CLAIM (Claude Code, Codex, Gemini) records touched files but INFERS the why and can miss: state intent yourself with `work_set`. Elsewhere nothing claims for you.",
-  "Why: 2026-09-30, two sessions in one checkout skipped these and each deployed over the other.",
+  "Why: once, two sessions in one checkout skipped these and each deployed over the other.",
   "",
   "1. SEARCH BEFORE YOU ACT: `search_all` first, grep second; `remember` the non-obvious, with the WHY.",
   `2. NEVER GUESS: verify against memory, the repo's docs, the code path INCLUDING its call sites, and the live data; else say "I have not verified X".`,
@@ -2141,6 +2168,7 @@ async function main2() {
   let updatedThisSession = false;
   if (process.env.CAPTAIN_MEMO_AUTO_UPDATE === "1") {
     const out = await runAutoUpdatePass({ event: "SessionStart", afterBoot: waitWorkerHealthy });
+    const unshown = takeUnshownOutcome();
     if (out.kind === "updated") {
       updatedThisSession = true;
       if (out.res.to)
@@ -2152,6 +2180,8 @@ async function main2() {
       autoUpdateNotice = formatRollbackBanner(out.res.from, out.res.to ?? "?", out.rolled);
     } else if (out.kind === "blocked") {
       autoUpdateNotice = formatAutoUpdateBlockedBanner(out.res.from, out.res.code, out.res.reason);
+    } else if (unshown) {
+      autoUpdateNotice = unshown.kind === "blocked" ? formatAutoUpdateBlockedBanner(unshown.res.from, unshown.res.code, unshown.res.reason) : formatRollbackBanner(unshown.res.from, unshown.res.to ?? "?", unshown.rolled);
     }
   }
   const selfHealOff = process.env.CAPTAIN_MEMO_DISABLE_SELF_HEAL === "1";

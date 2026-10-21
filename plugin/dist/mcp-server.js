@@ -12900,7 +12900,7 @@ function loadWorkerEnv() {
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.58.0",
+  version: "0.58.1",
   description: "Cross-AI local memory layer for Claude Code, Codex, Gemini CLI, Antigravity, goose, Cursor, opencode, Kimi CLI and more: hybrid search, six summarizer providers, hosted or local embedder. Replaces claude-mem.",
   type: "module",
   private: true,
@@ -13354,7 +13354,7 @@ var TOOLS = [
   },
   {
     name: "work_active",
-    description: "Coordination board: list the live work claims on this captain with their topics, `topic_contention` (every topic two or more sessions hold right now, with who), and, if you pass your session_id, `overlaps_with_mine` by topic / files / repo. `semantic.degraded` true means meaning-match is off (embedder down) \u2014 the board is then topics + files only. Call this to see who else is working on what before you start. READ `stale` BEFORE YOU DEFER TO A CLAIM: every row carries age_s (seconds since it was last refreshed) and stale:true once that passes the ceiling. A claim is refreshed by edits, so stale means no recent edit: the session may have died, or may only be reading or testing (on 2026-09-30 a live one was taken for dead and its work overwritten). Before writing files a stale claim holds, stop and tell the user which session holds it and let them decide. Never wait out a stale lease on your own: that blocks real work for the rest of its TTL.",
+    description: "Coordination board: list the live work claims on this captain with their topics, `topic_contention` (every topic two or more sessions hold right now, with who), and, if you pass your session_id, `overlaps_with_mine` by topic / files / repo. `semantic.degraded` true means meaning-match is off (embedder down) \u2014 the board is then topics + files only. Call this to see who else is working on what before you start. READ `stale` BEFORE YOU DEFER TO A CLAIM: every row carries age_s (seconds since it was last refreshed) and stale:true once that passes the ceiling. A claim is refreshed by edits, so stale means no recent edit: the session may have died, or may only be reading or testing (once a live one was taken for dead and its work overwritten). Before writing files a stale claim holds, stop and tell the user which session holds it and let them decide. Never wait out a stale lease on your own: that blocks real work for the rest of its TTL.",
     inputSchema: {
       type: "object",
       properties: {
