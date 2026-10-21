@@ -593,6 +593,68 @@ export function mergeVibeMcpConfig(existingToml: string | null, mcpServerPath: s
   return planVibeMcpConfig(existingToml, mcpServerPath).text;
 }
 
+// --- Mistral Vibe per-tool permissions (append-only, same scanner) -------------
+// Vibe asks before EVERY MCP tool call and has no server-wide allow: running without a prompt is one
+// `[tools.<server>_<tool>]` table per tool with `permission = "always"`, <server> being the RAW config name with its
+// hyphen (`captain-memo_search_memory`, not the dialog title `mcp_captain_memo.search_memory`). That key is read from
+// the Vibe 2.26.1 source, NOT yet confirmed by clicking "approve permanently" once and reading the stanza Vibe writes.
+// Two explicit lists, derived from nothing: tests/unit/cross-ai-vibe-merge.test.ts fails when a tool of the MCP server is
+// in neither list or in both, so a new tool forces the decision. Not imported from the MCP server on purpose: this file
+// must stay out of the bundled mcp-server.js and hook.
+/** Read tools and the memory / work-board writes: run without asking. */
+export const VIBE_ALWAYS_TOOLS: string[] = [
+  'search_memory', 'search_skill', 'list_skills', 'recommend_skills', 'load_skill', 'list_capabilities', 'recommend_capabilities',
+  'get_capability', 'search_observations', 'search_all', 'get_full', 'stats', 'status', 'todo_list', 'work_active',
+  'remember', 'work_set', 'work_clear', 'todo_add', 'todo_claim', 'todo_unclaim', 'todo_done',
+];
+/** Tools that rebuild the index: Vibe keeps asking. Never written. */
+export const VIBE_ASK_TOOLS: string[] = ['reindex'];
+
+/** Every `tools.captain-memo_<tool>` a Vibe config.toml already defines, in ANY form (a table, a sub-table, an array of
+ *  tables, a dotted or inline key), mapped to its `permission` string (null when it is not a plain string there).
+ *  Appending a second `[tools.captain-memo_x]` after any of those forms is invalid TOML (checked with Python's tomllib,
+ *  2026-10-21) and Vibe would not start, so every form counts as taken. `locked`: `tools` itself is a key/value (e.g.
+ *  `tools = {}`), after which no `[tools.*]` table can be added at all. */
+export function vibeToolPermissions(toml: string): { tools: Map<string, string | null>; locked: boolean } {
+  const tools = new Map<string, string | null>();
+  let locked = false;
+  let table = '';
+  for (const st of tomlStatements(toml)) {
+    const path = 'header' in st ? st.header : (table ? table + '.' : '') + st.key.replace(/["'\s]/g, '');
+    if ('header' in st) table = path;
+    else if (path === 'tools') locked = true;
+    const m = /^tools\.captain-memo_([^.]+)(?:\.(.*))?$/.exec(path);
+    if (!m) continue;
+    if (m[2] === 'permission' && 'key' in st) tools.set(m[1]!, tomlString(st.value));
+    else if (!tools.has(m[1]!)) tools.set(m[1]!, null);
+  }
+  return { tools, locked };
+}
+
+/** Append `[tools.captain-memo_<tool>] permission = "always"` for each VIBE_ALWAYS_TOOLS entry the file has no table for
+ *  yet. Append-only: an existing table of any value (a person's own "ask" or "never") is kept, nothing is edited, reordered
+ *  or deleted, and the text comes back as the very same string when nothing is missing. Only when the file has a parsed
+ *  `[[mcp_servers]]` table named captain-memo (found or just added), else the permissions would name no server. `note`
+ *  is the plain sentence for the connect report; `added` the tools actually appended. */
+export function planVibeToolPermissions(toml: string): { text: string; added: string[]; note: string } {
+  if (vibeCaptainMemoTables(toml).length === 0) return { text: toml, added: [], note: 'no [[mcp_servers]] table named captain-memo, so no tool permissions written' };
+  const { tools, locked } = vibeToolPermissions(toml);
+  if (locked) return { text: toml, added: [], note: 'the file sets `tools` as a plain value, so no tool permissions can be added to it; none written' };
+  const added = VIBE_ALWAYS_TOOLS.filter((t) => !tools.has(t));
+  const left = VIBE_ALWAYS_TOOLS.filter((t) => tools.has(t) && tools.get(t) !== 'always');
+  const asks = VIBE_ASK_TOOLS.filter((t) => !tools.has(t) || tools.get(t) === 'ask');
+  const note = [added.length ? `${added.length} captain-memo tools set to always` : 'captain-memo tool permissions already present',
+    ...(asks.length ? [`${asks.join(', ')} still ${asks.length === 1 ? 'asks' : 'ask'}`] : []),
+    ...(left.length ? [`existing permission for ${left.join(', ')} left as it is`] : [])].join('; ');
+  if (added.length === 0) return { text: toml, added, note };
+  const eol = toml.includes('\r\n') ? '\r\n' : '\n';
+  // The comment must not contain VIBE_MCP_MARKER: planVibeMcpConfig would read a file holding only this block as having our MCP entry.
+  const block = '# captain-memo connect: these tools run without asking; set permission = "ask" on one to be asked again' + eol
+    + added.map((t) => `[tools.captain-memo_${t}]${eol}permission = "always"${eol}`).join(eol);
+  const sep = toml === '' ? '' : (toml.endsWith('\n') ? eol : eol + eol);
+  return { text: toml + sep + block, added, note };
+}
+
 // --- kimi config.toml merge (PURE — unit-tested without disk) -----------------
 // `connect kimi` must leave kimi LAUNCHABLE, and kimi's launchability lives entirely in ~/.kimi/config.toml:
 // a [providers.*] table + [models.<alias>] aliases + a root `default_model` (bare `kimi` has nothing to route
@@ -1409,7 +1471,8 @@ const opencodeAdapter: ToolAdapter = {
 };
 
 // Mistral Vibe (~/.vibe) — Apache-2.0. No `mcp add` CLI; MCP is config.toml [[mcp_servers]], so register by
-// appending a managed block (idempotent, append-only). Skill best-effort to ~/.vibe/skills (read path unverified).
+// appending a managed block (idempotent, append-only), then (same write) the per-tool `always` permissions for the
+// safe tools (planVibeToolPermissions). Skill best-effort to ~/.vibe/skills (read path unverified).
 const vibeAdapter: ToolAdapter = {
   id: 'vibe',
   label: 'Mistral Vibe',
@@ -1424,12 +1487,13 @@ const vibeAdapter: ToolAdapter = {
     try {
       const existing = existsSync(cfgPath) ? readFileSync(cfgPath, 'utf-8') : null;
       const plan = planVibeMcpConfig(existing, serverPath);
-      if (plan.text !== existing) {   // an entry that is already there leaves the file untouched, byte for byte
+      const perms = planVibeToolPermissions(plan.text);   // one write for both; no captain-memo table => none added
+      if (perms.text !== existing) {   // an entry and permissions that are already there leave the file untouched, byte for byte
         mkdirSync(dirname(cfgPath), { recursive: true });
-        writeFileSync(cfgPath, plan.text);
+        writeFileSync(cfgPath, perms.text);
       }
       mcp = plan.added ? 'added' : 'present';
-      if (plan.note) detail = `${cfgPath}: ${plan.note}`;
+      detail = `${cfgPath}: ${[plan.note, perms.note].filter(Boolean).join('; ')}`;
     } catch (e) {
       detail = (e as Error).message;
     }
