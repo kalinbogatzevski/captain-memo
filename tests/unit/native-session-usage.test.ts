@@ -309,6 +309,59 @@ test('injectedBySession — totals per session, incremental, presence-not-truthi
   expect(second.get(SID)).toEqual({ tokens: 500, injections: 3 });   // 400 not double-counted
 });
 
+test('injectedBySession — overlapping calls never tally a line twice', async () => {
+  // A call captures acc.offset, awaits stat/open/read, then tallies. Two overlapping calls (two `captain-memo top` polling
+  // GET /sessions/usage do) read the same tail and BOTH tallied it into the shared map: the offset guard only kept the
+  // offset right, so injected_tokens and injections doubled and stayed doubled until the worker restarted.
+  const { injectedBySession, _resetInjectedCache } = await import('../../src/worker/native-session-usage.ts');
+  const audit = join(root, 'recall-audit.jsonl');
+  const N = 50;
+  let body = '';
+  for (let i = 0; i < N; i++) body += JSON.stringify({ ts: i, session_id: SID, injected_tokens: 10 }) + '\n';
+  writeFileSync(audit, body);
+  const want = { tokens: N * 10, injections: N };
+
+  _resetInjectedCache();
+  expect((await injectedBySession(audit)).get(SID)).toEqual(want);          // one call
+
+  _resetInjectedCache();
+  const maps = await Promise.all([injectedBySession(audit), injectedBySession(audit), injectedBySession(audit)]);
+  for (const m of maps) expect(m.get(SID)).toEqual(want);                   // overlapping calls
+  expect((await injectedBySession(audit)).get(SID)).toEqual(want);          // and nothing doubled for a later call
+});
+
+test('injectedBySession — one call, two sequential calls and two overlapping calls on a growing log agree', async () => {
+  // Three logs fed the same lines, read three ways each round: once, twice in a row, and twice overlapping with more lines
+  // appended while the first call is in flight (so the second may see a longer file than the first). Whichever call
+  // digests first, every line must be tallied exactly once, and a per-line token count that varies (1..7) makes a line
+  // tallied twice or skipped show in the sum.
+  const { injectedBySession, _resetInjectedCache } = await import('../../src/worker/native-session-usage.ts');
+  _resetInjectedCache();
+  const log = (n: string) => join(root, `audit-${n}.jsonl`);
+  const one = log('one'), seq = log('seq'), overlap = log('overlap');
+  let lines = 0, tokens = 0;
+  const grow = (n: number) => {
+    for (let j = 0; j < n; j++, lines++) {
+      const tk = (lines % 7) + 1;
+      tokens += tk;
+      const l = JSON.stringify({ ts: lines, session_id: SID, injected_tokens: tk }) + '\n';
+      for (const f of [one, seq, overlap]) appendFileSync(f, l);
+    }
+  };
+  for (let round = 0; round < 20; round++) {
+    grow(4);
+    await injectedBySession(one);
+    await injectedBySession(seq);
+    await injectedBySession(seq);
+    const first = injectedBySession(overlap);
+    grow(3);
+    await Promise.all([first, injectedBySession(overlap)]);
+    for (const f of [one, seq, overlap]) {
+      expect((await injectedBySession(f)).get(SID)).toEqual({ tokens, injections: lines });   // settled: all lines, once
+    }
+  }
+});
+
 test('injectedBySession — missing log yields an empty map, never throws', async () => {
   const { injectedBySession, _resetInjectedCache } = await import('../../src/worker/native-session-usage.ts');
   _resetInjectedCache();

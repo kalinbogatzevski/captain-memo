@@ -1102,16 +1102,21 @@ export async function injectedBySession(auditLogPath: string): Promise<Map<strin
     const fh = await open(auditLogPath, 'r').catch(() => null);
     if (fh) {
       try {
-        // Capture the position BEFORE the awaits, and only advance if it has not moved. This
-        // is the THIRD instance of one shape in this codebase — a shared cursor read before an
-        // await and written after — and here, as in dream-stats, there is no per-message
-        // dedupe to make a duplicated read harmless: it counts the same injections twice and
-        // then leaves the offset past what was consumed, which never self-heals.
+        // Capture the position BEFORE the awaits. This is the THIRD instance of one shape in this
+        // codebase — a shared cursor read before an await and written after — and here, as in
+        // dream-stats, there is no per-message dedupe to make a duplicated read harmless. A
+        // call that overlaps this one (two `top` polls) reads the same tail and, if both tally it,
+        // every injection counts twice and stays that way until the worker restarts. So after the
+        // read, skip the bytes another call has already tallied: acc.offset only ever advances past
+        // whole lines that a call tallied into acc.by, so it sits at a newline and everything before
+        // it in this buffer is already counted. As in accumulate(), nothing awaits between this
+        // check and the write below.
         const from = acc.offset;
         const len = size - from;
         const buf = Buffer.allocUnsafe(len);
         const { bytesRead } = await fh.read(buf, 0, len, from);
-        const chunk = buf.toString('utf8', 0, bytesRead);
+        const skip = acc.offset - from;   // >= 0; past bytesRead when the other call went further, which leaves chunk empty
+        const chunk = buf.toString('utf8', skip, bytesRead);
         const lastNl = chunk.lastIndexOf('\n');
         if (lastNl >= 0) {
           for (const raw of chunk.slice(0, lastNl + 1).split('\n')) {
@@ -1132,7 +1137,7 @@ export async function injectedBySession(auditLogPath: string): Promise<Map<strin
             e.injections++;
             acc.by.set(id, e);
           }
-          if (acc.offset === from) acc.offset = from + Buffer.byteLength(chunk.slice(0, lastNl + 1), 'utf8');
+          acc.offset = from + skip + Buffer.byteLength(chunk.slice(0, lastNl + 1), 'utf8');
         }
       } catch {
         /* transient — keep what we have */
