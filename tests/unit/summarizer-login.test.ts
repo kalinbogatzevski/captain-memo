@@ -34,6 +34,15 @@ test('Codex: needs the binary AND auth.json with an api key or tokens; agy: bina
   expect(summarizerLogins(fakeEnv({}, ['agy'])).agy).toBe(false);
 });
 
+test('Codex: auth.json is read from $CODEX_HOME when set (the default folder is then ignored); empty counts as unset; " " is a path, as codex reads it', () => {
+  const tokens = '{"tokens":{"id_token":"x"}}';
+  const codex = (files: Record<string, string>, codexHome: string) => summarizerLogins(fakeEnv(files, ['codex'], { CODEX_HOME: codexHome })).codex;
+  expect(codex({ '/opt/codex-alt/auth.json': tokens }, '/opt/codex-alt')).toBe(true);
+  expect(codex({ '/home/u/.codex/auth.json': tokens }, '/opt/codex-alt')).toBe(false);
+  expect(codex({ '/home/u/.codex/auth.json': tokens }, '')).toBe(true);
+  expect(codex({ '/home/u/.codex/auth.json': tokens }, ' ')).toBe(false);   // codex-cli 0.159.3: "CODEX_HOME points to " ", but that path does not exist"
+});
+
 // A keyring-only agy (Linux desktop with a Secret Service, Windows Credential Manager) never writes the token file.
 test('agy: the OS keyring answer counts when the token file is absent — present or locked yes, none / unknown no', () => {
   const env = fakeEnv({}, ['agy']);
