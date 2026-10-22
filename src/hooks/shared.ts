@@ -22,6 +22,13 @@ const HOOK_LOG_DIR = join(homedir(), '.captain-memo', 'logs');
 const HOOK_LOG_FILE = join(HOOK_LOG_DIR, 'hook.log');
 const HOOK_LOG_ROTATE_BYTES = 10 * 1024 * 1024; // 10 MB
 
+/** The dispatcher entry this process was launched through (`bun <bundle or bin/captain-memo-hook.ts> <Event>`), absolute; null
+ *  when a handler module was run directly. Re-running THAT file with another event name is the one argv that exists both in
+ *  the committed bundle and in a source checkout. */
+export function hookEntryPath(entry: string | undefined = process.argv[1]): string | null {
+  return entry && /(?:^|[\\/])captain-memo-hook(?:\.(?:js|ts))?$/.test(entry) ? resolve(entry) : null;
+}
+
 /** True when a hook module was executed directly, including Bun on Windows. */
 export function isMainModule(meta: ImportMeta): boolean {
   // Bun flattens every imported hook module into the distributable dispatcher.
@@ -29,7 +36,7 @@ export function isMainModule(meta: ImportMeta): boolean {
   // without this exclusion all six handlers race to consume the same stdin.
   // The dispatcher entry calls its selected handler explicitly.
   const entry = process.argv[1];
-  if (entry && /(?:^|[\\/])captain-memo-hook(?:\.(?:js|ts))?$/.test(entry)) return false;
+  if (hookEntryPath(entry)) return false;
   if (meta.main) return true;
   if (!entry) return false;
   try {

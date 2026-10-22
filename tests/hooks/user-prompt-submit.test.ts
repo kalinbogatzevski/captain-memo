@@ -1,6 +1,6 @@
 import { test, expect, beforeAll, afterAll } from 'bun:test';
 import { join } from 'path';
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawn } from 'bun';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
@@ -101,40 +101,127 @@ test('UserPromptSubmit — respects CAPTAIN_MEMO_HOOK_TIMEOUT_MS', async () => {
   expect(stdout).toContain('How do I run the worker');
 });
 
-// The opt-in self-update also runs from this hook (a session kept open for days never reaches SessionStart again).
-test('UserPromptSubmit — with CAPTAIN_MEMO_AUTO_UPDATE=1 and no check due, the prompt is unchanged and nothing is fetched', async () => {
+// The opt-in self-update also runs from this hook (a session kept open for days never reaches SessionStart again). #950: on
+// Linux/macOS the hook only spawns it, DETACHED, as `<dispatcher entry> UpdateApply` (Claude Code cuts the hook at 30 s and kills
+// its tree), so these tests run the hook through the dispatcher entry, as Claude Code does (the spawn re-runs that same file).
+// `.auto-update-spawn.lock` is taken by the hook BEFORE it spawns and exits with it, so it is the synchronous witness that a child
+// was started; what the child does comes later and is polled for.
+const ENTRY = join(import.meta.dir, '../../bin/captain-memo-hook.ts');
+const SPAWN_LOCK = '.auto-update-spawn.lock';
+// win32 keeps the pass in-line (nothing is spawned, so no spawn lock): the tests that need a child are POSIX-only.
+const posix = process.platform !== 'win32';
+
+async function runEntry(event: string, input: string, env: Record<string, string> = {}): Promise<{ stdout: string; exitCode: number; ms: number }> {
+  const t0 = performance.now();
+  const proc = spawn({ cmd: ['bun', ENTRY, event], stdin: 'pipe', stdout: 'pipe', stderr: 'pipe', env: { ...process.env, CAPTAIN_MEMO_WORKER_PORT: String(port), ...env } });
+  proc.stdin.write(input); proc.stdin.end();
+  // Both pipes are read to EOF: a child that kept either one open would hold this up until it exited.
+  const [stdout] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+  return { stdout, exitCode: await proc.exited, ms: performance.now() - t0 };
+}
+async function waitFor(cond: () => boolean, ms = 20_000): Promise<boolean> {
+  for (const end = Date.now() + ms; Date.now() < end && !cond();) await Bun.sleep(40);
+  return cond();
+}
+/** Make the check due again, as a stamp from 2020 does. Returns the stamp's text. */
+function dueStamp(dataDir: string): string {
+  const stamp = join(dataDir, '.last-update-check');
+  writeFileSync(stamp, '2020-01-01T00:00:00.000Z delay_ms=3600000 failures=0\n'); utimesSync(stamp, new Date('2020-01-01'), new Date('2020-01-01'));
+  return readFileSync(stamp, 'utf-8');
+}
+// GIT_DIR points nowhere, so a pass that does run finds "not a git checkout" and changes nothing but the stamp it rewrites.
+const updateEnv = (dataDir: string): Record<string, string> => ({ CAPTAIN_MEMO_AUTO_UPDATE: '1', CAPTAIN_MEMO_DATA_DIR: dataDir, GIT_DIR: join(dataDir, 'no-such-git-dir'), CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1' });
+/** The child has finished its pass: the stamp is rewritten and the pass released `.auto-update.lock`. */
+const passDone = (dataDir: string, before: string): boolean => readFileSync(join(dataDir, '.last-update-check'), 'utf-8') !== before && !existsSync(join(dataDir, '.auto-update.lock'));
+
+test('UserPromptSubmit — with CAPTAIN_MEMO_AUTO_UPDATE=1 and no check due, the prompt is unchanged, nothing is fetched and no child is started', async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'captain-memo-hook-autoupdate-'));
   const stamp = join(dataDir, '.last-update-check');
   writeFileSync(stamp, `${new Date().toISOString()} delay_ms=3600000 failures=0\n`);
   const before = readFileSync(stamp, 'utf-8');
-  // GIT_DIR points nowhere: even if a check did come due, git cannot touch this checkout from the test.
-  const { stdout, exitCode } = await runHook(FIXTURE, { CAPTAIN_MEMO_AUTO_UPDATE: '1', CAPTAIN_MEMO_DATA_DIR: dataDir, GIT_DIR: join(dataDir, 'no-such-git-dir') });
+  const { stdout, exitCode } = await runEntry('UserPromptSubmit', FIXTURE, updateEnv(dataDir));
   expect(exitCode).toBe(0);
   expect(stdout).toContain('<memory-context');
   expect(stdout).toContain('How do I run the worker');
   expect(readFileSync(stamp, 'utf-8')).toBe(before);
+  expect(existsSync(join(dataDir, SPAWN_LOCK))).toBe(false);
   rmSync(dataDir, { recursive: true, force: true });
 });
 
-test('UserPromptSubmit — a due check is made from this hook (stamp rewritten), but not while the worker is down', async () => {
+test('UserPromptSubmit — a due check starts a detached child that makes it (stamp rewritten), but none while the worker is down', async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'captain-memo-hook-autoupdate-due-'));
   const stamp = join(dataDir, '.last-update-check');
-  const due = (): string => { writeFileSync(stamp, '2020-01-01T00:00:00.000Z delay_ms=3600000 failures=0\n'); utimesSync(stamp, new Date('2020-01-01'), new Date('2020-01-01')); return readFileSync(stamp, 'utf-8'); };
-  // GIT_DIR points nowhere, so the pass finds "not a git checkout" and changes nothing but the stamp it rewrites.
-  const env = { CAPTAIN_MEMO_AUTO_UPDATE: '1', CAPTAIN_MEMO_DATA_DIR: dataDir, GIT_DIR: join(dataDir, 'no-such-git-dir'), CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1' };
-  let before = due();
-  expect((await runHook(FIXTURE, env)).exitCode).toBe(0);
-  expect(readFileSync(stamp, 'utf-8')).not.toBe(before);                       // the pass ran
-  expect(parseUpdateStamp(readFileSync(stamp, 'utf-8')).failures).toBe(0);
-  before = due();
-  expect((await runHook(FIXTURE, { ...env, CAPTAIN_MEMO_WORKER_PORT: '1' })).exitCode).toBe(0);
-  expect(readFileSync(stamp, 'utf-8')).toBe(before);                           // worker down: left for SessionStart / the next prompt
-  rmSync(dataDir, { recursive: true, force: true });
+  const env = updateEnv(dataDir);
+  try {
+    let before = dueStamp(dataDir);
+    const r = await runEntry('UserPromptSubmit', FIXTURE, env);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain('<memory-context');                             // the prompt is served as ever
+    if (posix) expect(existsSync(join(dataDir, SPAWN_LOCK))).toBe(true);       // a child was started...
+    expect(await waitFor(() => passDone(dataDir, before))).toBe(true);         // ...and it ran the pass: the stamp is rewritten
+    expect(parseUpdateStamp(readFileSync(stamp, 'utf-8')).failures).toBe(0);
+    rmSync(join(dataDir, SPAWN_LOCK), { force: true });
+    before = dueStamp(dataDir);
+    expect((await runEntry('UserPromptSubmit', FIXTURE, { ...env, CAPTAIN_MEMO_WORKER_PORT: '1' })).exitCode).toBe(0);
+    expect(existsSync(join(dataDir, SPAWN_LOCK))).toBe(false);                 // worker down: no child, left for SessionStart / the next prompt
+    expect(readFileSync(stamp, 'utf-8')).toBe(before);
+  } finally { rmSync(dataDir, { recursive: true, force: true }); }
 });
 
-// #913(4): this hook's stdout is model context, not the SessionStart banner, and the check it makes uses the hourly slot, so a refused
-// check (REAL git: a newer tag on a local origin, a dirty clone) is left for the next SessionStart to announce. Nothing is printed here.
-test('UserPromptSubmit — a due check refused by the dirty-tree gate uses the slot, prints nothing, and is left for SessionStart', async () => {
+// The point of #950: the hook does not wait for the apply. A PATH-first `git` that takes 1.2 s per call and fails makes the child's
+// pass last at least 2.4 s (two git calls before it gives up), so it cannot be done when the hook exits. Both of the hook's pipes were
+// read to EOF in runEntry: a child that held either would have kept this open until it ended.
+test.skipIf(!posix)('UserPromptSubmit — the hook exits before the child it started has finished its check', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'captain-memo-hook-autoupdate-async-'));
+  try {
+    const dataDir = join(root, 'data'); mkdirSync(dataDir);
+    const fakeBin = join(root, 'bin'); mkdirSync(fakeBin);
+    writeFileSync(join(fakeBin, 'git'), '#!/bin/sh\nsleep 1.2\nexit 1\n', { mode: 0o755 });
+    const before = dueStamp(dataDir);
+    const r = await runEntry('UserPromptSubmit', FIXTURE, { ...updateEnv(dataDir), PATH: `${fakeBin}:${process.env.PATH}` });
+    expect(r.exitCode).toBe(0);
+    expect(existsSync(join(dataDir, SPAWN_LOCK))).toBe(true);
+    expect(passDone(dataDir, before)).toBe(false);                             // the child is still inside its first slow git call
+    expect(await waitFor(() => passDone(dataDir, before))).toBe(true);         // and it does finish, on its own, after the hook is gone
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('UpdateApply — with closed stdin it runs the pass once and exits', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'captain-memo-hook-autoupdate-applyonce-'));
+  try {
+    const before = dueStamp(dataDir);
+    const r = await runEntry('UpdateApply', '', updateEnv(dataDir));
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe('');                                                 // the child has no stdout to speak of
+    const after = readFileSync(join(dataDir, '.last-update-check'), 'utf-8');
+    expect(after).not.toBe(before);                                            // the pass ran and used the slot...
+    expect(parseUpdateStamp(after).failures).toBe(0);
+    expect(existsSync(join(dataDir, '.auto-update.lock'))).toBe(false);        // ...and finished: its exit is the end of the pass
+  } finally { rmSync(dataDir, { recursive: true, force: true }); }
+});
+
+test('UpdateApply — without the opt-in it does nothing, whatever is due', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'captain-memo-hook-autoupdate-applyoff-'));
+  try {
+    const before = dueStamp(dataDir);
+    expect((await runEntry('UpdateApply', '', { ...updateEnv(dataDir), CAPTAIN_MEMO_AUTO_UPDATE: '' })).exitCode).toBe(0);
+    expect(readFileSync(join(dataDir, '.last-update-check'), 'utf-8')).toBe(before);
+  } finally { rmSync(dataDir, { recursive: true, force: true }); }
+});
+
+test('UserPromptSubmit — a due check is not made without the opt-in', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'captain-memo-hook-autoupdate-off-'));
+  try {
+    const before = dueStamp(dataDir);
+    expect((await runEntry('UserPromptSubmit', FIXTURE, { ...updateEnv(dataDir), CAPTAIN_MEMO_AUTO_UPDATE: '' })).exitCode).toBe(0);
+    expect(existsSync(join(dataDir, SPAWN_LOCK))).toBe(false);
+    expect(readFileSync(join(dataDir, '.last-update-check'), 'utf-8')).toBe(before);
+  } finally { rmSync(dataDir, { recursive: true, force: true }); }
+});
+
+// #913(4): the child's stdout is nobody's, and the check it makes uses the hourly slot, so a refused check (REAL git: a newer tag
+// on a local origin, a dirty clone) is left for the next SessionStart to announce. Nothing is printed.
+test('UpdateApply — a due check refused by the dirty-tree gate uses the slot, prints nothing, and is left for SessionStart', async () => {
   const root = mkdtempSync(join(tmpdir(), 'captain-memo-hook-autoupdate-unshown-'));
   try {
     const { env: gitEnv, head, git } = makeDirtyCloneBehindOrigin(root);
@@ -142,17 +229,37 @@ test('UserPromptSubmit — a due check refused by the dirty-tree gate uses the s
     const stamp = join(dataDir, '.last-update-check');
     writeFileSync(stamp, '2020-01-01T00:00:00.000Z delay_ms=3600000 failures=0\n'); utimesSync(stamp, new Date('2020-01-01'), new Date('2020-01-01'));
     const before = readFileSync(stamp, 'utf-8');
-    const r = await runHook(FIXTURE, { ...gitEnv, CAPTAIN_MEMO_AUTO_UPDATE: '1', CAPTAIN_MEMO_DATA_DIR: dataDir, CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1' });
+    const r = await runEntry('UpdateApply', '', { ...gitEnv, CAPTAIN_MEMO_AUTO_UPDATE: '1', CAPTAIN_MEMO_DATA_DIR: dataDir, CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1' });
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toContain('<memory-context');
-    expect(r.stdout).not.toContain('BLOCKED');
+    expect(r.stdout).toBe('');
     expect(readFileSync(stamp, 'utf-8')).not.toBe(before);                     // the pass ran and used the slot
     expect(git(join(root, 'work'), 'rev-parse', 'HEAD')).toBe(head);          // nothing was applied
     expect(JSON.parse(readFileSync(join(dataDir, '.auto-update-unshown'), 'utf-8'))).toMatchObject({ kind: 'blocked', res: { code: 'dirty_tree' } });
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test('UserPromptSubmit — the self-update pass runs only for an opted-in, healthy, Claude Code (no host timeout) prompt', () => {
+// Behaviour behind the source check below: a native host (Codex, Gemini, Kimi) kills this hook at 5 s, a check takes longer.
+test('UserPromptSubmit — a due check is made for Claude Code but not for a native host (Codex), though both are opted in and healthy', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'captain-memo-hook-autoupdate-native-'));
+  const stamp = join(dataDir, '.last-update-check');
+  const env = updateEnv(dataDir);
+  try {
+    let before = dueStamp(dataDir);
+    const claude = await runEntry('UserPromptSubmit', FIXTURE, env);
+    expect(claude.exitCode).toBe(0);
+    if (posix) expect(existsSync(join(dataDir, SPAWN_LOCK))).toBe(true);       // control: this entry does start the check...
+    expect(await waitFor(() => passDone(dataDir, before))).toBe(true);         // ...and it is made
+    rmSync(join(dataDir, SPAWN_LOCK), { force: true });
+    before = dueStamp(dataDir);
+    const codex = await runEntry('CodexUserPromptSubmit', FIXTURE, env);
+    expect(codex.exitCode).toBe(0);
+    expect(codex.stdout).toContain('stub');                                    // the worker answered: the gate that stopped the check is the host timeout
+    expect(existsSync(join(dataDir, SPAWN_LOCK))).toBe(false);
+    expect(readFileSync(stamp, 'utf-8')).toBe(before);
+  } finally { rmSync(dataDir, { recursive: true, force: true }); }
+});
+
+test('UserPromptSubmit — the self-update step runs only for an opted-in, healthy, Claude Code (no host timeout) prompt', () => {
   const src = readFileSync(join(import.meta.dir, '../../src/hooks/user-prompt-submit.ts'), 'utf8');
   const at = src.indexOf("await import('./auto-update.ts')");
   expect(at).toBeGreaterThan(0);
@@ -160,6 +267,8 @@ test('UserPromptSubmit — the self-update pass runs only for an opted-in, healt
   expect(gate).toContain('result.ok');
   expect(gate).toContain("process.env.CAPTAIN_MEMO_AUTO_UPDATE === '1'");
   expect(gate).toContain('options.hostTimeoutMs === undefined');
+  expect(src.slice(at)).toContain('startPromptUpdate()');                     // the hook starts the child; it no longer runs the pass itself
+  expect(src.slice(at)).not.toContain('runAutoUpdatePass');
   expect(src.indexOf('writeStdout(prompt)')).toBeLessThan(at);   // the prompt is written before the check starts (the host still waits for the hook to exit)
 });
 
