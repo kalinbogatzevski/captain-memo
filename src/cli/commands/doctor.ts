@@ -274,6 +274,36 @@ export function embedderSpendCheck(usage: Pick<EmbedUsage, 'paused_until_epoch' 
            remedy: 'nothing required, it resumes by itself. If it keeps coming back the link to the provider is too slow or down: raise CAPTAIN_MEMO_EMBEDDER_TIMEOUT_MS in worker.env, then captain-memo restart' };
 }
 
+/** The interactive embed budget (searches, recalls, remember checks; see INTERACTIVE_BUDGET_TOKENS): always a line once
+ *  the worker reports one, WARN while an engine has it tripped or is over its limit with the pause ended (its next
+ *  search is refused). null for a worker older than the budget. The figure is summed over the worker's engines, the
+ *  limit is each engine's own. */
+export function embedderBudgetCheck(usage: Pick<EmbedUsage, 'interactive_budget'> | null | undefined): Check | null {
+  const b = usage?.interactive_budget;
+  if (!b) return null;
+  const used = b.window_tokens.toLocaleString('en-US'), limit = b.limit_tokens.toLocaleString('en-US');
+  if (b.limit_tokens <= 0) {
+    return { name: 'embedder budget', status: 'PASS',
+             detail: `${b.off_reason === 'local-endpoint'
+               ? 'off: local endpoint, which bills nothing (CAPTAIN_MEMO_EMBEDDER_INTERACTIVE_BUDGET_TOKENS above 0 limits it anyway)'
+               : 'off (CAPTAIN_MEMO_EMBEDDER_INTERACTIVE_BUDGET_TOKENS=0)'}: ${used} tokens went to searches and recalls in the last hour` };
+  }
+  const remedy = 'nothing required, it resumes by itself. If a client is looping on long queries, stop it. If this is normal use, raise CAPTAIN_MEMO_EMBEDDER_INTERACTIVE_BUDGET_TOKENS in worker.env, then captain-memo restart';
+  if (b.paused_until_epoch) {
+    const until = new Date(b.paused_until_epoch * 1000).toTimeString().slice(0, 5);
+    return { name: 'embedder budget', status: 'WARN',
+             detail: `interactive token budget TRIPPED until ${until} in at least one of the worker's engines (the indexer and each search reader count on their own): ${used} tokens in the last hour, all engines, against ${limit} per engine. Searches there answer from keywords only and say so in degradation_flags; indexing is not affected`,
+             remedy };
+  }
+  if (b.over_limit) {
+    return { name: 'embedder budget', status: 'WARN',
+             detail: `interactive token budget OVER the limit in at least one of the worker's engines (the indexer and each search reader count on their own): ${used} tokens in the last hour, all engines, against ${limit} per engine. The pause has ended but the hour still holds the spend, so the next search there is refused and trips it again; it answers from keywords only and says so in degradation_flags. Indexing is not affected`,
+             remedy };
+  }
+  return { name: 'embedder budget', status: 'PASS',
+           detail: `${used} tokens sent for searches and recalls in the last hour, all engines (limit ${limit} per engine), not tripped` };
+}
+
 /** Files indexed as memory that are not markdown: what a too-wide watcher (fixed 2026-10-01) left behind. */
 export function nonMarkdownMemoryCheck(paths: string[]): Check | null {
   if (paths.length === 0) return null;
@@ -298,6 +328,8 @@ export function sidecarHealthVerdict(b: SidecarHealth): Check {
 function checkEmbedderSpendAndJunk(): void {
   const spend = embedderSpendCheck(lastStats?.embedder_usage as EmbedUsage | undefined);
   if (spend) record(spend);
+  const budget = embedderBudgetCheck(lastStats?.embedder_usage as EmbedUsage | undefined);
+  if (budget) record(budget);
   if (!existsSync(META_DB_PATH)) return;
   try {
     const junk = nonMarkdownMemoryCheck(removeNonMarkdownMemoryDocuments(META_DB_PATH, false));

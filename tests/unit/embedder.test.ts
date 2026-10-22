@@ -1,5 +1,9 @@
-import { test, expect, beforeAll, afterAll } from 'bun:test';
-import { Embedder, EmbedderInputTooLarge, EmbedderPaused } from '../../src/worker/embedder.ts';
+import { test, expect, beforeAll, afterAll, spyOn, setSystemTime } from 'bun:test';
+import {
+  Embedder, EmbedderInputTooLarge, EmbedderPaused, EmbedderBudgetExceeded, makeUsageReporter,
+  INTERACTIVE_BUDGET_TOKENS, TAIL_MINUTES, RING_MINUTES, type EmbedUsage,
+} from '../../src/worker/embedder.ts';
+import { countTokens } from '../../src/shared/tokens.ts';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let mockServer: ReturnType<typeof Bun.serve>;
@@ -301,4 +305,283 @@ test('Embedder — a refused connection wastes nothing: the request never left',
   await expect(e.embed(['some text'])).rejects.toThrow();
   expect(e.usage().wasted_tokens).toBe(0);
   expect(e.pausedUntilMs()).toBe(0);
+});
+
+// ---- per-minute metering and the interactive token budget (2026-10-22, #960) ----
+// The clock is moved with setSystemTime (the embedder reads Date.now()); every test puts it back.
+const TEXT = 'alpha beta gamma delta epsilon zeta eta theta';
+const TOK = countTokens(TEXT);
+const T0 = Date.UTC(2026, 9, 22, 10, 0, 10);                  // 10 s into a minute, so a slow test never crosses one
+const MIN0 = Math.floor(T0 / 60_000) * 60;                    // that minute, in epoch seconds
+const clock = (ms: number): void => { setSystemTime(new Date(ms)); };
+const quiet = () => spyOn(console, 'error').mockImplementation(() => {});
+const budgetLines = (log: ReturnType<typeof quiet>): number => log.mock.calls.filter(c => String(c[0]).includes('interactive token budget')).length;
+
+test('metering — each request lands in its minute and column; a later minute starts a new entry', async () => {
+  const s = slowServer(); const e = new Embedder({ endpoint: s.url, model: 'x' });
+  try {
+    clock(T0);
+    await e.embed([TEXT], 'query');
+    await e.embed([TEXT, TEXT], 'document', { source: 'remember' });
+    await e.embed([TEXT], 'document', { source: 'worknote' });
+    await e.embed([TEXT], 'document', { source: 'ingest', patient: true });
+    await e.embed([TEXT], 'document');                                   // no source: 'other'
+    expect(e.usage().per_minute).toEqual([{ at_epoch: MIN0, by_source: {
+      query: { calls: 1, tokens: TOK }, remember: { calls: 1, tokens: 2 * TOK }, worknote: { calls: 1, tokens: TOK },
+      other: { calls: 2, tokens: 2 * TOK },                              // ingest and the unnamed one, together
+    } }]);
+    clock(T0 + 60_000);
+    await e.embed([TEXT], 'query');
+    const tail = e.usage().per_minute!;
+    expect(tail.map(m => m.at_epoch)).toEqual([MIN0, MIN0 + 60]);       // oldest first
+    expect(tail[1]!.by_source).toEqual({ query: { calls: 1, tokens: TOK } });   // sources that sent nothing are absent
+  } finally { setSystemTime(); s.server.stop(); }
+});
+
+test('metering — the tail is the last TAIL_MINUTES, the hour is RING_MINUTES, a reused slot starts from zero', async () => {
+  const s = slowServer(); const e = new Embedder({ endpoint: s.url, model: 'x' });
+  try {
+    for (let k = 0; k <= TAIL_MINUTES; k++) { clock(T0 + k * 60_000); await e.embed([TEXT], 'query'); }   // TAIL_MINUTES + 1 minutes
+    const tail = e.usage().per_minute!;
+    expect(tail).toHaveLength(TAIL_MINUTES);
+    expect(tail[0]!.at_epoch).toBe(MIN0 + 60);                           // the first minute has dropped off the tail
+    expect(e.usage().interactive_budget!.window_tokens).toBe((TAIL_MINUTES + 1) * TOK);   // but is still in the hour
+    // RING_MINUTES later the first minute's slot is the one this request lands in: it must not add to the old count.
+    clock(T0 + RING_MINUTES * 60_000);
+    await e.embed([TEXT], 'query');
+    expect(e.usage().per_minute!.at(-1)).toEqual({ at_epoch: MIN0 + RING_MINUTES * 60, by_source: { query: { calls: 1, tokens: TOK } } });
+    // the hour is this minute and the 59 before it: minutes 1..TAIL_MINUTES are in, minute 0 is out
+    expect(e.usage().interactive_budget!.window_tokens).toBe((TAIL_MINUTES + 1) * TOK);
+  } finally { setSystemTime(); s.server.stop(); }
+});
+
+test('metering — the busiest interactive minute is tracked; patient work does not count towards it', async () => {
+  const s = slowServer(); const e = new Embedder({ endpoint: s.url, model: 'x' });
+  try {
+    expect(e.usage().busiest_interactive_minute).toBeNull();
+    clock(T0);
+    await e.embed([TEXT], 'query'); await e.embed([TEXT], 'query');
+    clock(T0 + 60_000);
+    await e.embed(Array(20).fill(TEXT), 'document', { source: 'ingest', patient: true });   // a huge patient minute, then ...
+    await e.embed([TEXT], 'query');                                                          // ... one interactive request in it
+    expect(e.usage().busiest_interactive_minute).toEqual({ at_epoch: MIN0, calls: 2, tokens: 2 * TOK });
+  } finally { setSystemTime(); s.server.stop(); }
+});
+
+test('metering — a quiet engine reports the same snapshot tick after tick, so its reader stops posting', async () => {
+  const s = slowServer(); const e = new Embedder({ endpoint: s.url, model: 'x' });
+  const posts: EmbedUsage[] = [];
+  const reporter = makeUsageReporter(() => e.usage(), (u) => posts.push(u));
+  try {
+    clock(T0);
+    reporter.tick();
+    expect(posts).toHaveLength(0);                                       // nothing sent yet
+    await e.embed([TEXT], 'query');
+    reporter.tick(); reporter.tick(); reporter.tick();
+    expect(posts).toHaveLength(1);
+    clock(T0 + 3 * 60_000); reporter.tick(); reporter.tick();            // still inside the tail: nothing moved
+    expect(posts).toHaveLength(1);
+    clock(T0 + (TAIL_MINUTES + 1) * 60_000); reporter.tick();            // the minute leaves the tail: one more post
+    expect(posts).toHaveLength(2);
+    expect(posts.at(-1)!.per_minute).toEqual([]);
+    clock(T0 + 30 * 60_000); reporter.tick(); reporter.tick();           // nothing changes while the spend is in the hour
+    expect(posts).toHaveLength(2);
+    clock(T0 + (RING_MINUTES + 1) * 60_000); reporter.tick(); reporter.tick();   // it leaves the hour: one more, then quiet for good
+    expect(posts).toHaveLength(3);
+    expect(posts.at(-1)!.interactive_budget!.window_tokens).toBe(0);
+  } finally { setSystemTime(); s.server.stop(); }
+});
+
+test('budget — only the interactive sources count; the request that reaches the limit is sent, the next one is not', async () => {
+  const s = slowServer(); const e = new Embedder({ endpoint: s.url, model: 'x', interactiveBudgetTokens: 3 * TOK });
+  const log = quiet();
+  try {
+    await e.embed(Array(10).fill(TEXT), 'document', { source: 'ingest', patient: true });
+    await e.embed([TEXT], 'document', { source: 'pending-retry', patient: true });
+    await e.embed([TEXT], 'document');                                   // the unnamed 'other' (the boot probe's)
+    expect(e.usage().interactive_budget).toMatchObject({ limit_tokens: 3 * TOK, window_tokens: 0, trips: 0 });
+    await e.embed([TEXT], 'query');
+    await e.embed([TEXT], 'document', { source: 'remember' });
+    expect(e.usage().interactive_budget).toMatchObject({ window_tokens: 2 * TOK, paused_until_epoch: null, trips: 0 });
+    expect(e.budgetPausedUntilMs()).toBe(0);                             // 2 of 3: not before the limit
+    const sent = s.state.requests;
+    await e.embed([TEXT], 'document', { source: 'worknote' });           // exactly the limit: sent ...
+    expect(s.state.requests).toBe(sent + 1);
+    expect(e.budgetPausedUntilMs()).toBeGreaterThan(0);                  // ... and it trips
+    expect(e.usage().interactive_budget).toMatchObject({ window_tokens: 3 * TOK, trips: 1 });
+    expect(e.usage().interactive_budget!.paused_until_epoch).not.toBeNull();
+    for (const call of [() => e.embed([TEXT], 'query'), () => e.embed([TEXT], 'document', { source: 'remember' }), () => e.embed([TEXT], 'document', { source: 'worknote' })]) {
+      await expect(call()).rejects.toBeInstanceOf(EmbedderBudgetExceeded);
+    }
+    expect(s.state.requests).toBe(sent + 1);                             // refused before anything was sent
+    await e.embed([TEXT], 'document', { source: 'ingest', patient: true });   // indexing carries on
+    expect(s.state.requests).toBe(sent + 2);
+    expect(budgetLines(log)).toBe(1);                                    // one log line for the trip, not one per refusal
+    // the waste pause is a different thing and says nothing here
+    expect(e.pausedUntilMs()).toBe(0);
+    expect(e.usage().paused_until_epoch).toBeNull();
+    expect(e.degradationFlags()).toHaveLength(1);
+    expect(e.degradationFlags()[0]).toStartWith('embedder=paused:interactive-token-budget:until=');
+  } finally { log.mockRestore(); s.server.stop(); }
+});
+
+test('budget — one token under the limit does not trip', async () => {
+  const s = slowServer(); const e = new Embedder({ endpoint: s.url, model: 'x', interactiveBudgetTokens: 3 * TOK + 1 });
+  const log = quiet();
+  try {
+    for (let i = 0; i < 3; i++) await e.embed([TEXT], 'query');
+    expect(e.budgetPausedUntilMs()).toBe(0);
+    expect(e.degradationFlags()).toEqual([]);
+    await e.embed([TEXT], 'query');                                      // the fourth reaches it
+    expect(e.budgetPausedUntilMs()).toBeGreaterThan(0);
+  } finally { log.mockRestore(); s.server.stop(); }
+});
+
+test('budget — tokens count whether or not the request was answered, every retry included', async () => {
+  const down = slowServer({ status: 503 });
+  const a = new Embedder({ endpoint: down.url, model: 'x', maxRetries: 3, wasteLimitTokens: 0, interactiveBudgetTokens: 100 * TOK });
+  await expect(a.embed([TEXT], 'query')).rejects.toThrow(/HTTP 503/);
+  expect(down.state.requests).toBe(3);
+  expect(a.usage().interactive_budget!.window_tokens).toBe(3 * TOK);     // each attempt is a request the provider may bill
+  down.server.stop();
+  const refused = slowServer({ status: 401 });
+  const b = new Embedder({ endpoint: refused.url, model: 'x', wasteLimitTokens: 0, interactiveBudgetTokens: 100 * TOK });
+  await expect(b.embed([TEXT], 'query')).rejects.toThrow(/HTTP 401/);
+  expect(b.usage().wasted_tokens).toBe(0);                               // not waste ...
+  expect(b.usage().interactive_budget!.window_tokens).toBe(TOK);         // ... but sent
+  refused.server.stop();
+});
+
+test('budget — a retry after the attempt that used the budget up is not sent', async () => {
+  const down = slowServer({ status: 503 });
+  const e = new Embedder({ endpoint: down.url, model: 'x', maxRetries: 3, wasteLimitTokens: 0, interactiveBudgetTokens: TOK });
+  const log = quiet();
+  try {
+    await expect(e.embed([TEXT], 'query')).rejects.toBeInstanceOf(EmbedderBudgetExceeded);   // not "HTTP 503"
+    expect(down.state.requests).toBe(1);                                 // it used to be 3
+  } finally { log.mockRestore(); down.server.stop(); }
+});
+
+test('budget — the pause ends on time but the hour still holds the spend, so it trips again; embedding resumes when the spend leaves the hour', async () => {
+  const s = slowServer(); const e = new Embedder({ endpoint: s.url, model: 'x', interactiveBudgetTokens: TOK });
+  const log = quiet();
+  try {
+    clock(T0);
+    await e.embed([TEXT], 'query');                                      // reaches the limit: trip 1, pause 30 minutes
+    expect(e.usage().interactive_budget!.trips).toBe(1);
+    clock(T0 + 29 * 60_000);
+    await expect(e.embed([TEXT], 'query')).rejects.toBeInstanceOf(EmbedderBudgetExceeded);
+    expect(e.usage().interactive_budget!.trips).toBe(1);                 // same trip, no second log line
+    clock(T0 + 31 * 60_000);                                             // pause over; the spend is 31 minutes old
+    await expect(e.embed([TEXT], 'query')).rejects.toBeInstanceOf(EmbedderBudgetExceeded);
+    expect(e.usage().interactive_budget!.trips).toBe(2);                 // not a fresh budget: a new trip
+    expect(s.state.requests).toBe(1);
+    clock(T0 + 62 * 60_000);                                             // the spend is out of the hour
+    await e.embed([TEXT], 'query');
+    expect(s.state.requests).toBe(2);
+    expect(e.usage().interactive_budget).toMatchObject({ trips: 3, window_tokens: TOK });   // this one alone is the whole limit: a third trip
+    expect(budgetLines(log)).toBe(3);                                    // one log line per trip
+  } finally { setSystemTime(); log.mockRestore(); s.server.stop(); }
+});
+
+test('budget — 0 turns it off but the minutes are still counted; the default for a hosted endpoint is INTERACTIVE_BUDGET_TOKENS', async () => {
+  const s = slowServer();
+  const off = new Embedder({ endpoint: s.url, model: 'x', interactiveBudgetTokens: 0 });
+  for (let i = 0; i < 5; i++) await off.embed([TEXT.repeat(50)], 'query');
+  expect(off.budgetPausedUntilMs()).toBe(0);
+  expect(off.usage().interactive_budget).toMatchObject({ limit_tokens: 0, trips: 0 });
+  expect(off.usage().interactive_budget!.window_tokens).toBeGreaterThan(0);
+  expect(off.usage().interactive_budget!.over_limit).toBeUndefined();     // off is never "over the limit"
+  expect(new Embedder({ endpoint: 'https://api.voyageai.com/v1/embeddings', model: 'x' }).usage().interactive_budget!.limit_tokens).toBe(INTERACTIVE_BUDGET_TOKENS);
+  s.server.stop();
+});
+
+// ---- a loopback endpoint bills nothing: the budget's default is off there (2026-10-22, #960 follow-up) ----
+const LOOPBACK = ['http://localhost:11434/v1/embeddings', 'http://127.0.0.1:8124/v1/embeddings', 'http://127.0.1.1:8124/x', 'http://[::1]:8124/x'];
+const HOSTED = ['https://api.voyageai.com/v1/embeddings', 'http://192.168.1.20:8124/v1/embeddings', 'http://embed.lan:8124/embed', 'not a url'];
+const budgetOf = (endpoint: string, interactiveBudgetTokens?: number) =>
+  new Embedder({ endpoint, model: 'x', ...(interactiveBudgetTokens !== undefined && { interactiveBudgetTokens }) }).usage().interactive_budget!;
+
+test('budget — at the default it is on for a hosted endpoint and off, with the reason, for a loopback one', () => {
+  for (const endpoint of LOOPBACK) expect(budgetOf(endpoint)).toMatchObject({ limit_tokens: 0, off_reason: 'local-endpoint' });
+  for (const endpoint of HOSTED) {                                       // an endpoint that does not parse is not provably local
+    expect(budgetOf(endpoint).limit_tokens).toBe(INTERACTIVE_BUDGET_TOKENS);
+    expect(budgetOf(endpoint).off_reason).toBeUndefined();
+  }
+});
+
+test('budget — a number the owner sets applies to a loopback endpoint too, and to a hosted one', () => {
+  for (const endpoint of [...LOOPBACK, ...HOSTED]) {
+    expect(budgetOf(endpoint, 1234).limit_tokens).toBe(1234);
+    expect(budgetOf(endpoint, 1234).off_reason).toBeUndefined();
+  }
+});
+
+test('budget — 0 is off everywhere, and the reason is the endpoint only when the owner set nothing', () => {
+  for (const endpoint of [...LOOPBACK, ...HOSTED]) {
+    expect(budgetOf(endpoint, 0).limit_tokens).toBe(0);
+    expect(budgetOf(endpoint, 0).off_reason).toBeUndefined();            // switched off by the owner, not by the endpoint
+  }
+});
+
+test('budget — at the default, a hosted endpoint is refused once its hour is spent and a loopback one never is; both are metered', async () => {
+  const BIG = 'x '.repeat(260_000);                                      // ~260k tokens: two are over the 500k default
+  const fetched = spyOn(globalThis, 'fetch').mockImplementation((async () => Response.json({ data: [{ embedding: [1, 2], index: 0 }], model: 'x' })) as unknown as typeof fetch);
+  const log = quiet();
+  try {
+    clock(T0);
+    const hosted = new Embedder({ endpoint: 'https://api.voyageai.com/v1/embeddings', model: 'x' });
+    await hosted.embed([BIG], 'query');
+    await hosted.embed([BIG], 'query');                                  // reaches the limit: sent, and trips
+    await expect(hosted.embed([BIG], 'query')).rejects.toBeInstanceOf(EmbedderBudgetExceeded);
+    expect(fetched).toHaveBeenCalledTimes(2);
+    const local = new Embedder({ endpoint: 'http://127.0.0.1:8124/v1/embeddings', model: 'x' });
+    for (let i = 0; i < 3; i++) await local.embed([BIG], 'query');       // 780k tokens in the minute: all sent
+    expect(fetched).toHaveBeenCalledTimes(5);
+    expect(local.budgetPausedUntilMs()).toBe(0);
+    expect(local.degradationFlags()).toEqual([]);
+    const u = local.usage();
+    expect(u.interactive_budget).toMatchObject({ limit_tokens: 0, trips: 0, off_reason: 'local-endpoint' });
+    expect(u.interactive_budget!.over_limit).toBeUndefined();
+    // the metering stays on: the hour, the minute and the busiest minute are all there
+    expect(u.interactive_budget!.window_tokens).toBeGreaterThan(INTERACTIVE_BUDGET_TOKENS);
+    expect(u.per_minute!.reduce((n, m) => n + (m.by_source.query?.tokens ?? 0), 0)).toBe(u.interactive_budget!.window_tokens);
+    expect(u.busiest_interactive_minute!.tokens).toBe(u.interactive_budget!.window_tokens);
+    expect(budgetLines(log)).toBe(1);                                    // the hosted trip only
+  } finally { setSystemTime(); fetched.mockRestore(); log.mockRestore(); }
+});
+
+// ---- the display gap: the pause has ended, the hour still holds the spend, the next request will trip it again ----
+test('budget — usage() says over_limit from the end of the pause until the next request trips it again, and not before or after', async () => {
+  const s = slowServer(); const e = new Embedder({ endpoint: s.url, model: 'x', interactiveBudgetTokens: 2 * TOK });
+  const log = quiet();
+  try {
+    clock(T0);
+    await e.embed([TEXT], 'query');
+    expect(e.usage().interactive_budget!.over_limit).toBeUndefined();   // under the limit
+    await e.embed([TEXT], 'query');                                      // reaches it: trips, paused 30 minutes
+    expect(e.usage().interactive_budget!.paused_until_epoch).not.toBeNull();
+    expect(e.usage().interactive_budget!.over_limit).toBeUndefined();   // paused: that is what is shown
+    clock(T0 + 31 * 60_000);                                             // the pause is over, the spend is 31 minutes old
+    expect(e.degradationFlags()).toEqual([]);
+    expect(e.usage().interactive_budget).toMatchObject({ paused_until_epoch: null, over_limit: true, window_tokens: 2 * TOK, trips: 1 });
+    await expect(e.embed([TEXT], 'query')).rejects.toBeInstanceOf(EmbedderBudgetExceeded);   // the next search is refused ...
+    expect(e.degradationFlags()).toHaveLength(1);                        // ... and its response carries the flag
+    expect(e.usage().interactive_budget!.over_limit).toBeUndefined();   // paused again
+    expect(e.usage().interactive_budget!.trips).toBe(2);
+    clock(T0 + 62 * 60_000);                                             // the spend has left the hour and the second pause is over
+    expect(e.usage().interactive_budget).toMatchObject({ paused_until_epoch: null, window_tokens: 0 });
+    expect(e.usage().interactive_budget!.over_limit).toBeUndefined();
+  } finally { setSystemTime(); log.mockRestore(); s.server.stop(); }
+});
+
+test('degradationFlags — empty when healthy; the waste pause has its own entry', async () => {
+  const s = slowServer({ delayMs: 300 });
+  const e = new Embedder({ endpoint: s.url, model: 'x', timeoutMs: 40, wasteLimitTokens: 1, pauseMs: 5000 });
+  expect(e.degradationFlags()).toEqual([]);
+  await expect(e.embed(['some text'])).rejects.toThrow();                // wasted -> paused
+  const flags = e.degradationFlags();
+  expect(flags).toHaveLength(1);
+  expect(flags[0]).toStartWith('embedder=paused:wasted-tokens:until=');
+  s.server.stop();
 });
