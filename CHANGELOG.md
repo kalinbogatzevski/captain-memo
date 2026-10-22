@@ -7,6 +7,18 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.58.6] — 2026-10-23
+
+### Added
+
+- **Mistral Vibe sessions are captured.** Captain Memo now reads the session store of Mistral Vibe 2.26 and newer (`~/.vibe/logs/session/unified/`, or `$VIBE_HOME`) the way it already does for Codex, Gemini, Kimi and OpenCode: each finished turn becomes an observation with your prompt, Vibe's answer and the name plus first 200 characters of each tool call's arguments (tool output and reasoning are never read). On by default; `CAPTAIN_MEMO_CAPTURE_VIBE=0` turns it off and `CAPTAIN_MEMO_CAPTURE_VIBE_DIR` points it at a custom `session_logging.save_dir`. Vibe sessions older than the moment capture first sees the folder are skipped until `captain-memo capture backfill`. Forks, subagents and sessions imported from another tool are not captured yet, and a session whose `CURRENT` pointer file cannot be read is logged once and skipped for that tick. Written from the Vibe 2.26.1 and 3.0.1 sources and from listings of real stores on Linux and Windows; it needs a restart of the worker.
+
+### Fixed
+
+- **Captured text and hook observations are redacted before they are queued.** Everything the worker queues as an observation now has credential-shaped values taken out of its prompt and tool text first: the turns read from Codex, Antigravity, Gemini, Kimi, OpenCode and Vibe transcripts (and any source added later), and the observations posted by hooks (Claude Code's `PostToolUse` and `PreCompact`, and the native Codex, Gemini and Kimi hooks). A token pasted into a prompt, or a command line with a password in it, no longer reaches the summarizer provider or the stored observation: it becomes `[REDACTED...]` and the words around it stay. The transcript readers redact before they cut a long turn to length, so a value the cut would have split no longer leaves its first characters (a hook still cuts at 1 500 characters before it posts, so a value that cut lands inside can still leave its head). Clean text is queued unchanged; the capture log shows how many values were redacted (never the value). Observations already stored or already queued keep their text.
+- **`captain-memo capture backfill` no longer runs on top of a capture tick.** It now waits for a running tick instead of starting a second one, so the two can no longer queue the same session twice.
+- **Dependency: `ip-address` raised to 10.7.4** (the audit flagged 10.7.2/10.7.3 for GHSA-rxp7-6hxx-x8q5, a quadratic-time IPv6 zone parser; it comes in through the MCP SDK's `express-rate-limit`). The override floor is `^10.7.4`; no behaviour change.
+
 ## [0.58.5] — 2026-10-22
 
 ### Fixed

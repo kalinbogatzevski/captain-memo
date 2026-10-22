@@ -978,7 +978,7 @@ var package_default;
 var init_package = __esm(() => {
   package_default = {
     name: "captain-memo",
-    version: "0.58.5",
+    version: "0.58.6",
     description: "Cross-AI local memory layer for Claude Code, Codex, Gemini CLI, Antigravity, goose, Cursor, opencode, Kimi CLI and more: hybrid search, six summarizer providers, hosted or local embedder. Replaces claude-mem.",
     type: "module",
     private: true,
@@ -1040,7 +1040,7 @@ var init_package = __esm(() => {
       "body-parser": "^2.3.0",
       "@hono/node-server": "^2.0.5",
       "fast-uri": "^3.1.6",
-      "ip-address": "^10.7.2"
+      "ip-address": "^10.7.4"
     },
     devDependencies: {
       "@types/bun": "^1.1.0",
