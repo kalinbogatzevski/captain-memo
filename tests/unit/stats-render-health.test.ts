@@ -95,6 +95,25 @@ test('a paused embedder says so on the stats page', () => {
   expect(out).toContain('embedding paused');
 });
 
+test('the budget line shows the hour, the per-engine limit and whether an engine tripped', () => {
+  const budget = { limit_tokens: 500_000, window_tokens: 12_345, paused_until_epoch: null, trips: 0 };
+  const ok = render({ efficiency: EFF, embedder_usage: { ...USAGE, interactive_budget: budget } });
+  expect(ok).toContain('Embed budget');
+  expect(ok).toContain('12.3 k tok');
+  expect(ok).toContain('limit 500.0 k per engine');
+  expect(ok).toContain('not tripped');
+  const off = render({ efficiency: EFF, embedder_usage: { ...USAGE, interactive_budget: { ...budget, limit_tokens: 0 } } });
+  expect(off).toContain('budget off');
+  const tripped = render({ efficiency: EFF, embedder_usage: { ...USAGE, interactive_budget: { ...budget, window_tokens: 640_000, paused_until_epoch: Math.floor(Date.now() / 1000) + 900, trips: 1 } } });
+  expect(tripped).toContain('TRIPPED');
+  expect(tripped).toContain('keyword-only');
+  expect(tripped).not.toContain('embedding paused');                      // the waste pause line is its own
+});
+
+test('an older worker with no budget field renders no budget line', () => {
+  expect(render({ efficiency: EFF, embedder_usage: USAGE })).not.toContain('Embed budget');
+});
+
 test('an older worker with no usage field renders no spend line', () => {
   expect(render({ efficiency: EFF })).not.toContain('Embed tokens');
 });

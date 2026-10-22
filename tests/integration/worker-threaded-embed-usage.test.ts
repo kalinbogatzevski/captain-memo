@@ -52,7 +52,8 @@ test('threaded worker: /stats embedder_usage includes the readers and matches wh
 
   const search = (q: string) => fetch(`${base}/search/all`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: q, top_k: 3 }) }).then(r => r.json());
   for (const q of ['hello', 'threaded world', 'a third question', 'and a fourth']) await search(q);
-  const stats = async () => (await (await fetch(`${base}/stats`)).json() as { embedder_usage?: { calls: number; tokens: number; readers?: number; by_source: Record<string, { calls: number; tokens: number }> } }).embedder_usage;
+  const stats = async () => (await (await fetch(`${base}/stats`)).json() as { embedder_usage?: { calls: number; tokens: number; readers?: number; by_source: Record<string, { calls: number; tokens: number }>;
+    interactive_budget?: { limit_tokens: number; window_tokens: number; trips: number }; per_minute?: Array<{ by_source: Record<string, { calls: number }> }> } }).embedder_usage;
 
   // Readers report on change, at most every 5 s: wait for the total to settle on what the provider really got.
   const end = Date.now() + 20_000;
@@ -64,6 +65,11 @@ test('threaded worker: /stats embedder_usage includes the readers and matches wh
   expect(u!.calls).toBe(provider.requests);                     // ... and every request is in the total
   expect(u!.by_source.query!.calls).toBe(provider.queries);
   expect(u!.tokens).toBeGreaterThan(0);
+  // The per-minute tail and the budget ride in the readers' snapshots too (#960): every query a reader sent is in the last minutes ...
+  expect((u!.per_minute ?? []).reduce((n, m) => n + (m.by_source.query?.calls ?? 0), 0)).toBe(provider.queries);
+  // ... and in the hour the budget counts, which nothing has used up.
+  expect(u!.interactive_budget).toMatchObject({ limit_tokens: 500_000, trips: 0 });
+  expect(u!.interactive_budget!.window_tokens).toBeGreaterThan(0);
 
   // Quiet: with nothing asked, the figure stays put (nothing is counted twice, nothing keeps growing).
   const before = u!.calls;

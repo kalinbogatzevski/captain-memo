@@ -83,6 +83,52 @@ export class EmbedderPaused extends Error {
   }
 }
 
+/** The sources somebody is waiting on: a search or recall query, the near-duplicate check of a `remember`, a work-board
+ *  claim. By source NAME, not by the `patient` flag. Everything else (ingest, pending-retry, the boot probe, reindex)
+ *  is background work with its own protection (the waste pause, the retry queue's backoff) and stays out of the budget. */
+export const INTERACTIVE_SOURCES: readonly string[] = ['query', 'remember', 'worknote'];
+
+/** Interactive tokens one Embedder may send in the last hour before it refuses more of them, answered or not. Same
+ *  order as WASTE_LIMIT_TOKENS, and for the same reason: the waste pause never sees a successful call, so a client
+ *  looping on long queries spent without limit. Measured 2026-10-22 (runaway-measure, #960): 18,000-char queries cost
+ *  3,502 tokens each, one client sends ~2.6 a second, so one engine reaches 500k in about 55 s; the live dev machine's
+ *  busiest minute of query traffic in a 37-minute sample was 898 tokens (x 60 = 54k an hour), the busiest real session
+ *  28 calls a minute of <= 143-character queries. 500k is ~10x the observed query peak, so normal use never meets it.
+ *  PER ENGINE: the writer and each search reader count their own, so the worker as a whole can send up to
+ *  (1 + reader pool size) x this in an hour. 0 turns the budget off. Override:
+ *  CAPTAIN_MEMO_EMBEDDER_INTERACTIVE_BUDGET_TOKENS. */
+export const INTERACTIVE_BUDGET_TOKENS = 500_000;
+
+/** Minutes of per-minute history an Embedder keeps. It is also the budget's "hour": the last RING_MINUTES minute
+ *  slots, this one included, so between 59 and 60 minutes of spend. The ring lives in memory and starts empty at every
+ *  restart; nothing is written to disk. */
+export const RING_MINUTES = 60;
+
+/** Minutes of that history usage() carries, which is all a reader ever posts to main. Measured 2026-10-22 on this box
+ *  (bun 1.4.2, load ~7, this class fed the same traffic; a reader tick is usage() plus the JSON.stringify that compares
+ *  it, a post is a structuredClone): the snapshot before the tail was 213-332 B, usage() 6-10 us, stringify 2 us,
+ *  clone 12-16 us. With a 6-minute tail it is 861 B (one source busy in all six minutes) to 1.7 KB (all four columns
+ *  busy), usage() 15-22 us, stringify 6-10 us, clone 47-76 us: at most ~30 us per 5 s tick (0.0006 % of a core) and
+ *  one ~76 us post. A 60-minute tail, measured on a synthetic snapshot of that shape, is 11.7 KB, 94 us stringify,
+ *  488 us clone, and twelve times the entries in the `stats` tool's JSON, which an AI reads. Per request, meter() is
+ *  0.6 us for an interactive source and 0.14 us for the rest, the guard before the send 0.27 / 0.10 us; the ring is
+ *  2,160 B of typed arrays (~3.1 KB heap per Embedder, 0.5 KB before). */
+export const TAIL_MINUTES = 6;
+
+/** Thrown by Embedder.embed() without sending anything while an interactive source is over its hour's budget. */
+export class EmbedderBudgetExceeded extends Error {
+  readonly untilMs: number;
+  constructor(untilMs: number, usedTokens: number, limitTokens: number) {
+    super(
+      `Interactive embed budget used up: ${usedTokens} of ${limitTokens} tokens went to searches and recalls in the last ` +
+      `hour; they are refused until ${new Date(untilMs).toISOString()} (they fall back to keyword search). ` +
+      `CAPTAIN_MEMO_EMBEDDER_INTERACTIVE_BUDGET_TOKENS raises it, 0 turns it off.`,
+    );
+    this.name = 'EmbedderBudgetExceeded';
+    this.untilMs = untilMs;
+  }
+}
+
 /** True for the abort our own timeout causes. */
 export const isTimeoutError = (e: Error): boolean => e.name === 'AbortError' || /aborted/i.test(e.message);
 
@@ -103,6 +149,32 @@ export interface EmbedUsage {
   waste_limit_tokens: number;
   paused_until_epoch: number | null;
   by_source: Record<string, { calls: number; tokens: number }>;
+  /** The interactive budget (see INTERACTIVE_BUDGET_TOKENS). Absent from a worker older than the budget. */
+  interactive_budget?: InteractiveBudgetUsage;
+  /** The last TAIL_MINUTES minutes in which anything was sent, oldest first. */
+  per_minute?: MinuteUsage[];
+  /** The minute with the most interactive tokens since this instance started: the figure to size the budget from. */
+  busiest_interactive_minute?: BusiestMinute | null;
+}
+
+/** One minute of requests, by source: query, remember and worknote each, every other source summed as 'other'.
+ *  Sources that sent nothing that minute are absent. `at_epoch` is the start of the minute, in seconds. */
+export interface MinuteUsage {
+  at_epoch: number;
+  by_source: Record<string, { calls: number; tokens: number }>;
+}
+
+export interface BusiestMinute { at_epoch: number; calls: number; tokens: number }
+
+export interface InteractiveBudgetUsage {
+  /** Per engine; 0 = off. */
+  limit_tokens: number;
+  /** Interactive tokens sent in the last hour. In a merged figure: the sum over the engines. */
+  window_tokens: number;
+  /** While tripped: when interactive embeds are accepted again (in a merged figure: the latest of the engines). */
+  paused_until_epoch: number | null;
+  /** Times it tripped since start (summed over the engines in a merged figure). */
+  trips: number;
 }
 
 /**
@@ -116,6 +188,11 @@ export interface EmbedUsage {
  *    expired one reads null, as it does on a single Embedder), waste_limit_tokens the base engine's.
  *  - `readers` is how many snapshots were added in, not how many readers exist: one that has sent nothing yet
  *    (no query so far) has nothing to add.
+ *
+ *  - interactive_budget adds up window_tokens and trips and takes the latest pause still running; per_minute adds up
+ *    the same minute across engines (a minute older than TAIL_MINUTES at `nowEpoch` is dropped: a reader that has
+ *    gone quiet keeps its last snapshot); busiest_interactive_minute is the busiest of the engines' own, so it is the
+ *    busiest minute of ONE engine, a lower bound on the worker's. None of the three is invented when no input has it.
  *
  * The waste PAUSE stays per engine: each Embedder pauses on its own hour of wasted tokens against its own limit,
  * and a paused reader does not pause the writer's ingest or the other readers. So window_wasted_tokens here can
@@ -140,6 +217,7 @@ export function mergeEmbedUsage(
     }
   };
   addShared(base);
+  mergeMetering(out, [base, ...readers], nowEpoch);
   for (const u of readers) {
     out.calls += u.calls;
     out.tokens += u.tokens;
@@ -150,6 +228,52 @@ export function mergeEmbedUsage(
     addShared(u);
   }
   return out;
+}
+
+/** The metering and budget part of mergeEmbedUsage. `out` starts as a copy of the base, so the three fields are taken
+ *  out of it first and set again only when some input carries them. */
+function mergeMetering(out: EmbedUsage, all: readonly EmbedUsage[], nowEpoch: number): void {
+  delete out.interactive_budget;
+  delete out.per_minute;
+  delete out.busiest_interactive_minute;
+  const budgets = all.flatMap(u => u.interactive_budget ? [u.interactive_budget] : []);
+  if (budgets.length > 0) {
+    let until: number | null = null;
+    for (const b of budgets) {
+      if (b.paused_until_epoch !== null && b.paused_until_epoch > nowEpoch) until = Math.max(until ?? 0, b.paused_until_epoch);
+    }
+    out.interactive_budget = {
+      limit_tokens: (all[0]!.interactive_budget ?? budgets[0]!).limit_tokens,
+      window_tokens: budgets.reduce((n, b) => n + b.window_tokens, 0),
+      paused_until_epoch: until,
+      trips: budgets.reduce((n, b) => n + b.trips, 0),
+    };
+  }
+  if (all.some(u => u.per_minute)) {
+    const oldest = Math.floor(nowEpoch / 60) * 60 - (TAIL_MINUTES - 1) * 60;
+    const minutes = new Map<number, MinuteUsage['by_source']>();
+    for (const u of all) {
+      for (const m of u.per_minute ?? []) {
+        if (m.at_epoch < oldest) continue;
+        const into = minutes.get(m.at_epoch) ?? {};
+        for (const [k, v] of Object.entries(m.by_source)) {
+          const s = (into[k] ??= { calls: 0, tokens: 0 });
+          s.calls += v.calls;
+          s.tokens += v.tokens;
+        }
+        minutes.set(m.at_epoch, into);
+      }
+    }
+    out.per_minute = [...minutes].sort((a, b) => a[0] - b[0]).map(([at_epoch, by_source]) => ({ at_epoch, by_source }));
+  }
+  if (all.some(u => u.busiest_interactive_minute !== undefined)) {
+    let best: BusiestMinute | null = null;
+    for (const u of all) {
+      const b = u.busiest_interactive_minute;
+      if (b && (!best || b.tokens > best.tokens)) best = b;
+    }
+    out.busiest_interactive_minute = best ? { ...best } : null;
+  }
 }
 
 /**
@@ -190,6 +314,8 @@ export interface EmbedderOptions {
   wasteLimitTokens?: number;
   wasteWindowMs?: number;
   pauseMs?: number;
+  /** See INTERACTIVE_BUDGET_TOKENS; 0 turns the budget off. The pause when it trips is `pauseMs`, as for the waste. */
+  interactiveBudgetTokens?: number;
   maxBatchSize?: number;
   maxRetries?: number;
   // 'openai' (default): POST /v1/embeddings — { input, model, input_type } →
@@ -242,6 +368,14 @@ export function assertUsableEmbeddings(vectors: number[][]): number[][] {
   return vectors;
 }
 
+/** The ring's columns: the interactive sources one each, every other source together as the last. */
+const COLUMNS: readonly string[] = [...INTERACTIVE_SOURCES, 'other'];
+const columnOf = (source: string): number => {
+  const i = INTERACTIVE_SOURCES.indexOf(source);
+  return i < 0 ? COLUMNS.length - 1 : i;
+};
+const isInteractive = (source: string): boolean => INTERACTIVE_SOURCES.includes(source);
+
 export class Embedder {
   private endpoint: string;
   private model: string;
@@ -255,6 +389,7 @@ export class Embedder {
   private wasteLimit: number;
   private wasteWindowMs: number;
   private pauseMs: number;
+  private budgetLimit: number;
   /** True when embed() redacts its inputs (see embedRedactEnabled). */
   readonly redactsInput: boolean;
 
@@ -266,6 +401,17 @@ export class Embedder {
   private bySource: Record<string, { calls: number; tokens: number }> = {};
   private wasteWindow: Array<{ at: number; tokens: number }> = [];
   private pausedUntil = 0;
+  /** Per-minute metering, one slot per minute modulo RING_MINUTES. `ringMinute` is the absolute minute (epoch ms / 60000)
+   *  a slot holds, -1 for none, so a slot from an hour ago is recognised and reused rather than summed. 60 slots x 4
+   *  columns: 2,160 B; counters are Uint32 (a minute would need 4.3 billion tokens to wrap). */
+  private ringMinute = new Int32Array(RING_MINUTES).fill(-1);
+  private ringCalls = new Uint32Array(RING_MINUTES * COLUMNS.length);
+  private ringTokens = new Uint32Array(RING_MINUTES * COLUMNS.length);
+  private busiest: BusiestMinute | null = null;
+  /** The interactive budget's own pause, apart from `pausedUntil`: the waste pause stops EVERY source (the retry queue
+   *  reads it), this one stops only the interactive ones. */
+  private budgetUntil = 0;
+  private budgetTrips = 0;
 
   constructor(opts: EmbedderOptions) {
     this.endpoint = opts.endpoint;
@@ -280,6 +426,7 @@ export class Embedder {
     this.wasteLimit = opts.wasteLimitTokens ?? WASTE_LIMIT_TOKENS;
     this.wasteWindowMs = opts.wasteWindowMs ?? WASTE_WINDOW_MS;
     this.pauseMs = opts.pauseMs ?? PAUSE_MS;
+    this.budgetLimit = opts.interactiveBudgetTokens ?? INTERACTIVE_BUDGET_TOKENS;
     this.redactsInput = opts.redactInput ?? embedRedactEnabled(opts.endpoint);
   }
 
@@ -288,9 +435,29 @@ export class Embedder {
     return Date.now() < this.pausedUntil ? this.pausedUntil : 0;
   }
 
+  /** When interactive embeds are accepted again (epoch ms), or 0 when the budget has not tripped. */
+  budgetPausedUntilMs(): number {
+    return Date.now() < this.budgetUntil ? this.budgetUntil : 0;
+  }
+
+  /** What a search served by this engine should tell its caller: one entry for each pause that is holding embedding
+   *  back right now, [] when none is. A search swallows an embed error and answers from keywords alone, so without
+   *  this the caller cannot tell a thin answer from a degraded one. State at the time of asking, so the response that
+   *  used up the budget carries it too. Per engine, like the pauses themselves. */
+  degradationFlags(): string[] {
+    const flags: string[] = [];
+    const waste = this.pausedUntilMs();
+    if (waste) flags.push(`embedder=paused:wasted-tokens:until=${new Date(waste).toISOString()}`);
+    const budget = this.budgetPausedUntilMs();
+    if (budget) flags.push(`embedder=paused:interactive-token-budget:until=${new Date(budget).toISOString()}`);
+    return flags;
+  }
+
   usage(): EmbedUsage {
-    this.pruneWaste(Date.now());
+    const now = Date.now();
+    this.pruneWaste(now);
     const paused = this.pausedUntilMs();
+    const budgetPaused = this.budgetPausedUntilMs();
     return {
       since_epoch: this.sinceEpoch,
       calls: this.calls,
@@ -301,6 +468,14 @@ export class Embedder {
       waste_limit_tokens: this.wasteLimit,
       paused_until_epoch: paused ? Math.floor(paused / 1000) : null,
       by_source: structuredClone(this.bySource),
+      interactive_budget: {
+        limit_tokens: this.budgetLimit,
+        window_tokens: this.interactiveWindowTokens(now),
+        paused_until_epoch: budgetPaused ? Math.floor(budgetPaused / 1000) : null,
+        trips: this.budgetTrips,
+      },
+      per_minute: this.tail(now),
+      busiest_interactive_minute: this.busiest ? { ...this.busiest } : null,
     };
   }
 
@@ -326,7 +501,7 @@ export class Embedder {
     const timeoutMs = callOpts.patient ? this.patientTimeoutMs : this.timeoutMs;
     const all: number[][] = [];
     for (let i = 0; i < texts.length; i += this.maxBatchSize) {
-      this.assertNotPaused();   // an earlier batch of this same call may have tripped it
+      this.assertNotPaused(source);   // an earlier batch of this same call may have tripped it
       const batch = texts.slice(i, i + this.maxBatchSize);
       const batchTokens = counts.slice(i, i + this.maxBatchSize).reduce((a, b) => a + b, 0);
       const embeddings = await this.embedBatch(batch, inputType, batchTokens, timeoutMs, source);
@@ -335,9 +510,90 @@ export class Embedder {
     return all;
   }
 
-  private assertNotPaused(): void {
+  private assertNotPaused(source: string): void {
     const until = this.pausedUntilMs();
     if (until) throw new EmbedderPaused(until, this.windowTokens());
+    if (isInteractive(source)) this.assertWithinBudget();
+  }
+
+  /** Before an interactive request goes out. A request that finds the pause over but the hour still holding the spend
+   *  trips it again: the window slides, it is not cleared (an answered probe must not hand a looping client a second
+   *  budget, as it can for the waste, whose window is only evidence about the provider). */
+  private assertWithinBudget(): void {
+    if (this.budgetLimit <= 0) return;
+    const now = Date.now();
+    const used = this.interactiveWindowTokens(now);
+    if (now >= this.budgetUntil) {
+      if (used < this.budgetLimit) return;
+      this.tripBudget(now, used);
+    }
+    throw new EmbedderBudgetExceeded(this.budgetUntil, used, this.budgetLimit);
+  }
+
+  /** The budget runs out: logged once per trip, not per refused request. */
+  private tripBudget(now: number, used: number): void {
+    this.budgetUntil = now + this.pauseMs;
+    this.budgetTrips += 1;
+    console.error(
+      `[embedder] interactive token budget used up: ${used} of ${this.budgetLimit} tokens sent for searches, recalls and ` +
+      `remember checks in the last hour. Until ${new Date(this.budgetUntil).toISOString()} they are not embedded ` +
+      `(keyword search only); indexing is not affected. CAPTAIN_MEMO_EMBEDDER_INTERACTIVE_BUDGET_TOKENS raises it, 0 turns it off.`,
+    );
+  }
+
+  /** Counts one request (every attempt, answered or not) in the ring, and trips the budget if it took the hour to the
+   *  limit: the request that crosses is sent, the next one is refused, as with the waste. */
+  private meter(source: string, tokens: number, now: number): void {
+    const minute = Math.floor(now / 60_000);
+    const slot = minute % RING_MINUTES;
+    const at = slot * COLUMNS.length;
+    if (this.ringMinute[slot] !== minute) {
+      this.ringMinute[slot] = minute;
+      this.ringCalls.fill(0, at, at + COLUMNS.length);
+      this.ringTokens.fill(0, at, at + COLUMNS.length);
+    }
+    const col = columnOf(source);
+    this.ringCalls[at + col]! += 1;
+    this.ringTokens[at + col]! += tokens;
+    if (!isInteractive(source)) return;
+    let calls = 0, sent = 0;
+    for (let c = 0; c < INTERACTIVE_SOURCES.length; c++) { calls += this.ringCalls[at + c]!; sent += this.ringTokens[at + c]!; }
+    if (!this.busiest || sent > this.busiest.tokens) this.busiest = { at_epoch: minute * 60, calls, tokens: sent };
+    if (this.budgetLimit > 0 && now >= this.budgetUntil) {
+      const used = this.interactiveWindowTokens(now);
+      if (used >= this.budgetLimit) this.tripBudget(now, used);
+    }
+  }
+
+  /** Interactive tokens in the last RING_MINUTES minutes, this one included. */
+  private interactiveWindowTokens(now: number): number {
+    const minute = Math.floor(now / 60_000);
+    let sum = 0;
+    for (let slot = 0; slot < RING_MINUTES; slot++) {
+      const m = this.ringMinute[slot]!;
+      if (m <= minute - RING_MINUTES || m > minute) continue;
+      for (let c = 0; c < INTERACTIVE_SOURCES.length; c++) sum += this.ringTokens[slot * COLUMNS.length + c]!;
+    }
+    return sum;
+  }
+
+  /** The last TAIL_MINUTES minutes in which something was sent, oldest first. A minute with nothing in it is left
+   *  out and every minute is named by its absolute start, so an engine that has gone quiet reports the same thing
+   *  from one tick to the next once the tail has emptied (makeUsageReporter then stops posting). */
+  private tail(now: number): MinuteUsage[] {
+    const minute = Math.floor(now / 60_000);
+    const out: MinuteUsage[] = [];
+    for (let m = minute - TAIL_MINUTES + 1; m <= minute; m++) {
+      const slot = m % RING_MINUTES;
+      if (this.ringMinute[slot] !== m) continue;
+      const by_source: MinuteUsage['by_source'] = {};
+      for (let c = 0; c < COLUMNS.length; c++) {
+        const calls = this.ringCalls[slot * COLUMNS.length + c]!;
+        if (calls > 0) by_source[COLUMNS[c]!] = { calls, tokens: this.ringTokens[slot * COLUMNS.length + c]! };
+      }
+      out.push({ at_epoch: m * 60, by_source });
+    }
+    return out;
   }
 
   private windowTokens(): number {
@@ -375,6 +631,7 @@ export class Embedder {
       const s = (this.bySource[source] ??= { calls: 0, tokens: 0 });
       s.calls += 1;
       s.tokens += tokens;
+      this.meter(source, tokens, Date.now());
       try {
         const out = await this.embedBatchOnce(texts, inputType, timeoutMs);
         this.noteAnswered();
@@ -395,7 +652,7 @@ export class Embedder {
         attempt++;
         if (attempt >= this.maxRetries) throw e;
         await new Promise(r => setTimeout(r, 100 * Math.pow(2, attempt - 1)));
-        this.assertNotPaused();
+        this.assertNotPaused(source);
       }
     }
   }

@@ -1005,6 +1005,16 @@ function renderEfficiencyBlock(
     if (usage?.paused_until_epoch) {
       out.push(`   ${' '.repeat(14)}${red('embedding paused')} ${dim(`until ${new Date(usage.paused_until_epoch * 1000).toTimeString().slice(0, 5)} in at least one engine`)}`);
     }
+    // The interactive budget (searches, recalls, remember checks): spend in the last hour summed over the engines, the
+    // limit each engine has, and whether one has tripped. A worker older than the budget reports none: no line.
+    const budget = usage?.interactive_budget;
+    if (budget) {
+      const state = budget.limit_tokens <= 0 ? dim('budget off')
+        : budget.paused_until_epoch
+          ? `${red('TRIPPED')} ${dim(`until ${new Date(budget.paused_until_epoch * 1000).toTimeString().slice(0, 5)} in at least one engine: its searches are keyword-only`)}`
+          : dim(`limit ${fmtCompact(budget.limit_tokens)} per engine, not tripped`);
+      out.push(`   ${dim('Embed budget'.padEnd(14))}${cyanBold(fmtCompact(budget.window_tokens))} tok ${dim('searches + recalls, last hour ·')} ${state}`);
+    }
     out.push(`   ${dim('Dedup'.padEnd(14))}` + (dedup.docs_seen > 0
       ? `${cyanBold(`${dedup.skip_pct}%`)}   ${dim(`${fmtCount(dedup.skipped_unchanged)} / ${fmtCount(dedup.docs_seen)} unchanged since worker start`)}`
       : dim('— no documents indexed since worker start')));

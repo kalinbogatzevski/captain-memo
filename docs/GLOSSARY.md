@@ -34,6 +34,7 @@ re-work is avoided.
 | **Embedder** | Embedding-API activity since the worker started: number of calls, average latency, throughput (tokens/sec). |
 | **Embed tokens** | Tokens sent to the embedding provider since the worker started: every request, retries included, from the indexer and from every search reader, and how many of them went to requests that never got an answer. |
 | **embedding paused** | Shown under **Embed tokens** when embedding is standing still: it pauses for 30 minutes after more than 500,000 such unanswered tokens in an hour, in at least one engine (`CAPTAIN_MEMO_EMBEDDER_WASTE_LIMIT_TOKENS` sets the limit, `0` turns the pause off). |
+| **Embed budget** | Under **Embed tokens**: the tokens searches, recalls and `remember` duplicate checks sent in the last hour (all engines added up), the limit each engine has (`CAPTAIN_MEMO_EMBEDDER_INTERACTIVE_BUDGET_TOKENS`, `0` turns it off) and **TRIPPED** when an engine has used its hour up: its searches then answer from keywords alone for at least 30 minutes, until the hour's spend is back under the limit (up to an hour after one burst), and say so in `degradation_flags`. Indexing is not counted and not stopped. |
 | **Dedup** | Share of documents skipped on re-index because their content hash was **unchanged** — i.e. work avoided. `42%  8 / 19 unchanged` = 8 of 19 re-seen docs needed no re-embed. |
 
 ## AI sources

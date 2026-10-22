@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { mergeEmbedUsage, makeUsageReporter, type EmbedUsage } from '../../src/worker/embedder.ts';
+import { mergeEmbedUsage, makeUsageReporter, TAIL_MINUTES, type EmbedUsage } from '../../src/worker/embedder.ts';
 
 const NOW = 1_800_000_000;
 const usage = (o: Partial<EmbedUsage> = {}): EmbedUsage => ({
@@ -94,4 +94,60 @@ test('reporter — posts once per change, not once per tick; a pause running out
   cur = { ...cur, paused_until_epoch: null, window_wasted_tokens: 0 };     // the pause ran out, no new request
   r.tick(); r.tick();
   expect(posts).toHaveLength(4);
+});
+
+// ---- per-minute metering and the interactive budget (2026-10-22, #960) ----
+const MIN = Math.floor(NOW / 60) * 60;   // the current minute, epoch seconds
+const budget = (o: Partial<NonNullable<EmbedUsage['interactive_budget']>> = {}) =>
+  ({ limit_tokens: 500_000, window_tokens: 0, paused_until_epoch: null, trips: 0, ...o });
+const q = (calls: number, tokens: number) => ({ query: { calls, tokens } });
+
+test('merge — the budget adds up the hour and the trips, keeps the base limit, and the latest pause still running wins', () => {
+  const base = usage({ interactive_budget: budget({ window_tokens: 100, trips: 1, paused_until_epoch: NOW + 300 }) });
+  const a = usage({ interactive_budget: budget({ limit_tokens: 999, window_tokens: 20_000, trips: 2, paused_until_epoch: NOW + 900 }) });
+  const over = usage({ interactive_budget: budget({ window_tokens: 7, paused_until_epoch: NOW - 1 }) });
+  const m = mergeEmbedUsage(base, [a, over], NOW);
+  expect(m.interactive_budget).toEqual({ limit_tokens: 500_000, window_tokens: 20_107, paused_until_epoch: NOW + 900, trips: 3 });
+  // a pause that has run out reads null, as the waste pause does
+  expect(mergeEmbedUsage(usage({ interactive_budget: budget() }), [over], NOW).interactive_budget!.paused_until_epoch).toBeNull();
+  // the waste pause and the budget pause are two things
+  expect(m.paused_until_epoch).toBeNull();
+});
+
+test('merge — per_minute adds the same minute across engines, orders by time, drops minutes older than the tail, changes no input', () => {
+  const base = usage({ per_minute: [{ at_epoch: MIN - 60, by_source: { ...q(1, 10), other: { calls: 2, tokens: 50 } } }] });
+  const a = usage({ per_minute: [
+    { at_epoch: MIN - TAIL_MINUTES * 60, by_source: q(9, 9) },                                // one minute too old for the tail
+    { at_epoch: MIN - 60, by_source: q(3, 30) },
+    { at_epoch: MIN, by_source: { remember: { calls: 1, tokens: 5 } } },
+  ] });
+  const b = usage({ per_minute: [{ at_epoch: MIN, by_source: q(4, 40) }] });
+  const frozen = structuredClone([base, a, b]);
+  const m = mergeEmbedUsage(base, [a, b], NOW);
+  expect(m.per_minute).toEqual([
+    { at_epoch: MIN - 60, by_source: { query: { calls: 4, tokens: 40 }, other: { calls: 2, tokens: 50 } } },
+    { at_epoch: MIN, by_source: { remember: { calls: 1, tokens: 5 }, query: { calls: 4, tokens: 40 } } },
+  ]);
+  expect([base, a, b]).toEqual(frozen);
+});
+
+test('merge — the busiest minute is the busiest of the engines (an engine\'s own, not a sum); null when none has one', () => {
+  const small = usage({ busiest_interactive_minute: { at_epoch: MIN - 600, calls: 2, tokens: 300 } });
+  const big = usage({ busiest_interactive_minute: { at_epoch: MIN - 60, calls: 5, tokens: 9_000 } });
+  const none = usage({ busiest_interactive_minute: null });
+  expect(mergeEmbedUsage(small, [big, none], NOW).busiest_interactive_minute).toEqual(big.busiest_interactive_minute!);
+  expect(mergeEmbedUsage(none, [none], NOW).busiest_interactive_minute).toBeNull();
+  expect(mergeEmbedUsage(small, [], NOW).busiest_interactive_minute).not.toBe(small.busiest_interactive_minute);   // a copy
+});
+
+test('merge — a writer that predates the budget and a reader that has it: the reader\'s figures are not lost, nothing is invented the other way', () => {
+  const old = usage();
+  const reader = usage({ interactive_budget: budget({ window_tokens: 50 }), per_minute: [{ at_epoch: MIN, by_source: q(1, 50) }], busiest_interactive_minute: null });
+  const m = mergeEmbedUsage(old, [reader], NOW);
+  expect(m.interactive_budget).toMatchObject({ window_tokens: 50, limit_tokens: 500_000 });
+  expect(m.per_minute).toHaveLength(1);
+  const plain = mergeEmbedUsage(old, [usage()], NOW);
+  expect('interactive_budget' in plain).toBe(false);
+  expect('per_minute' in plain).toBe(false);
+  expect('busiest_interactive_minute' in plain).toBe(false);
 });

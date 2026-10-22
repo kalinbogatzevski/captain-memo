@@ -21,7 +21,12 @@ declare const self: Worker;
  *  change check 16 µs, one postMessage of the 323-byte snapshot 12 µs on the sending side, so a reader that is
  *  never asked anything pays 16 µs per 5 s (0.0003 % of a core) and, after the one post its boot probe causes, posts nothing; one embedding all the time
  *  posts 12 µs per 5 s. On main, mergeEmbedUsage over 2 readers (the default pool) is 10 µs, over 8 (the most) 25 µs,
- *  paid once per /stats. Counters 5 s old are fine for a total read by a human. */
+ *  paid once per /stats. Counters 5 s old are fine for a total read by a human.
+ *  Since 2026-10-22 the snapshot also carries the last TAIL_MINUTES of per-minute metering and the interactive
+ *  budget (embedder.ts has the measured sizes): 0.9-1.7 KB instead of ~0.3 KB, ~30 µs a tick, one ~76 µs post. The
+ *  tail and the budget's hour slide with the clock, so a reader that has stopped being asked posts once more for each
+ *  minute it had traffic in, as that minute leaves the tail and again as it leaves the hour (at most ~66 posts, one a
+ *  minute at the very worst), then nothing again. */
 const EMBED_USAGE_TICK_MS = 5_000;
 
 async function boot(): Promise<void> {

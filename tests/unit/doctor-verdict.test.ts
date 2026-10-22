@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { embedderSpendCheck, nonMarkdownMemoryCheck, schemaDrift, migrationVerdict, workerVerdict, embedderVerdict, embedCoverageCheck, ivfHealthCheck, sidecarHealthVerdict, injectLatencyVerdict, INJECT_MIN_SAMPLES, captureSourceVerdict, captureSourcesDetail, summarizerVerdict } from '../../src/cli/commands/doctor.ts';
+import { embedderSpendCheck, embedderBudgetCheck, nonMarkdownMemoryCheck, schemaDrift, migrationVerdict, workerVerdict, embedderVerdict, embedCoverageCheck, ivfHealthCheck, sidecarHealthVerdict, injectLatencyVerdict, INJECT_MIN_SAMPLES, captureSourceVerdict, captureSourcesDetail, summarizerVerdict } from '../../src/cli/commands/doctor.ts';
 
 // ---------------------------------------------------------------------------
 // schemaDrift — does the live DB actually HAVE what the migrations promise?
@@ -509,6 +509,28 @@ test('doctor says nothing about spend while embedding runs, and names the pause 
   expect(c.status).toBe('WARN');
   expect(c.detail).toContain('650,000');
   expect(c.remedy).toContain('CAPTAIN_MEMO_EMBEDDER_TIMEOUT_MS');
+});
+
+// ---- the interactive embed budget (2026-10-22, #960) ----
+test('doctor always shows the budget once the worker reports one: the hour, the limit, and whether it tripped', () => {
+  expect(embedderBudgetCheck(undefined)).toBeNull();                       // a worker older than the budget
+  expect(embedderBudgetCheck({})).toBeNull();
+  const ok = embedderBudgetCheck({ interactive_budget: { limit_tokens: 500_000, window_tokens: 12_345, paused_until_epoch: null, trips: 0 } })!;
+  expect(ok.status).toBe('PASS');
+  expect(ok.detail).toContain('12,345');
+  expect(ok.detail).toContain('500,000');
+  expect(ok.detail).toContain('not tripped');
+  const off = embedderBudgetCheck({ interactive_budget: { limit_tokens: 0, window_tokens: 7, paused_until_epoch: null, trips: 0 } })!;
+  expect(off.status).toBe('PASS');
+  expect(off.detail).toContain('off');
+  const tripped = embedderBudgetCheck({ interactive_budget: { limit_tokens: 500_000, window_tokens: 640_000, paused_until_epoch: Math.floor(Date.now() / 1000) + 900, trips: 1 } })!;
+  expect(tripped.status).toBe('WARN');
+  expect(tripped.detail).toContain('TRIPPED');
+  expect(tripped.detail).toContain('640,000');
+  expect(tripped.detail).toContain('degradation_flags');
+  expect(tripped.remedy).toContain('CAPTAIN_MEMO_EMBEDDER_INTERACTIVE_BUDGET_TOKENS');
+  // the waste check is untouched by it: it still says nothing while only the budget has tripped
+  expect(embedderSpendCheck({ paused_until_epoch: null, window_wasted_tokens: 0 })).toBeNull();
 });
 
 test('doctor warns about non-markdown files indexed as memory and names the command', () => {
