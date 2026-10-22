@@ -117,9 +117,12 @@ import { appendFileSync, mkdirSync as mkdirSync2, statSync as statSync2, renameS
 import { homedir as homedir2 } from "os";
 import { join as join3, resolve, isAbsolute } from "path";
 import { fileURLToPath } from "url";
+function hookEntryPath(entry = process.argv[1]) {
+  return entry && /(?:^|[\\/])captain-memo-hook(?:\.(?:js|ts))?$/.test(entry) ? resolve(entry) : null;
+}
 function isMainModule(meta) {
   const entry = process.argv[1];
-  if (entry && /(?:^|[\\/])captain-memo-hook(?:\.(?:js|ts))?$/.test(entry))
+  if (hookEntryPath(entry))
     return false;
   if (meta.main)
     return true;
@@ -975,7 +978,7 @@ var package_default;
 var init_package = __esm(() => {
   package_default = {
     name: "captain-memo",
-    version: "0.58.3",
+    version: "0.58.4",
     description: "Cross-AI local memory layer for Claude Code, Codex, Gemini CLI, Antigravity, goose, Cursor, opencode, Kimi CLI and more: hybrid search, six summarizer providers, hosted or local embedder. Replaces claude-mem.",
     type: "module",
     private: true,
@@ -1352,6 +1355,16 @@ function readSkippedRelease() {
     return null;
   }
 }
+function readStampState(now = Date.now()) {
+  const intervalMs = updateCheckIntervalFromEnv(process.env.CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS);
+  let lastCheck = null;
+  let stamp = { delayMs: null, failures: 0 };
+  try {
+    lastCheck = statSync4(UPDATE_STAMP).mtimeMs;
+    stamp = parseUpdateStamp(readFileSync7(UPDATE_STAMP, "utf-8"));
+  } catch {}
+  return { intervalMs, stamp, due: isUpdateCheckDue(lastCheck, now, stamp.delayMs ?? intervalMs) };
+}
 async function runAutoUpdatePass(o) {
   let wroteTransition = false;
   const readInstance = o.readInstance ?? ((p) => readWorkerInstance(p, 1500));
@@ -1378,22 +1391,16 @@ async function runAutoUpdatePass(o) {
         fetchFailed = true;
       return r;
     };
-    const intervalMs = updateCheckIntervalFromEnv(process.env.CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS);
     try {
       mkdirSync7(DATA_DIR, { recursive: true });
     } catch {}
-    let lastCheck = null;
-    let stamp = { delayMs: null, failures: 0 };
-    try {
-      lastCheck = statSync4(UPDATE_STAMP).mtimeMs;
-      stamp = parseUpdateStamp(readFileSync7(UPDATE_STAMP, "utf-8"));
-    } catch {}
+    const { intervalMs, stamp, due } = readStampState();
     const writeStamp = (failures) => {
       try {
         writeFileSync7(UPDATE_STAMP, formatUpdateStamp(new Date, nextUpdateCheckDelayMs(intervalMs, failures), failures));
       } catch {}
     };
-    if (!isUpdateCheckDue(lastCheck, Date.now(), stamp.delayMs ?? intervalMs) || !acquireHealLock(AUTO_UPDATE_LOCK))
+    if (!due || !acquireHealLock(AUTO_UPDATE_LOCK))
       return { kind: "none" };
     try {
       writeStamp(stamp.failures + 1);
@@ -1451,7 +1458,41 @@ async function runAutoUpdatePass(o) {
     return { kind: "none" };
   }
 }
-var AUTO_UPDATE_LOCK, UPDATE_STAMP, SKIPPED_RELEASE_FILE, UNSHOWN_OUTCOME_FILE;
+async function applyPromptUpdate(event, pass = runAutoUpdatePass) {
+  const out = await pass({ event, networkTimeoutMs: 8000 });
+  if (out.kind === "updated")
+    logHookError(event, new Error(`auto-updated v${out.res.from} -> v${out.res.to ?? "?"}`));
+  recordUnshownOutcome(out);
+}
+function spawnDetached(cmd, platform = process.platform, spawn = Bun.spawn) {
+  spawn(cmd, { stdio: ["ignore", "ignore", "ignore"], detached: platform !== "win32", env: process.env }).unref();
+}
+async function startPromptUpdate(d = {}) {
+  if ((d.platform ?? process.platform) === "win32") {
+    await applyPromptUpdate("UserPromptSubmit", d.pass);
+    return "inline";
+  }
+  if (!readStampState(d.now).due)
+    return "not-due";
+  const entry = d.entry === undefined ? hookEntryPath() : d.entry;
+  if (!entry) {
+    logHookError("UserPromptSubmit", new Error("auto-update: not started, this hook was not launched through the dispatcher entry"));
+    return "no-entry";
+  }
+  try {
+    mkdirSync7(DATA_DIR, { recursive: true });
+  } catch {}
+  if (!acquireHealLock(UPDATE_SPAWN_LOCK, d.now))
+    return "in-flight";
+  try {
+    (d.spawn ?? spawnDetached)([d.execPath ?? process.execPath, entry, "UpdateApply"]);
+    return "spawned";
+  } catch (err) {
+    logHookError("UserPromptSubmit", new Error(`auto-update: could not start the detached apply: ${err.message}`));
+    return "spawn-failed";
+  }
+}
+var AUTO_UPDATE_LOCK, UPDATE_STAMP, SKIPPED_RELEASE_FILE, UNSHOWN_OUTCOME_FILE, UPDATE_SPAWN_LOCK;
 var init_auto_update = __esm(() => {
   init_paths();
   init_version();
@@ -1465,6 +1506,7 @@ var init_auto_update = __esm(() => {
   UPDATE_STAMP = join10(DATA_DIR, ".last-update-check");
   SKIPPED_RELEASE_FILE = join10(DATA_DIR, ".auto-update-skip");
   UNSHOWN_OUTCOME_FILE = join10(DATA_DIR, ".auto-update-unshown");
+  UPDATE_SPAWN_LOCK = join10(DATA_DIR, ".auto-update-spawn.lock");
 });
 
 // src/shared/plugin-cache.ts
@@ -1877,10 +1919,7 @@ async function main(options = {}) {
   if (result.ok && process.env.CAPTAIN_MEMO_AUTO_UPDATE === "1" && options.hostTimeoutMs === undefined) {
     try {
       await Promise.resolve().then(() => init_auto_update());
-      const out = await runAutoUpdatePass({ event: "UserPromptSubmit", networkTimeoutMs: 8000 });
-      if (out.kind === "updated")
-        logHookError("UserPromptSubmit", new Error(`auto-updated v${out.res.from} -> v${out.res.to ?? "?"}`));
-      recordUnshownOutcome(out);
+      await startPromptUpdate();
     } catch (err) {
       logHookError("UserPromptSubmit", err);
     }
@@ -3623,6 +3662,26 @@ if (isMainModule(import.meta)) {
   }
 }
 
+// src/hooks/update-apply.ts
+init_shared();
+var UPDATE_APPLY_BACKSTOP_MS = 30 * 60000;
+async function main7(d = {}) {
+  if (process.env.CAPTAIN_MEMO_AUTO_UPDATE !== "1")
+    return;
+  const backstopMs = d.backstopMs ?? UPDATE_APPLY_BACKSTOP_MS;
+  const backstop = setTimeout(() => {
+    logHookError("UpdateApply", new Error(`auto-update: still running after ${Math.round(backstopMs / 1000)} s, exiting`));
+    (d.exit ?? process.exit)(0);
+  }, backstopMs);
+  backstop.unref();
+  try {
+    await Promise.resolve().then(() => init_auto_update());
+    await applyPromptUpdate("UpdateApply", d.pass);
+  } catch (err) {
+    logHookError("UpdateApply", err);
+  }
+}
+
 // src/hooks/dispatcher.ts
 var EVENTS = {
   UserPromptSubmit: main,
@@ -3631,6 +3690,7 @@ var EVENTS = {
   PostToolUse: main3,
   Stop: main5,
   PreCompact: main6,
+  UpdateApply: main7,
   CodexUserPromptSubmit: () => main({ emitOriginalPrompt: false, structuredContextJson: true, hostTimeoutMs: NATIVE_PROMPT_HOOK_TIMEOUT_S * 1000 }),
   CodexPostToolUse: () => main3({ originAgent: "codex", source: "hook:codex" }),
   CodexPreToolUse: () => main4({ agent: "codex", format: "claude", hostTimeoutMs: 5000 }),
@@ -3645,7 +3705,7 @@ var EVENTS = {
   KimiPostToolUse: () => main3({ originAgent: "kimi", source: "hook:kimi" }),
   KimiStop: () => main5()
 };
-async function main7() {
+async function main8() {
   const event = process.argv[2] ?? process.env.CLAUDE_HOOK_EVENT_NAME ?? process.env.CAPTAIN_MEMO_HOOK_EVENT;
   if (!event || !(event in EVENTS)) {
     process.exit(0);
@@ -3663,7 +3723,7 @@ if (false) {}
 // bin/captain-memo-hook.ts
 init_shared();
 try {
-  await main7();
+  await main8();
 } catch (err) {
   logHookError(process.argv[2] ?? "unknown", err);
   process.exit(0);

@@ -12922,7 +12922,7 @@ function loadWorkerEnv() {
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.58.3",
+  version: "0.58.4",
   description: "Cross-AI local memory layer for Claude Code, Codex, Gemini CLI, Antigravity, goose, Cursor, opencode, Kimi CLI and more: hybrid search, six summarizer providers, hosted or local embedder. Replaces claude-mem.",
   type: "module",
   private: true,
@@ -13440,6 +13440,16 @@ async function dispatchRemember(args, deps) {
 function defaultDispatchDeps() {
   return { workerBase: WORKER_BASE2, sessionId: sessionIdNow(), cwd: () => process.cwd() };
 }
+function reindexBusyText(message) {
+  if (!/"error":"reindex_running"/.test(message))
+    return null;
+  try {
+    const detail = JSON.parse(message.slice(message.indexOf("{"))).detail;
+    if (typeof detail === "string" && detail)
+      return detail;
+  } catch {}
+  return "a reindex is already running, wait for it";
+}
 async function dispatchTool(name, args, deps = defaultDispatchDeps()) {
   const { workerBase, sessionId, cwd } = deps;
   let result;
@@ -13479,7 +13489,14 @@ async function dispatchTool(name, args, deps = defaultDispatchDeps()) {
         result = await workerPost(workerBase, "/get_full", args);
         break;
       case "reindex":
-        result = await workerPost(workerBase, "/reindex", args);
+        try {
+          result = await workerPost(workerBase, "/reindex", args);
+        } catch (e) {
+          const busy = reindexBusyText(e.message);
+          if (busy === null)
+            throw e;
+          return { content: [{ type: "text", text: busy }] };
+        }
         break;
       case "remember":
         return await dispatchRemember(args, {
@@ -13585,6 +13602,7 @@ export {
   dispatchTool,
   formatRememberResult,
   liveSessionId,
+  reindexBusyText,
   resolveWorkBoardSessionId,
   runMcpServer
 };

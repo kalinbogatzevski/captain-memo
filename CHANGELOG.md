@@ -7,6 +7,18 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.58.4] — 2026-10-22
+
+### Added
+
+- **Embedding spend is metered per minute and bounded for searches.** Each embedder counts its requests per minute, and `captain-memo stats` shows the hour's interactive spend. Searches, recalls and `remember` duplicate checks have a budget of 500,000 tokens an hour per engine (`CAPTAIN_MEMO_EMBEDDER_INTERACTIVE_BUDGET_TOKENS`, `0` turns it off), counted whether or not the provider answered; a client looping on long queries used to spend without limit because the waste pause only sees requests that got no answer. When an engine uses its hour up, it stops embedding those requests for at least 30 minutes and until its last hour of spend is back under the limit (one burst can keep it off for up to an hour; indexing carries on), and searches answer from keywords. A local embedder (the sidecar, a local Ollama: `localhost`, `127.x`, `[::1]`) bills nothing, so unless you set a number the limit is off there (`stats` says `budget off: local endpoint`); a number you set applies to any endpoint. The block is visible: every search result says so in `degradation_flags` (`embedder=paused:interactive-token-budget:until=...`, also for the waste pause, which used to be silent), `captain-memo stats` prints `Embed budget ... TRIPPED` (or `OVER THE LIMIT ... its next search is refused` once the pause is over and the hour is still full), `doctor` warns, and the worker log gets one line. Worker restart only; MCP clients need no update. (OSS: the `/search/*` and `/skills/recommend` responses had no `degradation_flags` key and still have none until a pause is active.)
+
+### Fixed
+
+- **Opt-in auto-update no longer stalls or cuts the prompt hook (Linux, macOS).** With `CAPTAIN_MEMO_AUTO_UPDATE=1`, a prompt that found an update due ran the whole apply inside the UserPromptSubmit hook, which Claude Code cuts at 30 s (killing everything under it), so a long `bun install` was cut midway and the memory envelope of that prompt could be lost with it. The hook now does only the cheap due-check and starts the update as a detached background process (`UpdateApply`), then exits at once (about +4 ms measured). One update at a time, as before; the child is bounded by a 30 min backstop. Windows keeps the old in-line behaviour. No `hooks.json` change; the plugin bundle `captain-memo-hook.js` is rebuilt; docs corrected (the prompt no longer waits on Linux and macOS).
+- **`POST /reindex` is single-flight.** A second reindex started while one runs is refused with HTTP 409 `reindex_running` (start time, channel, force) instead of re-embedding the whole corpus alongside the first; the CLI, `upgrade` and the MCP `reindex` tool say so in one sentence ("a reindex is already running, started HH:MM:SS, wait for it").
+- **`captain-memo top` keeps its title row.** The live view wrote a line break after the very last row of every frame; when the frame was as tall as the terminal (or taller, so it is clipped) that scrolled the screen by one and the `⚓ CAPTAIN MEMO` title was missing, showing the `═` rule first (Windows Terminal and Linux). The last row no longer gets a line break. On an 80-column terminal the title line (wordmark, version and live clock) was also wider than the screen and wrapped onto a second row; the clock now shortens to the bare time (`⟳ 10:47:27`) when the date and the interval do not fit, and is left out below about 60 columns; from 82 columns up nothing changes. Very narrow terminals (under about 68 columns) can still lose the title row to other wide rows.
+
 ## [0.58.3] — 2026-10-21
 
 ### Fixed
