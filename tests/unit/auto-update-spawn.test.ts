@@ -85,6 +85,13 @@ test('two prompts in quick succession spawn once; the spawn lock lapses after it
   expect(spawned.length).toBe(2);
 });
 
+test('spawnDetached: `detached` follows the platform and is never true on win32, even for a caller that skipped the win32 branch (a detached child escapes the kill-on-close job)', () => {
+  const seen: Array<{ detached?: boolean }> = [];
+  const fake = ((_cmd: string[], o: { detached?: boolean }) => { seen.push(o); return { unref() {} }; }) as never;
+  for (const p of ['win32', 'linux', 'darwin'] as const) spawnDetached([BUN, ENTRY, 'UpdateApply'], p, fake);
+  expect(seen.map((o) => o.detached)).toEqual([false, true, true]);
+});
+
 test('hookEntryPath: the dispatcher bundle and bin entry count, a handler module run directly does not', () => {
   expect(hookEntryPath('/home/u/.claude/plugins/x/dist/captain-memo-hook.js')).toBe(resolve('/home/u/.claude/plugins/x/dist/captain-memo-hook.js'));
   expect(hookEntryPath('/repo/bin/captain-memo-hook.ts')).toBe(resolve('/repo/bin/captain-memo-hook.ts'));

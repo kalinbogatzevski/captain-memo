@@ -229,9 +229,11 @@ export const UPDATE_SPAWN_LOCK = join(DATA_DIR, '.auto-update-spawn.lock');
 /** Start `cmd` fully detached: its own session (Bun `detached` = setsid), no stdio shared with the caller (Claude Code refuses
  *  the output of a hook whose background child holds its pipes, and waits for them), and unref'd so this process may exit
  *  while it runs. Measured 2026-10-22 (Claude Code 2.1.306, `claude -p`): such a child survives its parent's exit and the end
- *  of the session. Throws if the spawn itself fails. */
-export function spawnDetached(cmd: string[]): void {
-  Bun.spawn(cmd, { stdio: ['ignore', 'ignore', 'ignore'], detached: true, env: process.env as Record<string, string> }).unref();
+ *  of the session. Throws if the spawn itself fails. `detached` is computed from the platform (the repo's `detached: !win`), so
+ *  this is POSIX-only by construction: on win32 a detached child would escape the kill-on-close job (shared/kill-tree.ts), and a
+ *  caller that forgot startPromptUpdate's win32 branch still could not start one. `platform` and `spawn` are for tests. */
+export function spawnDetached(cmd: string[], platform: NodeJS.Platform = process.platform, spawn: typeof Bun.spawn = Bun.spawn): void {
+  spawn(cmd, { stdio: ['ignore', 'ignore', 'ignore'], detached: platform !== 'win32', env: process.env as Record<string, string> }).unref();
 }
 
 export type PromptUpdateStart = 'inline' | 'spawned' | 'not-due' | 'in-flight' | 'no-entry' | 'spawn-failed';
