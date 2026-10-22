@@ -283,7 +283,7 @@ function indexingText(idx: StatsResponse['indexing']): string {
  *  the previous boxed header — the frame fought the content for attention
  *  and added a "decorated dashboard" feel. The double `═` differentiates
  *  the title rule from the single `─` section rules below. */
-function headerPanel(version: string, panelWidth: number, headerRight?: string): string[] {
+function headerPanel(version: string, panelWidth: number, headerRight?: string | string[]): string[] {
   const wordmark = '⚓  CAPTAIN MEMO';
   const subtitle = 'corpus statistics';
   const ver = `v${version}`;
@@ -292,9 +292,13 @@ function headerPanel(version: string, panelWidth: number, headerRight?: string):
   // column: both `base` (⚓ anchor emoji) and `headerRight` (⟳ stamp) can render
   // 1 cell wider than their code-point count, and touching the last column wraps
   // the trailing char onto the next row. Budget to panelWidth-1 to absorb it.
-  const titleLine = headerRight
-    ? base + ' '.repeat(Math.max(1, panelWidth - 1 - visibleWidth(base) - visibleWidth(headerRight))) + headerRight
-    : base;
+  // A list is the stamp's candidates, longest first: the first that fits with a filler of at
+  // least one space wins, none fitting ⇒ no stamp. The filler floors at one space, so a stamp
+  // that does not fit would otherwise push the line past the terminal width and wrap it onto a
+  // second row, which scrolls the frame's first row off screen. The title itself is never cut.
+  const room = (s: string) => panelWidth - 1 - visibleWidth(base) - visibleWidth(s);
+  const right = Array.isArray(headerRight) ? headerRight.find((s) => room(s) >= 1) : headerRight;
+  const titleLine = right ? base + ' '.repeat(Math.max(1, room(right))) + right : base;
   // ═ matches the section-rule indent so the eye sees a continuous left
   // rail down the left edge of the panel.
   const rule = '  ' + dim('═'.repeat(Math.max(0, panelWidth - 2)));
@@ -303,8 +307,9 @@ function headerPanel(version: string, panelWidth: number, headerRight?: string):
 
 export interface RenderOpts {
   panelWidth?: number;
-  /** Optional right-aligned status on the header line (the `top` live clock). */
-  headerRight?: string;
+  /** Optional right-aligned status on the header line (the `top` live clock). A string is
+   *  placed as given; an array lists candidates longest first and the first that fits is used. */
+  headerRight?: string | string[];
   /** Open homework (GET /homework/list). `top` passes it, since its [h] panel acts on it;
    *  absent or null ⇒ no section, so `captain-memo stats` renders as before. */
   homework?: HomeworkView[] | null;

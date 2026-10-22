@@ -227,14 +227,15 @@ function trimTo(s: string, max: number): string {
 
 /** Live clock + refresh interval, so the user can SEE the data updating: it
  *  re-renders on every refresh tick. Frozen in paused modes (detail/help),
- *  which is itself a useful "not refreshing right now" signal. */
-function liveStamp(refreshMs: number): string {
+ *  which is itself a useful "not refreshing right now" signal. `timeOnly` is the
+ *  short form for a title row too narrow for the date and the interval. */
+function liveStamp(refreshMs: number, timeOnly = false): string {
   const d = new Date();
   const p = (n: number) => String(n).padStart(2, '0');
   const date = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   const time = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
   const sec = refreshMs % 1000 === 0 ? String(refreshMs / 1000) : (refreshMs / 1000).toFixed(1);
-  return `⟳ ${date} ${time} · every ${sec}s`;
+  return timeOnly ? `⟳ ${time}` : `⟳ ${date} ${time} · every ${sec}s`;
 }
 
 /** Place `right` flush against the right edge after `left` (both may be
@@ -285,7 +286,8 @@ function dashboardFrame(state: TopState, data: FrameData, dims: Dims): string[] 
   const body = data.stats
     ? renderStats(data.stats, {
         panelWidth: dims.cols,
-        headerRight: dim(liveStamp(state.refreshMs)),
+        // Full stamp, else the bare time, else none: the dashboard's title row must stay one row.
+        headerRight: [dim(liveStamp(state.refreshMs)), dim(liveStamp(state.refreshMs, true))],
         ...(data.homework ? { homework: data.homework } : {}),
       })
     : [dim('  (worker unreachable)')];

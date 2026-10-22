@@ -7,10 +7,11 @@
 // of their dashboard, assuming that was the dashboard. It also meant any change to
 // the panel's row count moved everything on screen — which is how a queue row that
 // appears when work arrives read as "the entire screen shifts".
-import { test, expect } from 'bun:test';
+import { test, expect, setSystemTime } from 'bun:test';
 import { buildFrame, clipFrame, frameBytes, frameScrollRange, type FrameData } from '../../src/cli/tui/frame.ts';
 import { initialState } from '../../src/cli/tui/state.ts';
-import type { StatsResponse } from '../../src/cli/stats-render.ts';
+import { renderStats, type StatsResponse } from '../../src/cli/stats-render.ts';
+import { visibleWidth } from '../../src/shared/ansi.ts';
 
 const frameOf = (n: number): string[] => [
   '  ⚓  CAPTAIN MEMO   corpus statistics · v0.27.20',
@@ -115,9 +116,13 @@ test('the pinned tail is whatever the shell put last (the worker-error line), no
 // frame, so the wordmark row went off the top and the `═` rule was the first thing on screen
 // (`captain-memo stats` was fine). These tests feed the real write path's bytes to a tiny
 // terminal model: CRLF at the bottom row scrolls, ESC[K / ESC[J erase from the cursor.
-const paint = (bytes: string, rows: number, stale = ''): string[] => {
+// With `cols` it also wraps like a real terminal (auto-margin): a character that does not fit in
+// the remaining cells goes onto the next row, scrolling at the bottom; widths are the repo's
+// visibleWidth (the anchor emoji is 2 cells). That is the second way a frame gains a row.
+const paint = (bytes: string, rows: number, stale = '', cols = 0): string[] => {
   const screen: string[] = Array.from({ length: rows }, (_, i) => (stale ? `${stale} ${i}` : ''));
   let r = 0, c = 0;
+  const lf = () => { if (r === rows - 1) { screen.shift(); screen.push(''); } else r++; };
   for (const m of bytes.matchAll(/\x1b\[([0-9;?]*)([A-Za-z])|\r|\n|[^\x1b\r\n]+/g)) {
     const [tok, , cmd] = m;
     if (cmd === 'H') { r = 0; c = 0; }
@@ -125,7 +130,14 @@ const paint = (bytes: string, rows: number, stale = ''): string[] => {
     else if (cmd === 'J') { screen[r] = screen[r]!.slice(0, c); for (let i = r + 1; i < rows; i++) screen[i] = ''; }
     else if (cmd) { /* SGR and the like: no cursor movement */ }
     else if (tok === '\r') c = 0;
-    else if (tok === '\n') { if (r === rows - 1) { screen.shift(); screen.push(''); } else r++; }
+    else if (tok === '\n') lf();
+    else if (cols) {   // rows are written once onto a blank screen, so appending is enough
+      for (const ch of tok) {
+        const w = visibleWidth(ch);
+        if (c + w > cols) { c = 0; lf(); }
+        screen[r] += ch; c += w;
+      }
+    }
     else { screen[r] = screen[r]!.slice(0, c) + tok + screen[r]!.slice(c + tok.length); c += tok.length; }
   }
   return screen.map(stripAnsi);
@@ -182,8 +194,6 @@ const writeDashboard = (data: FrameData, cols: number, rows: number, errLine?: s
   return { lines, screen: paint(frameBytes(clipFrame(lines, rows, 0)), rows) };
 };
 
-// Not 80 or 81 columns: there the title row (wordmark + live stamp) is itself wider than the
-// terminal and wraps onto a second physical row, a cost this byte-level model does not see.
 test('dashboard: the wordmark is the first row on screen when the frame is shorter than, exactly as tall as, and taller than the terminal', () => {
   for (const cols of [100, 156]) {
     const fit = buildFrame(initialState(), { stats: STATS }, { cols, rows: 46 }).length;
@@ -204,4 +214,80 @@ test('dashboard with the worker down: the banner stays the first row and the wor
   expect(lines).toHaveLength(fit);
   expect(screen[0]).toContain('WORKER UNREACHABLE');
   expect(screen[fit - 1]).toBe(err);
+});
+
+// The title row must stay ONE row (2026-10-22, wave 12): headerPanel put the live stamp after the
+// title with a filler that floors at one space, so below 82 columns the line outgrew the terminal
+// and wrapped onto a second row; the frame was then a row too tall and the first row scrolled off
+// (80x24 in tmux: the first visible row was "s", the tail of "every 2s"). The stamp now steps down:
+// the full stamp, else the bare time, else nothing, always leaving a filler of one space and the
+// last column free. The title itself is never cut. The fixture's title (v0.1.16) is 48 cells wide.
+const CLOCK = new Date(2026, 9, 22, 10, 47, 27);   // local time, so the expected strings hold in any timezone
+const atClock = <T>(fn: () => T): T => { setSystemTime(CLOCK); try { return fn(); } finally { setSystemTime(); } };
+const titleOf = (cols: number) => renderStats(STATS, { panelWidth: cols })[0]!;   // no stamp: the title alone
+const firstLine = (cols: number) => buildFrame(initialState(), { stats: STATS }, { cols, rows: 46 })[0]!;
+const FULL_STAMP = '⟳ 2026-10-22 10:47:27 · every 2s';
+
+test('dashboard title row: fits in cols-1 cells at every width from 40 to 160, title intact, never glued to the stamp', () => {
+  const bad: string[] = [];
+  atClock(() => {
+    for (let cols = 40; cols <= 160; cols++) {
+      const first = firstLine(cols), title = titleOf(cols);
+      if (!stripAnsi(first).startsWith(stripAnsi(title))) bad.push(`${cols}: title cut`);
+      else if (visibleWidth(title) > cols - 1) { if (first !== title) bad.push(`${cols}: title alone is too wide, stamp should go`); }
+      else if (visibleWidth(first) > cols - 1) bad.push(`${cols}: ${visibleWidth(first)} cells`);
+      else if (first !== title && !/\S {1,}⟳ /.test(stripAnsi(first))) bad.push(`${cols}: no filler before the stamp`);
+    }
+  });
+  expect(bad).toEqual([]);
+});
+
+test('dashboard title row: the stamp steps down full -> time only -> none at exactly the widths it stops fitting', () => {
+  const stampAt = (cols: number) => atClock(() => stripAnsi(firstLine(cols)).slice(stripAnsi(titleOf(cols)).length).trim());
+  expect(stampAt(156)).toBe(FULL_STAMP);
+  expect(stampAt(82)).toBe(FULL_STAMP);   // 48 title + 1 filler + 32 stamp = 81 = cols - 1
+  expect(stampAt(81)).toBe('⟳ 10:47:27');
+  expect(stampAt(60)).toBe('⟳ 10:47:27');   // 48 + 1 + 10 = 59 = cols - 1
+  expect(stampAt(59)).toBe('');
+  expect(stampAt(40)).toBe('');   // narrower than the title: only the stamp can go
+});
+
+test('dashboard title row, wide terminals: byte-identical to before the step-down (120 and 156 columns)', () => {
+  const env = { FORCE_COLOR: process.env.FORCE_COLOR, NO_COLOR: process.env.NO_COLOR };
+  process.env.FORCE_COLOR = '1'; delete process.env.NO_COLOR;   // pin the colour codes too
+  try {
+    const head = '  \x1b[33;1m⚓  CAPTAIN MEMO\x1b[0m   \x1b[2mcorpus statistics\x1b[0m \x1b[2m·\x1b[0m \x1b[1mv0.1.16\x1b[0m';
+    const stamp = `\x1b[2m${FULL_STAMP}\x1b[0m`;
+    atClock(() => {
+      expect(firstLine(120)).toBe(head + ' '.repeat(39) + stamp);
+      expect(firstLine(156)).toBe(head + ' '.repeat(75) + stamp);
+      // `captain-memo stats` passes no stamp: the title line is just the title, at any width
+      for (const cols of [40, 80, 120]) expect(titleOf(cols)).toBe(head);
+    });
+  } finally {
+    for (const [k, v] of Object.entries(env)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});
+
+// Real pipeline bytes into the wrapping terminal model. The dashboard's Embedder row is 67 cells
+// with this fixture, so below 68 columns the BODY wraps too (not this change's business: other
+// lines are never truncated); the title-and-rule pair is therefore also checked on its own, which
+// is what reaches 60.
+test('the title row is the first row of an exact-fit screen: title and rule alone at 60..90, whole dashboard from 80', () => {
+  atClock(() => {
+    for (const cols of [60, 80, 81, 85, 89, 90]) {
+      const pair = buildFrame(initialState(), { stats: STATS }, { cols, rows: 46 }).slice(0, 2);
+      const screen = paint(frameBytes(pair), 2, '', cols);
+      expect(screen[0]).toContain('CAPTAIN MEMO');
+      expect(screen[1]).toContain('══');
+    }
+    for (const cols of [80, 81, 85, 89, 90]) {
+      const fit = buildFrame(initialState(), { stats: STATS }, { cols, rows: 46 }).length;
+      const lines = buildFrame(initialState(), { stats: STATS }, { cols, rows: fit });
+      expect(lines).toHaveLength(fit);   // really the exact-fit case
+      const screen = paint(frameBytes(clipFrame(lines, fit, 0)), fit, '', cols);
+      expect(screen[0]).toContain('CAPTAIN MEMO');
+      expect(screen[fit - 1]).toContain('[q]uit');
+    }
+  });
 });

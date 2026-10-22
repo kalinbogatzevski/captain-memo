@@ -118,3 +118,22 @@ test('percentages drop the repeated "of corpus" suffix', () => {
   expect(out).not.toContain('of corpus');
   expect(out).toContain('(10.5%)');   // Tide Strengthened, 11 662 / 111 399
 });
+
+// Header stamp (2026-10-22): the filler between title and stamp floors at one space, so a stamp that
+// does not fit pushed the title row past the terminal width and it wrapped. A string is still placed
+// as given (the stats command passes none); a list is the stamp's candidates, longest first: the first
+// that fits in panelWidth-1 with a filler of at least one space wins, none fitting means no stamp.
+test('header stamp: a list steps down to the first candidate that fits, none fitting leaves the title alone; a string is placed as before', () => {
+  const first = (width: number, headerRight?: string | string[]) =>
+    strip(renderStats(BASE, { panelWidth: width, ...(headerRight === undefined ? {} : { headerRight }) })[0]!);
+  const title = first(100);
+  const w = visibleWidth(title);
+  const LONG = 'L'.repeat(30), SHORT = 'S'.repeat(8);
+  expect(first(w + 32, [LONG, SHORT])).toBe(title + ' ' + LONG);                  // w + 1 + 30 = width - 1: exact fit
+  expect(first(w + 31, [LONG, SHORT])).toBe(title + ' '.repeat(22) + SHORT);      // one short: right-aligned fallback
+  expect(first(w + 10, [LONG, SHORT])).toBe(title + ' ' + SHORT);                 // w + 1 + 8 = width - 1
+  expect(first(w + 9, [LONG, SHORT])).toBe(title);                                // neither fits: no stamp
+  expect(first(w + 9, [])).toBe(title);
+  expect(first(w + 9, LONG)).toBe(title + ' ' + LONG);                            // a plain string keeps the one-space floor
+  expect(first(w + 40, LONG)).toBe(title + ' '.repeat(9) + LONG);
+});
