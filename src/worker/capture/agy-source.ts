@@ -19,6 +19,7 @@ import { join } from 'path';
 import { Database } from 'bun:sqlite';
 import type { RawObservationEvent } from '../../shared/types.ts';
 import type { CaptureSource, SessionRef } from './types.ts';
+import { redactedHead } from './shared.ts';
 
 const DEFAULT_QUIESCE_MS = 60_000;
 const SUMMARY_MAX = 2000;
@@ -143,7 +144,8 @@ export function createAgySource(opts: AgySourceOptions): CaptureSource {
 
       if (!text.trim()) return [];
       const tsEpoch = ref.mtimeEpoch;
-      return chunk(text, SUMMARY_MAX, MAX_EVENTS).map((piece, i) => ({
+      // Redacted before the split: a token across a piece boundary would otherwise be two halves, neither of them a token.
+      return chunk(redactedHead(text, SUMMARY_MAX * MAX_EVENTS), SUMMARY_MAX, MAX_EVENTS).map((piece, i) => ({
         session_id: ref.sessionId,
         project_id: opts.projectId,
         prompt_number: 1, // agy transcripts have no reliable turn boundaries → one obs window

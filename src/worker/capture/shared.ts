@@ -7,11 +7,37 @@
 
 import type { RawObservationEvent } from '../../shared/types.ts';
 import type { OriginAgent } from '../../shared/origin-agent.ts';
+import { redactSecrets } from '../../shared/redact-secrets.ts';
 
 export const SUMMARY_MAX = 2000; // matches the enqueue schema cap on the summary fields
 
+/** What redactSecrets needs to see past a cut to decide about a secret the cut lands in: the widest context of a rule that is not
+ *  a lone private-key BEGIN (that one runs to the end of what it is given): a kv value is judged up to 1 024 chars, the XML and
+ *  command-line rules look 200-300 ahead. A url password or JWT longer than this can still straddle the window edge.
+ *  session-inbox.ts redactedHead() uses 10 200 for the same job, for a whole key body; here the key's BEGIN alone already redacts
+ *  to the end of the window, so the reach can be a fifth of that. */
+const REDACT_REACH = 2_048;
+
+/** The head of `t` redacted BEFORE it is cut to `max`: a token the cut lands inside, cut first, is a head too short for its rule
+ *  to match (a `glpat-` + 20 chars cut after 12 stays whole in the output); redacted first it goes whole. Only a window of `t` is
+ *  redacted, widening until the redacted text holds `max` + REDACT_REACH chars or all of `t`: a tool argument of several MB
+ *  costs ~1.4 ms to clip instead of the 0.77 s redacting it whole takes (6 MB, 2026-10-23). Over this host's own 982 captured
+ *  events (codex, gemini, agy; nice 19, load ~3) the pass is 14 107 calls, 0.92 s of an 8.6 s full extraction (10.6%; call p50
+ *  35 µs, p99 0.5 ms, max 8.9 ms). The result may be longer than `max`; the caller cuts. */
+export function redactedHead(t: string, max: number): string {
+  let end = 2 * max;
+  let head = redactSecrets(t.slice(0, end)).text;
+  while (head.length < max + REDACT_REACH && end < t.length) {
+    end *= 2;
+    head = redactSecrets(t.slice(0, end)).text;
+  }
+  return head;
+}
+
+/** Trim, redact credential-shaped values, THEN cut to `max` (redactedHead says why that order). The driver redacts the clipped
+ *  event again, as the net for a source that does not clip through here. */
 export function clip(s: string, max = SUMMARY_MAX): string {
-  const t = (s ?? '').trim();
+  const t = redactedHead((s ?? '').trim(), max);
   return t.length <= max ? t : t.slice(0, max - 1) + '…';
 }
 
