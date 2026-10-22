@@ -75,6 +75,29 @@ export function verifyToken(token: string, cfg: GatewayConfig): GatewayDevice | 
   return cfg.devices.find((d) => d.token_hash === hash) ?? null;
 }
 
+/** Resolve an `Authorization` header value ("Bearer <token>") to its paired device, or null. */
+export function verifyBearer(authorization: string | null, cfg: GatewayConfig): GatewayDevice | null {
+  const token = authorization?.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : '';
+  return verifyToken(token, cfg);
+}
+
+export type GatewaySessionGuard =
+  | { ok: true }
+  | { ok: false; status: 401 | 403; body: { error: string } };
+
+/** Whether a request carrying a known `mcp-session-id` may ride that session. The id is minted by the
+ *  server and handed to the client, so it is NOT a credential: it can leak (a reverse-proxy access log,
+ *  a debug capture) and must not outlive the token that opened it. Every request must therefore present
+ *  the bearer of the device that OWNS the session, checked against the live gateway.json — so `gateway
+ *  revoke` ends a device's open sessions at once. 401 = no / unknown / revoked bearer, 403 = a valid
+ *  bearer of a different paired device. */
+export function guardGatewaySession(sessionDeviceId: string, authorization: string | null, cfg: GatewayConfig): GatewaySessionGuard {
+  const device = verifyBearer(authorization, cfg);
+  if (!device) return { ok: false, status: 401, body: { error: 'unauthorized' } };
+  if (device.id !== sessionDeviceId) return { ok: false, status: 403, body: { error: 'session/device mismatch' } };
+  return { ok: true };
+}
+
 /** Remove a paired device by id. Returns whether a device was actually removed
  *  (false for an unknown id — never throws). */
 export function revokeDevice(id: string, path: string = defaultGatewayConfigPath()): boolean {

@@ -10,7 +10,7 @@ import { loadWorkerEnv } from '../shared/worker-env.ts';
 import { markTransition, clearTransition } from '../shared/worker-transition.ts';
 import { ensureExtensionCapableSqlite } from '../shared/sqlite-extensions.ts';
 import { resolveSummarizerProviders, resolveSummarizerProvider } from '../shared/summarizer-provider.ts';
-import { loadGatewayConfig, verifyToken } from '../shared/gateway-tokens.ts';
+import { loadGatewayConfig, verifyBearer, guardGatewaySession } from '../shared/gateway-tokens.ts';
 import { dispatchTool, TOOLS } from '../mcp-server.ts';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
@@ -4057,7 +4057,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // the federation gateway's server, the proven reference for this exact pattern.
   // See docs/superpowers/specs/2026-07-05-local-device-pairing-design.md.
   let gatewayServer: ReturnType<typeof Bun.serve> | undefined;
-  const gatewaySessions = new Map<string, { server: Server; transport: WebStandardStreamableHTTPServerTransport }>();
+  type GatewaySession = { server: Server; transport: WebStandardStreamableHTTPServerTransport; deviceId: string };
+  const gatewaySessions = new Map<string, GatewaySession>();
   const gatewayCfg = loadGatewayConfig(opts.gatewayConfigPath);
   if (gatewayCfg.devices.length > 0) {
     const gatewayPort = process.env.CAPTAIN_MEMO_GATEWAY_PORT
@@ -4072,12 +4073,13 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           if (sid) {
             const existing = gatewaySessions.get(sid);
             if (!existing) return new Response('unknown session', { status: 404 });
+            // The session id is NOT a credential — re-check the bearer of the owning device on every request.
+            const g = guardGatewaySession(existing.deviceId, req.headers.get('authorization'), loadGatewayConfig(opts.gatewayConfigPath));
+            if (!g.ok) return Response.json(g.body, { status: g.status });
             return existing.transport.handleRequest(req);
           }
 
-          const auth = req.headers.get('authorization') ?? '';
-          const token = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '';
-          const device = verifyToken(token, loadGatewayConfig(opts.gatewayConfigPath));
+          const device = verifyBearer(req.headers.get('authorization'), loadGatewayConfig(opts.gatewayConfigPath));
           if (!device) return Response.json({ error: 'unauthorized' }, { status: 401 });
 
           const mcpServer = new Server({ name: 'captain-memo-gateway', version: VERSION }, { capabilities: { tools: {} } });
@@ -4089,14 +4091,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
               cwd: () => '/',
             });
           });
-          let session: { server: Server; transport: WebStandardStreamableHTTPServerTransport };
+          let session: GatewaySession;
           const transport = new WebStandardStreamableHTTPServerTransport({
             sessionIdGenerator: () => crypto.randomUUID(),
             enableJsonResponse: true,
             onsessioninitialized: (newSid) => { gatewaySessions.set(newSid, session); },
             onsessionclosed: (closedSid) => { gatewaySessions.delete(closedSid); },
           });
-          session = { server: mcpServer, transport };
+          session = { server: mcpServer, transport, deviceId: device.id };
           await mcpServer.connect(transport);
           return transport.handleRequest(req);
         },

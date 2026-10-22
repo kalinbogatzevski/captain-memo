@@ -2,6 +2,9 @@ import { test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
 import { pairNewDevice, revokeDevice } from '../../src/shared/gateway-tokens.ts';
 import { rmWorkDir } from '../support/worker-temp.ts';
@@ -171,4 +174,110 @@ test('an unknown session id 404s (does not silently create a new session)', asyn
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
   });
   expect(res.status).toBe(404);
+});
+
+// ── Session-id is not a credential (#965) ───────────────────────────────────────────────────────
+// The bearer used to be checked on `initialize` only; every later request was routed on the
+// `mcp-session-id` header alone, so a leaked session id (reverse-proxy access log, a debug capture)
+// was a bearer-equivalent credential that revoke could not end. Real worker, real gateway port.
+
+const MCP_HEADERS = { 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+
+function rpc(id: number, method: string, params: unknown = {}): string {
+  return JSON.stringify({ jsonrpc: '2.0', id, method, params });
+}
+
+async function openSession(gatewayPort: number, token: string): Promise<string> {
+  const res = await fetch(`http://127.0.0.1:${gatewayPort}/`, {
+    method: 'POST',
+    headers: { ...MCP_HEADERS, authorization: `Bearer ${token}` },
+    body: rpc(1, 'initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0' } }),
+  });
+  expect(res.status).toBe(200);
+  return res.headers.get('mcp-session-id')!;
+}
+
+function onSession(gatewayPort: number, sid: string, extra: Record<string, string>, body = rpc(2, 'tools/list')): Promise<Response> {
+  return fetch(`http://127.0.0.1:${gatewayPort}/`, {
+    method: 'POST',
+    headers: { ...MCP_HEADERS, 'mcp-session-id': sid, ...extra },
+    body,
+  });
+}
+
+test('a known session id with NO bearer is refused — the id alone cannot run tools', async () => {
+  const { token, gatewayPort } = await startPairedWorker('phone');
+  const sid = await openSession(gatewayPort, token);
+  // The exploit: a tool call carrying only the leaked id.
+  const res = await onSession(gatewayPort, sid, {}, rpc(2, 'tools/call', { name: 'stats', arguments: {} }));
+  expect(res.status).toBe(401);
+  expect(await res.json()).toEqual({ error: 'unauthorized' });
+});
+
+test('a known session id with the bearer of ANOTHER paired device is refused — not transferable', async () => {
+  const { token, gatewayPort } = await startPairedWorker('phone');
+  const other = pairNewDevice('laptop', cfgPath); // gateway re-reads gateway.json per request
+  const sid = await openSession(gatewayPort, token);
+  const res = await onSession(gatewayPort, sid, { authorization: `Bearer ${other.token}` });
+  expect(res.status).toBe(403);
+  expect(await res.json()).toEqual({ error: 'session/device mismatch' });
+});
+
+test('a known session id with a garbage bearer is refused', async () => {
+  const { token, gatewayPort } = await startPairedWorker('phone');
+  const sid = await openSession(gatewayPort, token);
+  const res = await onSession(gatewayPort, sid, { authorization: 'Bearer not-a-real-token' });
+  expect(res.status).toBe(401);
+});
+
+test('revoking a device ends its OPEN sessions at once, even with its old bearer', async () => {
+  const { token, deviceId, gatewayPort } = await startPairedWorker('phone');
+  const sid = await openSession(gatewayPort, token);
+  expect((await onSession(gatewayPort, sid, { authorization: `Bearer ${token}` })).status).toBe(200);
+  revokeDevice(deviceId, cfgPath);
+  expect((await onSession(gatewayPort, sid, { authorization: `Bearer ${token}` })).status).toBe(401);
+  expect((await onSession(gatewayPort, sid, {})).status).toBe(401);
+});
+
+test('the session owner presenting its own bearer still works on the same session', async () => {
+  const { token, gatewayPort } = await startPairedWorker('phone');
+  const sid = await openSession(gatewayPort, token);
+  const res = await onSession(gatewayPort, sid, { authorization: `Bearer ${token}` });
+  expect(res.status).toBe(200);
+});
+
+test('an unauthenticated DELETE cannot terminate someone else\'s session', async () => {
+  const { token, gatewayPort } = await startPairedWorker('phone');
+  const sid = await openSession(gatewayPort, token);
+  const del = await fetch(`http://127.0.0.1:${gatewayPort}/`, { method: 'DELETE', headers: { 'mcp-session-id': sid } });
+  expect(del.status).toBe(401);
+  expect((await onSession(gatewayPort, sid, { authorization: `Bearer ${token}` })).status).toBe(200);
+});
+
+test('an unauthenticated GET (SSE stream) on a known session id is refused', async () => {
+  const { token, gatewayPort } = await startPairedWorker('phone');
+  const sid = await openSession(gatewayPort, token);
+  const res = await fetch(`http://127.0.0.1:${gatewayPort}/`, {
+    method: 'GET',
+    headers: { accept: 'text/event-stream', 'mcp-session-id': sid },
+    signal: AbortSignal.timeout(5000), // an accepted GET holds the stream open; never hang the suite on it
+  });
+  await res.body?.cancel();
+  expect(res.status).toBe(401);
+});
+
+test('the MCP SDK client (bearer in requestInit) works end to end — no regression for a legitimate client', async () => {
+  const { token, gatewayPort } = await startPairedWorker('phone');
+  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${gatewayPort}/`), {
+    requestInit: { headers: { authorization: `Bearer ${token}` } },
+  });
+  const client = new Client({ name: 'sdk-test', version: '0' }, { capabilities: {} });
+  try {
+    await client.connect(transport as Transport); // initialize + notifications/initialized + the GET stream attempt
+    expect((await client.listTools()).tools.length).toBeGreaterThan(0);
+    expect((await client.callTool({ name: 'stats', arguments: {} })).content).toBeDefined();
+    await transport.terminateSession(); // DELETE
+  } finally {
+    await client.close();
+  }
 });

@@ -372,8 +372,9 @@ captain-memo gateway revoke <device-id>       # remove a device; its token stops
 captain-memo restart                          # apply the change
 ```
 
-Revoking a device blocks any new connection immediately; an already-connected session keeps
-working until it closes or you restart the worker.
+Revoking a device ends its connections immediately: every request, including one on an already-open
+session, must present the bearer token of the device that opened it. A client must therefore send
+`Authorization: Bearer <token>` on every request (the MCP SDK clients do), not only on the first.
 
 The worker itself serves an authenticated HTTP-MCP listener (localhost-only) once a device is
 paired — nothing runs unless you pair something. Reach it from outside your machine via your own
