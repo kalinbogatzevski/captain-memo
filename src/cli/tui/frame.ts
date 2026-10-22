@@ -164,6 +164,20 @@ export function clipFrame(lines: string[], rows: number, offset: number | null =
   ];
 }
 
+const HOME = '\x1b[H';
+const CLEAR_EOL = '\x1b[K';
+const CLEAR_BELOW = '\x1b[J';
+
+/** The bytes `top` writes for one frame: home, every line with its row's tail erased, then
+ *  everything below erased. CRLF goes BETWEEN lines, never after the last: a CRLF on the
+ *  bottom row scrolls the alt screen by one, so a frame of exactly `rows` lines (which is
+ *  what clipFrame returns for any overflowing frame) lost its wordmark row and the user saw
+ *  the `═` rule first. The erase-below after the last line still clears a short frame's
+ *  leftovers. Pure and exported so the no-scroll invariant is unit-testable. */
+export function frameBytes(lines: string[]): string {
+  return HOME + lines.map((l) => l + CLEAR_EOL).join('\r\n') + CLEAR_BELOW;
+}
+
 /** The prominent "data is stale" banner shown while the worker is unreachable.
  *  Pure + exported so its wording is unit-testable. `lastOkAtMs` is formatted as
  *  a wall-clock time (HH:MM:SS) so the user can see how old the on-screen data is. */

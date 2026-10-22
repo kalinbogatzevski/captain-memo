@@ -8,7 +8,9 @@
 // the panel's row count moved everything on screen — which is how a queue row that
 // appears when work arrives read as "the entire screen shifts".
 import { test, expect } from 'bun:test';
-import { clipFrame, frameScrollRange } from '../../src/cli/tui/frame.ts';
+import { buildFrame, clipFrame, frameBytes, frameScrollRange, type FrameData } from '../../src/cli/tui/frame.ts';
+import { initialState } from '../../src/cli/tui/state.ts';
+import type { StatsResponse } from '../../src/cli/stats-render.ts';
 
 const frameOf = (n: number): string[] => [
   '  ⚓  CAPTAIN MEMO   corpus statistics · v0.27.20',
@@ -105,4 +107,101 @@ test('the pinned tail is whatever the shell put last (the worker-error line), no
   expect(clipped).toHaveLength(24);
   expect(clipped[22]).toContain('j/k scroll');
   expect(clipped[23]).toBe('  (worker: timed out)');
+});
+
+// The last row must not take a CRLF (2026-10-22, tester on Windows Terminal 156x46 and Linux):
+// `top` wrote `line + \r\n` for every line, the last included. A CRLF on the bottom row
+// scrolls the alt screen by one, and clipFrame returns EXACTLY `rows` lines for an overflowing
+// frame, so the wordmark row went off the top and the `═` rule was the first thing on screen
+// (`captain-memo stats` was fine). These tests feed the real write path's bytes to a tiny
+// terminal model: CRLF at the bottom row scrolls, ESC[K / ESC[J erase from the cursor.
+const paint = (bytes: string, rows: number, stale = ''): string[] => {
+  const screen: string[] = Array.from({ length: rows }, (_, i) => (stale ? `${stale} ${i}` : ''));
+  let r = 0, c = 0;
+  for (const m of bytes.matchAll(/\x1b\[([0-9;?]*)([A-Za-z])|\r|\n|[^\x1b\r\n]+/g)) {
+    const [tok, , cmd] = m;
+    if (cmd === 'H') { r = 0; c = 0; }
+    else if (cmd === 'K') screen[r] = screen[r]!.slice(0, c);
+    else if (cmd === 'J') { screen[r] = screen[r]!.slice(0, c); for (let i = r + 1; i < rows; i++) screen[i] = ''; }
+    else if (cmd) { /* SGR and the like: no cursor movement */ }
+    else if (tok === '\r') c = 0;
+    else if (tok === '\n') { if (r === rows - 1) { screen.shift(); screen.push(''); } else r++; }
+    else { screen[r] = screen[r]!.slice(0, c) + tok + screen[r]!.slice(c + tok.length); c += tok.length; }
+  }
+  return screen.map(stripAnsi);
+};
+const lfCount = (s: string) => (s.match(/\n/g) ?? []).length;
+
+test('a frame of exactly `rows` lines never scrolls: no CRLF after the bottom row, wordmark stays first', () => {
+  for (const rows of [5, 24, 46]) {
+    const bytes = frameBytes(clipFrame(frameOf(rows), rows, 0));
+    expect(lfCount(bytes)).toBeLessThanOrEqual(rows - 1);
+    const screen = paint(bytes, rows);
+    expect(screen[0]).toContain('CAPTAIN MEMO');
+    expect(screen[rows - 1]).toContain('[q]uit');
+  }
+});
+
+test('an overflowing frame (rows + 10 lines, clipped) never scrolls either, and keeps its position line', () => {
+  for (const rows of [24, 46]) {
+    const bytes = frameBytes(clipFrame(frameOf(rows + 10), rows, 0));
+    expect(lfCount(bytes)).toBeLessThanOrEqual(rows - 1);
+    const screen = paint(bytes, rows);
+    expect(screen[0]).toContain('CAPTAIN MEMO');
+    expect(screen[rows - 2]).toMatch(/▼ \d+ more · j\/k scroll/);
+    expect(screen[rows - 1]).toContain('[q]uit');
+  }
+});
+
+test('a short frame starts with the wordmark and erases what the last frame left below and to the right', () => {
+  const rows = 24;
+  const screen = paint(frameBytes(frameOf(10)), rows, 'STALE FRAME TEXT THAT IS LONGER THAN ANY NEW LINE');
+  expect(screen[0]).toContain('CAPTAIN MEMO');
+  expect(screen[9]).toContain('[q]uit');
+  expect(screen.join('\n')).not.toContain('STALE');
+  expect(screen.slice(10).every((row) => row === '')).toBe(true);
+  expect(frameBytes([])).toBe('\x1b[H\x1b[J');   // no lines: just wipe the screen
+});
+
+// Same pipeline as render() in commands/top.ts: buildFrame → clipFrame (dashboard scrolls, offset 0
+// on entry) → frameBytes. The exact-fit height is DERIVED from the frame so a dashboard that grows
+// or shrinks can't quietly turn the "exactly rows lines" case into a short-frame case that cannot fail.
+const STATS: StatsResponse = {
+  total_chunks: 24551,
+  by_channel: { memory: 279, observation: 24272 },
+  observations: { total: 10593, queue_pending: 0, queue_processing: 0 },
+  indexing: { status: 'ready', total: 279, done: 279, errors: 0, started_at_epoch: 0, finished_at_epoch: 0, last_error: null, elapsed_s: 0, percent: 100 },
+  project_id: 'default',
+  version: '0.1.16',
+  embedder: { model: 'voyage-4-lite', endpoint: 'https://api.voyageai.com/v1/embeddings' },
+  recall: { surfaced_count: 242, recalled_count: 3, totals: { auto: 900, search: 12, drill: 3 }, top_surfaced: [], top_recalled: [], recent_surfaced: [] },
+};
+const writeDashboard = (data: FrameData, cols: number, rows: number, errLine?: string) => {
+  const lines = buildFrame(initialState(), data, { cols, rows });
+  if (errLine) lines.push(errLine);
+  return { lines, screen: paint(frameBytes(clipFrame(lines, rows, 0)), rows) };
+};
+
+// Not 80 or 81 columns: there the title row (wordmark + live stamp) is itself wider than the
+// terminal and wraps onto a second physical row, a cost this byte-level model does not see.
+test('dashboard: the wordmark is the first row on screen when the frame is shorter than, exactly as tall as, and taller than the terminal', () => {
+  for (const cols of [100, 156]) {
+    const fit = buildFrame(initialState(), { stats: STATS }, { cols, rows: 46 }).length;
+    for (const rows of [fit + 6, fit, fit - 6]) {
+      const { lines, screen } = writeDashboard({ stats: STATS }, cols, rows);
+      if (rows === fit) expect(lines).toHaveLength(rows);   // really the exact-fit case
+      expect(screen[0]).toContain('CAPTAIN MEMO');
+      expect(screen[Math.min(rows, lines.length) - 1]).toContain('[q]uit');
+    }
+  }
+});
+
+test('dashboard with the worker down: the banner stays the first row and the worker-error line the last, at exact fit', () => {
+  const data: FrameData = { stats: STATS, workerUnreachable: true, lastOkAtMs: null };
+  const err = '  (worker: timed out)';
+  const fit = buildFrame(initialState(), data, { cols: 100, rows: 46 }).length + 1;
+  const { lines, screen } = writeDashboard(data, 100, fit, err);
+  expect(lines).toHaveLength(fit);
+  expect(screen[0]).toContain('WORKER UNREACHABLE');
+  expect(screen[fit - 1]).toBe(err);
 });
