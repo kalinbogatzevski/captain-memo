@@ -114,6 +114,18 @@ test('merge — the budget adds up the hour and the trips, keeps the base limit,
   expect(m.paused_until_epoch).toBeNull();
 });
 
+test('merge — over_limit is per engine (engines under the limit do not add up to over it) and off_reason is the base engine\'s', () => {
+  const half = () => usage({ interactive_budget: budget({ window_tokens: 300_000 }) });
+  const under = mergeEmbedUsage(half(), [half(), half()], NOW);
+  expect(under.interactive_budget!.window_tokens).toBe(900_000);          // past the 500,000 limit as a sum ...
+  expect(under.interactive_budget!.over_limit).toBeUndefined();           // ... with no engine over it
+  const one = mergeEmbedUsage(half(), [usage({ interactive_budget: budget({ window_tokens: 600_000, over_limit: true }) })], NOW);
+  expect(one.interactive_budget).toMatchObject({ over_limit: true, window_tokens: 900_000 });
+  const off = () => usage({ interactive_budget: budget({ limit_tokens: 0, off_reason: 'local-endpoint' }) });
+  expect(mergeEmbedUsage(off(), [off()], NOW).interactive_budget)
+    .toEqual({ limit_tokens: 0, window_tokens: 0, paused_until_epoch: null, trips: 0, off_reason: 'local-endpoint' });
+});
+
 test('merge — per_minute adds the same minute across engines, orders by time, drops minutes older than the tail, changes no input', () => {
   const base = usage({ per_minute: [{ at_epoch: MIN - 60, by_source: { ...q(1, 10), other: { calls: 2, tokens: 50 } } }] });
   const a = usage({ per_minute: [

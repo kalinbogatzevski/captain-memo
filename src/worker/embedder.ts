@@ -3,18 +3,22 @@ import { redactSecrets } from '../shared/redact-secrets.ts';
 
 export type ApiFormat = 'openai' | 'aelita';
 
-/** CAPTAIN_MEMO_EMBED_REDACT=1 (exactly `1`) redacts what is handed to the embedder, when the endpoint is not on this
- *  machine: the text that leaves is redacted, the stored chunk, the FTS index and local search keep the original. A
- *  loopback endpoint (the sidecar, a local Ollama) sends nothing out, so it is left alone. An endpoint that does not
- *  parse is not provably local and counts as hosted. */
-export function embedRedactEnabled(endpoint: string, env: Record<string, string | undefined> = process.env): boolean {
-  if (env.CAPTAIN_MEMO_EMBED_REDACT !== '1') return false;
+/** True when the endpoint is on this machine (localhost, [::1], 127.x): the sidecar, a local Ollama. Nothing leaves the
+ *  machine and nothing is billed. An endpoint that does not parse is not provably local and counts as hosted. */
+export function isLoopbackEndpoint(endpoint: string): boolean {
   try {
     const host = new URL(endpoint).hostname;
-    return !(host === 'localhost' || host === '[::1]' || /^127\./.test(host));
+    return host === 'localhost' || host === '[::1]' || /^127\./.test(host);
   } catch {
-    return true;
+    return false;
   }
+}
+
+/** CAPTAIN_MEMO_EMBED_REDACT=1 (exactly `1`) redacts what is handed to the embedder, when the endpoint is not on this
+ *  machine: the text that leaves is redacted, the stored chunk, the FTS index and local search keep the original. A
+ *  loopback endpoint (the sidecar, a local Ollama) sends nothing out, so it is left alone. */
+export function embedRedactEnabled(endpoint: string, env: Record<string, string | undefined> = process.env): boolean {
+  return env.CAPTAIN_MEMO_EMBED_REDACT === '1' && !isLoopbackEndpoint(endpoint);
 }
 
 /**
@@ -96,7 +100,8 @@ export const INTERACTIVE_SOURCES: readonly string[] = ['query', 'remember', 'wor
  *  28 calls a minute of <= 143-character queries. 500k is ~10x the observed query peak, so normal use never meets it.
  *  PER ENGINE: the writer and each search reader count their own, so the worker as a whole can send up to
  *  (1 + reader pool size) x this in an hour. 0 turns the budget off. Override:
- *  CAPTAIN_MEMO_EMBEDDER_INTERACTIVE_BUDGET_TOKENS. */
+ *  CAPTAIN_MEMO_EMBEDDER_INTERACTIVE_BUDGET_TOKENS. The default is for a hosted endpoint: a loopback endpoint (the
+ *  sidecar, a local Ollama) bills nothing, so unless the owner sets a number the budget is off there (metering stays on). */
 export const INTERACTIVE_BUDGET_TOKENS = 500_000;
 
 /** Minutes of per-minute history an Embedder keeps. It is also the budget's "hour": the last RING_MINUTES minute
@@ -175,6 +180,13 @@ export interface InteractiveBudgetUsage {
   paused_until_epoch: number | null;
   /** Times it tripped since start (summed over the engines in a merged figure). */
   trips: number;
+  /** Present when limit_tokens is 0 because the endpoint is a loopback one and the owner set no number (not when the
+   *  owner set 0). stats and doctor say so instead of just "off". */
+  off_reason?: 'local-endpoint';
+  /** Present when no pause is running but the last hour's spend is already at the limit (in a merged figure: in at
+   *  least one engine): the pause is over, and the next interactive request trips it again and is refused. Per engine,
+   *  because window_tokens of a merged figure adds the engines up and the limit is each one's own. */
+  over_limit?: true;
 }
 
 /**
@@ -242,11 +254,14 @@ function mergeMetering(out: EmbedUsage, all: readonly EmbedUsage[], nowEpoch: nu
     for (const b of budgets) {
       if (b.paused_until_epoch !== null && b.paused_until_epoch > nowEpoch) until = Math.max(until ?? 0, b.paused_until_epoch);
     }
+    const first = all[0]!.interactive_budget ?? budgets[0]!;   // every engine of a worker has the same limit and endpoint
     out.interactive_budget = {
-      limit_tokens: (all[0]!.interactive_budget ?? budgets[0]!).limit_tokens,
+      limit_tokens: first.limit_tokens,
       window_tokens: budgets.reduce((n, b) => n + b.window_tokens, 0),
       paused_until_epoch: until,
       trips: budgets.reduce((n, b) => n + b.trips, 0),
+      ...(first.off_reason && { off_reason: first.off_reason }),
+      ...(budgets.some(b => b.over_limit) && { over_limit: true as const }),
     };
   }
   if (all.some(u => u.per_minute)) {
@@ -314,7 +329,8 @@ export interface EmbedderOptions {
   wasteLimitTokens?: number;
   wasteWindowMs?: number;
   pauseMs?: number;
-  /** See INTERACTIVE_BUDGET_TOKENS; 0 turns the budget off. The pause when it trips is `pauseMs`, as for the waste. */
+  /** See INTERACTIVE_BUDGET_TOKENS; 0 turns the budget off, and unset it is off for a loopback endpoint and on for the
+   *  rest. A number set here applies to any endpoint. The pause when it trips is `pauseMs`, as for the waste. */
   interactiveBudgetTokens?: number;
   maxBatchSize?: number;
   maxRetries?: number;
@@ -390,6 +406,7 @@ export class Embedder {
   private wasteWindowMs: number;
   private pauseMs: number;
   private budgetLimit: number;
+  private budgetOffReason: InteractiveBudgetUsage['off_reason'];
   /** True when embed() redacts its inputs (see embedRedactEnabled). */
   readonly redactsInput: boolean;
 
@@ -426,7 +443,10 @@ export class Embedder {
     this.wasteLimit = opts.wasteLimitTokens ?? WASTE_LIMIT_TOKENS;
     this.wasteWindowMs = opts.wasteWindowMs ?? WASTE_WINDOW_MS;
     this.pauseMs = opts.pauseMs ?? PAUSE_MS;
-    this.budgetLimit = opts.interactiveBudgetTokens ?? INTERACTIVE_BUDGET_TOKENS;
+    // A loopback endpoint bills nothing, so unless the owner set a number the budget is off there; the ring still counts.
+    const loopback = isLoopbackEndpoint(opts.endpoint);
+    this.budgetLimit = opts.interactiveBudgetTokens ?? (loopback ? 0 : INTERACTIVE_BUDGET_TOKENS);
+    if (opts.interactiveBudgetTokens === undefined && loopback) this.budgetOffReason = 'local-endpoint';
     this.redactsInput = opts.redactInput ?? embedRedactEnabled(opts.endpoint);
   }
 
@@ -458,6 +478,7 @@ export class Embedder {
     this.pruneWaste(now);
     const paused = this.pausedUntilMs();
     const budgetPaused = this.budgetPausedUntilMs();
+    const used = this.interactiveWindowTokens(now);
     return {
       since_epoch: this.sinceEpoch,
       calls: this.calls,
@@ -470,9 +491,12 @@ export class Embedder {
       by_source: structuredClone(this.bySource),
       interactive_budget: {
         limit_tokens: this.budgetLimit,
-        window_tokens: this.interactiveWindowTokens(now),
+        window_tokens: used,
         paused_until_epoch: budgetPaused ? Math.floor(budgetPaused / 1000) : null,
         trips: this.budgetTrips,
+        ...(this.budgetOffReason && { off_reason: this.budgetOffReason }),
+        // The condition assertWithinBudget() trips on: the pause is over and the hour still holds the spend.
+        ...(this.budgetLimit > 0 && now >= this.budgetUntil && used >= this.budgetLimit && { over_limit: true as const }),
       },
       per_minute: this.tail(now),
       busiest_interactive_minute: this.busiest ? { ...this.busiest } : null,

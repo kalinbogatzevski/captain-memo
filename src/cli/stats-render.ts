@@ -1009,10 +1009,13 @@ function renderEfficiencyBlock(
     // limit each engine has, and whether one has tripped. A worker older than the budget reports none: no line.
     const budget = usage?.interactive_budget;
     if (budget) {
-      const state = budget.limit_tokens <= 0 ? dim('budget off')
+      const state = budget.limit_tokens <= 0 ? dim(budget.off_reason === 'local-endpoint' ? 'budget off: local endpoint' : 'budget off')
         : budget.paused_until_epoch
           ? `${red('TRIPPED')} ${dim(`until ${new Date(budget.paused_until_epoch * 1000).toTimeString().slice(0, 5)} in at least one engine: its searches are keyword-only`)}`
-          : dim(`limit ${fmtCompact(budget.limit_tokens)} per engine, not tripped`);
+          : budget.over_limit
+            // the pause is over but the hour still holds the spend: the next search in that engine trips it again
+            ? `${red('OVER THE LIMIT')} ${dim(`(${fmtCompact(budget.limit_tokens)} per engine) in at least one engine: its next search is refused`)}`
+            : dim(`limit ${fmtCompact(budget.limit_tokens)} per engine, not tripped`);
       out.push(`   ${dim('Embed budget'.padEnd(14))}${cyanBold(fmtCompact(budget.window_tokens))} tok ${dim('searches + recalls, last hour ·')} ${state}`);
     }
     out.push(`   ${dim('Dedup'.padEnd(14))}` + (dedup.docs_seen > 0

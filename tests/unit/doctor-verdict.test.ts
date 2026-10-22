@@ -533,6 +533,28 @@ test('doctor always shows the budget once the worker reports one: the hour, the 
   expect(embedderSpendCheck({ paused_until_epoch: null, window_wasted_tokens: 0 })).toBeNull();
 });
 
+test('doctor says why the budget is off, and warns when the pause is over but the hour still holds the spend', () => {
+  const b = { limit_tokens: 500_000, window_tokens: 640_000, paused_until_epoch: null, trips: 1 };
+  const local = embedderBudgetCheck({ interactive_budget: { ...b, limit_tokens: 0, off_reason: 'local-endpoint' } })!;
+  expect(local.status).toBe('PASS');
+  expect(local.detail).toContain('local endpoint');
+  expect(local.detail).not.toContain('=0');
+  const owner = embedderBudgetCheck({ interactive_budget: { ...b, limit_tokens: 0 } })!;
+  expect(owner.status).toBe('PASS');
+  expect(owner.detail).toContain('=0');
+  expect(owner.detail).not.toContain('local endpoint');
+  const over = embedderBudgetCheck({ interactive_budget: { ...b, over_limit: true } })!;
+  expect(over.status).toBe('WARN');
+  expect(over.detail).toContain('OVER the limit');
+  expect(over.detail).toContain('640,000');
+  expect(over.detail).toContain('500,000');
+  expect(over.detail).toContain('next search there is refused');
+  expect(over.detail).not.toContain('not tripped');
+  expect(over.remedy).toContain('CAPTAIN_MEMO_EMBEDDER_INTERACTIVE_BUDGET_TOKENS');
+  // a running pause is reported as tripped, not as over the limit
+  expect(embedderBudgetCheck({ interactive_budget: { ...b, over_limit: true, paused_until_epoch: Math.floor(Date.now() / 1000) + 900 } })!.detail).toContain('TRIPPED');
+});
+
 test('doctor warns about non-markdown files indexed as memory and names the command', () => {
   expect(nonMarkdownMemoryCheck([])).toBeNull();
   const c = nonMarkdownMemoryCheck(['/home/x/.codex/auth.json', '/home/x/.codex/logs_2.sqlite'])!;

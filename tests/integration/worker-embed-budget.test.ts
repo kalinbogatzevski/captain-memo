@@ -19,9 +19,9 @@ afterAll(async () => {
   for (const s of servers) s.stop(true);
 });
 
-type BudgetStats = { embedder_usage: { interactive_budget: { limit_tokens: number; trips: number; paused_until_epoch: number | null; window_tokens: number }; per_minute: unknown[] } };
+type BudgetStats = { embedder_usage: { interactive_budget: { limit_tokens: number; trips: number; paused_until_epoch: number | null; window_tokens: number; off_reason?: string }; per_minute: unknown[] } };
 
-async function boot(budgetEnv: string): Promise<{ post: (path: string, body: unknown) => Promise<Record<string, unknown>>; provider: { queries: number }; stats: (ready: (s: BudgetStats) => boolean) => Promise<BudgetStats> }> {
+async function boot(budgetEnv: string | undefined): Promise<{ post: (path: string, body: unknown) => Promise<Record<string, unknown>>; provider: { queries: number }; stats: (ready: (s: BudgetStats) => boolean) => Promise<BudgetStats> }> {
   const provider = { queries: 0 };
   const fake = Bun.serve({
     port: 0,
@@ -33,7 +33,7 @@ async function boot(budgetEnv: string): Promise<{ post: (path: string, body: unk
   });
   servers.push(fake);
   const before = process.env[ENV];
-  process.env[ENV] = budgetEnv;                          // read once, when the worker builds its embedder
+  if (budgetEnv === undefined) delete process.env[ENV]; else process.env[ENV] = budgetEnv;   // read once, when the worker builds its embedder
   let worker: WorkerHandle;
   try {
     worker = await startWorker({
@@ -62,6 +62,7 @@ async function boot(budgetEnv: string): Promise<{ post: (path: string, body: unk
 }
 
 test('every search route says so once the budget is used up, and says nothing before', async () => {
+  // The stand-in provider is on localhost: a number the owner sets applies to a local endpoint too.
   // Two queries fit (2 x TOK < limit); the third reaches the limit, is sent, and trips it.
   const { post, provider, stats: readStats } = await boot(String(2 * TOK + 1));
 
@@ -106,6 +107,18 @@ test('every search route says so once the budget is used up, and says nothing be
   expect(stats.embedder_usage.per_minute.length).toBeGreaterThanOrEqual(1);
 }, 60_000);
 
+test('with no environment setting on a local endpoint the budget is off by default, nothing is flagged, /stats says why', async () => {
+  const { post, provider, stats: readStats } = await boot(undefined);
+  for (let i = 0; i < 5; i++) {
+    const r = await post('/search/skill', { query: QUERY, top_k: 3 });
+    expect('degradation_flags' in r).toBe(false);
+  }
+  expect(provider.queries).toBe(5);
+  const stats = await readStats(s => (s.embedder_usage?.interactive_budget?.window_tokens ?? 0) >= 5 * TOK);
+  expect(stats.embedder_usage.interactive_budget).toMatchObject({ limit_tokens: 0, trips: 0, off_reason: 'local-endpoint' });
+  expect(stats.embedder_usage.interactive_budget.window_tokens).toBeGreaterThanOrEqual(5 * TOK);   // still metered
+}, 60_000);
+
 test('with the budget switched off by the environment (0) nothing is ever flagged and /stats says so', async () => {
   const { post, provider, stats: readStats } = await boot('0');
   for (let i = 0; i < 5; i++) {
@@ -115,5 +128,6 @@ test('with the budget switched off by the environment (0) nothing is ever flagge
   expect(provider.queries).toBe(5);
   const stats = await readStats(s => (s.embedder_usage?.interactive_budget?.window_tokens ?? 0) >= 5 * TOK);
   expect(stats.embedder_usage.interactive_budget).toMatchObject({ limit_tokens: 0, trips: 0 });
+  expect(stats.embedder_usage.interactive_budget.off_reason).toBeUndefined();                      // the owner said 0: no other reason
   expect(stats.embedder_usage.interactive_budget.window_tokens).toBeGreaterThanOrEqual(5 * TOK);   // still metered
 }, 60_000);

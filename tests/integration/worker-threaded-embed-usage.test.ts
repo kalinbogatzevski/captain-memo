@@ -67,8 +67,9 @@ test('threaded worker: /stats embedder_usage includes the readers and matches wh
   expect(u!.tokens).toBeGreaterThan(0);
   // The per-minute tail and the budget ride in the readers' snapshots too (#960): every query a reader sent is in the last minutes ...
   expect((u!.per_minute ?? []).reduce((n, m) => n + (m.by_source.query?.calls ?? 0), 0)).toBe(provider.queries);
-  // ... and in the hour the budget counts, which nothing has used up.
-  expect(u!.interactive_budget).toMatchObject({ limit_tokens: 500_000, trips: 0 });
+  // ... and in the hour the budget counts. The stand-in provider is on localhost, which bills nothing, so at the default
+  // the budget is off there and says why, through the readers' snapshots too.
+  expect(u!.interactive_budget).toMatchObject({ limit_tokens: 0, trips: 0, off_reason: 'local-endpoint' });
   expect(u!.interactive_budget!.window_tokens).toBeGreaterThan(0);
 
   // Quiet: with nothing asked, the figure stays put (nothing is counted twice, nothing keeps growing).

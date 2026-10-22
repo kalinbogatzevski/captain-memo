@@ -484,15 +484,95 @@ test('budget — the pause ends on time but the hour still holds the spend, so i
   } finally { setSystemTime(); log.mockRestore(); s.server.stop(); }
 });
 
-test('budget — 0 turns it off but the minutes are still counted; the default is INTERACTIVE_BUDGET_TOKENS', async () => {
+test('budget — 0 turns it off but the minutes are still counted; the default for a hosted endpoint is INTERACTIVE_BUDGET_TOKENS', async () => {
   const s = slowServer();
   const off = new Embedder({ endpoint: s.url, model: 'x', interactiveBudgetTokens: 0 });
   for (let i = 0; i < 5; i++) await off.embed([TEXT.repeat(50)], 'query');
   expect(off.budgetPausedUntilMs()).toBe(0);
   expect(off.usage().interactive_budget).toMatchObject({ limit_tokens: 0, trips: 0 });
   expect(off.usage().interactive_budget!.window_tokens).toBeGreaterThan(0);
-  expect(new Embedder({ endpoint: s.url, model: 'x' }).usage().interactive_budget!.limit_tokens).toBe(INTERACTIVE_BUDGET_TOKENS);
+  expect(off.usage().interactive_budget!.over_limit).toBeUndefined();     // off is never "over the limit"
+  expect(new Embedder({ endpoint: 'https://api.voyageai.com/v1/embeddings', model: 'x' }).usage().interactive_budget!.limit_tokens).toBe(INTERACTIVE_BUDGET_TOKENS);
   s.server.stop();
+});
+
+// ---- a loopback endpoint bills nothing: the budget's default is off there (2026-10-22, #960 follow-up) ----
+const LOOPBACK = ['http://localhost:11434/v1/embeddings', 'http://127.0.0.1:8124/v1/embeddings', 'http://127.0.1.1:8124/x', 'http://[::1]:8124/x'];
+const HOSTED = ['https://api.voyageai.com/v1/embeddings', 'http://192.168.1.20:8124/v1/embeddings', 'http://embed.lan:8124/embed', 'not a url'];
+const budgetOf = (endpoint: string, interactiveBudgetTokens?: number) =>
+  new Embedder({ endpoint, model: 'x', ...(interactiveBudgetTokens !== undefined && { interactiveBudgetTokens }) }).usage().interactive_budget!;
+
+test('budget — at the default it is on for a hosted endpoint and off, with the reason, for a loopback one', () => {
+  for (const endpoint of LOOPBACK) expect(budgetOf(endpoint)).toMatchObject({ limit_tokens: 0, off_reason: 'local-endpoint' });
+  for (const endpoint of HOSTED) {                                       // an endpoint that does not parse is not provably local
+    expect(budgetOf(endpoint).limit_tokens).toBe(INTERACTIVE_BUDGET_TOKENS);
+    expect(budgetOf(endpoint).off_reason).toBeUndefined();
+  }
+});
+
+test('budget — a number the owner sets applies to a loopback endpoint too, and to a hosted one', () => {
+  for (const endpoint of [...LOOPBACK, ...HOSTED]) {
+    expect(budgetOf(endpoint, 1234).limit_tokens).toBe(1234);
+    expect(budgetOf(endpoint, 1234).off_reason).toBeUndefined();
+  }
+});
+
+test('budget — 0 is off everywhere, and the reason is the endpoint only when the owner set nothing', () => {
+  for (const endpoint of [...LOOPBACK, ...HOSTED]) {
+    expect(budgetOf(endpoint, 0).limit_tokens).toBe(0);
+    expect(budgetOf(endpoint, 0).off_reason).toBeUndefined();            // switched off by the owner, not by the endpoint
+  }
+});
+
+test('budget — at the default, a hosted endpoint is refused once its hour is spent and a loopback one never is; both are metered', async () => {
+  const BIG = 'x '.repeat(260_000);                                      // ~260k tokens: two are over the 500k default
+  const fetched = spyOn(globalThis, 'fetch').mockImplementation((async () => Response.json({ data: [{ embedding: [1, 2], index: 0 }], model: 'x' })) as unknown as typeof fetch);
+  const log = quiet();
+  try {
+    clock(T0);
+    const hosted = new Embedder({ endpoint: 'https://api.voyageai.com/v1/embeddings', model: 'x' });
+    await hosted.embed([BIG], 'query');
+    await hosted.embed([BIG], 'query');                                  // reaches the limit: sent, and trips
+    await expect(hosted.embed([BIG], 'query')).rejects.toBeInstanceOf(EmbedderBudgetExceeded);
+    expect(fetched).toHaveBeenCalledTimes(2);
+    const local = new Embedder({ endpoint: 'http://127.0.0.1:8124/v1/embeddings', model: 'x' });
+    for (let i = 0; i < 3; i++) await local.embed([BIG], 'query');       // 780k tokens in the minute: all sent
+    expect(fetched).toHaveBeenCalledTimes(5);
+    expect(local.budgetPausedUntilMs()).toBe(0);
+    expect(local.degradationFlags()).toEqual([]);
+    const u = local.usage();
+    expect(u.interactive_budget).toMatchObject({ limit_tokens: 0, trips: 0, off_reason: 'local-endpoint' });
+    expect(u.interactive_budget!.over_limit).toBeUndefined();
+    // the metering stays on: the hour, the minute and the busiest minute are all there
+    expect(u.interactive_budget!.window_tokens).toBeGreaterThan(INTERACTIVE_BUDGET_TOKENS);
+    expect(u.per_minute!.reduce((n, m) => n + (m.by_source.query?.tokens ?? 0), 0)).toBe(u.interactive_budget!.window_tokens);
+    expect(u.busiest_interactive_minute!.tokens).toBe(u.interactive_budget!.window_tokens);
+    expect(budgetLines(log)).toBe(1);                                    // the hosted trip only
+  } finally { setSystemTime(); fetched.mockRestore(); log.mockRestore(); }
+});
+
+// ---- the display gap: the pause has ended, the hour still holds the spend, the next request will trip it again ----
+test('budget — usage() says over_limit from the end of the pause until the next request trips it again, and not before or after', async () => {
+  const s = slowServer(); const e = new Embedder({ endpoint: s.url, model: 'x', interactiveBudgetTokens: 2 * TOK });
+  const log = quiet();
+  try {
+    clock(T0);
+    await e.embed([TEXT], 'query');
+    expect(e.usage().interactive_budget!.over_limit).toBeUndefined();   // under the limit
+    await e.embed([TEXT], 'query');                                      // reaches it: trips, paused 30 minutes
+    expect(e.usage().interactive_budget!.paused_until_epoch).not.toBeNull();
+    expect(e.usage().interactive_budget!.over_limit).toBeUndefined();   // paused: that is what is shown
+    clock(T0 + 31 * 60_000);                                             // the pause is over, the spend is 31 minutes old
+    expect(e.degradationFlags()).toEqual([]);
+    expect(e.usage().interactive_budget).toMatchObject({ paused_until_epoch: null, over_limit: true, window_tokens: 2 * TOK, trips: 1 });
+    await expect(e.embed([TEXT], 'query')).rejects.toBeInstanceOf(EmbedderBudgetExceeded);   // the next search is refused ...
+    expect(e.degradationFlags()).toHaveLength(1);                        // ... and its response carries the flag
+    expect(e.usage().interactive_budget!.over_limit).toBeUndefined();   // paused again
+    expect(e.usage().interactive_budget!.trips).toBe(2);
+    clock(T0 + 62 * 60_000);                                             // the spend has left the hour and the second pause is over
+    expect(e.usage().interactive_budget).toMatchObject({ paused_until_epoch: null, window_tokens: 0 });
+    expect(e.usage().interactive_budget!.over_limit).toBeUndefined();
+  } finally { setSystemTime(); log.mockRestore(); s.server.stop(); }
 });
 
 test('degradationFlags — empty when healthy; the waste pause has its own entry', async () => {
