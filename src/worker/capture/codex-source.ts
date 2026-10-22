@@ -21,9 +21,9 @@ import { join } from 'path';
 import { codexHomeDir } from '../../shared/codex-home.ts';
 import type { RawObservationEvent } from '../../shared/types.ts';
 import type { CaptureSource, IncrementalExtract, SessionRef } from './types.ts';
+import { clip } from './shared.ts';
 
 const DEFAULT_QUIESCE_MS = 60_000;
-const SUMMARY_MAX = 2000; // matches the enqueue schema cap on the summary fields
 /** Bump on ANY change to the turn rules in parse(). A resume point written by another parser version is
  *  refused, so the file is parsed in full and the driver's eventCountAtMarker guard repairs the cursor. */
 const PARSER_VERSION = 1;
@@ -40,11 +40,6 @@ export interface CodexSourceOptions {
   /** Loud-failure sink. Defaults to console.error. Injected so tests can assert
    *  that an unparseable rollout is REPORTED rather than silently skipped. */
   warn?: (message: string) => void;
-}
-
-function clip(s: string, max = SUMMARY_MAX): string {
-  const t = (s ?? '').trim();
-  return t.length <= max ? t : t.slice(0, max - 1) + '…';
 }
 
 /** Join codex `content: [{type,text}]` arrays (and tolerate a plain string). */

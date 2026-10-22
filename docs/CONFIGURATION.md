@@ -292,6 +292,15 @@ connect` separately installs native observation hooks for supported Codex, Gemin
 the reader stays armed until each exact session proves native delivery, then skips that session to
 avoid duplicate observations. No extra environment setting is required.
 
+Captured text is redacted for credential-shaped values before it is queued, so it reaches neither the summarizer provider nor
+the stored observation: a token a vendor issues (GitLab, GitHub, OpenAI, Anthropic, Slack, AWS), a bearer token or JWT,
+`password=…`-style pairs, a password in a URL or on a command line, a private key block. Each becomes `[REDACTED…]`; the
+words around it stay. This covers the readers below (each redacts a turn before it cuts it to length, and the capture driver
+redacts once more as a net) and every observation a hook posts to the worker: Claude Code's `PostToolUse` and `PreCompact`
+and the native Codex, Gemini and Kimi hooks. The prompt and tool text are redacted; file paths and ids are not. The match is
+by shape, so a secret with none (a plain word used as a password) stays, and a hook cuts its text to 1 500 characters (2 000
+for `PreCompact`) before it posts it, so a value that cut lands inside can leave its first characters.
+
 | Setting | Default | Notes |
 |---|---|---|
 | `CAPTAIN_MEMO_CAPTURE_CODEX` | ON | |

@@ -110,7 +110,7 @@ import { createGeminiSource } from './capture/gemini-source.ts';
 import { createKimiSource } from './capture/kimi-source.ts';
 import { createOpencodeSource } from './capture/opencode-source.ts';
 import { createVibeSource } from './capture/vibe-source.ts';
-import { runCaptureTick } from './capture/driver.ts';
+import { runCaptureTick, redactEvent, createTickGate } from './capture/driver.ts';
 import { createWorkerMetrics, recordEmbed, recordIndexResult } from './metrics.ts';
 import { computeEfficiency } from './efficiency.ts';
 import { countTokens } from '../shared/tokens.ts';
@@ -1383,7 +1383,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // persist to disk). First tick seeds a per-source cutoff so pre-existing history
   // isn't summarized in bulk; only sessions finished after enable are captured.
   let captureTimer: ReturnType<typeof setInterval> | null = null;
-  let capturePromise: Promise<unknown> | null = null;
+  const captureGate = createTickGate();   // one capture tick at a time: the interval, the boot tick and POST /capture/backfill
   // Exposed to the /capture/backfill handler: runs one tick that IGNORES the cutoff,
   // so `captain-memo capture backfill` can ingest pre-cutoff history on demand.
   let captureBackfill: (() => Promise<{ ingested: number; events: number }>) | null = null;
@@ -1453,15 +1453,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           return { ingested: 0, events: 0, recent: {} };
         }
       };
-      captureBackfill = () => runTick(true);
+      captureBackfill = () => captureGate.backfill(() => runTick(true));
       const captureTickMs = Number(process.env.CAPTAIN_MEMO_CAPTURE_TICK_MS ?? 60_000);
-      void runTick(false); // seed cutoffs + populate the active-source list at boot
+      void captureGate.interval(() => runTick(false)); // seed cutoffs + populate the active-source list at boot
       // Skip — not queue — if the previous tick is still going. Now that a tick yields it can
       // outlive its interval on a big backlog, and overlapping ticks would double-extract.
-      captureTimer = setInterval(() => {
-        if (capturePromise) return;
-        capturePromise = runTick(false).finally(() => { capturePromise = null; });
-      }, captureTickMs);
+      captureTimer = setInterval(() => { captureGate.interval(() => runTick(false)); }, captureTickMs);
       // Per-source diagnostic: the RESOLVED path each source watches + whether it currently exists. Makes a
       // misresolved home / wrong path visible in the log instead of a silent "no sources detected".
       const captureDiag = captureSources.map(s => `${s.id}=${s.available() ? 'watching' : 'absent'}[${s.describe()}]`).join(' ');
@@ -3902,8 +3899,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
         }
         const { branch, source, origin_agent, ...rest } = parsed.data;
+        // The ingress of every hook (Claude Code's PostToolUse / PreCompact and the native Codex, Gemini and Kimi hooks), as the
+        // capture driver is for the transcript readers: credential-shaped text out of the prompt and tool text before the queue
+        // row, the summarizer prompt and the observation are made. redactEvent is the driver's own function; paths and ids stay.
+        // One call per tool use, measured 2026-10-23 (nice 19, load ~3): 30 µs for a typical Bash event, 81 µs for both fields at the
+        // hook's 1 500-char cut, 150 µs for text built to hit every gate word, 417 µs with tokens to replace; a booted worker answers
+        // the POST in 1.3 ms (p50, clean) / 1.8 ms (tokens): ~0.003% of the engine thread at a tool use every 3 s.
         const id = obsQueue.enqueue({
-          ...rest,
+          ...redactEvent(rest),
           branch: branch ?? null,
           ...(origin_agent !== undefined && { origin_agent }),
           ...(source !== undefined && { source }),
@@ -4019,7 +4022,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     // allSettled, not all: a slice that rejects has already logged + recorded its own errored audit row —
     // here we only care that it is DONE, and one failing slice must not skip the drain of the others.
     await Promise.allSettled([
-      processBatchPromise, tideSweepPromise, ivfSweepPromise, capturePromise, qmDedupPromise, qmSupersedePromise, promotionPromise,
+      processBatchPromise, tideSweepPromise, ivfSweepPromise, captureGate.pending(), qmDedupPromise, qmSupersedePromise, promotionPromise,
       orphanSweepPromise,
     ].filter((p): p is Promise<unknown> => p != null));
     await Promise.allSettled(watchers.map((watcher) => watcher.close()));
