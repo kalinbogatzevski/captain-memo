@@ -15,7 +15,7 @@ import { markTransition, clearTransition } from '../shared/worker-transition.ts'
 import { restartWorker } from '../shared/worker-control.ts';
 import { acquireHealLock, releaseHealLock } from '../shared/worker-heal-lock.ts';
 import { probeHealthOnce, readWorkerInstance } from '../shared/worker-health-probe.ts';
-import { logHookError } from './shared.ts';
+import { hookEntryPath, logHookError } from './shared.ts';
 
 export const AUTO_UPDATE_LOCK = join(DATA_DIR, '.auto-update.lock');
 export const UPDATE_STAMP = join(DATA_DIR, '.last-update-check');
@@ -109,6 +109,16 @@ function readSkippedRelease(): string | null {
   try { return readFileSync(SKIPPED_RELEASE_FILE, 'utf-8').trim() || null; } catch { return null; }
 }
 
+/** The configured interval, the stamp's contents and whether a check is due now: one stat and one small read. The pass and the
+ *  prompt hook's cheap due-check (startPromptUpdate) both ask THIS, so they can never disagree about "due". */
+function readStampState(now: number = Date.now()): { intervalMs: number; stamp: { delayMs: number | null; failures: number }; due: boolean } {
+  const intervalMs = updateCheckIntervalFromEnv(process.env.CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS);
+  let lastCheck: number | null = null;
+  let stamp: { delayMs: number | null; failures: number } = { delayMs: null, failures: 0 };
+  try { lastCheck = statSync(UPDATE_STAMP).mtimeMs; stamp = parseUpdateStamp(readFileSync(UPDATE_STAMP, 'utf-8')); } catch { /* never checked */ }
+  return { intervalMs, stamp, due: isUpdateCheckDue(lastCheck, now, stamp.delayMs ?? intervalMs) };
+}
+
 /** One throttled pass: if a check is due and no other session is running one, find the newest stable tag that
  *  fast-forwards (see worker/self-updater.ts for the gates), apply it, restart the worker onto it, and roll back if it
  *  does not come up. Never throws. Every other caller sees `{kind:'none'}` at the cost of one stat and one small read. */
@@ -139,16 +149,13 @@ export async function runAutoUpdatePass(o: AutoUpdateOptions): Promise<AutoUpdat
       if (argv[1] === 'fetch' && r.code !== 0) fetchFailed = true;
       return r;
     };
-    const intervalMs = updateCheckIntervalFromEnv(process.env.CAPTAIN_MEMO_AUTO_UPDATE_INTERVAL_MS);
     try { mkdirSync(DATA_DIR, { recursive: true }); } catch { /* dir may exist */ }
-    let lastCheck: number | null = null;
-    let stamp: { delayMs: number | null; failures: number } = { delayMs: null, failures: 0 };
-    try { lastCheck = statSync(UPDATE_STAMP).mtimeMs; stamp = parseUpdateStamp(readFileSync(UPDATE_STAMP, 'utf-8')); } catch { /* never checked */ }
+    const { intervalMs, stamp, due } = readStampState();
     const writeStamp = (failures: number): void => {
       try { writeFileSync(UPDATE_STAMP, formatUpdateStamp(new Date(), nextUpdateCheckDelayMs(intervalMs, failures), failures)); } catch { /* stamp best-effort */ }
     };
     // Lock serializes concurrent sessions: only one may fetch/ff/install/restart at a time.
-    if (!isUpdateCheckDue(lastCheck, Date.now(), stamp.delayMs ?? intervalMs) || !acquireHealLock(AUTO_UPDATE_LOCK)) return { kind: 'none' };
+    if (!due || !acquireHealLock(AUTO_UPDATE_LOCK)) return { kind: 'none' };
     try {
       writeStamp(stamp.failures + 1);   // counted as failed until it finishes: a hook killed mid-fetch still backs off
       const version = o.version ?? VERSION;
@@ -202,5 +209,72 @@ export async function runAutoUpdatePass(o: AutoUpdateOptions): Promise<AutoUpdat
     if (wroteTransition) clearTransition();
     logHookError(o.event, err);
     return { kind: 'none' };
+  }
+}
+
+/** What the PROMPT path does with one pass: the log line and the left-over outcome. No banner on this path (the hook's stdout
+ *  is the prompt's context). The version marker is left alone, so the next SessionStart announces the upgrade; the log is where
+ *  this one shows. A blocked or rolled-back check has no marker, and it has used the hourly slot: it is left for the next
+ *  SessionStart to announce (recordUnshownOutcome). Run in-line by the prompt hook on win32, and by the UpdateApply child
+ *  elsewhere (hooks/update-apply.ts). `event` tags the log lines. */
+export async function applyPromptUpdate(event: string, pass: typeof runAutoUpdatePass = runAutoUpdatePass): Promise<void> {
+  const out = await pass({ event, networkTimeoutMs: 8_000 });
+  if (out.kind === 'updated') logHookError(event, new Error(`auto-updated v${out.res.from} -> v${out.res.to ?? '?'}`));
+  recordUnshownOutcome(out);
+}
+
+/** Held by the prompt hook that spawned the apply child, and NOT released: it expires by itself (the heal lock's 20 s TTL). */
+export const UPDATE_SPAWN_LOCK = join(DATA_DIR, '.auto-update-spawn.lock');
+
+/** Start `cmd` fully detached: its own session (Bun `detached` = setsid), no stdio shared with the caller (Claude Code refuses
+ *  the output of a hook whose background child holds its pipes, and waits for them), and unref'd so this process may exit
+ *  while it runs. Measured 2026-10-22 (Claude Code 2.1.306, `claude -p`): such a child survives its parent's exit and the end
+ *  of the session. Throws if the spawn itself fails. */
+export function spawnDetached(cmd: string[]): void {
+  Bun.spawn(cmd, { stdio: ['ignore', 'ignore', 'ignore'], detached: true, env: process.env as Record<string, string> }).unref();
+}
+
+export type PromptUpdateStart = 'inline' | 'spawned' | 'not-due' | 'in-flight' | 'no-entry' | 'spawn-failed';
+
+export interface PromptUpdateDeps {
+  platform?: NodeJS.Platform;
+  /** The dispatcher entry to re-run as the child (default: the one this process was launched through). */
+  entry?: string | null;
+  execPath?: string;
+  spawn?: (cmd: string[]) => void;
+  pass?: typeof runAutoUpdatePass;
+  now?: number;
+}
+
+/** The UserPromptSubmit hook's self-update step, after its envelope is out (the caller has checked the opt-in, a healthy worker
+ *  and a Claude Code host). Claude Code cuts this hook at 30 s and kills everything still attached to it, so an apply (a
+ *  `bun install` alone may take 300 s) cannot run in it: on Linux/macOS it runs as a DETACHED child (`<dispatcher> UpdateApply`,
+ *  hooks/update-apply.ts) and the hook exits at once. win32 keeps the in-line pass as before (a plain child there probably
+ *  dies with the hook: shared/kill-tree.ts; the WMI launcher is not wired for this). Never throws on the spawn path.
+ *
+ *  Single flight: the child itself checks the stamp, takes `.auto-update.lock` and stamps BEFORE any git, as the in-line pass
+ *  always did. What that cannot cover is the gap between this hook's due-check and the child's stamp (a bun boot, ~0.1 s): a second
+ *  prompt in it would see "due" and spawn a second child, which the pass's own lock and stamp would then turn away, at the cost
+ *  of a bun boot. So the spawn takes UPDATE_SPAWN_LOCK first: one child per 20 s at most.
+ *
+ *  COST (measured 2026-10-22, load ~3 on 24 cores, run niced like every heavy job here, so absolute times are ~2.5x a quiet box;
+ *  20 alternating runs per arm): a due check adds +9.9 ms at the median (median of the pairwise differences; the spread between runs
+ *  is 25-45 ms) to a fresh bun process that does the due-check, the lock and the spawn (348.5 ms not due, 352.7 due, with a 5 s stub
+ *  child: the process had exited before the stub in 20/20), and +3.7 ms to the real bundle against a stub worker (388.4 vs 390.1 ms);
+ *  the real UpdateApply then finished a median 361 ms AFTER the hook had gone, time the hook used to spend in-line on a pass that
+ *  found nothing to do. */
+export async function startPromptUpdate(d: PromptUpdateDeps = {}): Promise<PromptUpdateStart> {
+  if ((d.platform ?? process.platform) === 'win32') { await applyPromptUpdate('UserPromptSubmit', d.pass); return 'inline'; }
+  if (!readStampState(d.now).due) return 'not-due';
+  const entry = d.entry === undefined ? hookEntryPath() : d.entry;
+  if (!entry) { logHookError('UserPromptSubmit', new Error('auto-update: not started, this hook was not launched through the dispatcher entry')); return 'no-entry'; }
+  try { mkdirSync(DATA_DIR, { recursive: true }); } catch { /* dir may exist */ }
+  if (!acquireHealLock(UPDATE_SPAWN_LOCK, d.now)) return 'in-flight';
+  try {
+    (d.spawn ?? spawnDetached)([d.execPath ?? process.execPath, entry, 'UpdateApply']);
+    return 'spawned';
+  } catch (err) {
+    logHookError('UserPromptSubmit', new Error(`auto-update: could not start the detached apply: ${(err as Error).message}`));
+    return 'spawn-failed';
   }
 }

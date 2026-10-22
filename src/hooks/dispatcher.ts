@@ -19,6 +19,7 @@ import { main as preToolUse } from './pre-tool-use.ts';
 import { main as postToolUse } from './post-tool-use.ts';
 import { main as stop } from './stop.ts';
 import { main as preCompact } from './pre-compact.ts';
+import { main as updateApply } from './update-apply.ts';
 
 const EVENTS: Record<string, () => Promise<void>> = {
   UserPromptSubmit: userPromptSubmit,
@@ -27,6 +28,9 @@ const EVENTS: Record<string, () => Promise<void>> = {
   PostToolUse:      postToolUse,
   Stop:             stop,
   PreCompact:       preCompact,
+  // Not a Claude Code hook event and not in hooks.json: the detached child the UserPromptSubmit hook spawns for the opt-in
+  // self-update (hooks/update-apply.ts).
+  UpdateApply:      updateApply,
   // Native Codex uses the same lifecycle event names but not identical stdout
   // semantics. Installer-owned aliases keep the vendor behavior explicit while
   // reusing the same single-file hook bundle.

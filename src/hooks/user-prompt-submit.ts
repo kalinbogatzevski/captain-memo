@@ -182,28 +182,23 @@ export async function main(options: UserPromptSubmitOptions = {}): Promise<void>
   // so the check is also made here, after the envelope is out. It shares SessionStart's stamp and lock (hooks/auto-update.ts):
   // one check per interval across both hooks, and the same gates (clean tree, branch checked out, fast-forward only, newest
   // stable tag). Claude Code only: the native hosts kill this hook at 5 s, a check takes longer. A healthy worker only.
-  // COST (measured 2026-10-01, load 37 on 24 cores): between checks one stat and one read of the stamp, 0.1 ms (the whole
-  // hook +14 ms at the median over 30 runs from source, mostly loading the module). A due check that finds nothing is
-  // `git fetch` 3.3 s plus `git ls-remote` 3.1 s, hourly with jitter. Both are held to 8 s here (20 s at SessionStart), so a
-  // dead origin costs one prompt at most 16 s and then backs off 2 h, 4 h, 6 h. An apply adds `bun install` (own 300 s cap),
-  // the restart and up to 30 s waiting for the new worker process; against a local origin the whole apply took 1.7 s.
-  // HOOK TIMEOUT (#913): Claude Code's default for a UserPromptSubmit command hook is 30 s, not the 600 s of other events
-  // (code.claude.com/docs/en/hooks), and a hook that reaches it is cancelled with its output discarded, the memory envelope
-  // included. MEASURED 2026-10-21 on Claude Code 2.1.306 (claude -p, a throwaway hook, default timeout): the hook process is
-  // KILLED at about 30 s. Not measured: its children, or an interactive session. A check that finds nothing fits (16 s of network at
-  // most); an apply does not: merge + `bun install` (300 s cap) + restart + up to 30 s for the new worker add up to 367.5 s
-  // (16 fetch and ls-remote + 20 merge + 300 install + 1.5 + 30) of caps, so an apply on this path
-  // that runs past 30 s is cut off midway. Known and tracked: the fix is a separate update-only hook entry with its own timeout,
-  // not a timeout key on this hook (a key is per entry, so it would raise the ceiling of every prompt of every user from 30 s).
+  // WHERE IT RUNS (#950): Claude Code's default for a UserPromptSubmit command hook is 30 s, not the 600 s of other events
+  // (code.claude.com/docs/en/hooks); a hook that reaches it is cancelled with its output discarded (the memory envelope
+  // included), and MEASURED 2026-10-21/22 on Claude Code 2.1.306 (claude -p): its whole descendant tree is killed with it, setsid
+  // children too. An apply (merge + `bun install` 300 s + restart + 30 s for the new worker: 367.5 s of caps) cannot run in it. So
+  // on Linux/macOS this hook only does the cheap due-check and spawns the pass as a DETACHED child (`UpdateApply`,
+  // hooks/update-apply.ts), then exits; MEASURED the same days: a child started with its stdio redirected survives the hook's
+  // exit and the end of `claude -p`. win32 keeps the pass in-line as before (startPromptUpdate says why).
+  // COST: opted in with nothing due, one stat and one read of the stamp plus loading the module (+14 ms at the median from source,
+  // 30 runs, 2026-10-01; +4.5 ms through the bundle, 2026-10-22, 20 runs). A due check adds a lock file, a spawn and an unref: +3.7 ms
+  // at the median through the bundle (see startPromptUpdate), and the hook is gone before the child has finished.
+  // Not opted in, the gate is one env read and nothing is loaded. The child's own cost is unchanged: a check that finds nothing
+  // is `git fetch` plus `git ls-remote` (3.3 s and 3.1 s measured 2026-10-01, load 37), both held to 8 s, so a dead
+  // origin costs the child 16 s and then backs off 2 h, 4 h, 6 h.
   if (result.ok && process.env.CAPTAIN_MEMO_AUTO_UPDATE === '1' && options.hostTimeoutMs === undefined) {
     try {
-      const { runAutoUpdatePass, recordUnshownOutcome } = await import('./auto-update.ts');
-      const out = await runAutoUpdatePass({ event: 'UserPromptSubmit', networkTimeoutMs: 8_000 });
-      // No banner on this path (the hook's stdout is the prompt's context). The version marker is left alone, so the next
-      // SessionStart announces the upgrade; the log is where this one shows. A blocked or rolled-back check has no marker, and
-      // it has used the hourly slot: it is left for the next SessionStart to announce (recordUnshownOutcome).
-      if (out.kind === 'updated') logHookError('UserPromptSubmit', new Error(`auto-updated v${out.res.from} -> v${out.res.to ?? '?'}`));
-      recordUnshownOutcome(out);
+      const { startPromptUpdate } = await import('./auto-update.ts');
+      await startPromptUpdate();
     } catch (err) {
       logHookError('UserPromptSubmit', err);
     }
