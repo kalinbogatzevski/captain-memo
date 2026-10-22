@@ -2512,6 +2512,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     ok: false, error: 'not_your_session',
     details: `work_set and work_clear act only on your own session, and ${sid} is not yours. Omit session_id to use your own; tell the user which session holds it.`,
   }, { status: 403 });
+  /** The POST /reindex pass in flight, or null. Per worker instance on purpose: a restarted writer has lost its pass. */
+  let reindexRunning: { started_at_ms: number; channel: string; force: boolean } | null = null;
   const handler = async (req: Request): Promise<Response> => {
     try {
       const url = new URL(req.url);
@@ -3363,181 +3365,198 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           return Response.json({ error: 'invalid_request', details: parsed.error.format() }, { status: 400 });
         }
 
-        let indexed = 0;
-        let skipped = 0;
-        let errors = 0;
+        // SINGLE-FLIGHT. Two forced passes started together made 1,602 embed requests (2 x 800 + 2 small) and both
+        // finished: every caller (CLI, the MCP `reindex` tool, upgrade) reaches this ONE handler on the writer, so the
+        // flag lives here and nowhere else. Checked and set with no `await` between, so two requests cannot both pass;
+        // released in `finally` on every exit. A refused request touches nothing.
+        if (reindexRunning) {
+          const at = new Date(reindexRunning.started_at_ms);
+          return Response.json({
+            error: 'reindex_running',
+            started_at: at.toISOString(), channel: reindexRunning.channel, force: reindexRunning.force,
+            detail: `a reindex is already running, started ${at.toTimeString().slice(0, 8)}, wait for it`,
+          }, { status: 409 });
+        }
+        reindexRunning = { started_at_ms: Date.now(), channel: parsed.data.channel, force: parsed.data.force };
+        try {
+          let indexed = 0;
+          let skipped = 0;
+          let errors = 0;
 
-        for (const source of watchSources) {
-          const channelMatch = parsed.data.channel === 'all' || parsed.data.channel === source.channel;
-          if (channelMatch) {
-            const files = await expandWatchPaths(source.paths);
-            for (const file of files) {
-              try {
-                // deleteFile drops the document's vectors, then the document. Dropping only the document
-                // (as this did) orphaned every old vector on each forced pass: 97% of 26,818 orphans.
-                // Without --force an unchanged file is skipped by sha, which says nothing about its vectors: after a
-                // run that died part-way (a `--redim` rate-limited at 115 of 20,540, 2026-08-03) the documents are
-                // intact and the vectors are gone, so a plain re-run did nothing. Treat "a chunk has no vector" as
-                // not indexed, exactly like --force does for that one file.
-                let refresh = parsed.data.force;
-                if (!refresh) {
-                  const prev = meta.getDocument(file);
-                  if (prev) {
-                    const ids = meta.getChunksForDocument(prev.id).map(c => c.chunk_id);
-                    refresh = ids.length > 0 && vector.hasVectors(collectionName, ids).size < ids.length;
+          for (const source of watchSources) {
+            const channelMatch = parsed.data.channel === 'all' || parsed.data.channel === source.channel;
+            if (channelMatch) {
+              const files = await expandWatchPaths(source.paths);
+              for (const file of files) {
+                try {
+                  // deleteFile drops the document's vectors, then the document. Dropping only the document
+                  // (as this did) orphaned every old vector on each forced pass: 97% of 26,818 orphans.
+                  // Without --force an unchanged file is skipped by sha, which says nothing about its vectors: after a
+                  // run that died part-way (a `--redim` rate-limited at 115 of 20,540, 2026-08-03) the documents are
+                  // intact and the vectors are gone, so a plain re-run did nothing. Treat "a chunk has no vector" as
+                  // not indexed, exactly like --force does for that one file.
+                  let refresh = parsed.data.force;
+                  if (!refresh) {
+                    const prev = meta.getDocument(file);
+                    if (prev) {
+                      const ids = meta.getChunksForDocument(prev.id).map(c => c.chunk_id);
+                      refresh = ids.length > 0 && vector.hasVectors(collectionName, ids).size < ids.length;
+                    }
                   }
+                  if (refresh) await ingest.deleteFile(file);
+                  const before = meta.getDocument(file);
+                  await ingest.indexFile(file, source.channel);
+                  const after = meta.getDocument(file);
+                  if (after && (!before || before.sha !== after.sha)) indexed++;
+                  else skipped++;
+                } catch {
+                  errors++;
                 }
-                if (refresh) await ingest.deleteFile(file);
-                const before = meta.getDocument(file);
-                await ingest.indexFile(file, source.channel);
-                const after = meta.getDocument(file);
-                if (after && (!before || before.sha !== after.sha)) indexed++;
-                else skipped++;
-              } catch {
-                errors++;
               }
             }
           }
-        }
 
-        // Observation reindex — file-based reindex above doesn't cover the
-        // observation channel because observations live in obsStore, not on
-        // disk. Batched embeds (32 obs per Voyage call) — per-obs serial
-        // embedding is API-latency bound at ~1.7 obs/sec, batched lifts it
-        // to ~50 obs/sec. With --force, we drop the old document (cascades
-        // meta chunks + FTS), evict orphaned vectors, then re-build chunks.
-        // Without --force, observations that already carry the current chunk
-        // shape (single chunk with field_type='observation') AND a vector are
-        // skipped so the reindex is resumable after a crash or interrupt.
-        if (obsStore && (parsed.data.channel === 'observation' || parsed.data.channel === 'all')) {
-          const OBS_REINDEX_BATCH = 32;
-          let buffer: Observation[] = [];
+          // Observation reindex — file-based reindex above doesn't cover the
+          // observation channel because observations live in obsStore, not on
+          // disk. Batched embeds (32 obs per Voyage call) — per-obs serial
+          // embedding is API-latency bound at ~1.7 obs/sec, batched lifts it
+          // to ~50 obs/sec. With --force, we drop the old document (cascades
+          // meta chunks + FTS), evict orphaned vectors, then re-build chunks.
+          // Without --force, observations that already carry the current chunk
+          // shape (single chunk with field_type='observation') AND a vector are
+          // skipped so the reindex is resumable after a crash or interrupt.
+          if (obsStore && (parsed.data.channel === 'observation' || parsed.data.channel === 'all')) {
+            const OBS_REINDEX_BATCH = 32;
+            let buffer: Observation[] = [];
 
-          const flushBatch = async (): Promise<void> => {
-            if (buffer.length === 0) return;
-            const batch = buffer;
-            buffer = [];
+            const flushBatch = async (): Promise<void> => {
+              if (buffer.length === 0) return;
+              const batch = buffer;
+              buffer = [];
 
-            // Build chunks for every obs in the batch up front; track which
-            // index of the flat texts array maps to which observation.
-            interface Prepared {
-              obs: Observation;
-              sourcePath: string;
-              chunksWithIds: Array<{ chunk_id: string; text: string; sha: string; position: number; metadata: Record<string, unknown> }>;
-              oldChunkIds: string[];
-            }
-            const prepared: Prepared[] = [];
-            for (const obs of batch) {
-              const sourcePath = `observation:${opts.projectId}:${obs.id}`;
-              // --force: capture the existing chunk ids READ-ONLY here. We must
-              // NOT delete vectors/meta yet — embed-then-swap drops the old
-              // vectors only after the new ones commit (write loop below), so a
-              // failed embed leaves the existing index fully intact.
-              let oldChunkIds: string[] = [];
-              if (parsed.data.force) {
-                const existing = meta.getDocument(sourcePath);
-                if (existing) oldChunkIds = meta.getChunksForDocument(existing.id).map(c => c.chunk_id);
+              // Build chunks for every obs in the batch up front; track which
+              // index of the flat texts array maps to which observation.
+              interface Prepared {
+                obs: Observation;
+                sourcePath: string;
+                chunksWithIds: Array<{ chunk_id: string; text: string; sha: string; position: number; metadata: Record<string, unknown> }>;
+                oldChunkIds: string[];
               }
-              const rawChunks = chunkObservation(obs);
-              if (rawChunks.length === 0) {
-                skipped++;
-                continue;
-              }
-              const chunks = splitForEmbed(rawChunks, effectiveMaxInputTokens);
-              const chunksWithIds = chunks.map(c => ({
-                chunk_id: newChunkId('observation', String(obs.id)),
-                text: c.text,
-                sha: sha256Hex(c.text),
-                position: c.position,
-                metadata: c.metadata,
-              }));
-              prepared.push({ obs, sourcePath, chunksWithIds, oldChunkIds });
-            }
-            if (prepared.length === 0) return;
-
-            // Single embed call for all chunks across the batch.
-            const flatTexts = prepared.flatMap(p => p.chunksWithIds.map(c => c.text));
-            let flatEmbeddings: number[][] | null = null;
-            if (opts.skipEmbed) {
-              flatEmbeddings = flatTexts.map(() => new Array(opts.embeddingDimension).fill(0));
-            } else {
-              try {
-                flatEmbeddings = await timedEmbed(flatTexts);
-              } catch (err) {
-                console.error(`[reindex-obs] batch embed failed (${prepared.length} obs):`, (err as Error).message);
-                errors += prepared.length;
-                return;
-              }
-            }
-
-            // Distribute embeddings back to each observation's chunks and
-            // commit meta + vector writes.
-            let cursor = 0;
-            for (const p of prepared) {
-              const n = p.chunksWithIds.length;
-              const obsEmbeddings = flatEmbeddings!.slice(cursor, cursor + n);
-              cursor += n;
-              const pStoredTokens = p.chunksWithIds.reduce((n, c) => n + countTokens(c.text), 0);
-              obsStore?.setStoredTokens(p.obs.id, pStoredTokens);
-              try {
-                const documentId = meta.upsertDocument({
-                  source_path: p.sourcePath,
-                  channel: 'observation',
-                  project_id: opts.projectId,
-                  sha: sha256Hex(JSON.stringify(p.obs)),
-                  mtime_epoch: p.obs.created_at_epoch,
-                  metadata: {
-                    observation_id: p.obs.id,
-                    session_id: p.obs.session_id,
-                    type: p.obs.type,
-                    title: p.obs.title,
-                    created_at_epoch: p.obs.created_at_epoch,
-                    branch: p.obs.branch ?? null,
-                  },
-                });
-                meta.replaceChunksForDocument(documentId, p.chunksWithIds);
-                await vector.add(
-                  collectionName,
-                  p.chunksWithIds.map((c, i) => ({ id: c.chunk_id, embedding: obsEmbeddings[i]! })),
-                );
-                // Embed-then-swap: now that the fresh vectors are committed, drop
-                // the old vectors that the new chunk set no longer covers. doc id
-                // is preserved (upsertDocument updates in place by source_path,
-                // replaceChunksForDocument swaps meta chunks), so no deleteDocument.
-                const stale = p.oldChunkIds.filter(id => !p.chunksWithIds.some(c => c.chunk_id === id));
-                if (stale.length > 0) await vector.delete(collectionName, stale);
-                indexed++;
-              } catch (err) {
-                console.error(`[reindex-obs] obs#${p.obs.id} write failed:`, (err as Error).message);
-                errors++;
-              }
-            }
-          };
-
-          for (const obs of obsStore.iterateAll()) {
-            // Resumability: without --force, skip observations already on the
-            // current chunk shape so re-running picks up where it left off.
-            if (!parsed.data.force) {
-              const existing = meta.getDocument(`observation:${opts.projectId}:${obs.id}`);
-              if (existing) {
-                const chunks = meta.getChunksForDocument(existing.id);
-                // ...and its vector is still there. A chunk row alone is not "indexed": `--redim` deletes the vector
-                // index and keeps the chunks, so a re-run after a partly failed redim skipped all 20,493 rows and
-                // reported success over a corpus that was 99% unembedded.
-                if (chunks.length === 1 && (chunks[0]!.metadata as Record<string, unknown>).field_type === 'observation'
-                    && vector.hasVectors(collectionName, [chunks[0]!.chunk_id]).size === 1) {
+              const prepared: Prepared[] = [];
+              for (const obs of batch) {
+                const sourcePath = `observation:${opts.projectId}:${obs.id}`;
+                // --force: capture the existing chunk ids READ-ONLY here. We must
+                // NOT delete vectors/meta yet — embed-then-swap drops the old
+                // vectors only after the new ones commit (write loop below), so a
+                // failed embed leaves the existing index fully intact.
+                let oldChunkIds: string[] = [];
+                if (parsed.data.force) {
+                  const existing = meta.getDocument(sourcePath);
+                  if (existing) oldChunkIds = meta.getChunksForDocument(existing.id).map(c => c.chunk_id);
+                }
+                const rawChunks = chunkObservation(obs);
+                if (rawChunks.length === 0) {
                   skipped++;
                   continue;
                 }
+                const chunks = splitForEmbed(rawChunks, effectiveMaxInputTokens);
+                const chunksWithIds = chunks.map(c => ({
+                  chunk_id: newChunkId('observation', String(obs.id)),
+                  text: c.text,
+                  sha: sha256Hex(c.text),
+                  position: c.position,
+                  metadata: c.metadata,
+                }));
+                prepared.push({ obs, sourcePath, chunksWithIds, oldChunkIds });
               }
-            }
-            buffer.push(obs);
-            if (buffer.length >= OBS_REINDEX_BATCH) await flushBatch();
-          }
-          await flushBatch();
-        }
+              if (prepared.length === 0) return;
 
-        return Response.json({ indexed, skipped, errors });
+              // Single embed call for all chunks across the batch.
+              const flatTexts = prepared.flatMap(p => p.chunksWithIds.map(c => c.text));
+              let flatEmbeddings: number[][] | null = null;
+              if (opts.skipEmbed) {
+                flatEmbeddings = flatTexts.map(() => new Array(opts.embeddingDimension).fill(0));
+              } else {
+                try {
+                  flatEmbeddings = await timedEmbed(flatTexts);
+                } catch (err) {
+                  console.error(`[reindex-obs] batch embed failed (${prepared.length} obs):`, (err as Error).message);
+                  errors += prepared.length;
+                  return;
+                }
+              }
+
+              // Distribute embeddings back to each observation's chunks and
+              // commit meta + vector writes.
+              let cursor = 0;
+              for (const p of prepared) {
+                const n = p.chunksWithIds.length;
+                const obsEmbeddings = flatEmbeddings!.slice(cursor, cursor + n);
+                cursor += n;
+                const pStoredTokens = p.chunksWithIds.reduce((n, c) => n + countTokens(c.text), 0);
+                obsStore?.setStoredTokens(p.obs.id, pStoredTokens);
+                try {
+                  const documentId = meta.upsertDocument({
+                    source_path: p.sourcePath,
+                    channel: 'observation',
+                    project_id: opts.projectId,
+                    sha: sha256Hex(JSON.stringify(p.obs)),
+                    mtime_epoch: p.obs.created_at_epoch,
+                    metadata: {
+                      observation_id: p.obs.id,
+                      session_id: p.obs.session_id,
+                      type: p.obs.type,
+                      title: p.obs.title,
+                      created_at_epoch: p.obs.created_at_epoch,
+                      branch: p.obs.branch ?? null,
+                    },
+                  });
+                  meta.replaceChunksForDocument(documentId, p.chunksWithIds);
+                  await vector.add(
+                    collectionName,
+                    p.chunksWithIds.map((c, i) => ({ id: c.chunk_id, embedding: obsEmbeddings[i]! })),
+                  );
+                  // Embed-then-swap: now that the fresh vectors are committed, drop
+                  // the old vectors that the new chunk set no longer covers. doc id
+                  // is preserved (upsertDocument updates in place by source_path,
+                  // replaceChunksForDocument swaps meta chunks), so no deleteDocument.
+                  const stale = p.oldChunkIds.filter(id => !p.chunksWithIds.some(c => c.chunk_id === id));
+                  if (stale.length > 0) await vector.delete(collectionName, stale);
+                  indexed++;
+                } catch (err) {
+                  console.error(`[reindex-obs] obs#${p.obs.id} write failed:`, (err as Error).message);
+                  errors++;
+                }
+              }
+            };
+
+            for (const obs of obsStore.iterateAll()) {
+              // Resumability: without --force, skip observations already on the
+              // current chunk shape so re-running picks up where it left off.
+              if (!parsed.data.force) {
+                const existing = meta.getDocument(`observation:${opts.projectId}:${obs.id}`);
+                if (existing) {
+                  const chunks = meta.getChunksForDocument(existing.id);
+                  // ...and its vector is still there. A chunk row alone is not "indexed": `--redim` deletes the vector
+                  // index and keeps the chunks, so a re-run after a partly failed redim skipped all 20,493 rows and
+                  // reported success over a corpus that was 99% unembedded.
+                  if (chunks.length === 1 && (chunks[0]!.metadata as Record<string, unknown>).field_type === 'observation'
+                      && vector.hasVectors(collectionName, [chunks[0]!.chunk_id]).size === 1) {
+                    skipped++;
+                    continue;
+                  }
+                }
+              }
+              buffer.push(obs);
+              if (buffer.length >= OBS_REINDEX_BATCH) await flushBatch();
+            }
+            await flushBatch();
+          }
+
+          return Response.json({ indexed, skipped, errors });
+        } finally {
+          reindexRunning = null;
+        }
       }
 
       if (req.method === 'POST' && url.pathname === '/remember') {

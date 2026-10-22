@@ -1,6 +1,7 @@
 import { statusCommand } from './commands/status.ts';
 import { statsCommand } from './commands/stats.ts';
 import { reindexCommand } from './commands/reindex.ts';
+import { workerErrorReason } from './client.ts';
 import { vacuumCommand } from './commands/vacuum.ts';
 import { upgradeCommand } from './commands/upgrade.ts';
 import { observationCommand } from './commands/observation.ts';
@@ -103,6 +104,12 @@ function reportCliError(err: unknown): number {
     // A non-idempotent write the worker may still be finishing: say so, never "failed" — a retry would double it.
     console.error(msg);
     return 2;
+  }
+  // A reindex refused because one is already running (reindex, upgrade, reindex --redim all reach it): say what the
+  // worker said, with the start time, not the raw `/reindex → 409: {json}` line. Nothing failed, nothing was started.
+  if (/"error":"reindex_running"/.test(msg)) {
+    console.error(workerErrorReason(err));
+    return 1;
   }
   if (/ECONNREFUSED|Unable to connect|Connection refused|fetch failed|failed to connect/i.test(msg)) {
     console.error('captain-memo worker is not reachable.');

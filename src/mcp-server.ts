@@ -421,6 +421,17 @@ function defaultDispatchDeps(): { workerBase: string; sessionId: string; cwd: ()
   return { workerBase: WORKER_BASE, sessionId: sessionIdNow(), cwd: () => process.cwd() };
 }
 
+/** The worker refused a reindex because one is already running (409 reindex_running): its own sentence, which carries the
+ *  start time, as the text the AI reads. null for any other error. */
+export function reindexBusyText(message: string): string | null {
+  if (!/"error":"reindex_running"/.test(message)) return null;
+  try {
+    const detail = (JSON.parse(message.slice(message.indexOf('{'))) as { detail?: unknown }).detail;
+    if (typeof detail === 'string' && detail) return detail;
+  } catch { /* not JSON: the generic sentence below */ }
+  return 'a reindex is already running, wait for it';
+}
+
 /** Route one MCP tool call to the worker. Shared by the stdio transport (runMcpServer,
  *  which omits `deps` to get today's env-derived worker base) and the gateway's HTTP-MCP
  *  listener (which passes its own actual bound port + a per-connection session id) —
@@ -445,7 +456,15 @@ export async function dispatchTool(
       case 'search_observations': result = await workerPost(workerBase, '/search/observations', args); break;
       case 'search_all':          result = await workerPost(workerBase, '/search/all', args); break;
       case 'get_full':            result = await workerPost(workerBase, '/get_full', args); break;
-      case 'reindex':             result = await workerPost(workerBase, '/reindex', args); break;
+      case 'reindex':
+        try { result = await workerPost(workerBase, '/reindex', args); }
+        catch (e) {
+          // Refused, not failed: nothing was started and nothing is wrong. Plain text (no isError) so the caller waits instead of retrying.
+          const busy = reindexBusyText((e as Error).message);
+          if (busy === null) throw e;
+          return { content: [{ type: 'text', text: busy }] };
+        }
+        break;
       case 'remember':
         return await dispatchRemember(args as unknown as RememberToolArgs, {
           post: (path, body) => workerPost(workerBase, path, body),

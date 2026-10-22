@@ -17,7 +17,7 @@ const IN_FLIGHT_HINTS: Record<string, string> = {
   // Only the CLI's shadow slices call this (promote --shadow); their verdicts land in the shadow ledger.
   '/promote/slice': 'Do NOT start another slice until this one lands: a second would judge the same rows again. Its verdicts show in `captain-memo promote --report` (the judged total rises when they are recorded).',
   // POST /reindex reports nothing until it ends and never touches the boot indexing state, so there is no progress to read.
-  '/reindex': 'Do NOT start another reindex: a second would re-embed the same files alongside this one. A manual reindex has no progress readout, so give it minutes, not seconds, then check `captain-memo stats`.',
+  '/reindex': 'Do NOT start another reindex: a second is refused (409 reindex_running) while this one runs. A manual reindex has no progress readout, so give it minutes, not seconds, then check `captain-memo stats`.',
   // A pass records its run row when it FINISHES (consolidate.ts polls the same field).
   '/consolidate': 'Do NOT run it again yet: its passes may already have started. A newer semantic or theme run in the Housekeeping panel of `captain-memo stats` shows each pass once it finishes.',
 };
