@@ -23,7 +23,7 @@ export interface SessionRef {
 }
 
 export interface CaptureSource {
-  readonly id: 'codex' | 'agy' | 'gemini' | 'kimi' | 'opencode';
+  readonly id: 'codex' | 'agy' | 'gemini' | 'kimi' | 'opencode' | 'vibe';
   /** Key of this source's backfill cutoff when it must not be `id`: a source that can watch more than one directory keeps
    *  `id` for the usual one (so its stored cutoff stays valid) and names any other directory here, so that directory seeds
    *  "now" on its first tick instead of inheriting a cutoff set for another one. Dedup, native-session and /stats keys stay `id`. */

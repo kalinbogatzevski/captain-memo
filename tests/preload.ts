@@ -44,6 +44,8 @@ delete process.env.CAPTAIN_MEMO_AUTO_UPDATE;
 delete process.env.CODEX_HOME;
 // kimi 2.x's home follows $KIMI_CODE_HOME the same way: a developer who has it exported would point `connect kimi` at their REAL kimi home.
 delete process.env.KIMI_CODE_HOME;
+// Vibe's home follows $VIBE_HOME: a developer who has it exported would point the vibe capture source at their REAL sessions.
+delete process.env.VIBE_HOME;
 
 const scratchOs = { ...os, homedir: () => home };
 mock.module('os', () => ({ ...scratchOs, default: scratchOs }));

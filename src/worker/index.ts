@@ -109,6 +109,7 @@ import { createAgySource } from './capture/agy-source.ts';
 import { createGeminiSource } from './capture/gemini-source.ts';
 import { createKimiSource } from './capture/kimi-source.ts';
 import { createOpencodeSource } from './capture/opencode-source.ts';
+import { createVibeSource } from './capture/vibe-source.ts';
 import { runCaptureTick } from './capture/driver.ts';
 import { createWorkerMetrics, recordEmbed, recordIndexResult } from './metrics.ts';
 import { computeEfficiency } from './efficiency.ts';
@@ -1410,6 +1411,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       createGeminiSource({ projectId: opts.projectId }),
       createKimiSource({ projectId: opts.projectId }),
       createOpencodeSource({ projectId: opts.projectId }),
+      createVibeSource({ projectId: opts.projectId }),
     ].filter(s => s.enabled());
     if (captureSources.length > 0) {
       // Co-locate capture-state.db with observations.db, NOT the module DATA_DIR constant, so a worker started

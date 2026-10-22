@@ -370,7 +370,7 @@ export function renderStats(stats: StatsResponse, opts: RenderOpts = {}): string
   }
 
   // AI sources — observations per originating AI tool (codex/agy/gemini/kimi/
-  // opencode/claude-code). Only when the worker reports the breakdown. Built here,
+  // opencode/vibe/claude-code). Only when the worker reports the breakdown. Built here,
   // emitted at the foot of the panel: it has a dedicated `top` tab ([a]), so it is
   // the right section to lose first when a short terminal clips the frame.
   const byOrigin = stats.observations.by_origin;

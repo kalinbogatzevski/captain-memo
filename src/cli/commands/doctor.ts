@@ -719,7 +719,7 @@ async function checkCapture(): Promise<void> {
     record(check);
   }
 
-  // Which non-Claude tools are feeding observations (codex/agy/gemini/kimi/opencode).
+  // Which non-Claude tools are feeding observations (codex/agy/gemini/kimi/opencode/vibe).
   const sources = b.capture?.sources;
   if (sources === undefined) return; // older worker without the field — skip
   record({

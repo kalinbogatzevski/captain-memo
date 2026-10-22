@@ -325,7 +325,7 @@ function sourcesFrame(state: TopState, data: FrameData, dims: Dims): string[] {
   out.push('');
   const byOrigin = data.stats?.observations.by_origin;
   if (!byOrigin || Object.keys(byOrigin).length === 0) {
-    out.push('  ' + dim('(no observations yet — sessions from codex/agy/gemini/kimi/opencode land here)'));
+    out.push('  ' + dim('(no observations yet — sessions from codex/agy/gemini/kimi/opencode/vibe land here)'));
   } else {
     const barWidth = Math.max(16, Math.min(60, cols - 40));
     out.push(...renderSourceBars(byOrigin, barWidth));

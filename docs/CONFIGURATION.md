@@ -305,8 +305,18 @@ avoid duplicate observations. No extra environment setting is required.
 | (`KIMI_CODE_HOME`) | `~/.kimi-code` | Kimi 2.x sessions are captured from `<home>/sessions/*/*/agents/main/wire.jsonl`; sub-agent transcripts are not captured yet. `CAPTAIN_MEMO_CAPTURE_KIMI_DIR` does not move this; Kimi's own `KIMI_CODE_HOME` does. Both layouts are read when both exist. |
 | `CAPTAIN_MEMO_CAPTURE_OPENCODE` | ON | |
 | `CAPTAIN_MEMO_CAPTURE_OPENCODE_DB` | `~/.local/share/opencode/opencode.db` | |
+| `CAPTAIN_MEMO_CAPTURE_VIBE` | ON | Mistral Vibe 2.26 or newer (the session store of its Unified Harness). |
+| `CAPTAIN_MEMO_CAPTURE_VIBE_DIR` | `$VIBE_HOME/logs/session` when `VIBE_HOME` is set, else `~/.vibe/logs/session` | The session root, the folder that holds `unified/`. A custom `session_logging.save_dir` in Vibe's `config.toml` is not read: point this at it. With `session_logging.enabled = false` Vibe keeps nothing to capture. A turn is captured once Vibe has finished it and the session has been idle for `CAPTAIN_MEMO_CAPTURE_QUIESCE_MS`. It holds your prompt, Vibe's answer, and the name plus the first 200 characters of the arguments of each tool call (` [error]` when it failed); tool output, reasoning, images and attached file bodies are not captured. **Not captured yet:** forks and subagents (a session whose `meta.json` has a `parent_session_id`), sessions imported from another tool's history, and the older `session_*/messages.jsonl` layout of Vibe before 2.26.0. |
 | `CAPTAIN_MEMO_CAPTURE_TICK_MS` | `60000` | How often sources are polled. |
 | `CAPTAIN_MEMO_CAPTURE_QUIESCE_MS` | `60000` | How long a session must be idle before it is captured. |
+
+The Vibe reader was written against the files of Vibe 2.26.1 and 3.0.1 (store format minor 8 and 9) and the key lists of three real
+stores. Not verified on a real machine: that `vibe -p` (headless) runs are stored in the same place, whether Vibe publishes after every
+answer or only when a turn ends (the reader assumes the second, and holds back a turn Vibe has not finished), what a fork's `meta.json`
+holds in `parent_session_id`, and that reading the store never blocks Vibe's own writes on Windows. A store newer than the tested minor is
+read anyway and logged once as `[capture:vibe]` (format and minor only). When a format change breaks the files inside a session, every
+tick logs `[capture:vibe] extract failed <id>` for it, and `captain-memo doctor` warns when Vibe sessions exist but none were captured.
+A session whose `CURRENT` pointer file cannot be read (a torn file, or a Vibe release that changed its shape) is left out of that tick and logged once per session and error as `[capture:vibe] session <folder>: ...; skipped this tick` (the folder name and the error only, never file content).
 
 ### Observation processing
 

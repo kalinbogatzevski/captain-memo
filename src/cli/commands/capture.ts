@@ -36,7 +36,7 @@ export async function captureCommand(args: string[]): Promise<number> {
       ? sources.join(', ')
       : summarizerOff
         ? '(gated OFF — the summarizer is not running; run `captain-memo doctor`. Capture stays off until it works.)'
-        : '(none detected — no codex/agy/gemini/kimi/opencode sessions on this host)';
+        : '(none detected — no codex/agy/gemini/kimi/opencode/vibe sessions on this host)';
     console.log(`active sources: ${activeLine}`);
 
     const dbPath = join(DATA_DIR, 'capture-state.db');

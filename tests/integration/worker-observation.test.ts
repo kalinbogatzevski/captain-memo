@@ -1,6 +1,6 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdirSync, mkdtempSync } from 'fs';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { tmpdir } from 'os';
 import { startWorker, type WorkerHandle } from '../../src/worker/index.ts';
 import { rmWorkDir } from '../support/worker-temp.ts';
@@ -125,6 +125,37 @@ test('/stats capture.dirs names the directory a CODEX_HOME makes the codex sourc
     await second?.stop();
     rmWorkDir(dir);
     rmWorkDir(codexHome);
+  }
+});
+
+// The vibe source reads Vibe's own home: a VIBE_HOME with logs/session/unified makes /stats say where Vibe's sessions are read from.
+test('/stats capture.dirs names the directory a VIBE_HOME makes the vibe source watch', async () => {
+  const vibeHome = mkdtempSync(join(tmpdir(), 'captain-memo-vibehome-'));
+  mkdirSync(join(vibeHome, 'logs', 'session', 'unified'), { recursive: true });
+  const dir = mkdtempSync(join(tmpdir(), 'captain-memo-obs-dirs-'));
+  const before = process.env.VIBE_HOME;
+  process.env.VIBE_HOME = vibeHome;
+  let second: WorkerHandle | undefined;
+  try {
+    second = await startWorker({
+      port: 0, projectId: 'obs-test', metaDbPath: ':memory:', embedderEndpoint: 'http://localhost:0/unused', embedderModel: 'voyage-4-nano',
+      vectorDbPath: join(dir, 'vec.db'), embeddingDimension: 8, skipEmbed: true,
+      observationQueueDbPath: join(dir, 'queue.db'), observationsDbPath: join(dir, 'obs.db'), pendingEmbedDbPath: join(dir, 'pending.db'),
+      summarize: async () => ({ type: 'change', title: 't', narrative: 'n', facts: [], concepts: [] }),
+      observationTickMs: 0,
+    });
+    let capture: { sources: string[]; dirs: Record<string, string> } | undefined;
+    for (let i = 0; i < 60 && !capture?.sources.includes('vibe'); i++) {
+      capture = (await fetch(`http://localhost:${second.port}/stats`).then((r) => r.json()) as any).capture;
+      if (!capture?.sources.includes('vibe')) await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(capture?.sources).toContain('vibe');
+    expect(capture?.dirs.vibe).toBe(join(resolve(vibeHome), 'logs', 'session', 'unified'));
+  } finally {
+    if (before === undefined) delete process.env.VIBE_HOME; else process.env.VIBE_HOME = before;
+    await second?.stop();
+    rmWorkDir(dir);
+    rmWorkDir(vibeHome);
   }
 });
 

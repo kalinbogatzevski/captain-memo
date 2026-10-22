@@ -58,7 +58,7 @@ export async function configCommand(args: string[]): Promise<number> {
     `watch_skills          ${process.env.CAPTAIN_MEMO_WATCH_SKILLS ?? 'auto (default)'}`,
     `watch_capabilities    ${process.env.CAPTAIN_MEMO_WATCH_CAPABILITIES ?? 'auto (default)'}`,
     `capture_tick_ms       ${process.env.CAPTAIN_MEMO_CAPTURE_TICK_MS ?? '60000 (default)'}`,
-    `capture_opt_outs      ${['codex', 'agy', 'gemini', 'kimi', 'opencode'].filter(t => process.env[`CAPTAIN_MEMO_CAPTURE_${t.toUpperCase()}`] === '0').join(',') || '(none — all sources on where detected)'}`,
+    `capture_opt_outs      ${['codex', 'agy', 'gemini', 'kimi', 'opencode', 'vibe'].filter(t => process.env[`CAPTAIN_MEMO_CAPTURE_${t.toUpperCase()}`] === '0').join(',') || '(none — all sources on where detected)'}`,
   ];
   for (const l of lines) console.log(l);
   return 0;
