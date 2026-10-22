@@ -8,10 +8,13 @@
 // the panel's row count moved everything on screen — which is how a queue row that
 // appears when work arrives read as "the entire screen shifts".
 import { test, expect, setSystemTime } from 'bun:test';
-import { buildFrame, clipFrame, frameBytes, frameScrollRange, type FrameData } from '../../src/cli/tui/frame.ts';
-import { initialState } from '../../src/cli/tui/state.ts';
+import { buildFrame, clipFrame, frameBytes, frameScrollRange, screenBytes, type FrameData } from '../../src/cli/tui/frame.ts';
+import { initialState, scrollsFrame, type Mode } from '../../src/cli/tui/state.ts';
 import { renderStats, type StatsResponse } from '../../src/cli/stats-render.ts';
 import { visibleWidth } from '../../src/shared/ansi.ts';
+import {
+  fullStats, fullHomework, FULL_PAGE_ROWS, FULL_DETAIL, FULL_SESSIONS, LONG_PROJECT, SHORT_PROJECT, type BudgetState,
+} from '../support/top-full-stats.ts';
 
 const frameOf = (n: number): string[] => [
   '  ⚓  CAPTAIN MEMO   corpus statistics · v0.27.20',
@@ -290,4 +293,167 @@ test('the title row is the first row of an exact-fit screen: title and rule alon
       expect(screen[fit - 1]).toContain('[q]uit');
     }
   });
+});
+
+// No line of a frame may be wider than the terminal (2026-10-22, wave 12 part 8: 0.58.4 still lost its title row).
+// At 146x37 against a real worker the dashboard's Efficiency column put the 94-cell "Embed budget" sentence in the right
+// half of a two-column row; the line came out 170 cells wide, the terminal wrapped it onto a second row, the frame was a
+// row too tall and the alt screen scrolled the title off. The test above had no embedder_usage in its fixture, so it never
+// met the line. FULL (tests/support/top-full-stats.ts) carries every optional block the dashboard can draw, and the checks
+// below call screenBytes, the one function render() writes through, at every width from 60 to 200.
+const WIDTHS = Array.from({ length: 141 }, (_, i) => 60 + i);
+const SIZES = [24, 37, 46];
+const NOW = CLOCK.getTime();
+const ERR_LINE = '  \x1b[2m(worker: ' + 'connect ECONNREFUSED 127.0.0.1:39888 '.repeat(5).trim() + ')\x1b[0m';
+// Building a dashboard frame costs ~15 ms, so each (width, variant) is built once and shared by the tests below: every width
+// gets two variants, every tenth width all six budget states, with the long and the short project name between them.
+const MAIN: Array<[BudgetState, string]> = [['ok', LONG_PROJECT], ['tripped', SHORT_PROJECT]];
+const REST: Array<[BudgetState, string]> = [['over', LONG_PROJECT], ['off', SHORT_PROJECT], ['off-local', LONG_PROJECT], ['none', SHORT_PROJECT]];
+const variantsAt = (cols: number) => (cols % 10 === 0 ? [...MAIN, ...REST] : MAIN);
+const withColor = <T>(fn: () => T): T => {
+  const env = { FORCE_COLOR: process.env.FORCE_COLOR, NO_COLOR: process.env.NO_COLOR };
+  process.env.FORCE_COLOR = '1'; delete process.env.NO_COLOR;   // the escapes are part of what is measured
+  try { return fn(); } finally { for (const [k, v] of Object.entries(env)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } }
+};
+const frames = new Map<string, string[]>();
+const dashLines = (cols: number, budget: BudgetState, project: string, down = false): string[] => {
+  const key = `${cols}|${budget}|${project}|${down}`;
+  let lines = frames.get(key);
+  if (!lines) {
+    const data: FrameData = {
+      stats: fullStats({ budget, project, paused: budget === 'ok', nowMs: NOW }), homework: fullHomework(NOW),
+      ...(down ? { workerUnreachable: true, lastOkAtMs: NOW } : {}),
+    };
+    lines = withColor(() => atClock(() => buildFrame(initialState(), data, { cols, rows: 46 })));
+    frames.set(key, lines);
+  }
+  return lines;
+};
+/** The lines screenBytes wrote, as the terminal received them: HOME, rows each ending in erase-to-end-of-line, CRLF between, erase-below. */
+const writtenLines = (bytes: string): string[] =>
+  bytes.slice('\x1b[H'.length, -'\x1b[J'.length).split('\r\n').map((l) => l.slice(0, -'\x1b[K'.length));
+
+test('dashboard: no written line is wider than the terminal, at every width 60..200 and every budget state, long and short project name', () => {
+  const bad: string[] = [];
+  for (const cols of WIDTHS) for (const [budget, project] of variantsAt(cols)) {
+    const lines = dashLines(cols, budget, project);
+    for (const rows of SIZES) {
+      const wide = writtenLines(screenBytes(lines, { cols, rows }, 0)).filter((l) => visibleWidth(l) > cols);
+      if (wide.length) bad.push(`${cols}x${rows} ${budget} ${project}: ${wide.length} wide, first ${visibleWidth(wide[0]!)} cells`);
+    }
+  }
+  expect(bad).toEqual([]);
+}, 120_000);
+
+test('dashboard: the title is the first row of the screen at every width 60..200 and height, for clipped, exact-fit and short frames', () => {
+  const bad: string[] = [];
+  for (const cols of WIDTHS) for (const [budget, project] of variantsAt(cols)) {
+    const lines = dashLines(cols, budget, project);
+    const heights = [...SIZES.map((rows) => ['clipped', rows] as const), ['exact', lines.length] as const, ['short', lines.length + 6] as const];
+    for (const [kind, rows] of heights) {
+      if (kind === 'clipped' && lines.length <= rows) { bad.push(`${cols}x${rows}: frame of ${lines.length} is not taller than the terminal`); continue; }
+      const screen = paint(screenBytes(lines, { cols, rows }, 0), rows, '', cols);
+      if (!screen[0]!.includes('CAPTAIN MEMO')) bad.push(`${cols}x${rows} ${kind} ${budget}: first row is ${JSON.stringify(screen[0]!.slice(0, 40))}`);
+      else if (!screen[Math.min(rows, lines.length) - 1]!.includes('[q]uit')) bad.push(`${cols}x${rows} ${kind} ${budget}: last row is not the hint bar`);
+      else if (kind === 'clipped' && !/▼ \d+ more/.test(screen[rows - 2]!)) bad.push(`${cols}x${rows} ${budget}: no position line`);
+    }
+  }
+  expect(bad).toEqual([]);
+}, 120_000);
+
+test('dashboard with the worker down: the banner is the first row and the (long) worker-error line the last, cut to the terminal, at every width', () => {
+  const bad: string[] = [];
+  for (const cols of WIDTHS) {
+    const lines = [...dashLines(cols, 'ok', LONG_PROJECT, true), ERR_LINE];
+    for (const rows of [24, lines.length]) {
+      const bytes = screenBytes(lines, { cols, rows }, 0);
+      if (writtenLines(bytes).some((l) => visibleWidth(l) > cols)) bad.push(`${cols}x${rows}: a line is wider than the terminal`);
+      const screen = paint(bytes, rows, '', cols);
+      if (!screen[0]!.includes('WORKER UNREACHABLE')) bad.push(`${cols}x${rows}: first row is ${JSON.stringify(screen[0]!.slice(0, 40))}`);
+      if (!screen[rows - 1]!.startsWith('  (worker: ')) bad.push(`${cols}x${rows}: last row is ${JSON.stringify(screen[rows - 1]!.slice(0, 40))}`);
+    }
+  }
+  expect(bad).toEqual([]);
+}, 120_000);
+
+test('every other panel (sources, tokens, homework, table, detail, help) fits the terminal too, and its first row stays first', () => {
+  const bad: string[] = [];
+  const data: FrameData = {
+    stats: fullStats({ nowMs: NOW }), homework: fullHomework(NOW), sessions: FULL_SESSIONS(NOW),
+    page: { rows: FULL_PAGE_ROWS(Math.floor(NOW / 1000)), total: 30 }, detail: FULL_DETAIL(Math.floor(NOW / 1000)),
+  };
+  const modes: Mode[] = ['sources', 'tokens', 'homework', 'table', 'detail', 'help'];
+  withColor(() => atClock(() => {
+    for (const mode of modes) for (const cols of WIDTHS) {
+      const base = initialState();
+      const state = { ...base, mode, pageSize: 30, hw: { ...base.hw, sel: 3 } };
+      const lines = buildFrame(state, data, { cols, rows: 46 });
+      for (const rows of [24, lines.length]) {
+        const bytes = screenBytes(lines, { cols, rows }, scrollsFrame(mode) ? 0 : null);
+        const written = writtenLines(bytes);
+        if (written.some((l) => visibleWidth(l) > cols)) { bad.push(`${mode} ${cols}x${rows}: a line is wider than the terminal`); continue; }
+        if (paint(bytes, rows, '', cols)[0] !== stripAnsi(written[0]!)) bad.push(`${mode} ${cols}x${rows}: the first row scrolled off`);
+      }
+    }
+  }));
+  expect(bad).toEqual([]);
+}, 120_000);
+
+test('a line that fits is left alone; one that does not is cut one column short of the edge and ends in an ellipsis', () => {
+  const cols = 40;
+  const line = (n: number) => `  \x1b[36;1m${'x'.repeat(n - 2)}\x1b[0m`;
+  const lines = [line(cols - 1), line(cols), line(cols + 1), line(cols + 60)];
+  const out = writtenLines(screenBytes(lines, { cols, rows: 10 }, 0));
+  expect(out.slice(0, 2)).toEqual(lines.slice(0, 2));
+  expect(out.slice(2).map(visibleWidth)).toEqual([cols - 1, cols - 1]);
+  for (const l of out.slice(2)) expect(l).toBe(`  \x1b[36;1m${'x'.repeat(cols - 4)}…\x1b[0m`);
+});
+
+// The Efficiency column's "Embed budget" sentence is 94 cells, which only a 196+ column terminal has room for in the right
+// half of a two-column row. It now steps down to the first wording that fits its column (screenBytes would cut it otherwise,
+// which loses the end of the sentence, the state). Checked on renderStats itself, i.e. without the clip underneath, over just
+// the blocks that carry the row.
+const budgetRows = (panelWidth: number, budget: BudgetState): string => {
+  const { efficiency, embedder_usage } = fullStats({ budget, nowMs: NOW });
+  const stats: StatsResponse = { ...STATS, efficiency, ...(embedder_usage ? { embedder_usage } : {}) };
+  const text = renderStats(stats, { panelWidth }).filter((l) => stripAnsi(l).includes('Embed budget')).map(stripAnsi);
+  return text.map((t) => `${visibleWidth(t)}|${t.slice(t.indexOf('Embed budget')).trim().replace(/\s+/g, ' ')}`).join('\n');
+};
+
+test('the Embed budget row fits its column at every panel width from 60 to 240, in every state', () => {
+  const bad: string[] = [];
+  atClock(() => {
+    for (let panelWidth = 60; panelWidth <= 240; panelWidth++) for (const budget of ['ok', 'tripped', 'over', 'off', 'off-local'] as const) {
+      const row = budgetRows(panelWidth, budget);
+      if (!row) bad.push(`${panelWidth} ${budget}: no Embed budget row`);
+      else if (Number(row.split('|')[0]) > panelWidth) bad.push(`${panelWidth} ${budget}: ${row.split('|')[0]} cells`);
+    }
+    expect(budgetRows(240, 'none')).toBe('');   // a worker older than the budget draws no row
+  });
+  expect(bad).toEqual([]);
+}, 120_000);
+
+test('the Embed budget wording steps down with the room, keeps its state meaningful, and the wide wording is unchanged', () => {
+  const at = (panelWidth: number, budget: BudgetState) => atClock(() => budgetRows(panelWidth, budget).split('|')[1]);
+  expect(at(200, 'ok')).toBe('Embed budget 12.3 k tok searches + recalls, last hour · limit 500.0 k per engine, not tripped');
+  expect(at(146, 'ok')).toBe('Embed budget 12.3 k tok/h · limit 500.0 k per engine');
+  expect(at(100, 'ok')).toBe('Embed budget 12.3 k · limit 500.0 k');
+  expect(at(146, 'tripped')).toMatch(/^Embed budget 640\.0 k tok\/h · TRIPPED until \d\d:\d\d: keyword-only$/);
+  expect(at(100, 'tripped')).toMatch(/^Embed budget 640\.0 k · TRIPPED until \d\d:\d\d$/);
+  expect(at(146, 'over')).toBe('Embed budget 640.0 k tok/h · OVER THE LIMIT: next search refused');
+  expect(at(100, 'over')).toBe('Embed budget 640.0 k · OVER THE LIMIT');
+  expect(at(146, 'off-local')).toBe('Embed budget 12.3 k tok/h · budget off: local endpoint');
+  expect(at(100, 'off-local')).toBe('Embed budget 12.3 k · off: local endpoint');
+  expect(at(146, 'off')).toBe('Embed budget 12.3 k tok searches + recalls, last hour · budget off');
+});
+
+test('wide terminals are byte-identical to 0.58.4: the four Efficiency rows at 200 columns, colours included', () => {
+  const rows = withColor(() => atClock(() => renderStats(fullStats({ budget: 'ok', nowMs: NOW }), { panelWidth: 200 })));
+  const cells = [
+    '\x1b[2mEmbedder      \x1b[0m\x1b[36;1m12345\x1b[0m calls \x1b[2m·\x1b[0m ~85 ms \x1b[2m·\x1b[0m 123 456 tok/s \x1b[2msince worker start\x1b[0m',
+    '\x1b[2mEmbed tokens  \x1b[0m\x1b[36;1m98.8 M\x1b[0m tok sent \x1b[2m·\x1b[0m \x1b[33m1.2 M in unfinished requests\x1b[0m \x1b[2msince worker start\x1b[0m',
+    '\x1b[2mEmbed budget  \x1b[0m\x1b[36;1m12.3 k\x1b[0m tok \x1b[2msearches + recalls, last hour ·\x1b[0m \x1b[2mlimit 500.0 k per engine, not tripped\x1b[0m',
+    '\x1b[2mDedup         \x1b[0m\x1b[36;1m97%\x1b[0m   \x1b[2m1 200 000 / 1 234 567 unchanged since worker start\x1b[0m',
+  ];
+  for (const cell of cells) expect(rows.filter((l) => l.endsWith(cell))).toHaveLength(1);
 });

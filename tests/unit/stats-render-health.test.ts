@@ -12,8 +12,11 @@ import { test, expect } from 'bun:test';
 import { renderStats, type StatsResponse } from '../../src/cli/stats-render.ts';
 
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
-const render = (over: Partial<StatsResponse>): string =>
-  renderStats({ ...BASE, ...over } as StatsResponse, { panelWidth: 100 }).map(strip).join('\n');
+const render = (over: Partial<StatsResponse>, panelWidth = 100): string =>
+  renderStats({ ...BASE, ...over } as StatsResponse, { panelWidth }).map(strip).join('\n');
+// The budget row steps down to the first wording that fits its column (see top-frame-clip.test.ts for the widths); the
+// longest wordings need a 196+ column panel, so the tests that read the wording render at the widest one.
+const renderWide = (over: Partial<StatsResponse>): string => render(over, 240);
 
 const BASE: StatsResponse = {
   total_chunks: 10,
@@ -97,14 +100,14 @@ test('a paused embedder says so on the stats page', () => {
 
 test('the budget line shows the hour, the per-engine limit and whether an engine tripped', () => {
   const budget = { limit_tokens: 500_000, window_tokens: 12_345, paused_until_epoch: null, trips: 0 };
-  const ok = render({ efficiency: EFF, embedder_usage: { ...USAGE, interactive_budget: budget } });
+  const ok = renderWide({ efficiency: EFF, embedder_usage: { ...USAGE, interactive_budget: budget } });
   expect(ok).toContain('Embed budget');
   expect(ok).toContain('12.3 k tok');
   expect(ok).toContain('limit 500.0 k per engine');
   expect(ok).toContain('not tripped');
-  const off = render({ efficiency: EFF, embedder_usage: { ...USAGE, interactive_budget: { ...budget, limit_tokens: 0 } } });
+  const off = renderWide({ efficiency: EFF, embedder_usage: { ...USAGE, interactive_budget: { ...budget, limit_tokens: 0 } } });
   expect(off).toContain('budget off');
-  const tripped = render({ efficiency: EFF, embedder_usage: { ...USAGE, interactive_budget: { ...budget, window_tokens: 640_000, paused_until_epoch: Math.floor(Date.now() / 1000) + 900, trips: 1 } } });
+  const tripped = renderWide({ efficiency: EFF, embedder_usage: { ...USAGE, interactive_budget: { ...budget, window_tokens: 640_000, paused_until_epoch: Math.floor(Date.now() / 1000) + 900, trips: 1 } } });
   expect(tripped).toContain('TRIPPED');
   expect(tripped).toContain('keyword-only');
   expect(tripped).not.toContain('embedding paused');                      // the waste pause line is its own
@@ -113,7 +116,7 @@ test('the budget line shows the hour, the per-engine limit and whether an engine
 test('the budget line says why it is off, and says the truth once the pause is over but the hour still holds the spend', () => {
   const budget = { limit_tokens: 500_000, window_tokens: 640_000, paused_until_epoch: null as number | null, trips: 1 };
   const withBudget = (b: NonNullable<NonNullable<StatsResponse['embedder_usage']>['interactive_budget']>) =>
-    render({ efficiency: EFF, embedder_usage: { ...USAGE, interactive_budget: b } });
+    renderWide({ efficiency: EFF, embedder_usage: { ...USAGE, interactive_budget: b } });
   const local = withBudget({ ...budget, limit_tokens: 0, off_reason: 'local-endpoint' });
   expect(local).toContain('budget off: local endpoint');
   const owner = withBudget({ ...budget, limit_tokens: 0 });                                    // the owner set 0: just off
@@ -121,8 +124,7 @@ test('the budget line says why it is off, and says the truth once the pause is o
   expect(owner).not.toContain('budget off: local');
   const over = withBudget({ ...budget, over_limit: true });
   expect(over).toContain('OVER THE LIMIT');
-  expect(over).toContain('500.0 k per engine');
-  expect(over).toContain('next search is refused');
+  expect(over).toContain('next search refused');
   expect(over).not.toContain('not tripped');
   expect(over).not.toContain('TRIPPED');
   // a pause that is running is the state shown, whatever else the flag says

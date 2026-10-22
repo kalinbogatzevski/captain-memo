@@ -42,17 +42,41 @@ const ANSI_SGR_RE = /\x1b\[[0-9;]*m/g;
 // width reserve a trailing column for that ±1 (see spread() / headerPanel()).
 const EMOJI_PRESENTATION_RE = /\p{Emoji_Presentation}/u;
 
+/** Cells one character takes: its code-unit length, plus 1 for a BMP emoji-presentation glyph. */
+function cellWidth(ch: string): number {
+  return ch.length === 1 && EMOJI_PRESENTATION_RE.test(ch) ? 2 : ch.length;
+}
+
 /** Width of a string as the terminal would print it — strips SGR escape codes,
  *  then counts cells. Base is the code-unit length (unchanged for all non-emoji
  *  text, so existing column alignment is untouched); each BMP emoji-presentation
  *  glyph adds 1 (it's 1 unit but 2 cells). Astral emoji are already 2 units. */
 export function visibleWidth(s: string): number {
-  const stripped = s.replace(ANSI_SGR_RE, '');
-  let width = stripped.length;
-  for (const ch of stripped) {
-    if (ch.length === 1 && EMOJI_PRESENTATION_RE.test(ch)) width += 1;
-  }
+  let width = 0;
+  for (const ch of s.replace(ANSI_SGR_RE, '')) width += cellWidth(ch);
   return width;
+}
+
+const SGR_SPLIT_RE = /(\x1b\[[0-9;]*m)/;   // capturing: the split keeps each escape, at the odd indexes
+const SGR_RESET_RE = /^\x1b\[0*m$/;
+
+/** Cut a possibly-colored string to at most `max` cells, ending in '…' when anything went. Cells are counted as
+ *  visibleWidth counts them, SGR escapes are kept and take none, and a reset follows the cut when a style is still
+ *  open, so a cut run cannot colour what the terminal draws next. A string that already fits comes back as is. */
+export function clipVisible(s: string, max: number): string {
+  if (visibleWidth(s) <= max) return s;
+  if (max < 1) return '';
+  const room = max - 1;   // the ellipsis takes a cell
+  let out = '', used = 0, styled = false;
+  scan: for (const [i, part] of s.split(SGR_SPLIT_RE).entries()) {
+    if (i % 2) { out += part; styled = !SGR_RESET_RE.test(part); continue; }
+    for (const ch of part) {
+      const w = cellWidth(ch);
+      if (used + w > room) break scan;
+      out += ch; used += w;
+    }
+  }
+  return out + '…' + (styled ? RESET : '');
 }
 
 /** Pad a possibly-colored string with spaces on the RIGHT until its visible
