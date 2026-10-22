@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
-  loadGatewayConfig, saveGatewayConfig, pairNewDevice, verifyToken, revokeDevice,
+  loadGatewayConfig, saveGatewayConfig, pairNewDevice, verifyToken, revokeDevice, verifyBearer, guardGatewaySession,
 } from '../../src/shared/gateway-tokens.ts';
 
 let dir: string;
@@ -71,4 +71,36 @@ test('pairNewDevice — multiple devices coexist independently', () => {
   expect(cfg.devices).toHaveLength(2);
   expect(verifyToken(a.token, cfg)?.id).toBe(a.device.id);
   expect(verifyToken(b.token, cfg)?.id).toBe(b.device.id);
+});
+
+test('verifyBearer — resolves "Bearer <token>" to its device; absent, malformed or wrong-scheme headers to null', () => {
+  const { device, token } = pairNewDevice('phone', cfgPath);
+  const cfg = loadGatewayConfig(cfgPath);
+  expect(verifyBearer(`Bearer ${token}`, cfg)?.id).toBe(device.id);
+  expect(verifyBearer(null, cfg)).toBeNull();
+  expect(verifyBearer('', cfg)).toBeNull();
+  expect(verifyBearer('Bearer ', cfg)).toBeNull();
+  expect(verifyBearer(token, cfg)).toBeNull();             // no scheme
+  expect(verifyBearer(`Basic ${token}`, cfg)).toBeNull();  // wrong scheme
+});
+
+test('guardGatewaySession — the owning device\'s bearer passes', () => {
+  const { device, token } = pairNewDevice('phone', cfgPath);
+  expect(guardGatewaySession(device.id, `Bearer ${token}`, loadGatewayConfig(cfgPath))).toEqual({ ok: true });
+});
+
+test('guardGatewaySession — no header, a garbage bearer or a revoked bearer is a 401', () => {
+  const { device, token } = pairNewDevice('phone', cfgPath);
+  const live = loadGatewayConfig(cfgPath);
+  expect(guardGatewaySession(device.id, null, live)).toEqual({ ok: false, status: 401, body: { error: 'unauthorized' } });
+  expect(guardGatewaySession(device.id, 'Bearer nope', live)).toMatchObject({ ok: false, status: 401 });
+  revokeDevice(device.id, cfgPath);
+  expect(guardGatewaySession(device.id, `Bearer ${token}`, loadGatewayConfig(cfgPath))).toMatchObject({ ok: false, status: 401 });
+});
+
+test('guardGatewaySession — another paired device\'s valid bearer is a 403, not a pass', () => {
+  const a = pairNewDevice('phone', cfgPath);
+  const b = pairNewDevice('laptop', cfgPath);
+  const cfg = loadGatewayConfig(cfgPath);
+  expect(guardGatewaySession(a.device.id, `Bearer ${b.token}`, cfg)).toEqual({ ok: false, status: 403, body: { error: 'session/device mismatch' } });
 });
