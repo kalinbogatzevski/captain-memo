@@ -7,6 +7,13 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.58.5] — 2026-10-22
+
+### Fixed
+
+- **`captain-memo top` keeps its title row at every terminal size.** 0.88.7 removed the stray line break after the last row, but a dashboard line wider than the terminal (the new `Embed budget` row: 170 cells at 146 columns, 175 at 156, and four more rows at narrower widths) wrapped onto a second row and scrolled the `⚓ CAPTAIN MEMO` title off the top again (seen on Windows Terminal 156x46 and a Linux 146x37 terminal). `top` now cuts every line to the terminal's width (ending in an ellipsis), and the Embed budget row uses a shorter wording when its half of the panel is too narrow. `captain-memo stats` is unchanged.
+- **Security: the device-pairing gateway checks the bearer on every request.** A request carrying a known `mcp-session-id` used to skip the check (the bearer was verified only on `initialize`), so a leaked session id was enough and an open session survived `gateway revoke`. Every request must now carry the bearer of the device that opened the session (401 for a missing, unknown or revoked token, 403 for another paired device's), and revoking a device ends its open sessions at once. A client that sends its token only on `initialize` would now get 401 on follow-up requests; the MCP SDK client sends it on every request.
+
 ## [0.58.4] — 2026-10-22
 
 ### Added
