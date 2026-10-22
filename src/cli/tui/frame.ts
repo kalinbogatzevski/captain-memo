@@ -6,7 +6,7 @@
 // all live here so they can be unit-tested without a terminal.
 
 import {
-  bold, boldRed, cyan, cyanBold, dim, gold, green, padVisibleEnd, visibleWidth,
+  bold, boldRed, clipVisible, cyan, cyanBold, dim, gold, green, padVisibleEnd, visibleWidth,
 } from '../../shared/ansi.ts';
 import { renderStats, renderSourceBars, hwClean, hwFirstLine, type StatsResponse, type HomeworkView } from '../stats-render.ts';
 import { LOGS_DIR } from '../../shared/paths.ts';
@@ -176,6 +176,22 @@ const CLEAR_BELOW = '\x1b[J';
  *  leftovers. Pure and exported so the no-scroll invariant is unit-testable. */
 export function frameBytes(lines: string[]): string {
   return HOME + lines.map((l) => l + CLEAR_EOL).join('\r\n') + CLEAR_BELOW;
+}
+
+/** A line wider than the terminal wraps onto a second physical row, so the frame is a row too tall,
+ *  the alt screen scrolls and the title row goes off the top (0.58.4 at 146x37: the Efficiency block's
+ *  "Embed budget" row, 170 cells, in the right half of a two-column row). A line that fits is left alone;
+ *  one that does not is cut one column short of the edge (the spare column spread() keeps for
+ *  ambiguous-width glyphs) and ends in an ellipsis. */
+function fitLine(line: string, cols: number): string {
+  return visibleWidth(line) > cols ? clipVisible(line, cols - 1) : line;
+}
+
+/** Everything `top` writes for one frame: clipped to the terminal's height by clipFrame and to its width
+ *  by fitLine, then framed by frameBytes. The one call render() makes, so a test of this is a test of what
+ *  reaches the screen. The line count is the same before and after the width fit. */
+export function screenBytes(lines: string[], dims: Dims, offset: number | null): string {
+  return frameBytes(clipFrame(lines, dims.rows, offset).map((l) => fitLine(l, dims.cols)));
 }
 
 /** The prominent "data is stale" banner shown while the worker is unreachable.

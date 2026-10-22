@@ -1012,16 +1012,28 @@ function renderEfficiencyBlock(
     }
     // The interactive budget (searches, recalls, remember checks): spend in the last hour summed over the engines, the
     // limit each engine has, and whether one has tripped. A worker older than the budget reports none: no line.
+    // In `top` this row sits in half the panel, and a row wider than its column pushes the whole line past the terminal
+    // (0.58.4: 170 cells at 146 columns), so the wording steps down, longest first, to the first that fits.
     const budget = usage?.interactive_budget;
     if (budget) {
-      const state = budget.limit_tokens <= 0 ? dim(budget.off_reason === 'local-endpoint' ? 'budget off: local endpoint' : 'budget off')
+      const label = `   ${dim('Embed budget'.padEnd(14))}`;
+      const spend = cyanBold(fmtCompact(budget.window_tokens));
+      const limit = fmtCompact(budget.limit_tokens);
+      const until = budget.paused_until_epoch ? new Date(budget.paused_until_epoch * 1000).toTimeString().slice(0, 5) : '';
+      // Longest first: the whole sentence, then "tok/h" for "searches + recalls, last hour", then no unit at all.
+      const long = (state: string) => `${spend} tok ${dim('searches + recalls, last hour ·')} ${state}`;
+      const hour = (state: string) => `${spend} ${dim('tok/h ·')} ${state}`;
+      const bare = (state: string) => `${spend} ${dim('·')} ${state}`;
+      const why = budget.off_reason === 'local-endpoint' ? ': local endpoint' : '';
+      const wordings = budget.limit_tokens <= 0
+        ? [long(dim(`budget off${why}`)), hour(dim(`budget off${why}`)), bare(dim(`off${why}`))]
         : budget.paused_until_epoch
-          ? `${red('TRIPPED')} ${dim(`until ${new Date(budget.paused_until_epoch * 1000).toTimeString().slice(0, 5)} in at least one engine: its searches are keyword-only`)}`
+          ? [hour(`${red('TRIPPED')} ${dim(`until ${until}: keyword-only`)}`), bare(`${red('TRIPPED')} ${dim(`until ${until}`)}`)]
           : budget.over_limit
             // the pause is over but the hour still holds the spend: the next search in that engine trips it again
-            ? `${red('OVER THE LIMIT')} ${dim(`(${fmtCompact(budget.limit_tokens)} per engine) in at least one engine: its next search is refused`)}`
-            : dim(`limit ${fmtCompact(budget.limit_tokens)} per engine, not tripped`);
-      out.push(`   ${dim('Embed budget'.padEnd(14))}${cyanBold(fmtCompact(budget.window_tokens))} tok ${dim('searches + recalls, last hour ·')} ${state}`);
+            ? [hour(`${red('OVER THE LIMIT')}${dim(': next search refused')}`), bare(red('OVER THE LIMIT'))]
+            : [long(dim(`limit ${limit} per engine, not tripped`)), hour(dim(`limit ${limit} per engine`)), bare(dim(`limit ${limit}`))];
+      out.push(label + (wordings.find((w) => visibleWidth(label + w) <= blockWidth) ?? wordings[wordings.length - 1]));
     }
     out.push(`   ${dim('Dedup'.padEnd(14))}` + (dedup.docs_seen > 0
       ? `${cyanBold(`${dedup.skip_pct}%`)}   ${dim(`${fmtCount(dedup.skipped_unchanged)} / ${fmtCount(dedup.docs_seen)} unchanged since worker start`)}`

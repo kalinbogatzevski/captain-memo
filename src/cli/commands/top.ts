@@ -14,7 +14,7 @@ import { workerGet, workerGetOptional, workerPost, workerErrorReason } from '../
 import { renderStats, type StatsResponse, type HomeworkView } from '../stats-render.ts';
 import { parseKey } from '../tui/keys.ts';
 import { initialState, reduce, scrollsFrame, type TopState, type Event } from '../tui/state.ts';
-import { buildFrame, clipFrame, frameBytes, frameScrollRange, orderHomework, type FrameData, type Dims, type RecallRowView, type DetailObs, type SessionUsageRow } from '../tui/frame.ts';
+import { buildFrame, frameScrollRange, screenBytes, orderHomework, type FrameData, type Dims, type RecallRowView, type DetailObs, type SessionUsageRow } from '../tui/frame.ts';
 
 const ALT_ON = '\x1b[?1049h';
 const ALT_OFF = '\x1b[?1049l';
@@ -192,12 +192,13 @@ export async function topCommand(args: string[]): Promise<number> {
     if (lastError) lines.push('  \x1b[2m(worker: ' + lastError + ')\x1b[0m');
     // Clip AFTER the error line, so what we measure is the frame we actually write.
     // Each line costs a row (frameBytes joins them with \r\n), so an unclipped frame taller
-    // than the terminal scrolls the alt buffer and takes the wordmark with it.
+    // than the terminal scrolls the alt buffer and takes the wordmark with it; so does a line
+    // wider than the terminal, which wraps onto a second row (screenBytes cuts those too).
     // Measure before clipping so the frame scroll is clamped to THIS frame — a refresh
     // or resize that changes the row count must not jump the view.
     const scrolls = scrollsFrame(state.mode);
     dispatch({ type: 'frame', ...(scrolls ? frameScrollRange(lines.length, d.rows) : { max: 0, page: 1 }) });
-    process.stdout.write(frameBytes(clipFrame(lines, d.rows, scrolls ? state.frame.scroll : null)));
+    process.stdout.write(screenBytes(lines, d, scrolls ? state.frame.scroll : null));
   };
 
   await fetchForMode();
