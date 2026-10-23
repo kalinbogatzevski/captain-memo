@@ -7,6 +7,13 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.58.7] — 2026-10-23
+
+### Fixed
+
+- **`captain-memo --version` and `captain-memo version` print the version.** Both answered "Unknown command"; they now print `captain-memo <version>` without calling the worker, and `help` lists the command.
+- **`captain-memo capture backfill` no longer gets a plain 503 in threaded worker mode.** The route had no deadline of its own, so the worker answered 503 after 10 s while the pass carried on. It now gets the same long deadline as `reindex`, and a late answer is reported as unconfirmed (do not start a second one).
+
 ## [0.58.6] — 2026-10-23
 
 ### Added
