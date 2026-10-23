@@ -128,7 +128,9 @@ test('work_set and work_clear send the caller as `by`, over any `by` the model p
     await dispatchTool('work_set', { what: 'x', session_id: 'peer', by: 'peer' }, deps);
     expect(seen['/worknote/set']).toMatchObject({ session_id: 'peer', by: 's' });
     await dispatchTool('work_clear', { session_id: 'peer' }, deps);
-    expect(seen['/worknote/clear']).toEqual({ session_id: 'peer', by: 's' });
+    // toMatchObject: work_clear also sends `pid` (hostAiPid(): the parent process under Claude Code, a found codex/gemini otherwise),
+    // so toEqual failed inside Claude Code, where CLAUDE_CODE_SESSION_ID is set. session_id and by stay strict.
+    expect(seen['/worknote/clear']).toMatchObject({ session_id: 'peer', by: 's' });
   } finally { srv.stop(); }
 });
 

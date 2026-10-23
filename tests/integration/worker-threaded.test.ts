@@ -101,3 +101,36 @@ test('threaded worker: a /remember, /reindex, /promote/slice or /consolidate tha
   expect(await b.text()).toContain('thread_rpc_timeout');
   proc.kill();
 }, BOOT_WAIT_MS + 20_000);
+
+// #1011: POST /capture/backfill reads every session file of every capture source, so it is a long write like /reindex. It used
+// the generic writer deadline, so main answered a plain 503 thread_rpc_timeout for a pass the writer was still running. Now it
+// waits the LONG deadline (CAPTAIN_MEMO_REINDEX_MS, shrunk here; the generic one is shrunk further) and then answers 202
+// write_in_flight with a hint of its own: "unconfirmed", not "failed".
+test('threaded worker: a /capture/backfill that outlives main\'s wait answers 202 write_in_flight, after the long deadline and not the generic one', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-thr-backfill-')); dirs.push(dir);
+  const port = await freePort();
+  const proc = Bun.spawn(['bun', WORKER], {
+    env: { ...process.env, CAPTAIN_MEMO_WORKER_THREADED: '1', CAPTAIN_MEMO_ENABLE_TEST_ENDPOINTS: '1',
+      CAPTAIN_MEMO_SKIP_EMBED: '1', CAPTAIN_MEMO_SUMMARIZER_PROVIDER: 'anthropic', ANTHROPIC_API_KEY: '',
+      CAPTAIN_MEMO_DATA_DIR: dir, CAPTAIN_MEMO_CONFIG_DIR: dir, CAPTAIN_MEMO_WORKER_PORT: String(port),
+      CAPTAIN_MEMO_REINDEX_MS: '2500', CAPTAIN_MEMO_ENGINE_REQUEST_MS: '500' },
+    stdout: 'ignore', stderr: 'pipe',
+  });
+  procs.push(proc);
+  const base = `http://localhost:${port}`;
+  await waitHealthy(base, proc, tailOf(proc.stderr));
+
+  const block = fetch(`${base}/test/block?ms=4500`);   // pins the WRITER past both deadlines; it answers 503 after the generic 0.5 s
+  await Bun.sleep(200);
+  const t0 = performance.now();
+  const r = await fetch(`${base}/capture/backfill`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  const waited = performance.now() - t0;
+  expect(r.status).toBe(202);
+  const body = await r.json() as { status?: string; hint?: string };
+  expect(body.status).toBe('write_in_flight');
+  expect(body.hint).toMatch(/capture status/);          // its own check, not a memory search
+  expect(body.hint).not.toMatch(/search_memory/);
+  expect(waited).toBeGreaterThan(2000);                 // the 0.5 s generic deadline would have answered long before
+  expect((await block).status).toBe(503);               // /test/block is not an in-flight path: its timeout is still a 503
+  proc.kill();
+}, BOOT_WAIT_MS + 20_000);

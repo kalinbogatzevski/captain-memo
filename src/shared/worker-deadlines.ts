@@ -20,6 +20,10 @@ const IN_FLIGHT_HINTS: Record<string, string> = {
   '/reindex': 'Do NOT start another reindex: a second is refused (409 reindex_running) while this one runs. A manual reindex has no progress readout, so give it minutes, not seconds, then check `captain-memo stats`.',
   // A pass records its run row when it FINISHES (consolidate.ts polls the same field).
   '/consolidate': 'Do NOT run it again yet: its passes may already have started. A newer semantic or theme run in the Housekeeping panel of `captain-memo stats` shows each pass once it finishes.',
+  // The tick gate (worker/capture/driver.ts) runs one tick at a time and wasIngested skips what a tick already recorded, so a
+  // second backfill duplicates nothing: it waits behind this one and re-reads every session file for no gain. The ingested
+  // counts of `capture status` are the only thing that moves while it runs.
+  '/capture/backfill': 'Do NOT start another backfill: a second one waits behind this one and re-reads every session file for nothing. The ingested session counts in `captain-memo capture status` rise while it runs.',
 };
 export const IN_FLIGHT_ON_TIMEOUT = new Set(Object.keys(IN_FLIGHT_HINTS));
 

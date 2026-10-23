@@ -34,7 +34,7 @@ async function run(args: string[]): Promise<{ code: number; out: string }> {
 
 const neverClaimsDone = (out: string) => {
   expect(out).toMatch(/UNCONFIRMED/);
-  expect(out).not.toMatch(/undefined|Reindex complete|Upgrade complete|remember failed|request failed|no candidates left/i);
+  expect(out).not.toMatch(/undefined|Reindex complete|Backfill complete|Upgrade complete|remember failed|request failed|no candidates left/i);
 };
 
 test('remember: UNCONFIRMED, exit 0 (no retry-inviting failure)', async () => {
@@ -77,5 +77,13 @@ test('upgrade --force: UNCONFIRMED, exit 2, and the worker is not stopped for VA
   neverClaimsDone(r.out);
   expect(r.out).not.toMatch(/Stopping worker|indexed:/);
   expect(hits).not.toContain('/shutdown');
+  expect(r.code).toBe(2);
+}, 20_000);
+
+test('capture backfill: UNCONFIRMED, exit 2, no "Backfill complete" (#1011)', async () => {
+  const r = await run(['capture', 'backfill']);
+  neverClaimsDone(r.out);
+  expect(r.out).toMatch(/may still be running/);
+  expect(r.out).toMatch(/capture status/);                                    // the per-path hint, not the generic one
   expect(r.code).toBe(2);
 }, 20_000);

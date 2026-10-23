@@ -34,7 +34,11 @@ const REQUEST_DEADLINE_MS = Number(process.env.CAPTAIN_MEMO_ENGINE_REQUEST_MS ??
 const LONG_WRITE_DEADLINE_MS = Number(process.env.CAPTAIN_MEMO_REINDEX_MS ?? 30 * 60_000);
 // /consolidate joins /reindex here because a forced pass is a whole-corpus scan (~50s measured)
 // plus, for themes, a model call per cluster.
-const LONG_WRITE_PATHS = new Set(['/reindex', '/consolidate']);
+// /capture/backfill reads every session file of every active capture source (the running tick first, then its own all-history
+// tick, one session at a time with a yield between them): minutes on a big history, never the 10 s default. It took the default,
+// so main 503'd `thread_rpc_timeout` while the writer carried on ingesting. The 30 min ceiling is /reindex's, not a measured
+// backfill time (not measured: no copy of a real history to run it on).
+const LONG_WRITE_PATHS = new Set(['/reindex', '/consolidate', '/capture/backfill']);
 // The paths whose work survives a timeout here (IN_FLIGHT_ON_TIMEOUT) and their hints: shared/worker-deadlines.ts.
 // /remember does an LLM frontmatter `generate`, a semantic dedup search AND a chunk-embed pass before
 // it returns — none of which fit the 10s default on a real corpus, and it was never given a ceiling

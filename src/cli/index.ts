@@ -79,6 +79,7 @@ Commands:
   eval         Run the search-quality eval harness (seed | run --profile=legacy,v2)
   top          Interactive live stats (htop-style: sort, filter, drill); press ? in-app
   watch        Deprecated alias for \`top\`
+  version      Print the installed version (also --version)
   help         Show this message
 
 Examples:
@@ -233,6 +234,11 @@ export async function main(args: string[]): Promise<void> {
       // Internal: the captain-memo-watchdog Scheduled Task action. Probes /health
       // and reclaims a dead/zombie worker. Not advertised in HELP (not for humans).
       exit = await workerWatchdogCommand(args.slice(1));
+      break;
+    case 'version':
+    case '--version':
+      // Offline on purpose: VERSION is read from package.json (shared/version.ts), so this answers with the worker down.
+      console.log(`captain-memo ${VERSION}`);
       break;
     case 'help':
     case '--help':
