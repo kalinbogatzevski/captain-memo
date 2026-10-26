@@ -7,6 +7,13 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.58.8] — 2026-10-26
+
+### Fixed
+
+- **`captain-memo vacuum` now compacts a sparse vector index.** sqlite-vec puts a re-inserted vector into the newest chunk of its cluster and never refills a hole in an older chunk, so cluster moves and re-indexed files left an index sparser and sparser (a store of 328k vectors held 4,944 chunks where 2,863 would do: 1 GB of empty slots no SQL VACUUM can return). When a repack would shed at least 25% of the chunks, vacuum re-lays the index at the same chunk size through the existing copy-out/copy-back, in one transaction (a copy that comes up short rolls back), after checking the disk has 3.5× the packed size free, and prints before/after. A dense index, a file without a vector table and the older chunk-size migration behave as before. The worker must be stopped, as for any vacuum (about 9.5 minutes for 330k vectors); `captain-memo upgrade` runs it too, and `--skip-vacuum` skips it.
+- **Dependencies: `body-parser` raised to 2.4.0 and `fast-uri` to 3.1.9** (the audit flagged body-parser 2.3.0 for GHSA-27r3-jxmh-p828, a denial of service on trailing bytes after a compressed request body, and fast-uri 3.1.8 for four URI-parsing advisories; both come in through the MCP SDK). The override floors are `^2.4.0` and `^3.1.9`; no behaviour change.
+
 ## [0.58.7] — 2026-10-23
 
 ### Fixed
