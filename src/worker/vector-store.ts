@@ -57,6 +57,28 @@ export const VEC_CHUNK_SIZE = 128;
 export const VECTOR_BUSY_TIMEOUT_MS = 5_000;
 
 
+/** How full the partitioned table's chunks are, off its two plain shadow tables: no vec0 extension and no vector is read, so
+ *  it works on a read-only handle. `denseChunks` is what a re-lay at `chunkSize` would need, Σ ceil(live in the partition /
+ *  chunkSize): a dense index is NOT at live/slots = 1, every partition ends in a part-filled chunk (the dev store, 469
+ *  partitions: 0.90 dense, 0.52 now), so whether a re-lay is worth it is chunks against denseChunks, not a fixed fill.
+ *  Null when the table or its shadow layout is not there (not the vector db, or another sqlite-vec version).
+ *  MEASURED on the dev store (328k vectors, 4,944 chunks, 2026-10-26): 976 ms. */
+export interface VectorOccupancy { live: number; slots: number; chunks: number; denseChunks: number }
+export function vectorOccupancy(db: Database, chunkSize: number = VEC_CHUNK_SIZE): VectorOccupancy | null {
+  try {
+    // CROSS JOIN: drive from the rowids and look each chunk up by key. The other order walks every rowid once per chunk.
+    const parts = db.query(
+      `SELECT COUNT(*) AS n FROM vec_chunks_p_rowids r CROSS JOIN vec_chunks_p_chunks c ON c.chunk_id = r.chunk_id GROUP BY c.partition00`,
+    ).all() as Array<{ n: number }>;
+    const c = db.query(`SELECT COUNT(*) AS chunks, COALESCE(SUM(size), 0) AS slots FROM vec_chunks_p_chunks`)
+      .get() as { chunks: number; slots: number };
+    return {
+      live: parts.reduce((a, p) => a + p.n, 0), slots: c.slots, chunks: c.chunks,
+      denseChunks: parts.reduce((a, p) => a + Math.ceil(p.n / chunkSize), 0),
+    };
+  } catch { return null; }
+}
+
 /** Cosine similarity from a vec0 L2 distance, for UNIT vectors only.
  *
  *  vec_chunks is declared `embedding FLOAT[N]` with no `distance_metric`, so vec0 returns L2.
@@ -377,7 +399,13 @@ export class VectorStore {
   }
 
   /** Re-lay the partitioned table at `target` vectors per chunk. Returns null when it already
-   *  matches — callers can invoke this unconditionally.
+   *  matches — callers can invoke this unconditionally — unless `force`, which re-lays at the same size: a compaction.
+   *
+   *  A re-insert lands in the LATEST chunk of its partition and never in a hole of an older one (sqlite-vec 0.1.9; a chunk
+   *  whose rows are all gone is freed, a partly-empty one is not). The sweep's cluster moves and a file's re-index delete
+   *  rows all over the old chunks, so an index only ever gets sparser: the dev store, 2026-10-26, held 328k vectors in
+   *  4,944 chunks where 2,863 would do (52% full, 1.04 GB of empty slots no VACUUM can give back). Copying out and in
+   *  re-packs every partition densely. See vectorOccupancy for how a caller tells.
    *
    *  chunk_size is fixed at CREATE time, and `ALTER TABLE ... RENAME` corrupts a vec0 table (it
    *  moves the main table but not its shadow tables, leaving "no such table: <new>_rowids"), so
@@ -386,24 +414,30 @@ export class VectorStore {
    *  worker stopped, not something the sweep does underneath a live worker.
    *
    *  Wrapped in a single transaction: a crash mid-rebuild rolls back to the original table rather
-   *  than leaving a half-copied index. */
-  rebuildChunkLayout(target: number = VEC_CHUNK_SIZE): { moved: number } | null {
-    if (this.chunkCapacity() === target) return null;
+   *  than leaving a half-copied index. Each copy is counted against the original before the next step destroys
+   *  anything, so a copy that came up short rolls back as well. */
+  rebuildChunkLayout(target: number = VEC_CHUNK_SIZE, force = false): { moved: number } | null {
+    if (!force && this.chunkCapacity() === target) return null;
     const dim = this.dimension;
     let moved = 0;
+    const count = (table: string) => (this.db.query(`SELECT COUNT(*) n FROM ${table}_rowids`).get() as { n: number }).n;
     const tx = this.db.transaction(() => {
+      const expected = count('vec_chunks_p');
       this.db.exec(`CREATE VIRTUAL TABLE vec_chunks_p_relay USING vec0(
         chunk_id TEXT PRIMARY KEY, cluster_id INTEGER PARTITION KEY,
         embedding FLOAT[${dim}], chunk_size=${target})`);
       this.db.exec(`INSERT INTO vec_chunks_p_relay(chunk_id, cluster_id, embedding)
                     SELECT chunk_id, cluster_id, embedding FROM vec_chunks_p`);
-      moved = (this.db.query(`SELECT COUNT(*) n FROM vec_chunks_p_relay_rowids`).get() as { n: number }).n;
+      moved = count('vec_chunks_p_relay');
+      if (moved !== expected) throw new Error(`re-lay copied ${moved} of ${expected} vectors out; nothing was changed`);
       this.db.exec(`DROP TABLE vec_chunks_p`);
       this.db.exec(`CREATE VIRTUAL TABLE vec_chunks_p USING vec0(
         chunk_id TEXT PRIMARY KEY, cluster_id INTEGER PARTITION KEY,
         embedding FLOAT[${dim}], chunk_size=${target})`);
       this.db.exec(`INSERT INTO vec_chunks_p(chunk_id, cluster_id, embedding)
                     SELECT chunk_id, cluster_id, embedding FROM vec_chunks_p_relay`);
+      const back = count('vec_chunks_p');
+      if (back !== expected) throw new Error(`re-lay copied ${back} of ${expected} vectors back; nothing was changed`);
       this.db.exec(`DROP TABLE vec_chunks_p_relay`);
     });
     tx();
