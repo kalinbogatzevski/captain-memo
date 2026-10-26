@@ -7,6 +7,16 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.58.9] — 2026-10-26
+
+### Security
+
+- **zod moves to 4.6.7** (`bun audit` no longer reports GHSA-mrhx-c7xc-m3w5, zod < 4.6.6; nothing in the 3.x line was fixed). The lockfile now has a single zod for the repo and both SDKs that import it. Parsing is unchanged for well-formed input. Known differences: validation error wording changed ("Invalid input: expected string, received undefined" instead of "Required") in the 400 `details` bodies; strings are length-limited in characters (an emoji counts once); integers of 2^53 and above and `Infinity` are rejected where they used to parse. The bundled `plugin/dist/mcp-server.js` grows by about 80 KB (the SDK's embedded zod). The worker and the MCP server load zod when they start, so they need a restart after the update.
+
+### Fixed
+
+- **The vacuum re-pack test closes the database handle it opens**, so the Windows CI job no longer fails with `EBUSY` while removing its temp directory (test only).
+
 ## [0.58.8] — 2026-10-26
 
 ### Fixed

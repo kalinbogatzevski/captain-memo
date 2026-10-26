@@ -978,7 +978,7 @@ var package_default;
 var init_package = __esm(() => {
   package_default = {
     name: "captain-memo",
-    version: "0.58.8",
+    version: "0.58.9",
     description: "Cross-AI local memory layer for Claude Code, Codex, Gemini CLI, Antigravity, goose, Cursor, opencode, Kimi CLI and more: hybrid search, six summarizer providers, hosted or local embedder. Replaces claude-mem.",
     type: "module",
     private: true,
@@ -1032,7 +1032,7 @@ var init_package = __esm(() => {
       "gpt-tokenizer": "^2.5.1",
       nanoid: "^5.1.16",
       "sqlite-vec": "^0.1.9",
-      zod: "^3.24.0"
+      zod: "^4.6.7"
     },
     overrides: {
       qs: "^6.16.0",
