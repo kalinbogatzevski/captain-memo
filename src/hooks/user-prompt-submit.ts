@@ -103,6 +103,7 @@ export async function main(options: UserPromptSubmitOptions = {}): Promise<void>
       top_k: 5,
       session_id: payload.session_id,
       project_id: resolveProjectId(payload.cwd),
+      ...(payload.cwd ? { cwd: payload.cwd } : {}),
     },
     timeoutMs,
   });

@@ -75,6 +75,14 @@ test('UserPromptSubmit — passes envelope to stdout', async () => {
   expect(stdout).toContain('stub');
 });
 
+test('UserPromptSubmit — sends the session cwd with the recall request (for CAPTAIN_MEMO_RECALL_SCOPE=project)', async () => {
+  lastReceived = null;
+  const input = JSON.stringify({ session_id: 's-1', cwd: '/tmp/work/shop', prompt: 'what is the rounding rule here?' });
+  const { exitCode } = await runHook(input);
+  expect(exitCode).toBe(0);
+  expect(lastReceived).toMatchObject({ cwd: '/tmp/work/shop', project_id: 'shop' });
+});
+
 test('UserPromptSubmit — preserves the original prompt at the bottom', async () => {
   const { stdout } = await runHook(FIXTURE);
   expect(stdout).toContain('How do I run the worker against a custom data dir?');

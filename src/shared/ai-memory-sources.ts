@@ -42,7 +42,7 @@ const H = homedir();
 // Common places people keep repos. Probed, not configured: if none exist, the
 // repo-level globs simply drop out. Users with repos elsewhere append their own
 // glob — `CAPTAIN_MEMO_WATCH_MEMORY=auto,/srv/code/*/AGENTS.md` — which already works.
-const REPO_ROOT_NAMES = ['projects', 'code', 'src', 'dev', 'repos', 'work', 'git'];
+export const REPO_ROOT_NAMES: readonly string[] = ['projects', 'code', 'src', 'dev', 'repos', 'work', 'git'];
 
 // Repo-level instruction files, relative to a code root, depth 1.
 const REPO_PATTERNS: ReadonlyArray<readonly [tool: string, pattern: string]> = [
