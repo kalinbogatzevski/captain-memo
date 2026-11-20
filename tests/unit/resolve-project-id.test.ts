@@ -29,6 +29,7 @@ test('a session in a worktree or subfolder files under its git repository\'s nam
   mkdirSync(admin, { recursive: true });
   mkdirSync(join(repo, 'src'), { recursive: true });
   mkdirSync(wt, { recursive: true });
+  writeFileSync(join(admin, 'commondir'), '../..\n');   // as `git worktree add` writes it
   writeFileSync(join(wt, '.git'), `gitdir: ${admin}\n`);
   expect(projectFor(join(repo, 'src'), 'CAPTAIN_MEMO_PROJECT_ID=default\n')).toBe('acme-app');
   expect(projectFor(wt, 'CAPTAIN_MEMO_PROJECT_ID=default\n')).toBe('acme-app');

@@ -3833,7 +3833,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         if (scopeCwd) {
           const { ids, roots } = projectAliases(scopeCwd);
           const projectIds = parsed.data.project_id ? [parsed.data.project_id, ...ids] : ids;
-          pool = filterHitsToProject(candidates, { cwd: scopeCwd, projectIds, roots });
+          pool = filterHitsToProject(candidates, { cwd: scopeCwd, projectIds, roots, untaggedIds: ['default', opts.projectId] });
           flags.push(`scope=project:dropped=${candidates.length - pool.length}`);
         }
         const hits = applyTemporalRerank(
