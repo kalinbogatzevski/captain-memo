@@ -89,6 +89,20 @@ describe('filterHitsToProject', () => {
     expect(filterHitsToProject([...keep, ...drop], scoped)).toEqual(keep);
   });
 
+  test('an observation tagged with another name is kept when its files are inside the project', () => {
+    const oldSubfolderObs = { ...obs('src'), metadata: { project_id: 'src', files_modified: [join(SHOP, 'src', 'a.ts')], files_read: [] } };
+    const otherRepoObs = { ...obs('src'), metadata: { project_id: 'src', files_modified: [join(BILLING, 'src', 'a.ts')] } };
+    const readOnly = { ...obs('feature-y'), metadata: { project_id: 'feature-y', files_read: [join(SHOP, 'README.md')] } };
+    expect(filterHitsToProject([oldSubfolderObs, otherRepoObs, readOnly], ctx(SHOP, ['shop'], [SHOP])))
+      .toEqual([oldSubfolderObs, readOnly]);
+  });
+
+  test('the worker\'s own corpus id counts as untagged', () => {
+    const transcriptObs = obs('my-corpus');
+    expect(filterHitsToProject([transcriptObs], { ...ctx(SHOP), untaggedIds: ['default', 'my-corpus'] })).toEqual([transcriptObs]);
+    expect(filterHitsToProject([transcriptObs], ctx(SHOP))).toEqual([]);
+  });
+
   test('without a cwd nothing is filtered', () => {
     const hits = [projectMemory(BILLING), obs('billing')];
     expect(filterHitsToProject(hits, { ...ctx(SHOP), cwd: '' })).toEqual(hits);
