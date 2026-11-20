@@ -7,6 +7,14 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+### Added
+
+- **`CAPTAIN_MEMO_RECALL_SCOPE=project` keeps the automatic recall to the session's project.** The per-prompt `<memory-context>` searched the whole machine's corpus, so a session in one repository was handed another repository's notes, business rules and credentials whenever they were the nearest match. The hook already sent the project; the worker now also gets the cwd and, with the setting on, leaves out observations, Claude per-project memory and repo-level instruction files that belong to another project. Skills, capabilities, user-global memory and observations with no project stay. Unset, recall is unchanged; explicit search is never scoped.
+
+### Changed
+
+- **A session's project is its git repository, not its folder name.** Observations, homework and work-board claims were filed under the cwd's last folder name, so one repository was split across every worktree and subfolder a session ran in (`.claude/worktrees/<name>`, a Codex sibling checkout, `src`, …), and Claude Code, Codex and Gemini sessions of the same repository did not share a project. The project is now the repository's name, read from the `.git` entries without running git; a linked worktree counts as the repository it was made from. Outside a repository, and for a repository at the home folder, it is the folder name as before. Observations already stored keep their old tag; scoped recall still matches the tags of the repository's own worktrees and of the cwd's folders.
+
 ## [0.58.9] — 2026-10-26
 
 ### Security
