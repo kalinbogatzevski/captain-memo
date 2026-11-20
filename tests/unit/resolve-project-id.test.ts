@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { mkdtempSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
@@ -19,6 +19,19 @@ function projectFor(cwd: string, workerEnv: string, sessionEnv: Record<string, s
 
 test('worker.env CAPTAIN_MEMO_PROJECT_ID=default does not override the session cwd', () => {
   expect(projectFor('/home/u/projects/acme-app', 'CAPTAIN_MEMO_PROJECT_ID=default\n')).toBe('acme-app');
+});
+
+test('a session in a worktree or subfolder files under its git repository\'s name', () => {
+  const root = mkdtempSync(join(tmpdir(), 'cm-proj-repo-'));
+  const repo = join(root, 'acme-app');
+  const wt = join(root, 'acme-app-codex');
+  const admin = join(repo, '.git', 'worktrees', 'acme-app-codex');
+  mkdirSync(admin, { recursive: true });
+  mkdirSync(join(repo, 'src'), { recursive: true });
+  mkdirSync(wt, { recursive: true });
+  writeFileSync(join(wt, '.git'), `gitdir: ${admin}\n`);
+  expect(projectFor(join(repo, 'src'), 'CAPTAIN_MEMO_PROJECT_ID=default\n')).toBe('acme-app');
+  expect(projectFor(wt, 'CAPTAIN_MEMO_PROJECT_ID=default\n')).toBe('acme-app');
 });
 
 test('a CAPTAIN_MEMO_PROJECT_ID set in the session environment still wins', () => {
