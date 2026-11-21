@@ -7,9 +7,16 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.58.10] — 2026-11-21
+
+### Security
+
+- **Transitive dependencies raised past nine advisories** (`bun audit` is clean again). The overrides' floors are now `hono ^4.13.16`, `@hono/node-server ^2.1.6` and `qs ^6.16.1`; the lockfile resolves hono 4.13.19, @hono/node-server 2.1.11 and qs 6.17.1. The advisories (GHSA-rmxm-3fg6-px4f, GHSA-qv5m-9pm6-hqp3, GHSA-jpvv-r467-5p4w in `@hono/node-server`; GHSA-4m76-xfj5-7975, GHSA-h7mg-cq63-vhpq, GHSA-3gg2-335m-rxc6, GHSA-46wx-v44x-9hh2, GHSA-4h7h-rv7c-7m2v in `hono`; GHSA-6pq8-jhm2-2vcw in `qs`) all come in through the MCP SDK. No behaviour change.
+
 ### Fixed
 
 - **A finished Codex run no longer holds the work board for hours on Windows.** Codex and Gemini claims carried no process id on Windows, so the board could not tell a finished `codex exec` from a running one: its claim, often declared for the 8-hour maximum, stayed live after the process was gone, and every session that respects the board stopped at it until a person typed an override. The process is now found on Windows too, from one Toolhelp32 snapshot read through `bun:ffi` (about 30 ms, no PowerShell), matching `codex.exe` above the hook or MCP server. The board drops a claim whose process has exited once a minute has passed without a refresh, on every platform. A Gemini claim on Windows still carries no pid: its CLI runs as `node`, and a snapshot has no command lines. Codex claims on Windows now block like they do on Linux while their process runs.
+- **The homework `due:` route test no longer depends on a runtime `TZ` change** (test only): Bun 1.4.5 ignores one, so CI got UTC midnight where the test expected Tokyo's. It now expects what the process's own `Date` says is local midnight.
 
 ## [0.58.9] — 2026-10-26
 

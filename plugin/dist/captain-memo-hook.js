@@ -978,7 +978,7 @@ var package_default;
 var init_package = __esm(() => {
   package_default = {
     name: "captain-memo",
-    version: "0.58.9",
+    version: "0.58.10",
     description: "Cross-AI local memory layer for Claude Code, Codex, Gemini CLI, Antigravity, goose, Cursor, opencode, Kimi CLI and more: hybrid search, six summarizer providers, hosted or local embedder. Replaces claude-mem.",
     type: "module",
     private: true,
@@ -1035,10 +1035,10 @@ var init_package = __esm(() => {
       zod: "^4.6.7"
     },
     overrides: {
-      qs: "^6.16.0",
-      hono: "^4.13.11",
+      qs: "^6.16.1",
+      hono: "^4.13.16",
       "body-parser": "^2.4.0",
-      "@hono/node-server": "^2.0.5",
+      "@hono/node-server": "^2.1.6",
       "fast-uri": "^3.1.9",
       "ip-address": "^10.7.4"
     },
@@ -3324,6 +3324,7 @@ function globsOverlap(aGlobs, bGlobs) {
 import { readFileSync as readFileSync12 } from "fs";
 import { spawnSync as spawnSync6 } from "child_process";
 import { basename as basename2 } from "path";
+import { dlopen, FFIType } from "bun:ffi";
 var MAX_DEPTH = 8;
 var PS_TIMEOUT_MS = 1000;
 var realPs = () => {
@@ -3356,7 +3357,77 @@ function psWalk(agents, start, snapshot) {
   return;
 }
 var name = (arg) => arg ? basename2(arg).replace(/\.[cm]?js$/, "") : "";
-function aiProcessPid(agents, start = process.ppid, root = "/proc", platform = process.platform, ps = realPs) {
+var TH32CS_SNAPPROCESS = 2;
+var PE32W_SIZE = 568;
+var PE32W_PID = 8;
+var PE32W_PPID = 32;
+var PE32W_EXE = 44;
+var MAX_PATH = 260;
+var realWinSnapshot = () => {
+  try {
+    const k32 = dlopen("kernel32.dll", {
+      CreateToolhelp32Snapshot: { args: [FFIType.u32, FFIType.u32], returns: FFIType.ptr },
+      Process32FirstW: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.bool },
+      Process32NextW: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.bool },
+      CloseHandle: { args: [FFIType.ptr], returns: FFIType.bool }
+    });
+    try {
+      const snap = k32.symbols.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+      if (!snap || Number(snap) === -1)
+        return null;
+      try {
+        const entry = new Uint8Array(PE32W_SIZE);
+        const view = new DataView(entry.buffer);
+        view.setUint32(0, PE32W_SIZE, true);
+        const out = [];
+        for (let ok = k32.symbols.Process32FirstW(snap, entry);ok; ok = k32.symbols.Process32NextW(snap, entry)) {
+          let exe = "";
+          for (let i = 0;i < MAX_PATH; i++) {
+            const c = view.getUint16(PE32W_EXE + i * 2, true);
+            if (c === 0)
+              break;
+            exe += String.fromCharCode(c);
+          }
+          out.push({ pid: view.getUint32(PE32W_PID, true), ppid: view.getUint32(PE32W_PPID, true), exe });
+        }
+        return out.length ? out : null;
+      } finally {
+        k32.symbols.CloseHandle(snap);
+      }
+    } finally {
+      k32.close();
+    }
+  } catch {
+    return null;
+  }
+};
+function winWalk(agents, start, procs) {
+  const byPid = new Map(procs.map((p) => [p.pid, p]));
+  let pid = start;
+  for (let i = 0;i < MAX_DEPTH && pid > 0; i++) {
+    const p = byPid.get(pid);
+    if (!p)
+      return;
+    const image = p.exe.replace(/\.exe$/i, "").toLowerCase();
+    if (agents.some((a) => image === a.toLowerCase()))
+      return pid;
+    if (p.ppid === pid)
+      return;
+    pid = p.ppid;
+  }
+  return;
+}
+function aiProcessPid(agents, start = process.ppid, root = "/proc", platform = process.platform, ps = realPs, win = realWinSnapshot) {
+  if (platform === "win32") {
+    const key = `win\x00${agents.join(",")}\x00${start}`;
+    if (!psCache.has(key)) {
+      const snapshot = win();
+      if (snapshot === null)
+        return;
+      psCache.set(key, winWalk(agents, start, snapshot));
+    }
+    return psCache.get(key);
+  }
   if (platform === "darwin") {
     const key = `${agents.join(",")}\x00${start}`;
     if (!psCache.has(key)) {
