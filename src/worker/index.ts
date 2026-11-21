@@ -2590,7 +2590,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // Guard 2 (the PreToolUse hook sends enforce + this call's `touched` files): a file a LIVE claim of another
         // session holds is left out of the stored claim and reported as `deny`, so the heartbeat still lands but the
         // intruder never takes the file. "Already held" comes from the STORED note: the hook sends old files + touched.
-        const local = listLocalActive(meta, now);
+        const local = listLocalActive(meta, now, pidAlive);
         const guardBody = body as { enforce?: unknown; touched?: unknown };
         // A whole-repo glob holds nothing (wholeRepo), so it contests nothing either.
         const touched = Array.isArray(guardBody.touched) ? guardBody.touched.filter((f): f is string => typeof f === 'string' && !wholeRepo(f, setBody.repo_root)).slice(0, 64) : [];
@@ -2681,7 +2681,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // Decorate with the heartbeat view (stale/age_s) so a reader can tell a claim that is still being
         // refreshed from one whose session died and is just running out its lease. Without this the board
         // cannot distinguish them, and a ghost blocks real work for its full TTL.
-        const claims = decorateStaleness(listLocalActive(meta, now), now);
+        const claims = decorateStaleness(listLocalActive(meta, now, pidAlive), now);
         const mine = url.searchParams.get('session_id') ?? '';
         const mineNote = mine ? claims.find((c) => c.session_id === mine) : undefined;
         const overlaps_with_mine = mineNote
@@ -2702,7 +2702,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         const now = Date.now();
         const repoRoot = url.searchParams.get('repo_root') ?? '';
         if (!repoRoot) return Response.json({ holders: [] });
-        const holders = repoActiveHolders(decorateStaleness(listLocalActive(meta, now), now), repoRoot);
+        const holders = repoActiveHolders(decorateStaleness(listLocalActive(meta, now, pidAlive), now), repoRoot);
         return Response.json({ holders });
       }
       // POST /worknote/override { session_id, files } — the UserPromptSubmit hook, when the USER typed `override: <file>`.

@@ -48,7 +48,7 @@ test('only the named agents match: a codex hook never takes the claude above it'
 });
 
 test('fails open: off Linux, past the depth cap, or a missing /proc entry', () => {
-  expect(aiProcessPid(['codex'], 22, root, 'win32')).toBeUndefined();
+  expect(aiProcessPid(['codex'], 22, root, 'freebsd')).toBeUndefined();
   expect(aiProcessPid(['codex'], 51, root, 'linux')).toBeUndefined();
   expect(aiProcessPid(['codex'], 47, root, 'linux')).toBe(40);
   expect(aiProcessPid(['codex'], 999, root, 'linux')).toBeUndefined();
@@ -87,4 +87,39 @@ test('macOS path against the real ps on this host: this test process finds itsel
   if (process.platform === 'win32') return;
   expect(aiProcessPid(['bun'], process.pid, root, 'darwin')).toBe(process.pid);
   expect(aiProcessPid(['no-such-agent-cli'], process.pid, root, 'darwin')).toBeUndefined();
+});
+
+// Windows: no /proc and no ps, so the walk runs over one Toolhelp32 snapshot (pid, ppid, image name). The tree is the
+// one seen live on Windows 11 (2026-11-21, codex-cli npm package): sh -> node codex.js -> codex.exe -> bun MCP server,
+// and the hook through cmd.exe under codex.exe.
+const WIN = [
+  { pid: 4, ppid: 0, exe: 'System' },
+  { pid: 50100, ppid: 4, exe: 'sh.exe' },
+  { pid: 35284, ppid: 50100, exe: 'node.exe' },
+  { pid: 39496, ppid: 35284, exe: 'codex.exe' },
+  { pid: 51504, ppid: 39496, exe: 'bun.exe' },
+  { pid: 51600, ppid: 39496, exe: 'cmd.exe' },
+  { pid: 51601, ppid: 51600, exe: 'bun.exe' },
+  { pid: 26204, ppid: 4, exe: 'claude.exe' },
+  { pid: 26720, ppid: 26204, exe: 'bun.exe' },
+  { pid: 70000, ppid: 70000, exe: 'loop.exe' },
+];
+
+test('Windows: the MCP server and the hook find codex.exe in one process snapshot, cached per process and question', () => {
+  let calls = 0;
+  const win = () => { calls++; return WIN; };
+  expect(aiProcessPid(['codex', 'gemini'], 51504, root, 'win32', () => null, win)).toBe(39496);
+  expect(aiProcessPid(['codex'], 51601, root, 'win32', () => null, win)).toBe(39496);
+  expect(aiProcessPid(['CODEX'], 51601, root, 'win32', () => null, win)).toBe(39496);   // image names ignore case
+  expect(aiProcessPid(['codex', 'gemini'], 26720, root, 'win32', () => null, win)).toBeUndefined();   // under claude
+  expect(aiProcessPid(['codex'], 70000, root, 'win32', () => null, win)).toBeUndefined();   // its own parent: stop
+  expect(calls).toBe(5);
+  expect(aiProcessPid(['codex', 'gemini'], 51504, root, 'win32', () => null, win)).toBe(39496);
+  expect(calls).toBe(5);
+  expect(aiProcessPid(['codex'], 99999, root, 'win32', () => null, () => null)).toBeUndefined();   // snapshot failed
+});
+
+test.if(process.platform === 'win32')('Windows path against the real process list: this test process finds itself', () => {
+  expect(aiProcessPid(['bun'], process.pid)).toBe(process.pid);
+  expect(aiProcessPid(['no-such-agent-cli'], process.pid)).toBeUndefined();
 });
