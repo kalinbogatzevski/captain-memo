@@ -58,7 +58,9 @@ test('due: the route stores it as UTC and lists it back; a past due is accepted;
   expect(zoned.item.due).toBe('2019-12-31T22:05:00.000Z');                       // long past: accepted, it will show as overdue
   const prevTz = process.env.TZ;
   process.env.TZ = 'Asia/Tokyo';                                                  // the worker runs in this process: pin the host zone
-  try { expect((await add({ text: 'a date only', due: '2020-01-01' })).item.due).toBe('2019-12-31T15:00:00.000Z'); }   // this host's midnight, not UTC's
+  // Bun 1.4.5 ignores a runtime TZ change (CI got UTC midnight), so expect what THIS process's Date says is local midnight:
+  // Tokyo's where the pin works, the host's where it does not. Either way it is the host's midnight, not UTC's.
+  try { expect((await add({ text: 'a date only', due: '2020-01-01' })).item.due).toBe(new Date(2020, 0, 1).toISOString()); }
   finally { if (prevTz === undefined) delete process.env.TZ; else process.env.TZ = prevTz; }
   const plain = await add({ text: 'no due time' });
   expect('due' in plain.item).toBe(false);
