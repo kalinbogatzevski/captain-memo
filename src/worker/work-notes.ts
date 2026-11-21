@@ -205,13 +205,24 @@ export function inheritDeclaredIntent(kv: WorkNoteKv, input: SetWorkNoteInput, n
   return true;
 }
 
-/** All LOCAL live notes (this captain), lazily reaping any expired/malformed key as it reads. */
-export function listLocalActive(kv: WorkNoteKv, now: number): WorkNote[] {
+/** All LOCAL live notes (this captain), lazily reaping any expired/malformed key as it reads.
+ *
+ *  With `alive`, a claim that carries a `pid` whose process has exited, and that nothing refreshed for a minute, is
+ *  reaped too. Without it a finished
+ *  `codex exec` run's claim, declared for up to 8 h, stayed on the board after the process was gone, and every
+ *  session that respects the board stopped at it until a person typed an override (2026-11-21, Windows). Only the
+ *  worker's own routes pass it: the pid is this machine's, and the default leaves pure callers and tests alone. */
+export const EXITED_GRACE_MS = 60_000;
+
+export function listLocalActive(kv: WorkNoteKv, now: number, alive?: (pid: number) => boolean): WorkNote[] {
   const out: WorkNote[] = [];
   for (const row of kv.listKvPrefix(WORKNOTE_PREFIX)) {
     let n: WorkNote | null = null;
     try { n = JSON.parse(row.value) as WorkNote; } catch { /* malformed */ }
-    if (n && typeof n === 'object' && typeof n.session_id === 'string' && isLive(n, now)) out.push(n);
+    // A minute's grace after the last refresh: the guard already ignores a dead holder at once, and the grace keeps a
+    // claim that was written a moment ago (a pid read as the process started) from being dropped by a race.
+    const exited = !!n && alive !== undefined && typeof n.pid === 'number' && now - n.ts > EXITED_GRACE_MS && !alive(n.pid);
+    if (n && typeof n === 'object' && typeof n.session_id === 'string' && isLive(n, now) && !exited) out.push(n);
     else kv.deleteKv(row.key);   // lazy reap — a crashed session's claim evaporates
   }
   return out;
@@ -258,7 +269,7 @@ export function overlapsAgainst(mineFiles: string[], others: WorkNote[], exclude
 // another session's write to the same file; a stale one (no edit for STALE_AFTER_MS) only warns.
 // Both sides must carry a `pid`, the AI CLI process: Claude's hook sends CLAUDE_PID, a Codex or Gemini hook and MCP
 // server find theirs in /proc (aiProcessPid). Their hook and MCP claims run under different session ids; the shared pid
-// pairs them. ponytail: Codex and Gemini find theirs on Linux (/proc) and macOS (ps, not yet run on a Mac); on Windows they send no pid and
+// pairs them. ponytail: Codex and Gemini find theirs on Linux (/proc) and macOS (ps, not yet run on a Mac); on Windows Codex is found by image name in a Toolhelp32 snapshot, Gemini (a node) is not and sends no pid, and
 // get claims and warnings, never a deny.
 
 export interface GuardHolder { session_id: string; agent: string; what: string; age_s: number; files: string[] }

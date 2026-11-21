@@ -464,3 +464,15 @@ test('guardContested enforces only between two Claude Code claims (both carry a 
   expect(guardContested(['/r/a.php'], [holder], { session_id: 'me', held: [], override: () => [] }, alive).contested).toEqual([]);   // caller without pid
   expect(guardContested(['/r/a.php'], [{ agent: 'claude', session_id: 'p', what: 'x', files: ['/r/a.php'], ts: 1, ttl_s: 60 }], { session_id: 'me', held: [], pid: 2, override: () => [] }, alive).contested).toEqual([]);   // holder without pid
 });
+
+test('listLocalActive with a liveness check reaps the claim of an exited process, and only that', () => {
+  const kv = makeKv();
+  setWorkNote(kv, { agent: 'codex', session_id: 'done', what: 'finished exec run', files: ['a/**'], ttl_s: 28_800, pid: 111 }, NOW);
+  setWorkNote(kv, { agent: 'codex', session_id: 'running', what: 'still working', files: ['b/**'], pid: 222 }, NOW);
+  setWorkNote(kv, { agent: 'cursor', session_id: 'no-pid', what: 'no process known', files: ['c/**'] }, NOW);
+  const alive = (pid: number) => pid === 222;
+  expect(listLocalActive(kv, NOW).map((n) => n.session_id).sort()).toEqual(['done', 'no-pid', 'running']);   // no check: as before
+  expect(listLocalActive(kv, NOW + 30_000, alive).length).toBe(3);   // within the minute's grace: kept
+  expect(listLocalActive(kv, NOW + 61_000, alive).map((n) => n.session_id).sort()).toEqual(['no-pid', 'running']);
+  expect(kv.map.has(WORKNOTE_PREFIX + 'done')).toBe(false);   // reaped from the kv, not just hidden
+});

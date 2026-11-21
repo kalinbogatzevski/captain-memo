@@ -7,6 +7,10 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+### Fixed
+
+- **A finished Codex run no longer holds the work board for hours on Windows.** Codex and Gemini claims carried no process id on Windows, so the board could not tell a finished `codex exec` from a running one: its claim, often declared for the 8-hour maximum, stayed live after the process was gone, and every session that respects the board stopped at it until a person typed an override. The process is now found on Windows too, from one Toolhelp32 snapshot read through `bun:ffi` (about 30 ms, no PowerShell), matching `codex.exe` above the hook or MCP server. The board drops a claim whose process has exited once a minute has passed without a refresh, on every platform. A Gemini claim on Windows still carries no pid: its CLI runs as `node`, and a snapshot has no command lines. Codex claims on Windows now block like they do on Linux while their process runs.
+
 ## [0.58.9] — 2026-10-26
 
 ### Security
