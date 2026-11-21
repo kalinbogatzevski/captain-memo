@@ -97,6 +97,8 @@ import {
   DEFAULT_REMEMBER_DEDUP_THRESHOLD,
 } from '../shared/paths.ts';
 import { writeRecallAuditLine } from './recall-audit.ts';
+import { filterHitsToProject, resolveRecallScope } from './recall-scope.ts';
+import { projectAliases } from '../shared/project-key.ts';
 import { resolveRankConfig, type RankConfig } from './search-config.ts';
 import { applyTemporalRerank } from './temporal-intent.ts';
 import { getDreamStats } from './dream-stats.ts';
@@ -393,6 +395,8 @@ const InjectContextSchema = z.object({
   budget_tokens: z.number().int().positive().max(20_000).optional(),
   session_id: z.string().optional(),
   project_id: z.string().optional(),
+  /** The session's working directory; with CAPTAIN_MEMO_RECALL_SCOPE=project it scopes the hits (recall-scope.ts). */
+  cwd: z.string().optional(),
   rank_profile: z.enum(['legacy', 'v2']).optional(),
 });
 
@@ -3779,7 +3783,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           flags.push('embedder=skipped');
         }
 
-        const fused = await searchWithRecency(embedding, trimmed, parsed.data.top_k * 3, cfg);
+        // Scoped recall drops other projects' hits AFTER the search, so it asks for a deeper pool: on a corpus
+        // where most notes belong to other projects, top_k*3 could leave the current project with no slot at all.
+        const scopeCwd = resolveRecallScope() === 'project' ? (parsed.data.cwd ?? '') : '';
+        const fused = await searchWithRecency(embedding, trimmed, parsed.data.top_k * (scopeCwd ? 6 : 3), cfg);
         const channelsRequested: Array<'memory' | 'skill' | 'observation'> =
           parsed.data.channels ?? ['memory', 'skill', 'observation'];
         // Snippet cap DERIVED from the budget rather than a fixed 600 chars.
@@ -3822,8 +3829,15 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // Drop archived (dedup-folded) AND sunk (Tide dormant/archived) observations
         // BEFORE taking top_k, so neither a folded dup nor an ebbed row consumes a slot
         // a live observation should fill. Sunk rows stay reachable via explicit /search.
+        let pool = candidates;
+        if (scopeCwd) {
+          const { ids, roots } = projectAliases(scopeCwd);
+          const projectIds = parsed.data.project_id ? [parsed.data.project_id, ...ids] : ids;
+          pool = filterHitsToProject(candidates, { cwd: scopeCwd, projectIds, roots, untaggedIds: ['default', opts.projectId] });
+          flags.push(`scope=project:dropped=${candidates.length - pool.length}`);
+        }
         const hits = applyTemporalRerank(
-          dropSunkForAutoInject(demoteSuperseded(dropArchived(candidates), cfg.supersedePenalty)).slice(0, parsed.data.top_k),
+          dropSunkForAutoInject(demoteSuperseded(dropArchived(pool), cfg.supersedePenalty)).slice(0, parsed.data.top_k),
           trimmed, cfg, Date.now(),
         );
 

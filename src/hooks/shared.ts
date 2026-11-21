@@ -16,6 +16,7 @@ import { fileURLToPath } from 'url';
 import { DEFAULT_WORKER_PORT } from '../shared/paths.ts';
 import { detectRepoRootSync } from '../worker/branch.ts';
 import { workerEnvLoadedKeys } from '../shared/worker-env.ts';
+import { projectKey } from '../shared/project-key.ts';
 import { workerAuthHeaders } from '../shared/worker-auth.ts';
 
 const HOOK_LOG_DIR = join(homedir(), '.captain-memo', 'logs');
@@ -179,14 +180,12 @@ export function staleNote(peer: { stale?: boolean; age_s?: number }): string {
 /** Coerce hook-time CWD → project_id for non-installed flows. Honors $CAPTAIN_MEMO_PROJECT_ID, but only when
  *  the session's own environment set it: worker.env carries CAPTAIN_MEMO_PROJECT_ID=default (the worker's corpus
  *  id, written by every install), and the MCP server seeds its env from that file, so honoring it there filed
- *  every todo_add from every project as "default". */
+ *  every todo_add from every project as "default".
+ *  Otherwise the project is the cwd's git repository (a worktree's: the repository it was made from), so every
+ *  subfolder and worktree of one repo, in any AI tool, files under one name; outside a repo, the folder name. */
 export function resolveProjectId(cwd: string | undefined): string {
   if (process.env.CAPTAIN_MEMO_PROJECT_ID && !workerEnvLoadedKeys().has('CAPTAIN_MEMO_PROJECT_ID')) return process.env.CAPTAIN_MEMO_PROJECT_ID;
-  if (!cwd) return 'default';
-  // Split on BOTH separators so a Windows cwd ("C:\\Users\\me\\project") keys to
-  // the folder name, not the whole backslash path. POSIX paths are unaffected.
-  const parts = cwd.split(/[\\/]/).filter(Boolean);
-  return parts[parts.length - 1] ?? 'default';
+  return projectKey(cwd);
 }
 
 /** Truncate any string to ≤ N codepoints, preserving a trailing marker. */
