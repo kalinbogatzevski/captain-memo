@@ -7,6 +7,10 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+### Fixed
+
+- Work-board overrides omit holders whose processes have exited once the grace period has passed.
+
 ## [0.58.10] — 2026-11-21
 
 ### Security

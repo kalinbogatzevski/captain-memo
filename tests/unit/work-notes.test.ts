@@ -3,7 +3,7 @@ import {
   setWorkNote, listLocalActive, clearWorkNote, overlapsAgainst, WORKNOTE_PREFIX,
   setFleetSnapshot, listFleetActive, filterActive, sanitizeFleetNotes, FLEET_SNAPSHOT_KEY,
   cosineSimilarity, semanticOverlaps, repoOverlapsAgainst, groupRepoContention, repoActiveHolders, inheritDeclaredIntent,
-  decorateStaleness, isStale, claimAgeS,
+  decorateStaleness, isStale, claimAgeS, setWorkOverride, EXITED_GRACE_MS,
   type WorkNoteKv, type WorkNote, type ClaimVec,
 } from '../../src/worker/work-notes.ts';
 
@@ -463,6 +463,18 @@ test('guardContested enforces only between two Claude Code claims (both carry a 
   expect(guardContested(['/r/a.php'], [holder], { session_id: 'me', held: [], pid: 2, override: () => [] }, alive).contested).toEqual(['/r/a.php']);
   expect(guardContested(['/r/a.php'], [holder], { session_id: 'me', held: [], override: () => [] }, alive).contested).toEqual([]);   // caller without pid
   expect(guardContested(['/r/a.php'], [{ agent: 'claude', session_id: 'p', what: 'x', files: ['/r/a.php'], ts: 1, ttl_s: 60 }], { session_id: 'me', held: [], pid: 2, override: () => [] }, alive).contested).toEqual([]);   // holder without pid
+});
+
+test('setWorkOverride only reports the live holder after the exited-process grace period', () => {
+  const kv = makeKv();
+  const files = ['a/file.ts'];
+  setWorkNote(kv, { session_id: 'exited', files, pid: 111 }, NOW);
+  setWorkNote(kv, { session_id: 'running', files, pid: 222 }, NOW);
+
+  const now = NOW + EXITED_GRACE_MS + 1;
+  const alive = (pid: number) => pid === 222;
+  expect(setWorkOverride(kv, 'me', files, now).holders.map((n) => n.session_id)).toEqual(['exited', 'running']);
+  expect(setWorkOverride(kv, 'me', files, now, alive).holders.map((n) => n.session_id)).toEqual(['running']);
 });
 
 test('listLocalActive with a liveness check reaps the claim of an exited process, and only that', () => {

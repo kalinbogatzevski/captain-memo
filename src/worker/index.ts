@@ -2714,7 +2714,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         if (!body || typeof body.session_id !== 'string' || !body.session_id || files.length === 0) {
           return Response.json({ error: 'invalid_request', details: 'session_id and files required' }, { status: 400 });
         }
-        const { override, holders } = setWorkOverride(meta, body.session_id, files, Date.now());
+        const { override, holders } = setWorkOverride(meta, body.session_id, files, Date.now(), pidAlive);
         return Response.json({ ok: true, files: override.files, until: override.until, holders: holders.map((h) => h.session_id) });
       }
       if (req.method === 'POST' && url.pathname === '/worknote/clear') {
