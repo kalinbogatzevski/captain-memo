@@ -90,9 +90,9 @@ describe('projectKey', () => {
 });
 
 describe('projectAliases', () => {
-  test('lists the repo name and its worktrees\' folder names, never a plain subfolder name', () => {
+  test('lists the repo name, cwd folder name and worktree folder names', () => {
     const { ids, roots } = projectAliases(join(shop, 'src', 'billing'), home);
-    expect(new Set(ids)).toEqual(new Set(['shop', 'feature-x', 'shop-codex']));
+    expect(new Set(ids)).toEqual(new Set(['shop', 'billing', 'feature-x', 'shop-codex']));
     expect(roots).toContain(join(shop, 'src', 'billing'));
     expect(roots).toContain(shop);
     expect(roots).toContain(insideWt);

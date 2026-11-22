@@ -1,12 +1,12 @@
 // src/shared/project-key.ts — which project a session's cwd belongs to.
 //
-// Observations used to be tagged with the cwd's last folder name. One repository then showed up under many names: each
+// By default observations are tagged with the cwd's last folder name. One repository can show up under many names: each
 // worktree (Claude Code's .claude/worktrees/<name>, a Codex run's sibling checkout) and each subfolder a session was
 // started in (`src`, `specs`, …) was a project of its own, and no two tools agreed. Measured on one machine
 // (2026-11-20): a single repo under 14 names for Claude Code sessions and 3 more for Codex.
 //
-// The key is now the name of the repository the cwd is in: for a linked worktree, the repository it was made from (a
-// bare `api.git` keys as `api`). It is read from the `.git` entries on disk, no git process, because it runs on every
+// The opt-in repo key is the name of the repository the cwd is in: for a linked worktree, the repository it was made from (a
+// bare `api.git` keys as `api`). It is read from the `.git` entries on disk without launching git, because it runs on every
 // hook. Outside a repository it is the folder name, as before. A repository AT the home folder (a dotfiles checkout) is
 // not a project: the walk stops below home.
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
@@ -25,8 +25,9 @@ export interface RepoLocation {
 const FOLD = process.platform === 'win32';
 const same = (a: string, b: string): boolean => (FOLD ? a.toLowerCase() === b.toLowerCase() : a === b);
 
-function lastSegment(p: string): string {
-  return p.split(/[\\/]/).filter(Boolean).pop() ?? '';
+/** The default project ID, accepting both Windows and POSIX path separators. */
+export function folderProjectKey(cwd: string | undefined): string {
+  return cwd?.split(/[\\/]/).filter(Boolean).pop() ?? 'default';
 }
 
 function readTrimmed(path: string): string | null {
@@ -75,7 +76,7 @@ const repoName = (mainRoot: string): string => basename(mainRoot).replace(/\.git
 export function projectKey(cwd: string | undefined, home: string = homedir()): string {
   if (!cwd) return 'default';
   const repo = findRepo(cwd, home);
-  return (repo ? repoName(repo.mainRoot) : lastSegment(cwd)) || 'default';
+  return (repo ? repoName(repo.mainRoot) : folderProjectKey(cwd)) || 'default';
 }
 
 /** The repository's linked worktrees, from <commonDir>/worktrees/<name>/gitdir (each names its worktree's .git). */
@@ -91,16 +92,17 @@ function linkedWorktrees(commonDir: string): string[] {
 
 /**
  * Everything that identifies the cwd's project, for scoping recall:
- *  - ids:   the project key, plus every linked worktree's folder name (what older observations of a worktree session
- *           were tagged with; those names are specific enough to match on, unlike a subfolder's `src`);
+ *  - ids:   the repo name, the cwd's folder name, and every linked worktree's folder name, so recall can match
+ *           observations tagged under either project key setting;
  *  - roots: the folders that are the project (the cwd, the main tree, every worktree): their per-folder memory is the
  *           project's, and so is an older observation whose files lie inside them.
  */
 export function projectAliases(cwd: string, home: string = homedir()): { ids: string[]; roots: string[] } {
+  const folder = folderProjectKey(cwd);
   const repo = findRepo(cwd, home);
-  if (!repo) return { ids: [lastSegment(cwd) || 'default'], roots: [resolve(cwd)] };
+  if (!repo) return { ids: [folder], roots: [resolve(cwd)] };
   const worktrees = linkedWorktrees(repo.commonDir);
-  const ids = new Set<string>([repoName(repo.mainRoot), ...worktrees.map(wt => basename(wt))]);
+  const ids = new Set<string>([repoName(repo.mainRoot), folder, ...worktrees.map(wt => basename(wt))]);
   const roots = new Set<string>([resolve(cwd), repo.worktreeRoot, repo.mainRoot, ...worktrees]);
   return { ids: [...ids], roots: [...roots] };
 }

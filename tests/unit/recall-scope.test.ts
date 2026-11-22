@@ -1,6 +1,6 @@
 import { test, expect, describe } from 'bun:test';
 import { join } from 'path';
-import { resolveRecallScope, filterHitsToProject } from '../../src/worker/recall-scope.ts';
+import { createProjectAliasesCache, resolveRecallScope, filterHitsToProject } from '../../src/worker/recall-scope.ts';
 import { projectSlugFromCwd } from '../../src/shared/paths.ts';
 
 // Fixture paths are built with join() so they read as native paths on every platform.
@@ -28,6 +28,14 @@ describe('resolveRecallScope', () => {
     expect(resolveRecallScope({ CAPTAIN_MEMO_RECALL_SCOPE: 'project' })).toBe('project');
     expect(resolveRecallScope({ CAPTAIN_MEMO_RECALL_SCOPE: ' Project ' })).toBe('project');
   });
+});
+
+test('project aliases are cached per cwd for 30 seconds', () => {
+  const lookup = createProjectAliasesCache();
+  const shopAliases = lookup(SHOP, 1000);
+  expect(lookup(BILLING, 1000)).not.toBe(shopAliases);
+  expect(lookup(SHOP, 30_999)).toBe(shopAliases);
+  expect(lookup(SHOP, 31_000)).not.toBe(shopAliases);
 });
 
 describe('filterHitsToProject', () => {

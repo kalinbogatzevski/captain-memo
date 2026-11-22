@@ -97,8 +97,7 @@ import {
   DEFAULT_REMEMBER_DEDUP_THRESHOLD,
 } from '../shared/paths.ts';
 import { writeRecallAuditLine } from './recall-audit.ts';
-import { filterHitsToProject, resolveRecallScope } from './recall-scope.ts';
-import { projectAliases } from '../shared/project-key.ts';
+import { createProjectAliasesCache, filterHitsToProject, resolveRecallScope } from './recall-scope.ts';
 import { resolveRankConfig, type RankConfig } from './search-config.ts';
 import { applyTemporalRerank } from './temporal-intent.ts';
 import { getDreamStats } from './dream-stats.ts';
@@ -417,6 +416,7 @@ function chmodSecret(path: string, mode: number): void {
 }
 
 export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
+  const scopedProjectAliases = createProjectAliasesCache();
   // Worker boot time — surfaced via /stats so the dashboard can show liveness + uptime.
   const workerStartedAtEpoch = Math.floor(Date.now() / 1000);
   const meta = new MetaStore(opts.metaDbPath, { readonly: !!opts.readOnly });
@@ -3831,7 +3831,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // a live observation should fill. Sunk rows stay reachable via explicit /search.
         let pool = candidates;
         if (scopeCwd) {
-          const { ids, roots } = projectAliases(scopeCwd);
+          const { ids, roots } = scopedProjectAliases(scopeCwd);
           const projectIds = parsed.data.project_id ? [parsed.data.project_id, ...ids] : ids;
           pool = filterHitsToProject(candidates, { cwd: scopeCwd, projectIds, roots, untaggedIds: ['default', opts.projectId] });
           flags.push(`scope=project:dropped=${candidates.length - pool.length}`);

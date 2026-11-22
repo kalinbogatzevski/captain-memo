@@ -7,7 +7,7 @@
 //
 // CAPTAIN_MEMO_RECALL_SCOPE=project drops a hit only when it is KNOWN to belong to another project:
 //   - an observation whose project_id is set (not 'default' or the worker's own corpus id) and is none of the session
-//     project's ids (its repository's name, or the folder name of one of its worktrees: see project-key.ts), unless a
+//     project's ids (its repository, cwd or worktree folder names: see project-key.ts), unless a
 //     file it read or modified lies inside the project (how an older observation, tagged with a subfolder or a since
 //     deleted worktree, is still recognised);
 //   - a Claude Code per-project memory file (<claude projects dir>/<slug>/memory/…) whose slug is not that of the
@@ -20,6 +20,7 @@
 import { homedir } from 'os';
 import { claudeProjectsDir, projectSlugFromCwd } from '../shared/paths.ts';
 import { REPO_ROOT_NAMES } from '../shared/ai-memory-sources.ts';
+import { projectAliases } from '../shared/project-key.ts';
 
 export type RecallScope = 'all' | 'project';
 
@@ -27,6 +28,24 @@ export const ENV_RECALL_SCOPE = 'CAPTAIN_MEMO_RECALL_SCOPE';
 
 export function resolveRecallScope(env: Record<string, string | undefined> = process.env): RecallScope {
   return env[ENV_RECALL_SCOPE]?.trim().toLowerCase() === 'project' ? 'project' : 'all';
+}
+
+export function createProjectAliasesCache() {
+  const entries = new Map<string, { aliases: ReturnType<typeof projectAliases>; expiresAt: number }>();
+  return (cwd: string, now = performance.now()): ReturnType<typeof projectAliases> => {
+    const cached = entries.get(cwd);
+    if (cached && now < cached.expiresAt) return cached.aliases;
+
+    // Refresh Git worktree metadata every 30 seconds and bound the number of remembered cwd values.
+    const aliases = projectAliases(cwd);
+    entries.delete(cwd);
+    entries.set(cwd, { aliases, expiresAt: now + 30_000 });
+    if (entries.size > 128) {
+      const oldest = entries.keys().next();
+      if (!oldest.done) entries.delete(oldest.value);
+    }
+    return aliases;
+  };
 }
 
 export interface ScopeContext {
