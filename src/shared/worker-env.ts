@@ -4,7 +4,7 @@
 // no equivalent on Windows (Scheduled Task) or macOS (launchd plists are awkward
 // for secrets), so the daemon must load it itself. Calling loadWorkerEnv() at the
 // top of the worker / MCP / CLI bootstrap makes secrets reach the process on EVERY
-// platform, and de-risks the eventual macOS port for free.
+// platform. Hooks can request a single setting without importing other values.
 import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, renameSync, chmodSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { dirname } from 'path';
@@ -103,7 +103,7 @@ export function setWorkerEnvVar(key: string, value: string, path: string = worke
  *    environment always take precedence over the file. This makes the call safe
  *    to run unconditionally on all platforms (a no-op where systemd already set it).
  *
- * Idempotent.
+ * Idempotent. When onlyKey is supplied, other variables are left untouched.
  */
 const loadedKeys = new Set<string>();
 
@@ -111,7 +111,7 @@ const loadedKeys = new Set<string>();
  *  CAPTAIN_MEMO_PROJECT_ID for a session's project. */
 export function workerEnvLoadedKeys(): ReadonlySet<string> { return loadedKeys; }
 
-export function loadWorkerEnv(): void {
+export function loadWorkerEnv(onlyKey?: string): void {
   for (const p of workerEnvPaths()) {
     if (!existsSync(p)) continue;
     let text: string;
@@ -126,7 +126,7 @@ export function loadWorkerEnv(): void {
       const eq = line.indexOf('=');
       if (eq <= 0) continue;
       const key = line.slice(0, eq).trim();
-      if (!key || key in process.env) continue;
+      if (!key || (onlyKey !== undefined && key !== onlyKey) || key in process.env) continue;
       let val = line.slice(eq + 1).trim();
       if (
         val.length >= 2 &&
