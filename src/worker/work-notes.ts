@@ -323,10 +323,12 @@ export interface WorkOverride { files: string[]; ts: number; until: number }
 /** Record that the USER of `sessionId` typed `override: <files>`: for OVERRIDE_MS the edit guard lets this session write
  *  those files over another session's live claim. Returns the stored override and the live claims of OTHER sessions it
  *  overrides. There is no inbox here: a holder learns of it from the board (work_active, and its next overlap line). */
-export function setWorkOverride(kv: WorkNoteKv, sessionId: string, files: string[], now: number): { override: WorkOverride; holders: WorkNote[] } {
+export function setWorkOverride(
+  kv: WorkNoteKv, sessionId: string, files: string[], now: number, alive?: (pid: number) => boolean,
+): { override: WorkOverride; holders: WorkNote[] } {
   const override: WorkOverride = { files: files.slice(0, MAX_FILES).map((f) => String(f).slice(0, 256)), ts: now, until: now + OVERRIDE_MS };
   kv.setKv(OVERRIDE_PREFIX + String(sessionId).slice(0, 64), JSON.stringify(override));
-  const holders = decorateStaleness(listLocalActive(kv, now), now)
+  const holders = decorateStaleness(listLocalActive(kv, now, alive), now)
     .filter((n) => n.session_id !== sessionId && !n.stale && globsOverlap(override.files, (n.files ?? []).filter((f) => !wholeRepo(f, n.repo_root))).length > 0);
   return { override, holders };
 }
