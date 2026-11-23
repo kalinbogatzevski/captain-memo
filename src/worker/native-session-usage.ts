@@ -39,6 +39,10 @@ export interface NativeSessionUsage {
   cache_read_tokens: number;
   /** Transcript mtime — when the session last produced a message. */
   last_activity_epoch_ms: number;
+  /** The model and effort of the session's LATEST response, as the transcript records them on every assistant
+   *  message. Last, not first: both can change mid-session (/model, /effort). Absent before the first response. */
+  model?: string | undefined;
+  effort?: string | undefined;
   /** The session's own name, when it has one (workflow sub-task agents do). */
   agentName?: string | undefined;
   /** Set when the transcript declares itself an agent (teammates do, at top level). */
@@ -98,6 +102,9 @@ interface Bucket { fresh: number; output: number; cacheRead: number }
 
 interface Totals {
   offset: number;   // bytes already parsed (always at a newline boundary)
+  /** Latest response's model and effort (NativeSessionUsage.model / .effort). */
+  model?: string;
+  effort?: string;
   input: number;
   output: number;
   cacheCreation: number;
@@ -189,6 +196,8 @@ function fresh(): Totals {
  *  module reads COUNTS, never content, matching the corpus-telemetry posture. */
 interface TranscriptLine {
   message?: { usage?: Record<string, unknown>; model?: string; id?: string };
+  /** The effort the response was requested at, written beside message.model on each assistant record. */
+  effort?: string;
   cwd?: string;
   type?: string;
   agentName?: string;
@@ -288,6 +297,11 @@ function digest(buf: Buffer, t: Totals): number {
     }
     const u = line.message?.usage;
     if (!u || typeof u !== 'object') continue;
+    // Free: these ride on the usage lines this loop already decodes. '<synthetic>' is Claude Code's stand-in for a
+    // locally generated message (an API error, an interrupt), not a model the session ran on.
+    const model = line.message?.model;
+    if (typeof model === 'string' && model && model !== '<synthetic>') t.model = model.slice(0, 64);
+    if (typeof line.effort === 'string' && line.effort) t.effort = line.effort.slice(0, 16);
     // ONE message, MANY records. The usage block describes the message and is re-emitted on
     // each record that has one, so counting per record double- (or triple-) counts it.
     //
@@ -702,6 +716,8 @@ async function scanAgents(
       // then the label the parent gave it. Bare hex only when neither exists.
       ...((t.agentName ?? dispatchedAs) ? { agentName: t.agentName ?? dispatchedAs } : {}),
       ...(t.entrypoint ? { entrypoint: t.entrypoint } : {}),
+      ...(t.model ? { model: t.model } : {}),
+      ...(t.effort ? { effort: t.effort } : {}),
     });
   }
 }
@@ -777,6 +793,8 @@ export async function readNativeSessionUsage(
         ...(t.agentName ? { agentName: t.agentName } : {}),
         ...(t.ownerSession ? { ownerSession: t.ownerSession } : {}),
         ...(t.entrypoint ? { entrypoint: t.entrypoint } : {}),
+        ...(t.model ? { model: t.model } : {}),
+        ...(t.effort ? { effort: t.effort } : {}),
         ...(t.agentSetting ? { agentSetting: t.agentSetting } : {}),
         ...(t.teamName ? { teamName: t.teamName } : {}),
         ...(t.teamName && teamLeadSession(t.teamName) ? { teamLeadSession: teamLeadSession(t.teamName) } : {}),

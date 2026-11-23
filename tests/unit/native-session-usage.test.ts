@@ -969,3 +969,25 @@ test('an idle transcript that resumes is read INCREMENTALLY, never re-read whole
   expect(s!.input_tokens).toBe(107);      // 100 once + 7 — the repeat must NOT be recounted
   expect(s!.output_tokens).toBe(13);
 });
+
+/** An assistant record with the model and effort Claude Code writes beside the usage. */
+const msgModel = (model: string, effort?: string) => JSON.stringify({
+  type: 'assistant', ...(effort ? { effort } : {}),
+  message: { role: 'assistant', model, content: [], usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } },
+}) + '\n';
+
+test('a session reports the model and effort of its LATEST response, never the synthetic stand-in', async () => {
+  const p = writeTranscript(SID, msgModel('claude-sonnet-5-5', 'high'));
+  expect((await readNativeSessionUsage())[0]).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'high' });
+  appendFileSync(p, msgModel('claude-opus-5-5', 'xhigh') + msgModel('<synthetic>'));
+  const [s] = await readNativeSessionUsage();
+  expect(s!.model).toBe('claude-opus-5-5');
+  expect(s!.effort).toBe('xhigh');
+});
+
+test('a session with no response yet reports no model or effort', async () => {
+  writeTranscript(SID, msg(10, 1));
+  const [s] = await readNativeSessionUsage();
+  expect(s!.model).toBeUndefined();
+  expect(s!.effort).toBeUndefined();
+});

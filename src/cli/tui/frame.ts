@@ -58,6 +58,9 @@ export interface SessionUsageRow {
   last_activity_epoch_ms: number;
   /** Working directory the session runs in — the only reliable human label. */
   cwd?: string;
+  /** Model and effort of the session's latest response (absent before its first one, or from an older worker). */
+  model?: string;
+  effort?: string;
 }
 
 export interface FrameData {
@@ -363,7 +366,7 @@ function tokensFrame(state: TopState, data: FrameData, dims: Dims): string[] {
   out.push(`  ${dim(`sessions active in the last ${mins} min · fresh = input + cache-write, what actually entered the context`)}`);
   out.push('');
   out.push('  ' + dim('session   ') + dim('    fresh in') + dim('      out') + dim('  cache-read')
-    + dim('    memory') + dim('  share') + dim('  last') + dim('  project'));
+    + dim('    memory') + dim('  share') + dim('  last') + dim('  model          ') + dim('  project'));
 
   for (const r of rows.slice(0, Math.max(3, dims.rows - 10))) {
     // '—' rather than 0% when there is no measurement: a session that has not been
@@ -376,12 +379,14 @@ function tokensFrame(state: TopState, data: FrameData, dims: Dims): string[] {
     // Project basename, not the full path — the leaf is what distinguishes sessions,
     // and several panes routinely share a long common prefix.
     const proj = r.cwd ? r.cwd.split('/').filter(Boolean).pop() ?? '' : '';
+    const model = [r.model?.replace(/^claude-/, ''), r.effort].filter(Boolean).join(' ') || '—';
     out.push('  ' + r.session_id.slice(0, 8) + '  '
       + tok(r.fresh_input_tokens).padStart(12)
       + tok(r.output_tokens).padStart(9)
       + dim(tok(r.cache_read_tokens).padStart(12))
       + mem + '  ' + share + '  ' + dim(age.padStart(5))
-      + '  ' + dim(proj.slice(0, Math.max(8, dims.cols - 76))));
+      + '  ' + model.slice(0, 15).padEnd(15)
+      + '  ' + dim(proj.slice(0, Math.max(8, dims.cols - 93))));
   }
 
   out.push('');

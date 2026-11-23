@@ -11,6 +11,7 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 - **`CAPTAIN_MEMO_RECALL_SCOPE=project` keeps automatic recall to the session's project.** The hook now sends its cwd. When enabled, the worker uses it to exclude other projects' observations, Claude per-project memory and repo instruction files under the auto-discovery roots. Scoped recall accepts both folder and repository tags and can recognise older observations by the files they touched. Skills, capabilities, user-global memory, custom-glob files and untagged observations still come through. Recall is corpus-wide by default. Explicit search is always corpus-wide.
 - **`CAPTAIN_MEMO_PROJECT_KEY=repo` opts into repository names for new session records.** The default still uses the cwd's folder name for observations, homework and work-board labels. With `repo`, subfolders and linked worktrees share the repository's name, and a session-set `CAPTAIN_MEMO_PROJECT_ID` still wins. Existing records retain their tags. Once you opt in, deduplication and theme clustering treat differing old folder tags and new repository tags as separate projects.
+- **Each Claude Code session reports the model and effort of its latest response.** Read from the assistant records the usage scan already parses, so it costs nothing extra. `/sessions/usage` returns them and the `captain-memo top` sessions panel shows them.
 
 ## [0.58.10] — 2026-11-21
 
