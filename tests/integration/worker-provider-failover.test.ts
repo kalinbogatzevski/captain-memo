@@ -362,3 +362,25 @@ test('8. a working summarizer is never re-walked', async () => {
   expect((await summarizerStats(port)).enabled).toBe(true);
 });
 
+
+test('9. a restore clears the restored provider from `skipped` and clears last_error', async () => {
+  let repaired = false;
+  const port = await boot({
+    summarize: failWith(401, 'codex: HTTP 401: unauthorized'),
+    summarizerTransport: transportFor('a'),
+    summarizerProvider: 'codex',
+    summarizerSkips: [{ provider: 'claude-oauth', reason: 'no OAuth token' }],   // skipped at boot
+    summarizerReprobeMs: 30,
+    rebuildSummarizer: async () =>
+      repaired ? { summarize: ok, transport: transportFor('b'), provider: 'claude-oauth', skips: [] } : null,
+  });
+  await enqueue(port, 's1');
+  await flush(port, 's1');
+  repaired = true;
+  expect(await until(async () => (await summarizerStats(port)).enabled)).toBe(true);
+  const st = (await (await fetch(`http://localhost:${port}/stats`)).json() as
+    { summarizer: { provider: string; skipped: unknown[]; last_error: string | null } }).summarizer;
+  expect(st.provider).toBe('claude-oauth');
+  expect(st.skipped).toEqual([]);
+  expect(st.last_error).toBeNull();
+});

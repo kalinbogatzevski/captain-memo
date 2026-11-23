@@ -41,7 +41,7 @@ import { buildThemeJudge } from './theme-judge.ts';
 import { runThemePass } from './theme-pass.ts';
 import { loadDreamInputs, pairKey } from '../dreaming/load.ts';
 import { coRetrievalSimilarity } from '../dreaming/distance.ts';
-import { isIdle, blockingSignals } from './idle.ts';
+import { isIdle, blockingSignals, resumeWatch, quietSeconds } from './idle.ts';
 import { runQmSupersedeSlice, applySupersedeDemotion } from './supersede.ts';
 import { setWorkNote, inheritDeclaredIntent, leaseSeconds, listLocalActive, clearWorkNote, decorateStaleness, overlapsAgainst, topicOverlapsAgainst, groupTopicContention, repoOverlapsAgainst, groupRepoContention, repoActiveHolders, guardContested, wholeRepo, pidAlive, setWorkOverride, getWorkOverride, getWorkNote, isStale, type SetWorkNoteInput, type GuardHolder } from './work-notes.ts';
 import { resolveRepoClaim } from './repo-claim.ts';
@@ -951,6 +951,17 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
    * Requires a known current provider: without one there is nothing to put on the exclusion list,
    * so the rebuild would hand back the SAME provider and we would "fail over" in a loop.
    */
+  /** Merge a rebuild's skips, and drop the entry of the provider that now RUNS: a provider skipped at boot
+   *  and selected later would otherwise stay "skipped" in /stats and doctor's WARN until restart. */
+  function adoptSkips(next: { provider: string; skips: Array<{ provider: string; reason: string }> }): void {
+    for (let i = summarizerSkips.length - 1; i >= 0; i--) {
+      if (summarizerSkips[i]!.provider === next.provider) summarizerSkips.splice(i, 1);
+    }
+    for (const s of next.skips) {
+      if (!summarizerSkips.some(x => x.provider === s.provider)) summarizerSkips.push(s);
+    }
+  }
+
   async function demoteProvider(reason: string): Promise<boolean> {
     if (!opts.rebuildSummarizer || !activeProvider) return false;
     const dying = activeProvider;
@@ -972,9 +983,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     summarize = next.summarize;
     activeTransport = next.transport;
     activeProvider = next.provider;
-    for (const s of next.skips) {
-      if (!summarizerSkips.some(x => x.provider === s.provider)) summarizerSkips.push(s);
-    }
+    adoptSkips(next);
     console.error(`[obs-batch] summarizer provider DEMOTED ${dying} -> ${next.provider}: ${reason}`);
     invalidateStats();
     return true;
@@ -1238,10 +1247,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       summarize = next.summarize;
       activeTransport = next.transport;
       activeProvider = next.provider;
-      for (const s of next.skips) {
-        if (!summarizerSkips.some(x => x.provider === s.provider)) summarizerSkips.push(s);
-      }
+      adoptSkips(next);
       demoted.length = 0;                          // retired for a login that is usable again; a relapse re-adds it
+      lastSummarizerError = null;                  // the outage it described is over; a relapse records a new one
       console.error(`[summarizer-reprobe] provider ${next.provider} is usable again — summarizer RESTORED`);
       releaseDeadLetters(`provider ${next.provider} is usable again`);
       invalidateStats();
@@ -1750,6 +1758,11 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
    *  theme pass — including its model calls — every 30 s. The one-shot start already honoured
    *  `pass=`; only the recurring window did not. */
   let forcedPasses: 'all' | 'semantic' | 'theme' = 'all';
+  // A laptop wake counts as activity (idle.ts resumeWatch). 60 s heartbeat, so a sleep over 3 min is detected; one
+  // Date.now() compare per tick.
+  const RESUME_HEARTBEAT_MS = 60_000;
+  const resume = resumeWatch(RESUME_HEARTBEAT_MS);
+  const resumeTimer: ReturnType<typeof setInterval> = setInterval(() => { resume.look(); }, RESUME_HEARTBEAT_MS);
   /** BACKLOG sweep window: while set, the semantic pass also considers never-surfaced rows.
    *  Shares the forcing window's deadline and expires with it, so a sweep can never become the
    *  permanent default — the steady-state pass costs 9.9 s, the sweep 247 s. */
@@ -1767,7 +1780,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         ingestActive: processBatchPromise != null,
         queuePending: obsQueue?.pendingCount() ?? 0,
         // Unknown clock ⇒ Infinity, so a corpus that has never recorded activity still qualifies.
-        secondsSinceLastActivity: lastActivity == null ? Infinity : Math.max(0, nowS - lastActivity),
+        secondsSinceLastActivity: quietSeconds(nowS, lastActivity, resume.look()),
         activeSessions: opts.activeSessionCount?.() ?? 0,
       }, { minIdleSeconds: qmConfig.semanticMinIdleSeconds });
       if (!force && !forcedNow('semantic') && !idle) return null;
@@ -1877,7 +1890,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       const idle = isIdle({
         ingestActive: processBatchPromise != null,
         queuePending: obsQueue?.pendingCount() ?? 0,
-        secondsSinceLastActivity: lastActivity == null ? Infinity : Math.max(0, nowS - lastActivity),
+        secondsSinceLastActivity: quietSeconds(nowS, lastActivity, resume.look()),
         activeSessions: opts.activeSessionCount?.() ?? 0,
       }, { minIdleSeconds: qmConfig.semanticMinIdleSeconds });
       if (!force && !forcedNow('theme') && !idle) return null;
@@ -2832,7 +2845,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           const sig = {
             ingestActive: processBatchPromise != null,
             queuePending: obsQueue?.pendingCount() ?? 0,
-            secondsSinceLastActivity: last == null ? Infinity : Math.max(0, nowS - last),
+            secondsSinceLastActivity: quietSeconds(nowS, last, resume.look()),
             activeSessions: opts.activeSessionCount?.() ?? 0,
           };
           const cfg = { minIdleSeconds: qmConfig.semanticMinIdleSeconds };
@@ -4023,6 +4036,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     if (ivfSweepTimer) clearTimeout(ivfSweepTimer);
     if (qmDedupTimer) clearInterval(qmDedupTimer);
     if (qmSupersedeTimer) clearInterval(qmSupersedeTimer);
+    clearInterval(resumeTimer);
     if (semanticTimer) clearInterval(semanticTimer);
     if (themeTimer) clearInterval(themeTimer);
     if (forcedTimer) clearInterval(forcedTimer);

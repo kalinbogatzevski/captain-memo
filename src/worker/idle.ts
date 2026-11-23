@@ -51,3 +51,31 @@ export function blockingSignals(s: IdleSignals): string[] {
   if (s.activeSessions > 0) out.push('co-session');
   return out;
 }
+
+/**
+ * Sleep/resume detector. Timers do not fire while a laptop sleeps, so the first look after a wake sees a wall-clock
+ * gap far longer than the heartbeat; that moment counts as activity. Without it, idle age = now minus the last
+ * observation, and a wake after a night's sleep reads as hours of quiet: every idle-gated pass started at once.
+ *
+ * `look` is called by the heartbeat AND by every gate before it reads, so a gate that fires first after a wake still
+ * sees the gap. An event-loop stall longer than the threshold also counts; that only defers a pass.
+ */
+export function resumeWatch(heartbeatMs: number, now: () => number = Date.now): { look: () => number | null } {
+  let lastLook = now();
+  let resumedAtMs: number | null = null;
+  return {
+    /** Records this look; returns the wall-clock ms of the latest detected resume, or null. */
+    look() {
+      const t = now();
+      if (t - lastLook > 3 * heartbeatMs) resumedAtMs = t;
+      lastLook = t;
+      return resumedAtMs;
+    },
+  };
+}
+
+/** Seconds of quiet: since the last observation, or since the last resume when that is more recent. */
+export function quietSeconds(nowS: number, lastActivityEpoch: number | null, resumedAtMs: number | null): number {
+  const last = Math.max(lastActivityEpoch ?? -Infinity, resumedAtMs == null ? -Infinity : Math.floor(resumedAtMs / 1000));
+  return Number.isFinite(last) ? Math.max(0, nowS - last) : Infinity;
+}

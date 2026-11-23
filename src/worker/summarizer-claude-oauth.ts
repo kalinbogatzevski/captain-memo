@@ -100,7 +100,20 @@ export function createClaudeOauthTransport(opts: ClaudeOauthTransportOptions = {
   const fetchFn = opts.fetchFn ?? fetch;
   const timeoutMs = opts.timeoutMs ?? Number(process.env.CAPTAIN_MEMO_SUMMARIZER_TIMEOUT_MS ?? 60_000);
 
+  // One retry with a FRESH credential read before an auth failure escapes: a 401/403 demotes the provider in the
+  // same batch, and Claude Code may have rewritten the file seconds ago (refresh / re-login).
   return async (args: SummarizerTransportArgs): Promise<SummarizerTransportResult> => {
+    try {
+      return await callOnce(args);
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      if (status !== 401 && status !== 403) throw err;
+      cached = null;
+      return await callOnce(args);
+    }
+  };
+
+  async function callOnce(args: SummarizerTransportArgs): Promise<SummarizerTransportResult> {
     const cred = readClaudeOauthToken();
     if (!cred) {
       const e = new Error(
@@ -192,5 +205,5 @@ export function createClaudeOauthTransport(opts: ClaudeOauthTransportOptions = {
     } finally {
       clearTimeout(timer);
     }
-  };
+  }
 }
