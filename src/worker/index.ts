@@ -1546,7 +1546,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         setCentroids: (coll, centroids, bootstrapVectors) => vector.setCentroids(coll, centroids, bootstrapVectors),
         split: {
           current: (coll) => vector.splitInProgress(coll),
-          largest: (ids) => vector.largestCluster(ids),
+          largest: (ids, over) => vector.largestCluster(ids, over),
           rows: (id, limit) => vector.clusterRows(id, limit),
           sample: (id, limit) => vector.sampleClusterVectors(id, limit),
           start: (coll, id, seeds) => vector.startSplit(coll, id, seeds),

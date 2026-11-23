@@ -53,7 +53,8 @@ export interface IvfSweepDeps {
 /** VectorStore's split storage: splitInProgress, largestCluster, clusterRows, sampleClusterVectors, startSplit, finishSplit. */
 export interface IvfSplitDeps {
   current: (collection: string) => { clusterId: number; seedLo: number; seedHi: number } | null;
-  largest: (clusterIds: readonly number[]) => { clusterId: number; size: number } | null;
+  /** The largest of clusterIds holding more than `over` vectors. */
+  largest: (clusterIds: readonly number[], over: number) => { clusterId: number; size: number } | null;
   /** null: the store cannot read a cluster's rows cheaply, so nothing is split. */
   rows: (clusterId: number, limit: number) => Array<{ chunkId: string; embedding: Float32Array }> | null;
   sample: (clusterId: number, limit: number) => Array<{ chunkId: string; embedding: Float32Array }>;
@@ -247,7 +248,7 @@ async function splitSlice(
     centroids = deps.getCentroids(collection);
   }
 
-  const big = s.largest(centroids.map(c => c.clusterId));
+  const big = s.largest(centroids.map(c => c.clusterId), cfg.regrowRatio * cfg.targetPerCluster);
   if (!big || big.size <= cfg.regrowRatio * cfg.targetPerCluster) return null;
   const pool = s.sample(big.clusterId, Math.max(2, Math.round(big.size / cfg.targetPerCluster)));
   if (pool.length < 2) return null;

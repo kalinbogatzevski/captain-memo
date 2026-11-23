@@ -701,12 +701,12 @@ export class VectorStore {
     } catch { return null; }   // a read-only handle on a file that predates the table
   }
 
-  /** The largest of `clusterIds` by vector count, or null (none populated, or a shadow layout this code does not know).
+  /** The largest of `clusterIds` holding more than `over` vectors, or null (none, or a shadow layout this code does not know).
    *  Each partition's chunk slots bound its count from above (chunks are part-filled after deletes and moves), so the exact
-   *  count is taken only while a bound can still beat the best found. MEASURED on a copy of the dev store (400,797 vectors,
-   *  477 clusters, 2026-11-23, box at load 25): the bounds 0.8 ms p50, an exact count 0.5 ms (3,761 rows); the one-pass
-   *  exact GROUP BY over every row was 153 ms. Run once per converged sweep tick. */
-  largestCluster(clusterIds: readonly number[]): { clusterId: number; size: number } | null {
+   *  count is taken only while a bound can still beat both `over` and the best found. Run once per converged sweep tick and
+   *  once per split. MEASURED on a copy of the dev store (400,797 vectors, 477 clusters, 2026-11-23, box at load 9-14, warm):
+   *  93-136 ms p50, 160 ms max, almost all of it the bounds GROUP BY (none past `over`: 93 ms); 3 s on a cold cache. */
+  largestCluster(clusterIds: readonly number[], over = 0): { clusterId: number; size: number } | null {
     try {
       const live = new Set(clusterIds);
       const bounds = this.db.query(`SELECT partition00 AS p, SUM(size) AS slots FROM vec_chunks_p_chunks
@@ -715,10 +715,10 @@ export class VectorStore {
                                      CROSS JOIN vec_chunks_p_rowids r ON r.chunk_id = c.chunk_id WHERE c.partition00 = ?`);
       let best: { clusterId: number; size: number } | null = null;
       for (const b of bounds) {
-        if (best && b.slots <= best.size) break;
+        if (b.slots <= over || (best && b.slots <= best.size)) break;
         if (!live.has(b.p)) continue;
         const n = (count.get(b.p) as { n: number }).n;
-        if (n > 0 && (!best || n > best.size)) best = { clusterId: b.p, size: n };
+        if (n > over && (!best || n > best.size)) best = { clusterId: b.p, size: n };
       }
       return best;
     } catch { return null; }

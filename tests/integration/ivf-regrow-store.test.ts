@@ -31,7 +31,7 @@ function depsFor(store: VectorStore, c: typeof cfg = cfg): IvfSweepDeps {
     updateCentroids: (k, cs) => store.updateCentroids(k, cs),
     split: {
       current: (k) => store.splitInProgress(k),
-      largest: (ids) => store.largestCluster(ids),
+      largest: (ids, over) => store.largestCluster(ids, over),
       rows: (id, n) => store.clusterRows(id, n),
       sample: (id, n) => store.sampleClusterVectors(id, n),
       start: (k, id, seeds) => store.startSplit(k, id, seeds),

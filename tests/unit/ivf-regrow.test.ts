@@ -111,7 +111,7 @@ test('split — a split whose seeds are gone (the set was replaced) is forgotten
 test('the worker wires the split storage into the sweep (the dep is optional: absent, nothing is split)', () => {
   const src = readFileSync(join(import.meta.dir, '../../src/worker/index.ts'), 'utf-8');
   const call = src.slice(src.indexOf('runIvfSweepSlice({'), src.indexOf('sample: defaultSample'));
-  for (const w of ['vector.splitInProgress(coll)', 'vector.largestCluster(ids)', 'vector.clusterRows(id, limit)',
+  for (const w of ['vector.splitInProgress(coll)', 'vector.largestCluster(ids, over)', 'vector.clusterRows(id, limit)',
     'vector.sampleClusterVectors(id, limit)', 'vector.startSplit(coll, id, seeds)', 'vector.finishSplit(coll, id, drop)']) {
     expect(call).toContain(w);
   }
