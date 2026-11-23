@@ -82,8 +82,44 @@ var init_branch = __esm(() => {
 });
 
 // src/shared/worker-env.ts
+import { existsSync as existsSync2, mkdirSync, readFileSync, writeFileSync, copyFileSync, renameSync, chmodSync } from "fs";
+function workerEnvPaths() {
+  const paths = [WORKER_ENV_PATH];
+  if (process.platform !== "win32")
+    paths.push("/etc/captain-memo/worker.env");
+  return paths;
+}
 function workerEnvLoadedKeys() {
   return loadedKeys;
+}
+function loadWorkerEnv(onlyKey) {
+  for (const p of workerEnvPaths()) {
+    if (!existsSync2(p))
+      continue;
+    let text;
+    try {
+      text = readFileSync(p, "utf8");
+    } catch {
+      continue;
+    }
+    for (const rawLine of text.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#"))
+        continue;
+      const eq = line.indexOf("=");
+      if (eq <= 0)
+        continue;
+      const key = line.slice(0, eq).trim();
+      if (!key || onlyKey !== undefined && key !== onlyKey || key in process.env)
+        continue;
+      let val = line.slice(eq + 1).trim();
+      if (val.length >= 2 && (val.startsWith('"') && val.endsWith('"') || val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1);
+      }
+      process.env[key] = val;
+      loadedKeys.add(key);
+    }
+  }
 }
 var loadedKeys;
 var init_worker_env = __esm(() => {
@@ -91,12 +127,73 @@ var init_worker_env = __esm(() => {
   loadedKeys = new Set;
 });
 
+// src/shared/project-key.ts
+import { existsSync as existsSync3, readdirSync, readFileSync as readFileSync2, statSync } from "fs";
+import { homedir as homedir2 } from "os";
+import { basename, dirname, isAbsolute, join as join2, resolve } from "path";
+function folderProjectKey(cwd) {
+  return cwd?.split(/[\\/]/).filter(Boolean).pop() ?? "default";
+}
+function readTrimmed(path) {
+  try {
+    return readFileSync2(path, "utf-8").trim() || null;
+  } catch {
+    return null;
+  }
+}
+function resolveDotGitFile(dir, dotGit) {
+  const m = /^gitdir:\s*(.+?)\s*$/m.exec(readTrimmed(dotGit) ?? "");
+  if (!m?.[1])
+    return null;
+  const admin = fromGitFile(m[1], dir);
+  const common = readTrimmed(join2(admin, "commondir"));
+  if (!common)
+    return { mainRoot: dir, worktreeRoot: dir, commonDir: admin };
+  const commonDir = fromGitFile(common, admin);
+  const mainRoot = same(basename(commonDir), ".git") ? dirname(commonDir) : commonDir;
+  return { mainRoot, worktreeRoot: dir, commonDir };
+}
+function findRepo(cwd, home = homedir2()) {
+  if (!cwd)
+    return null;
+  const stop = resolve(home);
+  let dir = resolve(cwd);
+  for (;; ) {
+    if (same(dir, stop))
+      return null;
+    const dotGit = join2(dir, ".git");
+    try {
+      if (existsSync3(dotGit)) {
+        if (statSync(dotGit).isDirectory())
+          return { mainRoot: dir, worktreeRoot: dir, commonDir: dotGit };
+        const found = resolveDotGitFile(dir, dotGit);
+        if (found)
+          return found;
+      }
+    } catch {}
+    const up = dirname(dir);
+    if (up === dir)
+      return null;
+    dir = up;
+  }
+}
+function projectKey(cwd, home = homedir2()) {
+  if (!cwd)
+    return "default";
+  const repo = findRepo(cwd, home);
+  return (repo ? repoName(repo.mainRoot) : folderProjectKey(cwd)) || "default";
+}
+var FOLD, same = (a, b) => FOLD ? a.toLowerCase() === b.toLowerCase() : a === b, fromGitFile = (value, baseDir) => isAbsolute(value) ? resolve(value) : resolve(baseDir, value), repoName = (mainRoot) => basename(mainRoot).replace(/\.git$/i, "") || basename(mainRoot);
+var init_project_key = __esm(() => {
+  FOLD = process.platform === "win32";
+});
+
 // src/shared/worker-auth.ts
-import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
-import { dirname, join as join2 } from "path";
+import { chmodSync as chmodSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync3, statSync as statSync2, writeFileSync as writeFileSync2 } from "fs";
+import { dirname as dirname2, join as join3 } from "path";
 function readWorkerToken(path = WORKER_TOKEN_PATH) {
   try {
-    return readFileSync(path, "utf8").trim() || null;
+    return readFileSync3(path, "utf8").trim() || null;
   } catch {
     return null;
   }
@@ -109,16 +206,16 @@ var WORKER_TOKEN_HEADER = "x-captain-memo-worker-token", WORKER_TOKEN_PATH;
 var init_worker_auth = __esm(() => {
   init_paths();
   init_worker_env();
-  WORKER_TOKEN_PATH = join2(CONFIG_DIR, "worker.token");
+  WORKER_TOKEN_PATH = join3(CONFIG_DIR, "worker.token");
 });
 
 // src/hooks/shared.ts
-import { appendFileSync, mkdirSync as mkdirSync2, statSync as statSync2, renameSync, existsSync as existsSync2 } from "fs";
-import { homedir as homedir2 } from "os";
-import { join as join3, resolve, isAbsolute } from "path";
+import { appendFileSync, mkdirSync as mkdirSync3, statSync as statSync3, renameSync as renameSync2, existsSync as existsSync4 } from "fs";
+import { homedir as homedir3 } from "os";
+import { join as join4, resolve as resolve2, isAbsolute as isAbsolute2 } from "path";
 import { fileURLToPath } from "url";
 function hookEntryPath(entry = process.argv[1]) {
-  return entry && /(?:^|[\\/])captain-memo-hook(?:\.(?:js|ts))?$/.test(entry) ? resolve(entry) : null;
+  return entry && /(?:^|[\\/])captain-memo-hook(?:\.(?:js|ts))?$/.test(entry) ? resolve2(entry) : null;
 }
 function isMainModule(meta) {
   const entry = process.argv[1];
@@ -129,8 +226,8 @@ function isMainModule(meta) {
   if (!entry)
     return false;
   try {
-    const actual = resolve(entry);
-    const expected = resolve(fileURLToPath(meta.url));
+    const actual = resolve2(entry);
+    const expected = resolve2(fileURLToPath(meta.url));
     return process.platform === "win32" ? actual.toLowerCase() === expected.toLowerCase() : actual === expected;
   } catch {
     return false;
@@ -138,17 +235,17 @@ function isMainModule(meta) {
 }
 function rotateIfNeeded() {
   try {
-    if (!existsSync2(HOOK_LOG_FILE))
+    if (!existsSync4(HOOK_LOG_FILE))
       return;
-    const sz = statSync2(HOOK_LOG_FILE).size;
+    const sz = statSync3(HOOK_LOG_FILE).size;
     if (sz < HOOK_LOG_ROTATE_BYTES)
       return;
-    renameSync(HOOK_LOG_FILE, HOOK_LOG_FILE + ".1");
+    renameSync2(HOOK_LOG_FILE, HOOK_LOG_FILE + ".1");
   } catch {}
 }
 function logHookError(event, err) {
   try {
-    mkdirSync2(HOOK_LOG_DIR, { recursive: true });
+    mkdirSync3(HOOK_LOG_DIR, { recursive: true });
     rotateIfNeeded();
     const e = err;
     const line = `${new Date().toISOString()} [${event}] ${e?.name ?? "Error"}: ${e?.message ?? String(err)}
@@ -220,10 +317,9 @@ function staleNote(peer) {
 function resolveProjectId(cwd) {
   if (process.env.CAPTAIN_MEMO_PROJECT_ID && !workerEnvLoadedKeys().has("CAPTAIN_MEMO_PROJECT_ID"))
     return process.env.CAPTAIN_MEMO_PROJECT_ID;
-  if (!cwd)
-    return "default";
-  const parts = cwd.split(/[\\/]/).filter(Boolean);
-  return parts[parts.length - 1] ?? "default";
+  if (process.env.CAPTAIN_MEMO_PROJECT_KEY === undefined)
+    loadWorkerEnv("CAPTAIN_MEMO_PROJECT_KEY");
+  return process.env.CAPTAIN_MEMO_PROJECT_KEY === "repo" ? projectKey(cwd) : folderProjectKey(cwd);
 }
 function clamp(s, max) {
   if (typeof s !== "string")
@@ -241,26 +337,27 @@ function summarize(value, max = 1500) {
   }
 }
 function absoluteClaimFiles(files, cwd) {
-  if (!cwd || cwd === "/" || files.every((f) => typeof f !== "string" || isAbsolute(f)))
+  if (!cwd || cwd === "/" || files.every((f) => typeof f !== "string" || isAbsolute2(f)))
     return files;
   const base = detectRepoRootSync(cwd) ?? cwd;
-  return files.map((f) => typeof f === "string" && !isAbsolute(f) ? resolve(base, f.trim() === "" || f.trim() === "." ? "**" : f) + (/[\\/]$/.test(f) ? "/" : "") : f);
+  return files.map((f) => typeof f === "string" && !isAbsolute2(f) ? resolve2(base, f.trim() === "" || f.trim() === "." ? "**" : f) + (/[\\/]$/.test(f) ? "/" : "") : f);
 }
 var HOOK_LOG_DIR, HOOK_LOG_FILE, HOOK_LOG_ROTATE_BYTES, WORKER_BASE;
 var init_shared = __esm(() => {
   init_paths();
   init_branch();
   init_worker_env();
+  init_project_key();
   init_worker_auth();
-  HOOK_LOG_DIR = join3(homedir2(), ".captain-memo", "logs");
-  HOOK_LOG_FILE = join3(HOOK_LOG_DIR, "hook.log");
+  HOOK_LOG_DIR = join4(homedir3(), ".captain-memo", "logs");
+  HOOK_LOG_FILE = join4(HOOK_LOG_DIR, "hook.log");
   HOOK_LOG_ROTATE_BYTES = 10 * 1024 * 1024;
   WORKER_BASE = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
 });
 
 // src/shared/worker-transition.ts
-import { mkdirSync as mkdirSync3, readFileSync as readFileSync2, readdirSync, renameSync as renameSync2, statSync as statSync3, unlinkSync, writeFileSync as writeFileSync2 } from "fs";
-import { dirname as dirname2, join as join4 } from "path";
+import { mkdirSync as mkdirSync4, readFileSync as readFileSync4, readdirSync as readdirSync2, renameSync as renameSync3, statSync as statSync4, unlinkSync, writeFileSync as writeFileSync3 } from "fs";
+import { dirname as dirname3, join as join5 } from "path";
 function markTransition(t, path = TRANSITION_PATH, now = Date.now()) {
   try {
     const live = readTransition(path, now);
@@ -270,10 +367,10 @@ function markTransition(t, path = TRANSITION_PATH, now = Date.now()) {
       ...t.to === undefined && live?.to !== undefined ? { to: live.to } : {},
       ts: live?.ts ?? now
     };
-    mkdirSync3(dirname2(path), { recursive: true });
+    mkdirSync4(dirname3(path), { recursive: true });
     const tmp = `${path}.tmp-${process.pid}`;
-    writeFileSync2(tmp, JSON.stringify(entry), "utf-8");
-    renameSync2(tmp, path);
+    writeFileSync3(tmp, JSON.stringify(entry), "utf-8");
+    renameSync3(tmp, path);
     return true;
   } catch {
     return false;
@@ -281,7 +378,7 @@ function markTransition(t, path = TRANSITION_PATH, now = Date.now()) {
 }
 function readTransition(path = TRANSITION_PATH, now = Date.now()) {
   try {
-    const t = JSON.parse(readFileSync2(path, "utf-8"));
+    const t = JSON.parse(readFileSync4(path, "utf-8"));
     if (t.phase !== "booting" && t.phase !== "updating")
       return null;
     if (!Number.isFinite(t.ts) || Math.abs(now - t.ts) > TRANSITION_TTL_MS)
@@ -297,21 +394,21 @@ function clearTransition(path = TRANSITION_PATH) {
   } catch {}
 }
 function degradedPath(sessionId, dataDir) {
-  return join4(dataDir, `${DEGRADED_PREFIX}${sessionId.replace(/[^a-zA-Z0-9_-]/g, "")}`);
+  return join5(dataDir, `${DEGRADED_PREFIX}${sessionId.replace(/[^a-zA-Z0-9_-]/g, "")}`);
 }
 function markSessionDegraded(sessionId, dataDir = DATA_DIR) {
   if (!sessionId)
     return false;
   const now = Date.now();
   try {
-    mkdirSync3(dataDir, { recursive: true });
-    writeFileSync2(degradedPath(sessionId, dataDir), new Date(now).toISOString(), "utf-8");
-    for (const f of readdirSync(dataDir)) {
+    mkdirSync4(dataDir, { recursive: true });
+    writeFileSync3(degradedPath(sessionId, dataDir), new Date(now).toISOString(), "utf-8");
+    for (const f of readdirSync2(dataDir)) {
       if (!f.startsWith(DEGRADED_PREFIX))
         continue;
-      const p = join4(dataDir, f);
+      const p = join5(dataDir, f);
       try {
-        if (now - statSync3(p).mtimeMs > DEGRADED_MAX_AGE_MS)
+        if (now - statSync4(p).mtimeMs > DEGRADED_MAX_AGE_MS)
           unlinkSync(p);
       } catch {}
     }
@@ -325,7 +422,7 @@ function consumeSessionDegraded(sessionId, dataDir = DATA_DIR) {
     return false;
   try {
     const p = degradedPath(sessionId, dataDir);
-    statSync3(p);
+    statSync4(p);
     unlinkSync(p);
     return true;
   } catch {
@@ -335,13 +432,13 @@ function consumeSessionDegraded(sessionId, dataDir = DATA_DIR) {
 var TRANSITION_PATH, TRANSITION_TTL_MS = 120000, DEGRADED_PREFIX = ".degraded-", DEGRADED_MAX_AGE_MS;
 var init_worker_transition = __esm(() => {
   init_paths();
-  TRANSITION_PATH = join4(DATA_DIR, ".worker-transition");
+  TRANSITION_PATH = join5(DATA_DIR, ".worker-transition");
   DEGRADED_MAX_AGE_MS = 24 * 60 * 60000;
 });
 
 // src/shared/worker-heal-lock.ts
-import { openSync, closeSync, readFileSync as readFileSync3, unlinkSync as unlinkSync2, writeSync } from "fs";
-import { join as join5 } from "path";
+import { openSync, closeSync, readFileSync as readFileSync5, unlinkSync as unlinkSync2, writeSync } from "fs";
+import { join as join6 } from "path";
 function acquireHealLock(lockPath = HEAL_LOCK_PATH, now = Date.now()) {
   try {
     const fd = openSync(lockPath, "wx");
@@ -350,7 +447,7 @@ function acquireHealLock(lockPath = HEAL_LOCK_PATH, now = Date.now()) {
     return true;
   } catch {
     try {
-      const stamp = Number(readFileSync3(lockPath, "utf-8").trim());
+      const stamp = Number(readFileSync5(lockPath, "utf-8").trim());
       const age = now - (Number.isFinite(stamp) ? stamp : 0);
       if (age > HEAL_LOCK_TTL_MS) {
         unlinkSync2(lockPath);
@@ -371,7 +468,7 @@ function releaseHealLock(lockPath = HEAL_LOCK_PATH) {
 var HEAL_LOCK_PATH, HEAL_LOCK_TTL_MS = 20000;
 var init_worker_heal_lock = __esm(() => {
   init_paths();
-  HEAL_LOCK_PATH = join5(DATA_DIR, ".worker-heal.lock");
+  HEAL_LOCK_PATH = join6(DATA_DIR, ".worker-heal.lock");
 });
 
 // src/shared/worker-health-probe.ts
@@ -445,9 +542,9 @@ var init_worker_health_probe = __esm(() => {
 });
 
 // src/services/service-manager/systemd.ts
-import { existsSync as existsSync3, mkdirSync as mkdirSync4, readFileSync as readFileSync4, rmSync, writeFileSync as writeFileSync3 } from "fs";
-import { homedir as homedir3 } from "os";
-import { join as join6, resolve as resolve2 } from "path";
+import { existsSync as existsSync5, mkdirSync as mkdirSync5, readFileSync as readFileSync6, rmSync, writeFileSync as writeFileSync4 } from "fs";
+import { homedir as homedir4 } from "os";
+import { join as join7, resolve as resolve3 } from "path";
 import { spawnSync as spawnSync2 } from "child_process";
 function unitName(name) {
   return name.endsWith(".service") ? name : `${name}.service`;
@@ -455,9 +552,9 @@ function unitName(name) {
 function templateFor(name) {
   const bare = name.replace(/\.service$/, "");
   if (bare === "captain-memo-embed") {
-    return join6(REPO_ROOT, "services/embed/systemd/captain-memo-embed.user.service");
+    return join7(REPO_ROOT, "services/embed/systemd/captain-memo-embed.user.service");
   }
-  return join6(REPO_ROOT, "services/worker/systemd/captain-memo-worker.user.service");
+  return join7(REPO_ROOT, "services/worker/systemd/captain-memo-worker.user.service");
 }
 function systemctl(args) {
   const userR = spawnSync2("systemctl", ["--user", ...args], { encoding: "utf-8", timeout: 1e4 });
@@ -473,13 +570,13 @@ function systemctl(args) {
 class SystemdServiceManager {
   async install(spec) {
     const tpl = templateFor(spec.name);
-    if (!existsSync3(tpl))
+    if (!existsSync5(tpl))
       throw new Error(`missing systemd unit template: ${tpl}`);
     const bun = spec.exec[0] ?? "bun";
-    const unit = readFileSync4(tpl, "utf-8").replaceAll("__INSTALL_DIR__", spec.workingDir).replaceAll("__ENV_FILE__", spec.envFile ?? "").replaceAll("__BUN__", bun);
-    if (!existsSync3(USER_SYSTEMD_DIR))
-      mkdirSync4(USER_SYSTEMD_DIR, { recursive: true });
-    writeFileSync3(join6(USER_SYSTEMD_DIR, unitName(spec.name)), unit, { mode: 420 });
+    const unit = readFileSync6(tpl, "utf-8").replaceAll("__INSTALL_DIR__", spec.workingDir).replaceAll("__ENV_FILE__", spec.envFile ?? "").replaceAll("__BUN__", bun);
+    if (!existsSync5(USER_SYSTEMD_DIR))
+      mkdirSync5(USER_SYSTEMD_DIR, { recursive: true });
+    writeFileSync4(join7(USER_SYSTEMD_DIR, unitName(spec.name)), unit, { mode: 420 });
     systemctl(["daemon-reload"]);
     if (spec.autostart)
       systemctl(["enable", unitName(spec.name)]);
@@ -488,8 +585,8 @@ class SystemdServiceManager {
   async remove(name) {
     systemctl(["stop", unitName(name)]);
     systemctl(["disable", unitName(name)]);
-    const unitPath = join6(USER_SYSTEMD_DIR, unitName(name));
-    if (existsSync3(unitPath))
+    const unitPath = join7(USER_SYSTEMD_DIR, unitName(name));
+    if (existsSync5(unitPath))
       rmSync(unitPath, { force: true });
     systemctl(["daemon-reload"]);
   }
@@ -551,14 +648,14 @@ var REPO_ROOT, USER_SYSTEMD_DIR;
 var init_systemd = __esm(() => {
   init_paths();
   init_worker_auth();
-  REPO_ROOT = resolve2(import.meta.dir, "../../..");
-  USER_SYSTEMD_DIR = join6(homedir3(), ".config/systemd/user");
+  REPO_ROOT = resolve3(import.meta.dir, "../../..");
+  USER_SYSTEMD_DIR = join7(homedir4(), ".config/systemd/user");
 });
 
 // src/services/service-manager/launchd.ts
-import { existsSync as existsSync4, mkdirSync as mkdirSync5, readFileSync as readFileSync5, rmSync as rmSync2, writeFileSync as writeFileSync4 } from "fs";
-import { homedir as homedir4, userInfo } from "os";
-import { join as join7, resolve as resolve3 } from "path";
+import { existsSync as existsSync6, mkdirSync as mkdirSync6, readFileSync as readFileSync7, rmSync as rmSync2, writeFileSync as writeFileSync5 } from "fs";
+import { homedir as homedir5, userInfo } from "os";
+import { join as join8, resolve as resolve4 } from "path";
 import { spawnSync as spawnSync3 } from "child_process";
 function bareName(name) {
   return name.replace(/\.service$/, "");
@@ -567,7 +664,7 @@ function labelFor(name) {
   return `com.captainmemo.${bareName(name).replace(/^captain-memo-/, "")}`;
 }
 function plistPath(name) {
-  return join7(LAUNCH_AGENTS_DIR, `${labelFor(name)}.plist`);
+  return join8(LAUNCH_AGENTS_DIR, `${labelFor(name)}.plist`);
 }
 function domainTarget(name) {
   const uid = typeof process.getuid === "function" ? process.getuid() : userInfo().uid;
@@ -576,9 +673,9 @@ function domainTarget(name) {
 function templateFor2(name) {
   const bare = bareName(name);
   if (bare === "captain-memo-embed") {
-    return join7(REPO_ROOT2, "services/embed/launchd/captain-memo-embed.plist");
+    return join8(REPO_ROOT2, "services/embed/launchd/captain-memo-embed.plist");
   }
-  return join7(REPO_ROOT2, "services/worker/launchd/captain-memo-worker.plist");
+  return join8(REPO_ROOT2, "services/worker/launchd/captain-memo-worker.plist");
 }
 function xmlEscape(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -621,16 +718,16 @@ async function settled(check, ms = 20000) {
 class LaunchdServiceManager {
   async install(spec) {
     const tpl = templateFor2(spec.name);
-    if (!existsSync4(tpl))
+    if (!existsSync6(tpl))
       throw new Error(`missing launchd plist template: ${tpl}`);
-    const plist = renderPlist(spec, readFileSync5(tpl, "utf-8"));
-    if (!existsSync4(LAUNCH_AGENTS_DIR))
-      mkdirSync5(LAUNCH_AGENTS_DIR, { recursive: true });
+    const plist = renderPlist(spec, readFileSync7(tpl, "utf-8"));
+    if (!existsSync6(LAUNCH_AGENTS_DIR))
+      mkdirSync6(LAUNCH_AGENTS_DIR, { recursive: true });
     const logDir = spec.logDir || DEFAULT_LOG_DIR;
-    if (!existsSync4(logDir))
-      mkdirSync5(logDir, { recursive: true });
+    if (!existsSync6(logDir))
+      mkdirSync6(logDir, { recursive: true });
     const path = plistPath(spec.name);
-    writeFileSync4(path, plist, { mode: 420 });
+    writeFileSync5(path, plist, { mode: 420 });
     launchctl(["bootout", domainTarget(spec.name)]);
     must(launchctl(["bootstrap", domainTarget(), path]), `bootstrap ${path}`);
     if (spec.autostart)
@@ -647,13 +744,13 @@ class LaunchdServiceManager {
   async remove(name) {
     launchctl(["bootout", domainTarget(name)]);
     const path = plistPath(name);
-    if (existsSync4(path))
+    if (existsSync6(path))
       rmSync2(path, { force: true });
   }
   async start(name) {
     if (!await this.isLoaded(name)) {
       const path = plistPath(name);
-      if (!existsSync4(path))
+      if (!existsSync6(path))
         throw new Error(`launchd plist not found: ${path} (run install first)`);
       must(launchctl(["bootstrap", domainTarget(), path]), `bootstrap ${path}`);
     }
@@ -690,7 +787,7 @@ class LaunchdServiceManager {
   async status(name) {
     const r = launchctl(["print", domainTarget(name)]);
     if (r.status !== 0) {
-      return existsSync4(plistPath(name)) ? "stopped" : "not-installed";
+      return existsSync6(plistPath(name)) ? "stopped" : "not-installed";
     }
     if (/\bstate\s*=\s*running\b/.test(r.stdout))
       return "running";
@@ -716,15 +813,15 @@ var REPO_ROOT2, LAUNCH_AGENTS_DIR, DEFAULT_LOG_DIR, LAUNCHCTL_TIMEOUT_MS = 90000
 var init_launchd = __esm(() => {
   init_paths();
   init_worker_auth();
-  REPO_ROOT2 = resolve3(import.meta.dir, "../../..");
-  LAUNCH_AGENTS_DIR = join7(homedir4(), "Library/LaunchAgents");
+  REPO_ROOT2 = resolve4(import.meta.dir, "../../..");
+  LAUNCH_AGENTS_DIR = join8(homedir5(), "Library/LaunchAgents");
   DEFAULT_LOG_DIR = LOGS_DIR;
 });
 
 // src/services/service-manager/windows-scheduled-task.ts
-import { writeFileSync as writeFileSync5, rmSync as rmSync3 } from "fs";
+import { writeFileSync as writeFileSync6, rmSync as rmSync3 } from "fs";
 import { tmpdir } from "os";
-import { join as join8 } from "path";
+import { join as join9 } from "path";
 function psSingleQuote(value) {
   return `'${value.replaceAll("'", "''")}'`;
 }
@@ -875,8 +972,8 @@ function toTaskXmlBuffer(xml) {
 class WindowsScheduledTaskServiceManager {
   async install(spec) {
     const xml = buildTaskXml(spec);
-    const xmlPath = join8(tmpdir(), `captain-memo-task-${spec.name}-${process.pid}-${Date.now()}.xml`);
-    writeFileSync5(xmlPath, toTaskXmlBuffer(xml));
+    const xmlPath = join9(tmpdir(), `captain-memo-task-${spec.name}-${process.pid}-${Date.now()}.xml`);
+    writeFileSync6(xmlPath, toTaskXmlBuffer(xml));
     try {
       const r = await runSchtasks(["/Create", "/TN", spec.name, "/XML", xmlPath, "/F"]);
       if (r.exitCode !== 0) {
@@ -978,7 +1075,7 @@ var package_default;
 var init_package = __esm(() => {
   package_default = {
     name: "captain-memo",
-    version: "0.58.10",
+    version: "0.58.11",
     description: "Cross-AI local memory layer for Claude Code, Codex, Gemini CLI, Antigravity, goose, Cursor, opencode, Kimi CLI and more: hybrid search, six summarizer providers, hosted or local embedder. Replaces claude-mem.",
     type: "module",
     private: true,
@@ -1058,8 +1155,8 @@ var init_version = __esm(() => {
 });
 
 // src/shared/self-update.ts
-import { mkdirSync as mkdirSync6, readFileSync as readFileSync6, writeFileSync as writeFileSync6, renameSync as renameSync3 } from "fs";
-import { join as join9 } from "path";
+import { mkdirSync as mkdirSync7, readFileSync as readFileSync8, writeFileSync as writeFileSync7, renameSync as renameSync4 } from "fs";
+import { join as join10 } from "path";
 function compareSemver(a, b) {
   const parse = (v) => v.replace(/^v/i, "").split("+")[0].split("-")[0].split(".").map((n) => parseInt(n, 10) || 0);
   const pa = parse(a);
@@ -1120,11 +1217,11 @@ function formatRollbackBanner(from, attempted, rolledBack) {
 `);
 }
 function markerPath(dataDir) {
-  return join9(dataDir, MARKER_FILENAME);
+  return join10(dataDir, MARKER_FILENAME);
 }
 function readMarker(dataDir) {
   try {
-    const raw = readFileSync6(markerPath(dataDir), "utf-8").trim();
+    const raw = readFileSync8(markerPath(dataDir), "utf-8").trim();
     return raw.length > 0 ? raw : null;
   } catch {
     return null;
@@ -1132,12 +1229,12 @@ function readMarker(dataDir) {
 }
 function writeMarker(dataDir, version) {
   try {
-    mkdirSync6(dataDir, { recursive: true });
+    mkdirSync7(dataDir, { recursive: true });
     const final = markerPath(dataDir);
     const tmp = `${final}.tmp-${process.pid}`;
-    writeFileSync6(tmp, `${version}
+    writeFileSync7(tmp, `${version}
 `, "utf-8");
-    renameSync3(tmp, final);
+    renameSync4(tmp, final);
   } catch {}
 }
 function consumeUpgrade(dataDir, runningVersion) {
@@ -1296,11 +1393,11 @@ var init_self_updater = __esm(() => {
 });
 
 // src/hooks/auto-update.ts
-import { mkdirSync as mkdirSync7, readFileSync as readFileSync7, rmSync as rmSync4, statSync as statSync4, writeFileSync as writeFileSync7 } from "fs";
-import { join as join10 } from "path";
+import { mkdirSync as mkdirSync8, readFileSync as readFileSync9, rmSync as rmSync4, statSync as statSync5, writeFileSync as writeFileSync8 } from "fs";
+import { join as join11 } from "path";
 function readPkgField(dir, field) {
   try {
-    return JSON.parse(readFileSync7(join10(dir, "package.json"), "utf-8"))[field] ?? null;
+    return JSON.parse(readFileSync9(join11(dir, "package.json"), "utf-8"))[field] ?? null;
   } catch {
     return null;
   }
@@ -1326,7 +1423,7 @@ async function awaitNewProcess(before, port, read, o) {
 function recordUnshownOutcome(out) {
   try {
     if (out.kind === "blocked" || out.kind === "rolled-back")
-      writeFileSync7(UNSHOWN_OUTCOME_FILE, JSON.stringify(out));
+      writeFileSync8(UNSHOWN_OUTCOME_FILE, JSON.stringify(out));
     else if (out.kind === "updated")
       rmSync4(UNSHOWN_OUTCOME_FILE, { force: true });
   } catch {}
@@ -1334,7 +1431,7 @@ function recordUnshownOutcome(out) {
 function takeUnshownOutcome(version = VERSION) {
   let raw;
   try {
-    raw = readFileSync7(UNSHOWN_OUTCOME_FILE, "utf-8");
+    raw = readFileSync9(UNSHOWN_OUTCOME_FILE, "utf-8");
   } catch {
     return null;
   }
@@ -1350,7 +1447,7 @@ function takeUnshownOutcome(version = VERSION) {
 }
 function readSkippedRelease() {
   try {
-    return readFileSync7(SKIPPED_RELEASE_FILE, "utf-8").trim() || null;
+    return readFileSync9(SKIPPED_RELEASE_FILE, "utf-8").trim() || null;
   } catch {
     return null;
   }
@@ -1360,8 +1457,8 @@ function readStampState(now = Date.now()) {
   let lastCheck = null;
   let stamp = { delayMs: null, failures: 0 };
   try {
-    lastCheck = statSync4(UPDATE_STAMP).mtimeMs;
-    stamp = parseUpdateStamp(readFileSync7(UPDATE_STAMP, "utf-8"));
+    lastCheck = statSync5(UPDATE_STAMP).mtimeMs;
+    stamp = parseUpdateStamp(readFileSync9(UPDATE_STAMP, "utf-8"));
   } catch {}
   return { intervalMs, stamp, due: isUpdateCheckDue(lastCheck, now, stamp.delayMs ?? intervalMs) };
 }
@@ -1392,12 +1489,12 @@ async function runAutoUpdatePass(o) {
       return r;
     };
     try {
-      mkdirSync7(DATA_DIR, { recursive: true });
+      mkdirSync8(DATA_DIR, { recursive: true });
     } catch {}
     const { intervalMs, stamp, due } = readStampState();
     const writeStamp = (failures) => {
       try {
-        writeFileSync7(UPDATE_STAMP, formatUpdateStamp(new Date, nextUpdateCheckDelayMs(intervalMs, failures), failures));
+        writeFileSync8(UPDATE_STAMP, formatUpdateStamp(new Date, nextUpdateCheckDelayMs(intervalMs, failures), failures));
       } catch {}
     };
     if (!due || !acquireHealLock(AUTO_UPDATE_LOCK))
@@ -1430,7 +1527,7 @@ async function runAutoUpdatePass(o) {
         const rolled = res.priorSha ? rollbackTo(port, installDir, res.priorSha, process.execPath) : false;
         if (res.to) {
           try {
-            writeFileSync7(SKIPPED_RELEASE_FILE, res.to + `
+            writeFileSync8(SKIPPED_RELEASE_FILE, res.to + `
 `);
           } catch {}
         }
@@ -1480,7 +1577,7 @@ async function startPromptUpdate(d = {}) {
     return "no-entry";
   }
   try {
-    mkdirSync7(DATA_DIR, { recursive: true });
+    mkdirSync8(DATA_DIR, { recursive: true });
   } catch {}
   if (!acquireHealLock(UPDATE_SPAWN_LOCK, d.now))
     return "in-flight";
@@ -1502,17 +1599,17 @@ var init_auto_update = __esm(() => {
   init_worker_heal_lock();
   init_worker_health_probe();
   init_shared();
-  AUTO_UPDATE_LOCK = join10(DATA_DIR, ".auto-update.lock");
-  UPDATE_STAMP = join10(DATA_DIR, ".last-update-check");
-  SKIPPED_RELEASE_FILE = join10(DATA_DIR, ".auto-update-skip");
-  UNSHOWN_OUTCOME_FILE = join10(DATA_DIR, ".auto-update-unshown");
-  UPDATE_SPAWN_LOCK = join10(DATA_DIR, ".auto-update-spawn.lock");
+  AUTO_UPDATE_LOCK = join11(DATA_DIR, ".auto-update.lock");
+  UPDATE_STAMP = join11(DATA_DIR, ".last-update-check");
+  SKIPPED_RELEASE_FILE = join11(DATA_DIR, ".auto-update-skip");
+  UNSHOWN_OUTCOME_FILE = join11(DATA_DIR, ".auto-update-unshown");
+  UPDATE_SPAWN_LOCK = join11(DATA_DIR, ".auto-update-spawn.lock");
 });
 
 // src/shared/plugin-cache.ts
-import { existsSync as existsSync6, readFileSync as readFileSync9, readdirSync as readdirSync2, statSync as statSync5 } from "fs";
-import { homedir as homedir6 } from "os";
-import { join as join12 } from "path";
+import { existsSync as existsSync8, readFileSync as readFileSync11, readdirSync as readdirSync3, statSync as statSync6 } from "fs";
+import { homedir as homedir7 } from "os";
+import { join as join13 } from "path";
 function normalizePath(p) {
   return p.replace(/\\/g, "/").replace(/\/+$/, "");
 }
@@ -1542,7 +1639,7 @@ function parseInstalledPaths(json) {
 }
 function readPluginManifest(root) {
   try {
-    const m = JSON.parse(readFileSync9(join12(root, ".claude-plugin", "plugin.json"), "utf-8"));
+    const m = JSON.parse(readFileSync11(join13(root, ".claude-plugin", "plugin.json"), "utf-8"));
     if (typeof m.name !== "string")
       return null;
     return { name: m.name, version: typeof m.version === "string" ? m.version : null };
@@ -1552,29 +1649,29 @@ function readPluginManifest(root) {
 }
 function readInstalledPaths(file = INSTALLED_PLUGINS_PATH) {
   try {
-    return parseInstalledPaths(readFileSync9(file, "utf-8"));
+    return parseInstalledPaths(readFileSync11(file, "utf-8"));
   } catch {
     return null;
   }
 }
 var CACHE_ROOT, INSTALLED_PLUGINS_PATH;
 var init_plugin_cache = __esm(() => {
-  CACHE_ROOT = join12(homedir6(), ".claude", "plugins", "cache");
-  INSTALLED_PLUGINS_PATH = join12(homedir6(), ".claude", "plugins", "installed_plugins.json");
+  CACHE_ROOT = join13(homedir7(), ".claude", "plugins", "cache");
+  INSTALLED_PLUGINS_PATH = join13(homedir7(), ".claude", "plugins", "installed_plugins.json");
 });
 
 // src/cli/plugin-cache-refresh.ts
 import { spawnSync as spawnSync4 } from "child_process";
-import { existsSync as existsSync7, mkdirSync as mkdirSync8, readFileSync as readFileSync10, readdirSync as readdirSync3, rmSync as rmSync5, writeFileSync as writeFileSync8 } from "fs";
-import { homedir as homedir7 } from "os";
-import { join as join13 } from "path";
-function marketplacePointsAtCheckout(repoRoot, home = homedir7()) {
+import { existsSync as existsSync9, mkdirSync as mkdirSync9, readFileSync as readFileSync12, readdirSync as readdirSync4, rmSync as rmSync5, writeFileSync as writeFileSync9 } from "fs";
+import { homedir as homedir8 } from "os";
+import { join as join14 } from "path";
+function marketplacePointsAtCheckout(repoRoot, home = homedir8()) {
   return marketplaceState(repoRoot, home) === "ours";
 }
-function marketplaceState(repoRoot, home = homedir7()) {
+function marketplaceState(repoRoot, home = homedir8()) {
   try {
-    const file = join13(home, ".claude", "plugins", "known_marketplaces.json");
-    const parsed = JSON.parse(readFileSync10(file, "utf-8"));
+    const file = join14(home, ".claude", "plugins", "known_marketplaces.json");
+    const parsed = JSON.parse(readFileSync12(file, "utf-8"));
     const entry = parsed["captain-memo"];
     if (!entry)
       return "absent";
@@ -1584,8 +1681,8 @@ function marketplaceState(repoRoot, home = homedir7()) {
     return "unknown";
   }
 }
-function activeCachedVersion(home = homedir7(), runningVersion) {
-  const installed = readInstalledPaths(join13(home, ".claude", "plugins", "installed_plugins.json"));
+function activeCachedVersion(home = homedir8(), runningVersion) {
+  const installed = readInstalledPaths(join14(home, ".claude", "plugins", "installed_plugins.json"));
   if (installed === null)
     return null;
   let first = null;
@@ -1626,7 +1723,7 @@ var REPO_ROOT3, CACHE_REFRESH_LOCK = ".plugin-cache-refresh.lock";
 var init_plugin_cache_refresh = __esm(() => {
   init_plugin_cache();
   init_paths();
-  REPO_ROOT3 = join13(import.meta.dir, "..", "..");
+  REPO_ROOT3 = join14(import.meta.dir, "..", "..");
 });
 
 // src/shared/vscode-paths.ts
@@ -1643,40 +1740,40 @@ var init_vscode_paths = __esm(() => {
 });
 
 // src/shared/kimi-home.ts
-import { homedir as homedir8 } from "os";
-import { join as join14 } from "path";
-function kimiCodeHomeDir(home = homedir8(), env = process.env) {
-  return env.KIMI_CODE_HOME || join14(home, ".kimi-code");
+import { homedir as homedir9 } from "os";
+import { join as join15 } from "path";
+function kimiCodeHomeDir(home = homedir9(), env = process.env) {
+  return env.KIMI_CODE_HOME || join15(home, ".kimi-code");
 }
 var init_kimi_home = () => {};
 
 // src/shared/codex-home.ts
-import { homedir as homedir9 } from "os";
-import { join as join15 } from "path";
-function codexHomeDir(home = homedir9(), env = process.env) {
-  return env.CODEX_HOME || join15(home, ".codex");
+import { homedir as homedir10 } from "os";
+import { join as join16 } from "path";
+function codexHomeDir(home = homedir10(), env = process.env) {
+  return env.CODEX_HOME || join16(home, ".codex");
 }
 var init_codex_home = () => {};
 
 // src/cli/skill-refresh.ts
-import { existsSync as existsSync8, copyFileSync } from "fs";
-import { join as join16 } from "path";
+import { existsSync as existsSync10, copyFileSync as copyFileSync2 } from "fs";
+import { join as join17 } from "path";
 function resolveMemoSkillSource(base = import.meta.dir) {
   return [
-    join16(base, "..", "..", "skills", "captain-memo", "SKILL.md"),
-    join16(base, "..", "portable", "captain-memo", "SKILL.md")
-  ].find((p) => existsSync8(p)) ?? null;
+    join17(base, "..", "..", "skills", "captain-memo", "SKILL.md"),
+    join17(base, "..", "portable", "captain-memo", "SKILL.md")
+  ].find((p) => existsSync10(p)) ?? null;
 }
 function refreshMemoSkills(source, home, deps = {}) {
-  const exists = deps.exists ?? existsSync8;
-  const copy = deps.copy ?? copyFileSync;
+  const exists = deps.exists ?? existsSync10;
+  const copy = deps.copy ?? copyFileSync2;
   if (!exists(source))
     return [];
   const refreshed = [];
   const dests = new Set([
-    ...[...MEMO_SKILL_RELPATHS, ...VSCODE_SKILL_RELPATHS].map((rel) => join16(home, ...rel.split("/"))),
-    join16(kimiCodeHomeDir(home, deps.env), "skills", "captain-memo", "SKILL.md"),
-    join16(codexHomeDir(home, deps.env), "skills", "captain-memo", "SKILL.md")
+    ...[...MEMO_SKILL_RELPATHS, ...VSCODE_SKILL_RELPATHS].map((rel) => join17(home, ...rel.split("/"))),
+    join17(kimiCodeHomeDir(home, deps.env), "skills", "captain-memo", "SKILL.md"),
+    join17(codexHomeDir(home, deps.env), "skills", "captain-memo", "SKILL.md")
   ]);
   for (const dest of dests) {
     if (!exists(dest))
@@ -1869,7 +1966,8 @@ async function main(options = {}) {
       prompt,
       top_k: 5,
       session_id: payload.session_id,
-      project_id: resolveProjectId(payload.cwd)
+      project_id: resolveProjectId(payload.cwd),
+      ...payload.cwd ? { cwd: payload.cwd } : {}
     },
     timeoutMs
   });
@@ -1936,8 +2034,8 @@ if (isMainModule(import.meta)) {
 
 // src/hooks/session-start.ts
 init_shared();
-import { join as join17 } from "path";
-import { homedir as homedir10 } from "os";
+import { join as join18 } from "path";
+import { homedir as homedir11 } from "os";
 
 // src/hooks/local-articles.ts
 var LOCAL_ARTICLES = [
@@ -1971,9 +2069,9 @@ init_version();
 init_self_update();
 
 // src/shared/windows-shim.ts
-import { existsSync as existsSync5, readFileSync as readFileSync8 } from "fs";
-import { homedir as homedir5 } from "os";
-import { join as join11 } from "path";
+import { existsSync as existsSync7, readFileSync as readFileSync10 } from "fs";
+import { homedir as homedir6 } from "os";
+import { join as join12 } from "path";
 
 // src/shared/platform.ts
 var isWindows = process.platform === "win32";
@@ -1981,11 +2079,11 @@ var isMac = process.platform === "darwin";
 var isLinux = process.platform === "linux";
 
 // src/shared/windows-shim.ts
-function windowsCliShimPath(env = process.env, home = homedir5()) {
-  return join11(env.LOCALAPPDATA ?? join11(home, "AppData", "Local"), "captain-memo", "bin", "captain-memo.cmd");
+function windowsCliShimPath(env = process.env, home = homedir6()) {
+  return join12(env.LOCALAPPDATA ?? join12(home, "AppData", "Local"), "captain-memo", "bin", "captain-memo.cmd");
 }
 var WINDOWS_SHIM_FIX = "bun src\\cli\\index.ts install --yes   (run it from the captain-memo checkout; `captain-memo doctor` cannot start while the shim is stale, use `bun src\\cli\\index.ts doctor` there)";
-function windowsShimState(body, exists = existsSync5) {
+function windowsShimState(body, exists = existsSync7) {
   const entry = /^\s*bun\s+"([^"]+)"/im.exec(body)?.[1];
   if (!entry)
     return { state: "unknown" };
@@ -1996,12 +2094,12 @@ function windowsShimState(body, exists = existsSync5) {
 function windowsShimStaleText(path, reason) {
   return `The captain-memo command on your PATH (${path}) is stale: ${reason}, so \`captain-memo <anything>\` fails with "Module not found". Fix: ${WINDOWS_SHIM_FIX}`;
 }
-function staleWindowsShimNotice(path = isWindows ? windowsCliShimPath() : null, exists = existsSync5) {
+function staleWindowsShimNotice(path = isWindows ? windowsCliShimPath() : null, exists = existsSync7) {
   if (!path)
     return null;
   let body;
   try {
-    body = readFileSync8(path, "utf-8");
+    body = readFileSync10(path, "utf-8");
   } catch {
     return null;
   }
@@ -2292,7 +2390,7 @@ async function main2() {
   }
   try {
     await Promise.resolve().then(() => init_plugin_cache_refresh());
-    const lock = join17(DATA_DIR, CACHE_REFRESH_LOCK);
+    const lock = join18(DATA_DIR, CACHE_REFRESH_LOCK);
     if (acquireHealLock(lock)) {
       try {
         const r = refreshPluginCacheIfStale(VERSION);
@@ -2312,7 +2410,7 @@ async function main2() {
     await Promise.resolve().then(() => init_skill_refresh());
     const memoSource = resolveMemoSkillSource();
     if (memoSource)
-      refreshMemoSkills(memoSource, homedir10());
+      refreshMemoSkills(memoSource, homedir11());
   } catch (err) {
     logHookError("SessionStart", err);
   }
@@ -2379,7 +2477,7 @@ async function fetchNews(from, to) {
 init_shared();
 
 // src/hooks/shell-writes.ts
-import { resolve as resolve4 } from "path";
+import { resolve as resolve5 } from "path";
 var MAX_SHELL_FILES = 25;
 function coarseClaimFor(cwd) {
   return `${cwd}/**`;
@@ -2580,7 +2678,7 @@ function splitSegments(command, cwd, shell = "posix") {
   for (const r of raw) {
     const cd = chdirTarget(r.seg);
     if (cd !== null) {
-      dir = cd === "" || dir === null ? null : resolve4(dir, norm(cd));
+      dir = cd === "" || dir === null ? null : resolve5(dir, norm(cd));
       continue;
     }
     out.push({ ...r, dir });
@@ -2603,7 +2701,7 @@ function scriptWrites(command, cwd) {
       const t = m[2] ?? "";
       if (NOT_A_FILE.test(t) || unresolvable(t) || t.includes("{") || notAPath(t))
         continue;
-      const abs = resolve4(cwd, t);
+      const abs = resolve5(cwd, t);
       if (!out.includes(abs))
         out.push(abs);
     }
@@ -2643,7 +2741,7 @@ function parseWrittenPaths(command, cwd, shell = "posix") {
         unresolved = true;
         continue;
       }
-      const abs = resolve4(d, norm(t));
+      const abs = resolve5(d, norm(t));
       if (seen.has(abs))
         continue;
       seen.add(abs);
@@ -2668,10 +2766,10 @@ function parseWrittenPaths(command, cwd, shell = "posix") {
 }
 
 // src/hooks/deploy-guard.ts
-import { resolve as resolve5, basename, dirname as dirname3, join as join18, relative } from "path";
+import { resolve as resolve6, basename as basename2, dirname as dirname4, join as join19, relative } from "path";
 import { createHash } from "crypto";
-import { homedir as homedir11 } from "os";
-import { existsSync as existsSync9, statSync as statSync6, readFileSync as readFileSync11, writeFileSync as writeFileSync9, mkdirSync as mkdirSync9 } from "fs";
+import { homedir as homedir12 } from "os";
+import { existsSync as existsSync11, statSync as statSync7, readFileSync as readFileSync13, writeFileSync as writeFileSync10, mkdirSync as mkdirSync10 } from "fs";
 import { spawnSync as spawnSync5 } from "child_process";
 init_paths();
 init_branch();
@@ -2713,7 +2811,7 @@ var RSYNC_VALUE_FLAGS = new Set([
 ]);
 var SSH_VALUE_FLAGS = new Set(["-p", "-i", "-o", "-J", "-F", "-l", "-L", "-R", "-D", "-b", "-c", "-E", "-e", "-m", "-O", "-Q", "-S", "-W", "-w", "-B"]);
 var SSH_PASS = new Set(["-p", "-i", "-o", "-J", "-F", "-l"]);
-var tilde = (p) => p === "~" || p.startsWith("~/") ? homedir11() + p.slice(1) : p;
+var tilde = (p) => p === "~" || p.startsWith("~/") ? homedir12() + p.slice(1) : p;
 function sshPassArgs(toks) {
   const out = [];
   for (let i = 0;i < toks.length; i++) {
@@ -2726,7 +2824,7 @@ function sshPassArgs(toks) {
 }
 var defaultIsDir = (p) => {
   try {
-    return statSync6(p).isDirectory();
+    return statSync7(p).isDirectory();
   } catch {
     return false;
   }
@@ -2873,10 +2971,10 @@ function parseTransfers(command, cwd, isDir = defaultIsDir) {
                 unchecked++;
                 continue;
               }
-              const local = resolve5(dir, tilde(src));
+              const local = resolve6(dir, tilde(src));
               const isDirSrc = recursive && (isDir(local) || src.endsWith("/"));
               const intoDir = destTok.endsWith("/") || sources.length > 1 || dest.path === "" || name === "rsync" && isDirSrc && !src.endsWith("/");
-              let path = intoDir ? dest.path === "" ? basename(local) : `${dest.path.replace(/\/+$/, "")}/${basename(local)}` : dest.path;
+              let path = intoDir ? dest.path === "" ? basename2(local) : `${dest.path.replace(/\/+$/, "")}/${basename2(local)}` : dest.path;
               if (name === "rsync" && isDirSrc && src.endsWith("/"))
                 path = dest.path.replace(/\/+$/, "");
               uploads.push({ local, userhost: dest.userhost, path, sshArgs: [...sshArgs], ...isDirSrc ? { dir: true } : !intoDir ? { orDir: true } : {} });
@@ -2886,8 +2984,8 @@ function parseTransfers(command, cwd, isDir = defaultIsDir) {
               const r = remoteSpec(src);
               if (!r || !r.path || r.path.includes("*") || src.includes("$"))
                 continue;
-              const destAbs = resolve5(dir, tilde(destTok));
-              const local = destTok.endsWith("/") || destTok === "." || isDir(destAbs) ? join18(destAbs, basename(r.path)) : destAbs;
+              const destAbs = resolve6(dir, tilde(destTok));
+              const local = destTok.endsWith("/") || destTok === "." || isDir(destAbs) ? join19(destAbs, basename2(r.path)) : destAbs;
               downloads.push({ local, userhost: r.userhost, path: r.path, sshArgs: [...sshArgs] });
             }
           }
@@ -2922,7 +3020,7 @@ function parseTransfers(command, cwd, isDir = defaultIsDir) {
             if (src.includes("$") || path.includes("$") || userhost.includes("$"))
               unchecked++;
             else if (src)
-              uploads.push({ local: resolve5(dir, tilde(src)), userhost, path, sshArgs });
+              uploads.push({ local: resolve6(dir, tilde(src)), userhost, path, sshArgs });
             continue;
           }
           if (up && piped) {
@@ -2933,7 +3031,7 @@ function parseTransfers(command, cwd, isDir = defaultIsDir) {
             if (/[$*?{]/.test(src) || path.includes("$") || userhost.includes("$") || prev.dir === null)
               unchecked++;
             else
-              uploads.push({ local: resolve5(prev.dir, tilde(src)), userhost, path, sshArgs });
+              uploads.push({ local: resolve6(prev.dir, tilde(src)), userhost, path, sshArgs });
             continue;
           }
           const down = /^\s*cat\s+([^\s;|&<>'"]+)\s*$/.exec(remoteCmd);
@@ -2941,7 +3039,7 @@ function parseTransfers(command, cwd, isDir = defaultIsDir) {
           if (down && outRedirect) {
             const tok = sub(tokenize(seg.slice(outRedirect.index + outRedirect[0].length))[0] ?? "");
             if (tok && !tok.includes("$"))
-              downloads.push({ local: resolve5(dir, tilde(tok)), userhost, path: down[1], sshArgs });
+              downloads.push({ local: resolve6(dir, tilde(tok)), userhost, path: down[1], sshArgs });
           }
         }
       }
@@ -2967,7 +3065,7 @@ function decideDeploy(server, known) {
 function denyDeployText(t, md5, holder) {
   const k = remoteKey(t);
   const board = holder ? `; the board last saw ${holder.local} held by ${holder.session_id} (${holder.agent ?? "?"}, ${Math.round((holder.age_s ?? 0) / 60)} min ago)` : "";
-  return `DEPLOY BLOCKED: ${k} on the server (md5 ${md5.slice(0, 8)}) is not your file, not a committed version (HEAD, the last ${COMMITTED_DEPTH} commits or the default branch), and not a copy you fetched or uploaded in this session. Someone deployed uncommitted work there${board}. Uploading now erases it. Instead: 1) scp ${t.sshArgs.includes("-p") ? `-P ${t.sshArgs[t.sshArgs.indexOf("-p") + 1]} ` : ""}${k} <your scratchpad>/${basename(t.path)}.live  2) apply your change onto that LIVE copy  3) upload the merged file (the guard allows an upload whose server copy matches what you fetched). Do not bypass this with another command. If the user explicitly wants to overwrite, they type \`override: ${k}\`.`;
+  return `DEPLOY BLOCKED: ${k} on the server (md5 ${md5.slice(0, 8)}) is not your file, not a committed version (HEAD, the last ${COMMITTED_DEPTH} commits or the default branch), and not a copy you fetched or uploaded in this session. Someone deployed uncommitted work there${board}. Uploading now erases it. Instead: 1) scp ${t.sshArgs.includes("-p") ? `-P ${t.sshArgs[t.sshArgs.indexOf("-p") + 1]} ` : ""}${k} <your scratchpad>/${basename2(t.path)}.live  2) apply your change onto that LIVE copy  3) upload the merged file (the guard allows an upload whose server copy matches what you fetched). Do not bypass this with another command. If the user explicitly wants to overwrite, they type \`override: ${k}\`.`;
 }
 function deployNudge(t, note) {
   return `DEPLOY: server copy of ${t.path} ${note}. Build a deploy from the LIVE copy plus your change, never from HEAD plus your change.`;
@@ -2985,10 +3083,10 @@ var md5Of = (buf) => createHash("md5").update(buf).digest("hex");
 var MAX_HASH_BYTES = 5 * 1024 * 1024;
 function localMd5(p) {
   try {
-    const st = statSync6(p);
+    const st = statSync7(p);
     if (!st.isFile() || st.size > MAX_HASH_BYTES)
       return null;
-    return md5Of(readFileSync11(p));
+    return md5Of(readFileSync13(p));
   } catch {
     return null;
   }
@@ -3024,12 +3122,12 @@ var COMMITTED_DEPTH = 9;
 function committedMd5s(file, remotePath, cwd) {
   const out = new Map;
   try {
-    let root = detectRepoRootSync(dirname3(file));
+    let root = detectRepoRootSync(dirname4(file));
     let rel = root ? relative(root, file).split("\\").join("/") : "..";
     if (rel.startsWith("..") && remotePath && cwd) {
       root = detectRepoRootSync(cwd);
       const parts = remotePath.split("/").filter(Boolean);
-      const i = root ? parts.findIndex((_, k) => existsSync9(join18(root, ...parts.slice(k)))) : -1;
+      const i = root ? parts.findIndex((_, k) => existsSync11(join19(root, ...parts.slice(k)))) : -1;
       rel = i >= 0 ? parts.slice(i).join("/") : "..";
     }
     if (!root || rel.startsWith(".."))
@@ -3068,10 +3166,10 @@ function committedMd5s(file, remotePath, cwd) {
   } catch {}
   return out;
 }
-var baseFile = (sid) => join18(process.env.CAPTAIN_MEMO_DATA_DIR ?? DATA_DIR, "deploy-base", `${sid.replace(/[^A-Za-z0-9_.-]/g, "_")}.json`);
+var baseFile = (sid) => join19(process.env.CAPTAIN_MEMO_DATA_DIR ?? DATA_DIR, "deploy-base", `${sid.replace(/[^A-Za-z0-9_.-]/g, "_")}.json`);
 function readBaselines(sid) {
   try {
-    return JSON.parse(readFileSync11(baseFile(sid), "utf-8"));
+    return JSON.parse(readFileSync13(baseFile(sid), "utf-8"));
   } catch {
     return {};
   }
@@ -3081,9 +3179,9 @@ function recordBaseline(sid, key, md5, how) {
     const b = readBaselines(sid);
     b[key] = [...(b[key] ?? []).filter((e) => e.md5 !== md5), { md5, how }].slice(-5);
     const f = baseFile(sid);
-    if (!existsSync9(dirname3(f)))
-      mkdirSync9(dirname3(f), { recursive: true });
-    writeFileSync9(f, JSON.stringify(b));
+    if (!existsSync11(dirname4(f)))
+      mkdirSync10(dirname4(f), { recursive: true });
+    writeFileSync10(f, JSON.stringify(b));
   } catch {}
 }
 var MAX_CHECKED = 5;
@@ -3099,7 +3197,7 @@ function checkUploads(sid, uploads, opts = {}) {
   }
   const nudges = [];
   for (const group of byHost.values()) {
-    const inside = (u) => `${u.path.replace(/\/+$/, "")}/${basename(u.local)}`;
+    const inside = (u) => `${u.path.replace(/\/+$/, "")}/${basename2(u.local)}`;
     const maybe = group.filter((u) => u.orDir);
     const server = remoteMd5s(group[0].userhost, group[0].sshArgs, [...group.map((u) => u.path), ...maybe.map(inside)], opts.killMs, maybe.map((u) => u.path));
     for (const u of group) {
@@ -3321,9 +3419,9 @@ function globsOverlap(aGlobs, bGlobs) {
 }
 
 // src/shared/ai-process.ts
-import { readFileSync as readFileSync12 } from "fs";
+import { readFileSync as readFileSync14 } from "fs";
 import { spawnSync as spawnSync6 } from "child_process";
-import { basename as basename2 } from "path";
+import { basename as basename3 } from "path";
 import { dlopen, FFIType } from "bun:ffi";
 var MAX_DEPTH = 8;
 var PS_TIMEOUT_MS = 1000;
@@ -3356,7 +3454,7 @@ function psWalk(agents, start, snapshot) {
   }
   return;
 }
-var name = (arg) => arg ? basename2(arg).replace(/\.[cm]?js$/, "") : "";
+var name = (arg) => arg ? basename3(arg).replace(/\.[cm]?js$/, "") : "";
 var TH32CS_SNAPPROCESS = 2;
 var PE32W_SIZE = 568;
 var PE32W_PID = 8;
@@ -3443,12 +3541,12 @@ function aiProcessPid(agents, start = process.ppid, root = "/proc", platform = p
   let pid = start;
   for (let i = 0;i < MAX_DEPTH && pid > 1; i++) {
     try {
-      const comm = readFileSync12(`${root}/${pid}/comm`, "utf8").trim();
-      const argv = readFileSync12(`${root}/${pid}/cmdline`, "utf8").split("\x00");
+      const comm = readFileSync14(`${root}/${pid}/comm`, "utf8").trim();
+      const argv = readFileSync14(`${root}/${pid}/cmdline`, "utf8").split("\x00");
       const script = argv.slice(1).find((a) => a !== "" && !a.startsWith("-"));
       if (agents.some((a) => comm === a || name(argv[0]) === a || name(script) === a))
         return pid;
-      const stat = readFileSync12(`${root}/${pid}/stat`, "utf8");
+      const stat = readFileSync14(`${root}/${pid}/stat`, "utf8");
       pid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
     } catch {
       return;
@@ -3458,13 +3556,13 @@ function aiProcessPid(agents, start = process.ppid, root = "/proc", platform = p
 }
 
 // src/hooks/pre-tool-use.ts
-import { resolve as resolve6, dirname as dirname4 } from "path";
+import { resolve as resolve7, dirname as dirname5 } from "path";
 var HOOK_TIMEOUT_MS3 = Number(process.env.CAPTAIN_MEMO_PRE_TOOL_USE_TIMEOUT_MS ?? 1500);
 var MAX_FILES = 25;
 var HOST_EXIT_MARGIN_MS2 = 750;
 var SHELL_TOOLS = { Bash: "posix", PowerShell: "powershell", run_shell_command: "posix" };
 var enforcing = () => process.env.CAPTAIN_MEMO_WORKBOARD_ENFORCE !== "0";
-var scratchPath = (p) => (/^\/(?:var\/)?tmp\//.test(p) || /\/claude-\d+\//.test(p)) && !detectRepoRootSync(dirname4(p));
+var scratchPath = (p) => (/^\/(?:var\/)?tmp\//.test(p) || /\/claude-\d+\//.test(p)) && !detectRepoRootSync(dirname5(p));
 async function publishClaim(sid, cwd, touched, o) {
   const project = resolveProjectId(cwd);
   const advisories = [];
@@ -3578,7 +3676,7 @@ async function main4(opts = {}) {
   const agent = opts.agent ?? "claude";
   const advisories = [];
   let deny;
-  const abs = (p) => cwd ? resolve6(cwd, p) : p;
+  const abs = (p) => cwd ? resolve7(cwd, p) : p;
   const claim = async (touched, extra = {}) => {
     try {
       const r = await publishClaim(sid, cwd, touched.filter((p) => !scratchPath(p)), { agent, ...extra, ...opts.hostTimeoutMs !== undefined ? { hostTimeoutMs: opts.hostTimeoutMs } : {} });

@@ -7,6 +7,8 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.58.11] — 2026-11-23
+
 ### Added
 
 - **`CAPTAIN_MEMO_RECALL_SCOPE=project` keeps automatic recall to the session's project.** The hook now sends its cwd. When enabled, the worker uses it to exclude other projects' observations, Claude per-project memory and repo instruction files under the auto-discovery roots. Scoped recall accepts both folder and repository tags and can recognise older observations by the files they touched. Skills, capabilities, user-global memory, custom-glob files and untagged observations still come through. Recall is corpus-wide by default. Explicit search is always corpus-wide.
