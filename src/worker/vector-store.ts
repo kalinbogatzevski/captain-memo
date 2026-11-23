@@ -913,13 +913,16 @@ export class VectorStore {
    *
    *   COUNT centroids                       11.6 ms   ok
    *   COUNT from vec_chunk_meta             13.7 ms   ok
-   *   SUM(hit_count) from centroids          6.9 ms   ok  <- progress proxy
+   *   SUM(hit_count) from centroids          6.9 ms   ok  (no longer the progress figure, see below)
    *   COUNT vec_chunks_p WHERE cluster_id  1329.0 ms   REJECTED — would be a self-inflicted outage
    *
-   * `assigned` is the summed hit_count rather than a direct count of clustered rows: it answers
-   * the same question for a progress display and costs 6.9 ms instead of 1.3 s. It counts
-   * assignments made, so once the build completes and rebalancing begins it can drift past the
-   * vector count — hence the caller clamps to 100%.
+   * `assigned` is the vectors minus the rows at the unclustered sentinel, counted off the shadow tables' two indexes
+   * (never the vec0 table above). It was the summed hit_count, which counts assignments ever made, not membership: it
+   * read 100% through a repair's reset phase while every row went back to unclustered. MEASURED on a copy of the dev
+   * store (400,797 vectors, 2026-11-23, box at load 25): 6 rows at -1 0.0 ms p50; the worst case, a first build with
+   * every row still at -1, walks all of them: 141 ms p50 / 155 max (timed as the same count over every placed row).
+   * The sentinel is shared by every collection in the file (a worker writes one); a layout this code does not know falls
+   * back to the hit_count figure, clamped.
    */
   indexSummary(collection: string): { centroids: number; vectors: number; assigned: number; zeroCentroids: number } {
     const c = this.db
@@ -932,7 +935,17 @@ export class VectorStore {
     // poll, a path polled every 2 s. Measured on the 272k-vector dev copy: 43.7 ms p50 this way against 44.4 ms for the
     // summary without it; the SQL compare was 50.3 ms.
     const zeroCentroids = c.n === 0 ? 0 : this.getCentroids(collection).filter(x => isZeroVector(x.vector)).length;
-    return { centroids: c.n, vectors: v.n, assigned: Math.min(c.h, v.n), zeroCentroids };
+    const unclustered = this.countUnclustered();
+    return { centroids: c.n, vectors: v.n, assigned: unclustered === null ? Math.min(c.h, v.n) : Math.max(0, v.n - unclustered), zeroCentroids };
+  }
+
+  /** Rows at the unclustered sentinel (every collection), or null when the shadow layout is unknown. */
+  private countUnclustered(): number | null {
+    try {
+      return (this.db.query(`SELECT COUNT(*) AS n FROM vec_chunks_p_chunks c
+                               CROSS JOIN vec_chunks_p_rowids r ON r.chunk_id = c.chunk_id
+                              WHERE c.partition00 = ${UNCLUSTERED}`).get() as { n: number }).n;
+    } catch { return null; }
   }
 
   /** Count of rows still in the pre-A2 `vec_chunks` table (0 once fully

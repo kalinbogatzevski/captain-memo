@@ -84,6 +84,24 @@ test('indexSummary counts the all-zero centroids', async () => {
   } finally { rmWorkDir(dir); }
 });
 
+test('indexSummary.assigned counts rows in a cluster, so a reset phase does not read 100%', async () => {
+  // It was the summed hit_count, which a reset never lowers: 100% while every row sat back at unclustered.
+  const dir = mkdtempSync(join(tmpdir(), 'cm-ivf-assigned-'));
+  try {
+    const store = open(dir);
+    await fill(store);
+    expect(store.indexSummary(C).assigned).toBe(0);                 // no centroids: everything unclustered
+    const [id] = store.allocateClusterIds(C, 1);
+    store.setCentroids(C, [{ clusterId: id!, hitCount: 5000, vector: [0.5, 0.5, 0.5, 0.5] }]);
+    const rows = await store.sampleAnyVectors(C, 500);
+    store.reassignClusterBatch(rows.map(r => ({ chunkId: r.chunkId, embedding: r.embedding, clusterId: id! })));
+    expect(store.indexSummary(C)).toMatchObject({ vectors: 50, assigned: 40 });   // the 10 zero vectors were never placed
+    store.reassignClusterBatch(rows.slice(0, 30).map(r => ({ chunkId: r.chunkId, embedding: r.embedding, clusterId: UNCLUSTERED_CLUSTER })));
+    expect(store.indexSummary(C).assigned).toBe(10);
+    store.close();
+  } finally { rmWorkDir(dir); }
+});
+
 test('the sweep repairs a store seeded with zero centroids: nothing left zero, rows spread, zero vectors parked', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'cm-ivf-repair-'));
   try {
