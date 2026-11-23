@@ -410,7 +410,7 @@ having new work.
 | `CAPTAIN_MEMO_IVF_BUILD_MS` | `2000` | Shortest gap between build slices. A slice slower than ~670 ms (many clusters, a busy machine) is followed by a gap of three slice-times instead, so the writer is busy at most 25% of the time: a 1.6 s slice at 931 clusters gets a 5.2 s gap. The earlier "~19% duty, 143k vectors in ~75 min" assumed a 376 ms slice and did not count the nearest-cluster ranking or the cluster rewrite. |
 | `CAPTAIN_MEMO_IVF_SWEEP_MS` | `60000` | Cadence once converged, when the only remaining work is rebalancing. |
 | `CAPTAIN_MEMO_IVF_MIN_LEARNING_RATE` | `0.01` | Centroid drift floor, so clusters keep adapting instead of freezing. |
-| `CAPTAIN_MEMO_IVF_REGROW_RATIO` | `3` | Split any cluster holding more than this many times `TARGET_PER_CLUSTER` vectors; `0` never. See below. |
+| `CAPTAIN_MEMO_IVF_REGROW_RATIO` | `0` (off) | Split any cluster holding more than this many times `TARGET_PER_CLUSTER` vectors (3 is the setting that was measured); `0` never. Off by default: a large store spends hours splitting and search runs 0.5-1.1 s meanwhile, against the 1.5 s the memory hook waits. Turn it on after measuring on an idle box. See below. |
 
 Once converged, the sweep keeps rebalancing: each pass it takes a batch of 64 vectors, moves the ones
 whose nearest centroid is no longer the cluster they sit in, and nudges the centroids toward them. That
@@ -420,15 +420,19 @@ re-reading the same 64 rows, so a store whose centroids have drifted since its v
 
 The number of clusters is chosen when the index is built. A store built at 3,300 vectors would
 otherwise keep its 11 clusters at 41k, an average of 3,700 vectors each, and the dedup pass takes its
-groups from cluster membership. So once the index has converged, the sweep splits the largest cluster
-holding more than `CAPTAIN_MEMO_IVF_REGROW_RATIO` x `TARGET_PER_CLUSTER` vectors (900 by default): it
+groups from cluster membership. With `CAPTAIN_MEMO_IVF_REGROW_RATIO` set (it is off by default), once the
+index has converged the sweep splits the largest cluster holding more than that many times
+`TARGET_PER_CLUSTER` vectors (900 at a ratio of 3): it
 draws size/300 seeds from that cluster's own members, adds them beside it, moves its rows to the
 nearest seed 64 per slice, and removes the old centre once it is empty, then takes the next one. No
 row is ever sent back to the unclustered partition, so search is not slowed: on a copy of a
 400,797-vector store with 232 clusters past 900, search ran at 0.5-0.64 s p50 (1.14 s max) while
 splitting, against 0.5-0.9 s with no split, and a slice held the writer 67 ms p50 (458 ms max).
-Splitting that whole store is about 5,300 slices, roughly three to four hours. A restart mid-split
-resumes it.
+Splitting that whole store is about 5,300 slices, roughly three to four hours, and 1.14 s is close
+to the 1.5 s the memory hook waits, which is why it is off unless you turn it on; measure on an idle
+box first. A restart mid-split resumes it. A cluster made of identical vectors cannot be divided (every
+seed is the same point, so one child takes nearly all of it): after one attempt that child is marked
+and never split again, and seeds left empty are removed, until the index is next rebuilt.
 
 ### Tide (decay and lifecycle)
 

@@ -50,16 +50,22 @@ export interface IvfSweepDeps {
   yieldToLoop: () => Promise<void>;
 }
 
-/** VectorStore's split storage: splitInProgress, largestCluster, clusterRows, sampleClusterVectors, startSplit, finishSplit. */
+/** VectorStore's split storage: splitInProgress, largestCluster, clusterSizes, unsplittableClusters, clusterRows,
+ *  sampleClusterVectors, startSplit, finishSplit. */
 export interface IvfSplitDeps {
   current: (collection: string) => { clusterId: number; seedLo: number; seedHi: number } | null;
   /** The largest of clusterIds holding more than `over` vectors. */
   largest: (clusterIds: readonly number[], over: number) => { clusterId: number; size: number } | null;
+  /** Vectors in each of `clusterIds`, in order. */
+  sizes: (clusterIds: readonly number[]) => number[];
+  /** Clusters a split could not divide (see splitSlice): never picked again until a bootstrap replaces the set. */
+  unsplittable: (collection: string) => number[];
   /** null: the store cannot read a cluster's rows cheaply, so nothing is split. */
   rows: (clusterId: number, limit: number) => Array<{ chunkId: string; embedding: Float32Array }> | null;
   sample: (clusterId: number, limit: number) => Array<{ chunkId: string; embedding: Float32Array }>;
   start: (collection: string, clusterId: number, seeds: Centroid[]) => void;
-  finish: (collection: string, clusterId: number, dropCentroid: boolean) => void;
+  /** `dropIds`: seeds left empty, removed with it; `unsplittable`: a child marked so (see unsplittable), same transaction. */
+  finish: (collection: string, clusterId: number, dropCentroid: boolean, more?: { dropIds: number[]; unsplittable?: number }) => void;
 }
 
 export interface IvfSweepResult {
@@ -210,6 +216,11 @@ export async function runIvfSweepSlice(deps: IvfSweepDeps): Promise<IvfSweepResu
   return { ...EMPTY_RESULT, rebalanced: changed.length };
 }
 
+/** A split whose largest child keeps this share of the members did not divide the cluster; that child is not split again.
+ *  ponytail: a fixed share, so a genuinely skewed cluster is pinned too and just stays oversized (no worse than splitting
+ *  off); the mark lasts until a bootstrap. Re-test a mark when the cluster has grown if that ever matters. */
+const SPLIT_STUCK_SHARE = 0.9;
+
 /** One slice of splitting an oversized cluster, or null when there is none to split (the caller rebalances instead).
  *
  *  The cluster count is chosen once, at the bootstrap, and the corpus keeps growing into it (a store seeded at ~3,300 vectors
@@ -228,6 +239,7 @@ async function splitSlice(
   saveCentroids: (updated: Centroid[], base: Centroid[]) => void,
 ): Promise<number | null> {
   const { cfg, collection } = deps;
+  const over = cfg.regrowRatio * cfg.targetPerCluster;
   const drain = async (rows: Array<{ chunkId: string; embedding: Float32Array }>, seeds: Centroid[]): Promise<number> => {
     const items = rows.map(r => ({ id: r.chunkId, vector: r.embedding }));
     const { centroids: updated, assignments } = miniBatchUpdate(items, seeds, cfg, await nearestInBatch(items, seeds, deps.yieldToLoop));
@@ -243,13 +255,29 @@ async function splitSlice(
     if (rows === null) return null;
     const seeds = centroids.filter(c => c.clusterId >= cur.seedLo && c.clusterId <= cur.seedHi);
     if (rows.length > 0 && seeds.length > 0) return drain(rows, seeds);
-    // Empty: its centroid goes. Seeds gone (a bootstrap replaced the set): forget the split and leave the cluster as it is.
-    s.finish(collection, cur.clusterId, rows.length === 0);
+    // Empty: its centroid goes, with every seed that won no row. Seeds gone (a bootstrap replaced the set): forget the split
+    // and leave the cluster as it is. No await from rows() to finish(): add() checks its cluster against the live set, so
+    // nothing lands under an id dropped here.
+    if (rows.length === 0 && seeds.length > 0) {
+      const n = s.sizes(seeds.map(c => c.clusterId));
+      const top = n.indexOf(Math.max(...n));
+      const total = n.reduce((a, b) => a + b, 0);
+      // A cluster of (nearly) identical vectors: every seed drawn from it is the same point, ties go to the first, so one child
+      // takes nearly all of it and would be picked and split again, forever, K growing by empty seeds each time.
+      const stuck = n[top]! > over && n[top]! >= SPLIT_STUCK_SHARE * total;
+      s.finish(collection, cur.clusterId, true, {
+        dropIds: seeds.filter((_, i) => n[i] === 0).map(c => c.clusterId),
+        ...(stuck ? { unsplittable: seeds[top]!.clusterId } : {}),
+      });
+    } else {
+      s.finish(collection, cur.clusterId, rows.length === 0);
+    }
     centroids = deps.getCentroids(collection);
   }
 
-  const big = s.largest(centroids.map(c => c.clusterId), cfg.regrowRatio * cfg.targetPerCluster);
-  if (!big || big.size <= cfg.regrowRatio * cfg.targetPerCluster) return null;
+  const skip = new Set(s.unsplittable(collection));
+  const big = s.largest(centroids.map(c => c.clusterId).filter(id => !skip.has(id)), over);
+  if (!big || big.size <= over) return null;
   const pool = s.sample(big.clusterId, Math.max(2, Math.round(big.size / cfg.targetPerCluster)));
   if (pool.length < 2) return null;
   const seeds = seedCentroids(pool.map(p => ({ id: p.chunkId, vector: p.embedding })),

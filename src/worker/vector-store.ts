@@ -143,6 +143,14 @@ CREATE TABLE IF NOT EXISTS vec_index_split (
   seed_lo INTEGER NOT NULL,
   seed_hi INTEGER NOT NULL
 );
+
+-- Clusters a split could not divide (one child kept nearly every row: identical vectors), so never split again; cleared
+-- with the set by a bootstrap (see finishSplit, setCentroids).
+CREATE TABLE IF NOT EXISTS vec_index_unsplittable (
+  collection_name TEXT NOT NULL,
+  cluster_id INTEGER NOT NULL,
+  PRIMARY KEY (collection_name, cluster_id)
+);
 `;
 const SEED_SEQ = `INSERT OR IGNORE INTO vec_cluster_id_seq (id, next_id) VALUES (1, 0);`;
 // A real persisted sequence, not "MAX(cluster_id) already committed to
@@ -655,6 +663,7 @@ export class VectorStore {
       if (bootstrapVectors !== undefined) {
         this.db.query(`INSERT OR REPLACE INTO vec_index_bootstrap (collection_name, vectors) VALUES (?, ?)`).run(collection, bootstrapVectors);
         this.db.query(`DELETE FROM vec_index_split WHERE collection_name = ?`).run(collection);   // its ids are gone with the set
+        this.db.query(`DELETE FROM vec_index_unsplittable WHERE collection_name = ?`).run(collection);
       }
     });
     tx();
@@ -711,17 +720,35 @@ export class VectorStore {
       const live = new Set(clusterIds);
       const bounds = this.db.query(`SELECT partition00 AS p, SUM(size) AS slots FROM vec_chunks_p_chunks
                                      WHERE partition00 >= 0 GROUP BY 1 ORDER BY 2 DESC`).all() as Array<{ p: number; slots: number }>;
-      const count = this.db.query(`SELECT COUNT(*) AS n FROM vec_chunks_p_chunks c
-                                     CROSS JOIN vec_chunks_p_rowids r ON r.chunk_id = c.chunk_id WHERE c.partition00 = ?`);
       let best: { clusterId: number; size: number } | null = null;
       for (const b of bounds) {
         if (b.slots <= over || (best && b.slots <= best.size)) break;
         if (!live.has(b.p)) continue;
-        const n = (count.get(b.p) as { n: number }).n;
+        const n = this.clusterSize(b.p);
         if (n > over && (!best || n > best.size)) best = { clusterId: b.p, size: n };
       }
       return best;
     } catch { return null; }
+  }
+
+  /** Vectors in one cluster, exactly (0.5 ms for 3,761 rows on the store measured above). Throws on an unknown shadow layout. */
+  private clusterSize(clusterId: number): number {
+    return (this.db.query(`SELECT COUNT(*) AS n FROM vec_chunks_p_chunks c
+                            CROSS JOIN vec_chunks_p_rowids r ON r.chunk_id = c.chunk_id WHERE c.partition00 = ?`)
+      .get(clusterId) as { n: number }).n;
+  }
+
+  /** Vectors in each of `clusterIds`, in order: the children of a finished split, once per split. */
+  clusterSizes(clusterIds: readonly number[]): number[] {
+    return clusterIds.map(id => this.clusterSize(id));
+  }
+
+  /** Clusters a split could not divide (see finishSplit), or none. */
+  unsplittableClusters(collection: string): number[] {
+    try {
+      return (this.db.query(`SELECT cluster_id FROM vec_index_unsplittable WHERE collection_name = ?`).all(collection) as Array<{ cluster_id: number }>)
+        .map(r => r.cluster_id);
+    } catch { return []; }   // a read-only handle on a file that predates the table
   }
 
   /** Up to `limit` vectors of one cluster (its leading rows), or null when the shadow layout is unknown. */
@@ -765,16 +792,22 @@ export class VectorStore {
   }
 
   /** End the split: forget it and, with `dropCentroid` (every row has moved), remove the cluster's centroid, in one
-   *  transaction. add() checks its cluster against the live set right before it writes, so nothing lands under the old id. */
-  finishSplit(collection: string, clusterId: number, dropCentroid: boolean): void {
+   *  transaction, together with `more.dropIds` (seeds that won no row) and the `more.unsplittable` mark. add() checks its
+   *  cluster against the live set right before it writes, so nothing lands under a dropped id. */
+  finishSplit(collection: string, clusterId: number, dropCentroid: boolean, more?: { dropIds: number[]; unsplittable?: number }): void {
     const current = this.getCentroids(collection);
+    const gone = new Set([...(dropCentroid ? [clusterId] : []), ...(more?.dropIds ?? [])]);
+    const del = this.db.query(`DELETE FROM vec_cluster_centroids WHERE collection_name = ? AND cluster_id = ?`);
     this.db.transaction(() => {
-      if (dropCentroid) this.db.query(`DELETE FROM vec_cluster_centroids WHERE collection_name = ? AND cluster_id = ?`).run(collection, clusterId);
+      for (const id of gone) del.run(collection, id);
       this.db.query(`DELETE FROM vec_index_split WHERE collection_name = ?`).run(collection);
+      if (more?.unsplittable !== undefined) {
+        this.db.query(`INSERT OR IGNORE INTO vec_index_unsplittable (collection_name, cluster_id) VALUES (?, ?)`).run(collection, more.unsplittable);
+      }
     })();
     this.centroidCache.set(collection, {
       fp: this.centroidFingerprint(collection), at: Date.now(), own: true,
-      centroids: dropCentroid ? current.filter(c => c.clusterId !== clusterId) : current,
+      centroids: current.filter(c => !gone.has(c.clusterId)),
     });
   }
 

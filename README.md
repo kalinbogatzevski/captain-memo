@@ -698,9 +698,10 @@ centroid per 300 vectors at the time the index is built — and a search reads o
 instead of scanning everything. On by default; `CAPTAIN_MEMO_IVF_ENABLED=0` switches it off.
 
 The cluster count is set when the index is first built. As the store grows, a cluster that ends up
-with more than three times its 300-vector target is split in place into clusters of its own
-members (`CAPTAIN_MEMO_IVF_REGROW_RATIO`, `0` turns it off); its rows never leave the index, so
-search keeps its speed while that happens. Vectors with no direction (all zeros) are kept in a cluster no query probes, and
+with more than `CAPTAIN_MEMO_IVF_REGROW_RATIO` times its 300-vector target can be split in place into
+clusters of its own members; its rows never leave the index. It is off by default: a large store
+spends hours splitting with search at 0.5-1.1 s against the 1.5 s hook timeout, so set it (3 was
+measured) after measuring on an idle box. Vectors with no direction (all zeros) are kept in a cluster no query probes, and
 `doctor` warns when a cluster centre is all zeros; the worker repairs such an index itself, after an
 update and a restart.
 

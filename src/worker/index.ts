@@ -1547,10 +1547,12 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         split: {
           current: (coll) => vector.splitInProgress(coll),
           largest: (ids, over) => vector.largestCluster(ids, over),
+          sizes: (ids) => vector.clusterSizes(ids),
+          unsplittable: (coll) => vector.unsplittableClusters(coll),
           rows: (id, limit) => vector.clusterRows(id, limit),
           sample: (id, limit) => vector.sampleClusterVectors(id, limit),
           start: (coll, id, seeds) => vector.startSplit(coll, id, seeds),
-          finish: (coll, id, drop) => vector.finishSplit(coll, id, drop),
+          finish: (coll, id, drop, more) => vector.finishSplit(coll, id, drop, more),
         },
         updateCentroids: (coll, changed) => vector.updateCentroids(coll, changed),
         allocateClusterIds: (coll, n) => vector.allocateClusterIds(coll, n),

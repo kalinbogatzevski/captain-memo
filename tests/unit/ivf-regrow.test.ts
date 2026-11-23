@@ -16,12 +16,14 @@ const cent = (id: number, v: number[], hitCount = 50): Centroid => ({ clusterId:
 const row = (id: string, v: number[]) => ({ chunkId: id, embedding: Float32Array.from(v) });
 
 /** In-memory index: centroids, each row's cluster, the split record, and every call the sweep makes. */
-function fakeIndex(sizes: Record<number, number>) {
+function fakeIndex(sizes: Record<number, number>, vec = (i: number) => [1, (i % 7) / 7, i % 2, 0]) {
   let centroids: Centroid[] = Object.keys(sizes).map(Number).map((id, i) => cent(id, [i === 0 ? 1 : 0, i === 0 ? 0 : 1, 0, 0]));
   const rows = new Map<string, { cluster: number; v: number[] }>();
-  for (const [id, n] of Object.entries(sizes)) for (let i = 0; i < n; i++) rows.set(`${id}-${i}`, { cluster: Number(id), v: [1, (i % 7) / 7, i % 2, 0] });
+  for (const [id, n] of Object.entries(sizes)) for (let i = 0; i < n; i++) rows.set(`${id}-${i}`, { cluster: Number(id), v: vec(i) });
   let split: { clusterId: number; seedLo: number; seedHi: number } | null = null;
   let nextId = 1000;
+  let starts = 0;
+  const unsplittable = new Set<number>();
   const moves: Array<{ chunkId: string; clusterId: number }> = [];
   const inCluster = (c: number) => [...rows].filter(([, r]) => r.cluster === c);
   const splitDeps: IvfSplitDeps = {
@@ -30,11 +32,19 @@ function fakeIndex(sizes: Record<number, number>) {
       .sort((a, b) => b.size - a.size)[0] ?? null,
     rows: (c, limit) => inCluster(c).slice(0, limit).map(([id, r]) => row(id, r.v)),
     sample: (c, limit) => inCluster(c).slice(0, limit).map(([id, r]) => row(id, r.v)),
+    sizes: (ids) => ids.map(id => inCluster(id).length),
+    unsplittable: () => [...unsplittable],
     start: (_c, clusterId, seeds) => {
+      starts++;
       centroids = [...centroids, ...seeds];
       split = { clusterId, seedLo: Math.min(...seeds.map(s => s.clusterId)), seedHi: Math.max(...seeds.map(s => s.clusterId)) };
     },
-    finish: (_c, clusterId, drop) => { if (drop) centroids = centroids.filter(c => c.clusterId !== clusterId); split = null; },
+    finish: (_c, clusterId, drop, more) => {
+      const gone = new Set([...(drop ? [clusterId] : []), ...(more?.dropIds ?? [])]);
+      centroids = centroids.filter(c => !gone.has(c.clusterId));
+      if (more?.unsplittable !== undefined) unsplittable.add(more.unsplittable);
+      split = null;
+    },
   };
   const deps: IvfSweepDeps = {
     collection: 'c', cfg,
@@ -49,11 +59,11 @@ function fakeIndex(sizes: Record<number, number>) {
     yieldToLoop: () => Promise.resolve(),
     split: splitDeps,
   };
-  return { deps, moves, rows, get centroids() { return centroids; }, get split() { return split; }, inCluster };
+  return { deps, moves, rows, get centroids() { return centroids; }, get split() { return split; }, get starts() { return starts; }, unsplittable, inCluster };
 }
 
 test('loadIvfConfig — CAPTAIN_MEMO_IVF_REGROW_RATIO overrides, 0 included', () => {
-  expect(loadIvfConfig({}).regrowRatio).toBe(3);                                  // on: a split never parks rows at -1
+  expect(loadIvfConfig({}).regrowRatio).toBe(0);                                  // off by default: see DEFAULT_IVF_CONFIG
   expect(loadIvfConfig({ CAPTAIN_MEMO_IVF_REGROW_RATIO: '5' }).regrowRatio).toBe(5);
   expect(loadIvfConfig({ CAPTAIN_MEMO_IVF_REGROW_RATIO: '0' }).regrowRatio).toBe(0);
   expect(loadIvfConfig({ CAPTAIN_MEMO_IVF_REGROW_RATIO: 'x' }).regrowRatio).toBe(DEFAULT_IVF_CONFIG.regrowRatio);
@@ -100,6 +110,17 @@ test('split — runs to the end: the drained cluster loses its centroid, the nex
   expect(ix.rows.size).toBe(115);
 });
 
+test('split — a cluster of identical vectors is split once, then left alone: K does not grow by empty seeds', async () => {
+  // Ties go to the first seed, so every row lands in one child; without the mark that child was split again, forever.
+  const ix = fakeIndex({ 1: 50, 2: 5 }, () => [1, 0, 0, 0]);
+  for (let i = 0; i < 100; i++) await runIvfSweepSlice(ix.deps);
+  expect(ix.starts).toBe(1);
+  expect(ix.split).toBeNull();
+  expect(ix.centroids.length).toBe(2);                   // the old cluster went, one child stayed, the empty seeds went
+  expect([...ix.unsplittable]).toEqual([ix.centroids.find(c => c.clusterId >= 1000)!.clusterId]);
+  expect(ix.rows.size).toBe(55);
+});
+
 test('split — a split whose seeds are gone (the set was replaced) is forgotten, and the cluster keeps its centroid', async () => {
   const ix = fakeIndex({ 1: 20, 2: 5 });
   ix.deps.split!.start('c', 1, [cent(1000, [1, 0, 0, 0], 1)]);
@@ -113,7 +134,8 @@ test('the worker wires the split storage into the sweep (the dep is optional: ab
   const src = readFileSync(join(import.meta.dir, '../../src/worker/index.ts'), 'utf-8');
   const call = src.slice(src.indexOf('runIvfSweepSlice({'), src.indexOf('sample: defaultSample'));
   for (const w of ['vector.splitInProgress(coll)', 'vector.largestCluster(ids, over)', 'vector.clusterRows(id, limit)',
-    'vector.sampleClusterVectors(id, limit)', 'vector.startSplit(coll, id, seeds)', 'vector.finishSplit(coll, id, drop)']) {
+    'vector.sampleClusterVectors(id, limit)', 'vector.startSplit(coll, id, seeds)', 'vector.finishSplit(coll, id, drop, more)',
+    'vector.clusterSizes(ids)', 'vector.unsplittableClusters(coll)']) {
     expect(call).toContain(w);
   }
   expect(src).toContain('r.reset > 0 || r.split > 0');   // a split slice runs at the build cadence

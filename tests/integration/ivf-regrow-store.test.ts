@@ -32,10 +32,12 @@ function depsFor(store: VectorStore, c: typeof cfg = cfg): IvfSweepDeps {
     split: {
       current: (k) => store.splitInProgress(k),
       largest: (ids, over) => store.largestCluster(ids, over),
+      sizes: (ids) => store.clusterSizes(ids),
+      unsplittable: (k) => store.unsplittableClusters(k),
       rows: (id, n) => store.clusterRows(id, n),
       sample: (id, n) => store.sampleClusterVectors(id, n),
       start: (k, id, seeds) => store.startSplit(k, id, seeds),
-      finish: (k, id, drop) => store.finishSplit(k, id, drop),
+      finish: (k, id, drop, more) => store.finishSplit(k, id, drop, more),
     },
     allocateClusterIds: (k, n) => store.allocateClusterIds(k, n),
     sampleAnyVectors: (k, n) => store.sampleAnyVectors(k, n),
@@ -61,7 +63,7 @@ async function sweep(store: VectorStore, slices: number, c: typeof cfg = cfg): P
 test('setCentroids records the size the index was built for only when the bootstrap says so, and a bootstrap drops a split', () => {
   const dir = mkdtempSync(join(tmpdir(), 'cm-ivf-boot-'));
   try {
-    const store = open(dir);
+    let store = open(dir);
     const cs = [{ clusterId: 1, vector: [1, 0, 0, 0], hitCount: 1 }];
     expect(store.bootstrapSize(C)).toBeNull();
     store.setCentroids(C, cs);
@@ -75,8 +77,15 @@ test('setCentroids records the size the index was built for only when the bootst
     expect(store.splitInProgress(C)).toEqual({ clusterId: 1, seedLo: 2, seedHi: 2 });
     store.setCentroids(C, cs);                           // a drift update keeps the split
     expect(store.splitInProgress(C)).not.toBeNull();
+    store.finishSplit(C, 1, false, { dropIds: [], unsplittable: 2 });
+    expect(store.unsplittableClusters(C)).toEqual([2]);
+    store.close();
+    store = open(dir);                                   // the mark is on disk
+    expect(store.unsplittableClusters(C)).toEqual([2]);
+    store.startSplit(C, 1, [{ clusterId: 3, vector: [0, 1, 0, 0], hitCount: 1 }]);
     store.setCentroids(C, cs, 130);                      // a bootstrap replaces the ids it named
     expect(store.splitInProgress(C)).toBeNull();
+    expect(store.unsplittableClusters(C)).toEqual([]);
     store.close();
   } finally { rmWorkDir(dir); }
 });
@@ -121,6 +130,31 @@ test('an oversized cluster is split into seeds of its own: no row is ever unclus
     const after = await sizes(store);
     expect(Math.max(...after.values())).toBeLessThanOrEqual(30);
     expect([...after.values()].reduce((a, b) => a + b, 0)).toBe(90);
+    store.close();
+  } finally { rmWorkDir(dir); }
+});
+
+test('a cluster of identical vectors is split once: the child holding them is marked, the empty seeds go, K does not grow', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-ivf-split-same-'));
+  try {
+    const store = open(dir);
+    await store.add(C, realVectors(30, 'a-', 3));
+    await sweep(store, 12);
+    const k = store.getCentroids(C).length;
+    const same = realVectors(1, 'x-', 9)[0]!.embedding;
+    await store.add(C, Array.from({ length: 200 }, (_, i) => ({ id: `same-${i}`, embedding: same })));
+    let starts = 0;
+    const deps = depsFor(store);
+    const start = deps.split!.start;
+    deps.split!.start = (c, id, seeds) => { starts++; start(c, id, seeds); };
+    for (let i = 0; i < 80; i++) await runIvfSweepSlice(deps);
+    expect(starts).toBe(1);
+    expect(store.splitInProgress(C)).toBeNull();
+    const m = await sizes(store);                        // the original rows in that cluster won seeds of their own; none is empty
+    expect(store.getCentroids(C).every(c => (m.get(c.clusterId) ?? 0) > 0)).toBe(true);
+    expect(store.getCentroids(C).length).toBeLessThan(k + 12);
+    expect(store.unsplittableClusters(C).length).toBe(1);
+    expect(store.indexSummary(C).assigned).toBe(230);
     store.close();
   } finally { rmWorkDir(dir); }
 });
