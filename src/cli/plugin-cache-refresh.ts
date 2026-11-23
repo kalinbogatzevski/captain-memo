@@ -29,7 +29,7 @@
 import { spawnSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, delimiter, isAbsolute } from 'path';
 import { readInstalledPaths, readPluginManifest, normalizePath } from '../shared/plugin-cache.ts';
 import { DATA_DIR } from '../shared/paths.ts';
 
@@ -84,8 +84,11 @@ export function clearPluginRemoved(dataDir: string = DATA_DIR): void {
  *  The lookup is anchored at `home`, not the caller's cwd: from a hook the cwd is the project the user opened, and a
  *  relative PATH entry (or Windows' cwd-first search) must not pick up a `claude` planted in an untrusted clone. */
 export function findClaudeBinary(home: string = homedir()): string | null {
-  const onPath = Bun.which('claude', { cwd: home });
-  if (onPath) return onPath;
+  // Absolute PATH entries only: on Windows Bun.which resolves a '.' (or any relative) entry against the process's own
+  // folder, which in a hook is the opened project, whatever cwd says (CI windows-latest returned '.\\claude.exe').
+  const path = (process.env.PATH ?? '').split(delimiter).filter((d) => d && isAbsolute(d)).join(delimiter);
+  const onPath = path ? Bun.which('claude', { PATH: path, cwd: home }) : null;
+  if (onPath && isAbsolute(onPath)) return onPath;
   const exe = process.platform === 'win32' ? 'claude.exe' : 'claude';
   for (const p of [join(home, '.local', 'bin', exe), join(home, '.claude', 'local', exe), '/opt/homebrew/bin/claude', '/usr/local/bin/claude']) {
     if (existsSync(p)) return p;
