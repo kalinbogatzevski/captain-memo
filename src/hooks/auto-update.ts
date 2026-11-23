@@ -239,6 +239,8 @@ export function spawnDetached(cmd: string[], platform: NodeJS.Platform = process
 export type PromptUpdateStart = 'inline' | 'spawned' | 'not-due' | 'in-flight' | 'no-entry' | 'spawn-failed';
 
 export interface PromptUpdateDeps {
+  /** The hook that starts it, for the log lines (default UserPromptSubmit). */
+  event?: string;
   platform?: NodeJS.Platform;
   /** The dispatcher entry to re-run as the child (default: the one this process was launched through). */
   entry?: string | null;
@@ -266,17 +268,18 @@ export interface PromptUpdateDeps {
  *  the real UpdateApply then finished a median 361 ms AFTER the hook had gone, time the hook used to spend in-line on a pass that
  *  found nothing to do. */
 export async function startPromptUpdate(d: PromptUpdateDeps = {}): Promise<PromptUpdateStart> {
-  if ((d.platform ?? process.platform) === 'win32') { await applyPromptUpdate('UserPromptSubmit', d.pass); return 'inline'; }
+  const event = d.event ?? 'UserPromptSubmit';
+  if ((d.platform ?? process.platform) === 'win32') { await applyPromptUpdate(event, d.pass); return 'inline'; }
   if (!readStampState(d.now).due) return 'not-due';
   const entry = d.entry === undefined ? hookEntryPath() : d.entry;
-  if (!entry) { logHookError('UserPromptSubmit', new Error('auto-update: not started, this hook was not launched through the dispatcher entry')); return 'no-entry'; }
+  if (!entry) { logHookError(event, new Error('auto-update: not started, this hook was not launched through the dispatcher entry')); return 'no-entry'; }
   try { mkdirSync(DATA_DIR, { recursive: true }); } catch { /* dir may exist */ }
   if (!acquireHealLock(UPDATE_SPAWN_LOCK, d.now)) return 'in-flight';
   try {
     (d.spawn ?? spawnDetached)([d.execPath ?? process.execPath, entry, 'UpdateApply']);
     return 'spawned';
   } catch (err) {
-    logHookError('UserPromptSubmit', new Error(`auto-update: could not start the detached apply: ${(err as Error).message}`));
+    logHookError(event, new Error(`auto-update: could not start the detached apply: ${(err as Error).message}`));
     return 'spawn-failed';
   }
 }

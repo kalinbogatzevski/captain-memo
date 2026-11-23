@@ -8,7 +8,7 @@ import { VERSION } from '../shared/version.ts';
 import { consumeUpgrade, formatUpgradeBanner, formatAutoUpdateBanner, formatAutoUpdateBlockedBanner, formatRollbackBanner, writeMarker, compareSemver } from '../shared/self-update.ts';
 import { staleWindowsShimNotice } from '../shared/windows-shim.ts';
 import { newsLines, type NewsItem } from '../shared/whats-new.ts';
-import { runAutoUpdatePass, takeUnshownOutcome } from './auto-update.ts';
+import { runAutoUpdatePass, startPromptUpdate, takeUnshownOutcome, type AutoUpdateOutcome } from './auto-update.ts';
 import { ensureWorkerHealthy } from '../shared/worker-health.ts';
 import { readTransition, markSessionDegraded, type WorkerTransition } from '../shared/worker-transition.ts';
 import { restartWorker } from '../shared/worker-control.ts';
@@ -248,7 +248,13 @@ export async function main(): Promise<void> {
   let updatedThisSession = false;
   if (process.env.CAPTAIN_MEMO_AUTO_UPDATE === '1') {
     // One pass, shared with the UserPromptSubmit hook (hooks/auto-update.ts): same stamp, same lock, same gates.
-    const out = await runAutoUpdatePass({ event: 'SessionStart', afterBoot: waitWorkerHealthy });
+    // Linux/macOS (#951): like the prompt hook's, the pass runs as the detached UpdateApply child. An apply (`bun install`
+    // alone may take 300 s) cannot finish inside this hook's 60 s timeout, and a hook that reaches it is killed with its
+    // whole tree. The next SessionStart announces the child's update (version marker), a block or a rollback through
+    // takeUnshownOutcome. win32 keeps the in-line pass (startPromptUpdate says why).
+    const detach = process.platform !== 'win32';
+    if (detach) await startPromptUpdate({ event: 'SessionStart' });
+    const out: AutoUpdateOutcome = detach ? { kind: 'none' } : await runAutoUpdatePass({ event: 'SessionStart', afterBoot: waitWorkerHealthy });
     // What the PROMPT hook found and could not announce (it used the slot, so this pass is not due): this pass's own result wins.
     const unshown = takeUnshownOutcome();
     if (out.kind === 'updated') {
