@@ -53,6 +53,7 @@ function fakeIndex(sizes: Record<number, number>) {
 }
 
 test('loadIvfConfig — CAPTAIN_MEMO_IVF_REGROW_RATIO overrides, 0 included', () => {
+  expect(loadIvfConfig({}).regrowRatio).toBe(3);                                  // on: a split never parks rows at -1
   expect(loadIvfConfig({ CAPTAIN_MEMO_IVF_REGROW_RATIO: '5' }).regrowRatio).toBe(5);
   expect(loadIvfConfig({ CAPTAIN_MEMO_IVF_REGROW_RATIO: '0' }).regrowRatio).toBe(0);
   expect(loadIvfConfig({ CAPTAIN_MEMO_IVF_REGROW_RATIO: 'x' }).regrowRatio).toBe(DEFAULT_IVF_CONFIG.regrowRatio);

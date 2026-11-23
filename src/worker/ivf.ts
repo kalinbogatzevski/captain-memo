@@ -95,10 +95,15 @@ export const DEFAULT_IVF_CONFIG: IvfConfig = {
   sweepIntervalMs: 60_000,
   buildIntervalMs: 2_000,
   minLearningRate: 0.01,
-  // OFF by default for now (see the measured figures in docs/CONFIGURATION.md). A split moves one oversized cluster's rows
-  // straight to seeds drawn from its own members, so search never scans a parked partition flat; the rebuild this replaced sent
-  // every row back to unclustered and made each search 4.8-9.3 s for ~11 h at 279k, against the 1.5 s the memory hook waits.
-  regrowRatio: 0,
+  // A cluster past 3 x 300 = 900 vectors is split (see the sweep's splitSlice). A split moves one cluster's rows straight to
+  // seeds drawn from its own members, so search never scans a parked partition flat; the rebuild this replaced sent every row
+  // back to unclustered and made each search 4.8-9.3 s for ~11 h at 279k, against the 1.5 s the memory hook waits.
+  // MEASURED on a copy of the dev store (2026-11-23: 400,797 vectors, 477 clusters, 232 of them past 900 holding 341,958 rows,
+  // box at load 7-15), 160 split slices of 64 rows: slice 198 ms p50 / 561 p95 / 1,029 max, the write transaction 67 ms p50 /
+  // 327 p95 / 458 max (~3% of writer time at the 2 s gap); search during the split 507-641 ms p50, 873 ms p95, 1,141 max,
+  // against 515-897 ms p50 warm with no split running; recall@10 of probe-16 against probing every cluster 0.987 on the
+  // partly split copy, 0.953 before (30 random probes each). The whole store: ~5,300 slices, roughly 3-4 h, K 477 -> ~1,385.
+  regrowRatio: 3,
 };
 
 /** A build slice is followed by at least this many slice-times of quiet, so the writer is busy at most 1/(1+3) = 25% of the
