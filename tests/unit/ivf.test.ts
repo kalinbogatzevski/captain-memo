@@ -2,7 +2,7 @@
 import { test, expect } from 'bun:test';
 import {
   DEFAULT_IVF_CONFIG, loadIvfConfig, targetClusterCount,
-  nearestCentroid, nearestCentroids, miniBatchUpdate, nearestInBatch, seedCentroids, defaultSample,
+  nearestCentroid, nearestCentroids, miniBatchUpdate, nearestInBatch, seedCentroids, defaultSample, RANK_GROUP,
   type Centroid,
 } from '../../src/worker/ivf.ts';
 
@@ -115,7 +115,7 @@ test('miniBatchUpdate — nearest computed ahead (nearestInBatch, with yields) g
   const batch = Array.from({ length: 30 }, (_, i) => ({ id: `v${i}`, vector: Array.from({ length: 16 }, (_, j) => Math.cos(i * 0.9 + j)) }));
   let yields = 0;
   const pre = await nearestInBatch(batch, cs, async () => { yields++; });
-  expect(yields).toBe(batch.length);
+  expect(yields).toBe(Math.ceil(batch.length / RANK_GROUP));   // one yield per group of rows
   expect(miniBatchUpdate(batch, cs, DEFAULT_IVF_CONFIG, pre)).toEqual(miniBatchUpdate(batch, cs, DEFAULT_IVF_CONFIG));
 });
 
@@ -154,4 +154,20 @@ test('isZeroVector — true only when every component is exactly 0', () => {
   expect(isZeroVector(new Float32Array(1024))).toBe(true);
   expect(isZeroVector([0, 0, 1e-9])).toBe(false);
   expect(isZeroVector([NaN])).toBe(false);   // not "zero": the sweep only repairs what is provably dead
+});
+
+test('nearestInBatch — ranking RANK_GROUP rows per pass gives nearestCentroid exactly, one yield per group', async () => {
+  // A seeded LCG so the vectors (and any tie) are the same on every run.
+  let seed = 7;
+  const rnd = (): number => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648) - 0.5;
+  const vec = (d: number): number[] => Array.from({ length: d }, rnd);
+  const centroids: Centroid[] = Array.from({ length: 50 }, (_, i) => ({ clusterId: 100 + i, vector: vec(16), hitCount: 1 }));
+  centroids.push({ clusterId: 999, vector: [...centroids[3]!.vector], hitCount: 1 });   // an exact tie: the first one wins
+  const batch = Array.from({ length: 37 }, (_, i) => ({ vector: i % 2 ? Float32Array.from(vec(16)) : vec(16) }));
+  batch.push({ vector: [...centroids[3]!.vector] });
+  let yields = 0;
+  const got = await nearestInBatch(batch, centroids, async () => { yields++; });
+  expect(got).toEqual(batch.map(b => nearestCentroid(b.vector, centroids)));
+  expect(got[37]!.clusterId).toBe(103);
+  expect(yields).toBe(Math.ceil(batch.length / RANK_GROUP));
 });

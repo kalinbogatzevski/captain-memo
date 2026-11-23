@@ -358,16 +358,49 @@ export function miniBatchUpdate(
   return { centroids: next, assignments };
 }
 
-/** nearestCentroid for each item, with a yield between items: 64 of them at ~12 ms each held the writer ~0.8 s every
- *  sweep minute on the reference store (477 x 1024). Feed the result to miniBatchUpdate with the SAME centroids. */
+/** Rows ranked per pass over the packed centroids by nearestInBatch. Each centroid is read once for the group instead of
+ *  once per row, and the yield comes between groups. MEASURED (2026-11-23, 1024 dims, 64 rows, box at load 17-22): per row
+ *  1,385 ms at 931 centroids (longest stretch without a yield 49 ms), groups of 8 302 ms (39 ms); at 477 686 -> 170 ms
+ *  (17 -> 23 ms); at 1,383 1,988 -> 442 ms (42 -> 57 ms). 16 gains ~25% more and doubles the stretch; 64 is one 200 ms block. */
+export const RANK_GROUP = 8;
+
+/** nearestCentroid for each vector of `group`, one pass over the packed centroids for all of them (same scores, same ties). */
+function nearestGroup(
+  group: ReadonlyArray<{ vector: number[] | Float32Array }>,
+  centroids: readonly Centroid[],
+): Array<{ clusterId: number; similarity: number } | null> {
+  const p = packed(centroids);
+  if (!p || group.some(g => g.vector.length !== p.dim)) return group.map(g => nearestCentroid(g.vector, centroids));
+  const { dim, unit } = p;
+  const best = group.map(() => -1), score = group.map(() => -Infinity);
+  for (let k = 0, o = 0; k < centroids.length; k++, o += dim) {
+    for (let r = 0; r < group.length; r++) {
+      const v = group[r]!.vector;
+      let s0 = 0, s1 = 0, s2 = 0, s3 = 0, j = 0;
+      for (; j + 3 < dim; j += 4) {
+        s0 += v[j]! * unit[o + j]!; s1 += v[j + 1]! * unit[o + j + 1]!;
+        s2 += v[j + 2]! * unit[o + j + 2]!; s3 += v[j + 3]! * unit[o + j + 3]!;
+      }
+      for (; j < dim; j++) s0 += v[j]! * unit[o + j]!;
+      const s = s0 + s1 + s2 + s3;
+      if (best[r]! < 0 || s > score[r]!) { score[r] = s; best[r] = k; }
+    }
+  }
+  return group.map((g, r) => best[r]! < 0 ? null
+    : { clusterId: centroids[best[r]!]!.clusterId, similarity: cosine(g.vector, centroids[best[r]!]!.vector) });
+}
+
+/** nearestCentroid for each item, RANK_GROUP at a time with a yield between groups: one row at a time, 64 of them at
+ *  ~12 ms each held the writer ~0.8 s every sweep minute on the reference store (477 x 1024). Feed the result to
+ *  miniBatchUpdate with the SAME centroids. */
 export async function nearestInBatch(
   batch: ReadonlyArray<{ vector: number[] | Float32Array }>,
   centroids: readonly Centroid[],
   yieldToLoop: () => Promise<void>,
 ): Promise<Array<{ clusterId: number } | null>> {
   const out: Array<{ clusterId: number } | null> = [];
-  for (const item of batch) {
-    out.push(nearestCentroid(item.vector, centroids));
+  for (let i = 0; i < batch.length; i += RANK_GROUP) {
+    out.push(...nearestGroup(batch.slice(i, i + RANK_GROUP), centroids));
     await yieldToLoop();
   }
   return out;
