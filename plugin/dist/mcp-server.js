@@ -15626,6 +15626,221 @@ function workerAuthHeaders(path = WORKER_TOKEN_PATH) {
   return t ? { [WORKER_TOKEN_HEADER]: t } : {};
 }
 
+// src/shared/redact-secrets.ts
+var KV_KEYWORD = "secret[_ -]access[_ -]key|secret[_ -]?key|signing[_ -]?key|encryption[_ -]?key|app[_ -]?key|" + "pass(?:word|wd|phrase|code)?|pwd|secret|api[_ -]?key|access[_ -]?key|private[_ -]?key|auth[_ -]?token|auth[_ -]?key|" + "master[_ -]?key|pre[_ -]?shared[_ -]?key|psk|redis[_-]?auth|smtp[_-]?credentials|token|" + "x-[a-z0-9]+(?:-[a-z0-9]+){0,3}-test";
+var NOT_A_SECRET = /^(?:true|false|null|none|nil|undefined|yes|no|required|optional|pass(?:ed)?|fail(?:ed)?|warn(?:ing)?|ok|error|skip(?:ped)?|string|number|boolean|bigint|unknown|any|bytes|str|int|buffer|uint8array|await|async|new|this|self|typeof|\d+\/\d+|[a-z_]+(?::[^|]*)?(?:\|[a-z_]+(?::[^|]*)?)+)$/i;
+var PLACEHOLDER = /^(?:\$\{?\w+\}?|<[^<>]+>|\{\{.*\}\}|%\(\w+\)s)$/;
+var DUMMY = /\.\.\.|\u2026|x{4,}|your[_ -]?(?:api|key|token|pass|secret)|_here$|changeme|^\[[^\]]*\]$|^</i;
+function kvIsProse(m) {
+  const key = m[1], keyword = m[2];
+  const value = m[4] ?? m[5] ?? m[6] ?? m[7] ?? m[8];
+  const bare = m[8] !== undefined;
+  if (value.startsWith("[REDACTED"))
+    return true;
+  if (value.length > 1024)
+    return false;
+  if (!bare && /^\s|\s$/.test(value))
+    return true;
+  if (/^(?:~?\/|\.\.?\/)|^[a-z][a-z0-9+.-]*:\/\/|^(?:GET|POST|PUT|PATCH|DELETE) \/|^\$\{\{|^\$\(/i.test(value))
+    return true;
+  if (HASH_NAME.test(value) || /^-+$|^-----/.test(value) || /^\d+[-.:]\d+$/.test(value))
+    return true;
+  let start = 0, end = value.length;
+  while (bare && start < end && "*_".includes(value[start]))
+    start++;
+  while (bare && end > start && ")]}.:*".includes(value[end - 1]))
+    end--;
+  const word = value.slice(start, end);
+  if (NOT_A_SECRET.test(word) || PLACEHOLDER.test(word) || DUMMY.test(value))
+    return true;
+  if (/^\$(?:\{\w+\}|[A-Z_][A-Z0-9_]*)(?![\w$])/.test(value))
+    return true;
+  if (/^\$?\{[^{}\s]{1,80}\}/.test(value))
+    return true;
+  if (!bare && /^\s*[.+|&]\s/.test(value))
+    return true;
+  if (bare && /^\(|^!\w+\(|[[(]$/.test(value))
+    return true;
+  if (bare && (/^[A-Z]{2,20}$/.test(word) || /^\d+(?:\.\d+)?:\d+(?:\.\d+)?$/.test(word) || /^\[/.test(value) || /^\\[sSKwd]/.test(value)))
+    return true;
+  if (/^[A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)*\??\.(?:pass(?:word|wd)?|pwd|token|secret|api_?key)$/i.test(value))
+    return true;
+  if (m[3] === "," && /^[A-Z][A-Z0-9_]+$/.test(value))
+    return true;
+  if (bare && /^=[ \t]/.test(m[0].slice(key.length)))
+    return true;
+  if (/^(?:NOPASSWD|without-password|prohibit-password)$/i.test(key))
+    return true;
+  if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_(?:TOKEN|KEY|PASS|PASSWORD|PWD|SECRET)$/.test(value))
+    return true;
+  if (bare && /^[\w$.]+\[[^\]]*\]/.test(value))
+    return true;
+  const code = bare || m[7] !== undefined;
+  if (code && (/^[A-Za-z_$]+(?:\.[A-Za-z_$]+)+$/.test(value) || /^[\w$.:\\>-]+\(/.test(value)))
+    return true;
+  if (/^(?:OLD)?PWD$/i.test(key) && value.startsWith("/"))
+    return true;
+  const envName = key === key.toUpperCase() && (key.length > keyword.length || /[_-]/.test(key));
+  if (key.toLowerCase() === "pass" && (/^(?:fail|error|skip|warn)/i.test(value) || code && /^[a-z][A-Za-z_-]*(?:\\n)?$/.test(word)))
+    return true;
+  if (m[3] === "," && !envName)
+    return true;
+  const prefix = key.slice(0, key.length - keyword.length);
+  const plain = bare && /^(?:[A-Za-z][a-z]*(?:-[a-z]+)*|\d{1,6})$/.test(word);
+  if (prefix && !/[_.-]$/.test(prefix) && !envName && !/^[A-Z]/.test(keyword) && (plain || /(?:by|com|encom|sur|over|under|tres)pass$/i.test(key)))
+    return true;
+  return !prefix && !envName && !/^(?:password|passphrase|pwd)$|^x-/i.test(keyword) && plain;
+}
+function notKeyBody(m) {
+  const body = m[1];
+  if (!/[A-Z]/.test(body) || !/[a-z]/.test(body) || !/\d/.test(body))
+    return true;
+  const lines = body.split(/\r?\n|\\r\\n|\\n/).map((s) => s.trim().replace(/^>\s*/, ""));
+  if (lines.length === 1 && (lines[0].length < 60 || (lines[0].match(/\//g)?.length ?? 0) > 4))
+    return true;
+  return !lines.slice(1, -1).every((s) => s.length >= 40) || !lines.some((s) => s.length >= 40);
+}
+var PROSE_VALUE = String.raw`(?:[\x60'"]|\*{1,2}|__)?(?=[^\s'"\x60]{8,200}(?![^\s'"\x60]))(?=[^\s'"\x60]*\d)(?![^\s'"\x60]*\/)([^\s'"\x60.~*][^\s'"\x60]*[^\s'"\x60.,;:!?)\]*])`;
+var notMixedCase = (m) => !/[A-Z]/.test(m[1]) || !/[a-z]/.test(m[1]);
+var isSlug = (m) => !/[A-Z]/.test(m[0]) && m[0].split("-").every((s) => s.length <= 15);
+var quotedValue = (m) => /[\x60'"*]/.test(m[0][m[0].lastIndexOf(m[1]) - 1] ?? "");
+var HASH_NAME = /^(?:sha\d*|md5|argon2(?:id|i|d)?|bcrypt|scrypt|pbkdf2|base64|hex|aes\d*|rsa|hmac|[hrep]s\d{3}|ed25519|utf-?8|wpa\d?)(?:-|$)/i;
+var B64_LINE = "[A-Za-z0-9+/]+=*";
+var ARMOR = String.raw`(?:[A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?|OpenVPN [\w -]{0,40}?key(?: V\d)?)`;
+var NL = String.raw`(?:\r?\n|\\r\\n|\\n)`;
+var BEGIN_END = String.raw`(?=[ \t]*(?:${NL}[ \t]*(?:>[ \t]*)?(?:${NL}[ \t]*(?:>[ \t]*)?)?(?:[A-Za-z0-9+/]{16}|[A-Z][A-Za-z-]+: )|(?:${NL}[ \t]*)?$)|[A-Za-z0-9+/]|[ \t]+[A-Za-z0-9+/]{60})`;
+var CLI_VALUE = String.raw`(?:\\"([^"\\\n]*)\\"|'([^'\n]*)'|"([^"\n]*)"|([^\s'"\x60),]+))`;
+var cliValue = (m) => m[1] ?? m[2] ?? m[3] ?? m[4];
+var notCliSecret = (v) => !v || PLACEHOLDER.test(v) || DUMMY.test(v) || /^[$<[{-]/.test(v) || /^[A-Z]{2,20}$/.test(v) || NOT_A_SECRET.test(v) || /^(?:public|private)$/.test(v) || /^[a-z]+$/.test(v) || /^\d{1,6}$/.test(v) || /^[\w-]+\.[a-z]{2,5}$/i.test(v);
+var ENV_NAME = String.raw`[A-Z_][A-Z0-9_]{0,60}?(?:PASSWORD|PASSWD|PASS|PWD|SECRET|TOKEN|API_KEY|PASSCODE|REDIS_AUTH|CREDENTIALS)`;
+var DB_ARG = String.raw`(?:'[^'\n]*'|"[^"\n]*"|\$[\w>\[\]'"-]{1,64}|[A-Za-z_][\w:]{0,63})`;
+var LINE_TAIL = String.raw`[ \t]*${NL}[ \t]*(?:>[ \t]*)?`;
+var RULES = [
+  { kind: "private-key", needs: /-----BEGIN /, re: new RegExp(String.raw`-----BEGIN ${ARMOR}-----${BEGIN_END}[\s\S]{0,16000}?(?:-----END ${ARMOR}-----|$)`, "g") },
+  { kind: "private-key", needs: /---- BEGIN /, re: new RegExp(String.raw`---- BEGIN ${ARMOR} ----${BEGIN_END}[\s\S]{0,16000}?(?:---- END ${ARMOR} ----|$)`, "g") },
+  { kind: "private-key", needs: /-----END |---- END /, slashes: true, re: new RegExp(String.raw`(?=[A-Za-z0-9+/=])(?<![A-Za-z0-9+/=]\\?)(?<![A-Za-z0-9+/=]${LINE_TAIL})(?:[A-Za-z0-9+/=]+${LINE_TAIL}){0,1000}[A-Za-z0-9+/=]*(?:-----|---- )END ${ARMOR} ?-{4,5}`, "g") },
+  { kind: "private-key", needs: /Private-Lines:/, re: new RegExp(String.raw`Private-Lines: \d+${LINE_TAIL}[A-Za-z0-9+/=]+(?=[ \t]*(?:${NL}|$))(?:${LINE_TAIL}[A-Za-z0-9+/=]+(?=[ \t]*(?:${NL}|$))){0,200}`, "g") },
+  {
+    kind: "base64-block",
+    skip: notKeyBody,
+    slashes: true,
+    re: new RegExp(String.raw`^\s*(?=\S)(?:[A-Z ]*-{1,5}${NL})?(?:\\r\\n|\\n)?[ \t]*(?:>[ \t]*)?(${B64_LINE}(?:${LINE_TAIL}${B64_LINE}){0,1000})(?:${NL}(?:-{1,5}(?:[A-Z ]*[A-Z])?)?|\\r\\?|\\)?\s*$`, "g")
+  },
+  {
+    kind: "private-key",
+    needs: /[A-Za-z0-9+/]{60} [A-Za-z0-9+/]{60}/,
+    skip: (m) => !/[A-Z]/.test(m[0]) || !/[a-z]/.test(m[0]) || !/\d/.test(m[0]),
+    re: new RegExp(String.raw`(?<![A-Za-z0-9+/=])(?<!-----[ \t]{0,4})[A-Za-z0-9+/]{60,}={0,2}(?: [A-Za-z0-9+/]{60,}={0,2}){1,300}(?: [A-Za-z0-9+/=]*-----END ${ARMOR}-----)?`, "g")
+  },
+  { kind: "gitlab-token", needs: /gl[a-z]{1,5}-/, re: /(?<![A-Za-z0-9_-])gl(?:pat|ptt|imt|ffct|wt|rtr|rt|dt|ft|oas|soat|cbt|agent)-[A-Za-z0-9_-]{16,}/g },
+  { kind: "github-token", needs: /gh[pousr]_|github_pat_/, re: /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})/g },
+  { kind: "anthropic-key", needs: /sk-ant-/, re: /(?<![A-Za-z0-9_-])sk-ant-[A-Za-z0-9_-]{20,}/g },
+  { kind: "openai-key", needs: /sk-/, re: /(?<![A-Za-z0-9_-])sk-(?:proj-)?[A-Za-z0-9_-]{32,}/g, skip: isSlug },
+  { kind: "slack-token", needs: /xox[abprs]-/, re: /(?<![A-Za-z0-9_-])xox[abprs]-[A-Za-z0-9-]{10,}/g, skip: isSlug },
+  { kind: "aws-key", needs: /AKIA/, re: /\bAKIA[0-9A-Z]{16}\b/g },
+  { kind: "google-key", needs: /AIza/, re: /\bAIza[0-9A-Za-z_-]{35}\b/g },
+  { kind: "jwt", needs: /eyJ/, re: /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g },
+  { kind: "telegram-token", needs: /:AA/, re: /(?:(?<![A-Za-z0-9_:-])|(?<=\/bot))\d{8,10}:AA[A-Za-z0-9_-]{30,}/g },
+  { kind: "voyage-key", needs: /pa-/, re: /(?<![A-Za-z0-9_-])pa-[A-Za-z0-9_-]{40,}/g, skip: isSlug },
+  { kind: "bearer", needs: /Bearer|Basic/, re: /\b(?:Bearer|Basic)\s+([A-Za-z0-9._~+/=-]{16,})/g, value: (m) => m[1], skip: (m) => !/[0-9A-Z+=]/.test(m[1]) },
+  {
+    kind: "auth-header",
+    needs: /[Aa]uthorization/,
+    re: /\b[Aa]uthorization["']?[ \t]*[:=][ \t]*["']?(?:[A-Z][\w-]{0,40}[ \t]+)?([A-Za-z0-9._~+/=-]{16,})/g,
+    value: (m) => m[1],
+    skip: (m) => !/[0-9+=]/.test(m[1]) && !/[a-z][A-Z]|^[A-Z0-9]+$/.test(m[1])
+  },
+  {
+    kind: "url-password",
+    needs: /:\\?\/\\?\//,
+    re: /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]{0,31}:\\?\/\\?\/[^\s/:@\\]*:([^\s@/\\]{1,})@/gi,
+    value: (m) => m[1],
+    skip: (m) => PLACEHOLDER.test(m[1]) || DUMMY.test(m[1])
+  },
+  {
+    kind: "env-value",
+    needs: /Environment=|[A-Z0-9_](?:PASSWORD|PASSWD|PASS|PWD|SECRET|TOKEN|API_KEY|PASSCODE|AUTH|CREDENTIALS)=/,
+    re: new RegExp(String.raw`(?<=\bEnvironment=(?:[^\n]{0,300}[ \t])?)(["'])${ENV_NAME}=([^"'\n]+)\1|\bEnvironment=${ENV_NAME}=([^\s"']+)|(?:(?<![^\n])[ \t]*(?:export[ \t]+|-[ \t]+|ENV[ \t]+)?|(?<=[ \t])(?:-e|--env)[ \t=]+)${ENV_NAME}=([^\s'"#]*[;,][^\s'"#]*)`, "g"),
+    value: (m) => (m[2] ?? m[3] ?? m[4])?.replace(/[;,]+$/, ""),
+    skip: (m) => {
+      const v = (m[2] ?? m[3] ?? m[4] ?? "").replace(/[;,]+$/, "");
+      return v.length < 4 || PLACEHOLDER.test(v) || DUMMY.test(v) || /^\$/.test(v) || NOT_A_SECRET.test(v) || /^[\d.,;:-]+$/.test(v);
+    }
+  },
+  {
+    kind: "xml-secret",
+    needs: /<\/[\w.:-]*(?:pass|pwd|secret|key)/i,
+    re: /<([\w.:-]{0,40}?(?:password|passwd|pass|pwd|passphrase|secret|api[_-]?key))(?:\s[^<>\n]{0,200})?>\s{0,20}(?:<!\[CDATA\[([^\]\n]{1,200})\]\]>|([^<\s][^<\n]{0,199}?))\s{0,20}<\/\1>/gi,
+    value: (m) => m[2] ?? m[3],
+    skip: (m) => {
+      const v = m[2] ?? m[3];
+      return NOT_A_SECRET.test(v) || PLACEHOLDER.test(v) || DUMMY.test(v) || /^\?+$|^%\w+%$|^#\{.*\}$|^@\w+@$|^\$|^\{|^\d{1,6}$/.test(v);
+    }
+  },
+  {
+    kind: "db-connect",
+    needs: /connect|mysqli|PDO/,
+    re: new RegExp(String.raw`\b(?:(?:mysqli_connect|mysql_connect|new\s+mysqli)\s*\(\s*${DB_ARG}\s*,\s*${DB_ARG}\s*,\s*|mysqli_real_connect\s*\(\s*${DB_ARG}\s*,\s*${DB_ARG}\s*,\s*${DB_ARG}\s*,\s*|new\s+PDO\s*\(\s*${DB_ARG}\s*,\s*${DB_ARG}\s*,\s*)(['"])([^'"\n]+)\1`, "g"),
+    value: (m) => m[2],
+    skip: (m) => notCliSecret(m[2])
+  },
+  {
+    kind: "kv",
+    needs: /pass|pwd|secret|key|token|-test|redis.auth|credentials|psk/i,
+    re: new RegExp(`(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]{0,64}?(${KV_KEYWORD}))(?:\\\\?["'])?\\]?(?:\\*{1,2}|__)?[ \\t]*(=>|[:=](?!:)|,(?<=["'][ \\t]*,)(?=[ \\t]*["']))(?:\\*{1,2}|__)?[ \\t]*(?:\\\\"([^"\\\\\\n]{4,})\\\\"|"([^"\\n]{4,})"|'([^'\\n]{4,})'|\\x60([^\\x60\\n]{4,})\\x60|["']?([^\\s"',;\\x60&]{4,}))`, "gi"),
+    value: (m) => m[4] ?? m[5] ?? m[6] ?? m[7] ?? m[8],
+    skip: kvIsProse
+  },
+  {
+    kind: "cli-password",
+    needs: /mysql|mariadb|sshpass|curl/,
+    re: new RegExp(String.raw`(?:\b(?:mysql|mysqldump|mysqladmin|mariadb(?:-dump|-admin)?)\b[^\n|;&]{0,200}?\s-p|\bsshpass\b[^\n|;&]{0,200}?\s-p[ \t]*|\bcurl\b[^\n|;&]{0,200}?\s(?:-u|--user)(?:[ \t]+|=)?['"]?[^\s:'"]{1,256}:)${CLI_VALUE}`, "g"),
+    value: cliValue,
+    skip: (m) => {
+      const v = cliValue(m);
+      return PLACEHOLDER.test(v) || DUMMY.test(v) || /^[$<[{]/.test(v) || /^[A-Z]{2,20}$/.test(v);
+    }
+  },
+  {
+    kind: "cli-password",
+    needs: /redis-cli|AUTH|requirepass|masterauth|mongo|snmp|ipmitool|smbclient|docker|setx|PSK/,
+    re: new RegExp(String.raw`(?:\bredis-cli\b[^\n|;&]{0,200}?\s(?:-a|--pass)[ \t]+|(?:(?<![^\n])[ \t]*|> )AUTH[ \t]+(?:[A-Za-z0-9_.-]{1,64}[ \t]+(?=\S))?|\b(?:requirepass|masterauth)[ \t]+|\bmongo(?:sh|dump|restore|import|export)?\b[^\n|;&]{0,200}?\s(?:-p|--password)(?:[ \t]+|=)|\bsnmp(?:walk|get|getnext|bulkwalk|bulkget|set|table|trap)\b[^\n|;&]{0,200}?\s-c[ \t]*|\bsnmp-server[ \t]+community[ \t]+|\bipmitool\b[^\n|;&]{0,200}?\s-P[ \t]*|\bsmbclient\b[^\n|;&]{0,200}?\s(?:-U|--user(?:name)?)(?:[ \t]+|=)?['"]?[^\s%'"]{1,256}%|\bdocker[ \t]+login\b[^\n|;&]{0,200}?\s(?:-p|--password)(?:[ \t]+|=)|\bsetx[ \t]+[A-Za-z0-9_]{0,60}(?:PASSWORD|PASS|PWD|SECRET|TOKEN|KEY)[ \t]+|:[ \t]*PSK[ \t]+)${CLI_VALUE}`, "g"),
+    value: cliValue,
+    skip: (m) => notCliSecret(cliValue(m))
+  },
+  {
+    kind: "cli-password",
+    needs: /chpasswd/,
+    re: /\becho[ \t]+(['"]?)[^\s:'"|]{1,64}:([^\s'"|]+)\1[ \t]*\|[ \t]*(?:sudo[ \t]+)?chpasswd\b/g,
+    value: (m) => m[2],
+    skip: (m) => notCliSecret(m[2])
+  },
+  {
+    kind: "prose-password",
+    needs: /pass|pw|token|secret|api|-test/i,
+    re: new RegExp(String.raw`(?:\b(?:password|passwd|passphrase|pw|token|secret|api[ _-]?key)|(?<![\w-])x-[a-z0-9]+(?:-[a-z0-9]+){0,3}-test(?:[ \t]+(?:header|value))?)\b(?:\*{1,2}|__)?(?:[ \t]+for(?:[ \t]+[^\s:]{1,40}){1,4}?(?:[ \t]+(?:is|was)\b|[ \t]*[:=]))?(?:[ \t]+(?:is|was|been|has|got|now|still|will|be|changed|set|reset|updated|as|to)\b){0,4}(?:[ \t]*[:=\u2014\u2013\u2192-])?(?:\*{1,2}|__)?(?:[ \t]+|[ \t]*\n[ \t]*)${PROSE_VALUE}`, "gi"),
+    value: (m) => m[1],
+    skip: (m) => HASH_NAME.test(m[1]) || m[1].includes("(") || !/[A-Za-z]/.test(m[1]) || !quotedValue(m) && notMixedCase(m)
+  },
+  {
+    kind: "prose-password",
+    needs: /[\u041F\u043F]\u0430\u0440\u043E\u043B/,
+    re: /(?<![\p{L}\p{N}_])(?:\*\*|__)?[\u041F\u043F]\u0430\u0440\u043E\u043B(?:\u0430\u0442\u0430|\u0430)(?:\*\*|__)?[ \t]*[:=](?:\*\*)?[ \t]*(?:\x60([^\x60\n]{4,})\x60|"([^"\n]{4,})"|'([^'\n]{4,})'|([^\s'"\x60,;*]{4,}))/gu,
+    value: (m) => m[1] ?? m[2] ?? m[3] ?? m[4],
+    skip: (m) => {
+      const v = m[1] ?? m[2] ?? m[3] ?? m[4];
+      return NOT_A_SECRET.test(v) || PLACEHOLDER.test(v) || DUMMY.test(v) || /^\p{Script=Cyrillic}+[.,]?$/u.test(v);
+    }
+  },
+  {
+    kind: "prose-password",
+    needs: /[\u041F\u043F]\u0430\u0440\u043E\u043B/,
+    re: new RegExp(String.raw`(?<![\p{L}\p{N}_])[\u041F\u043F]\u0430\u0440\u043E\u043B(?:\u0430\u0442\u0430|\u0438\u0442\u0435|\u0430|\u0438)(?![\p{L}])(?:[ \t]+(?:\u043C\u0438|\u043C\u0443|\u0439))?(?:[ \t]+(?:\u0437\u0430|\u043D\u0430)(?:[ \t]+[^\s:]{1,40}){1,4}?(?:[ \t]+(?:\u0435|\u0431\u0435\u0448\u0435)(?![\p{L}])|[ \t]*[:=]))?(?:[ \t]+(?:\u0435|\u0431\u0435\u0448\u0435|\u0432\u0435\u0447\u0435|\u043D\u043E\u0432\u0430)(?![\p{L}])){0,3}(?:[ \t]+(?:\u0441\u043C\u0435\u043D\u0435\u043D\u0430|\u043F\u0440\u043E\u043C\u0435\u043D\u0435\u043D\u0430|\u0437\u0430\u0434\u0430\u0434\u0435\u043D\u0430)[ \t]+\u043D\u0430)?(?:[ \t]*[:=\u2014\u2013\u2192-])?(?:\*{1,2}|__)?(?:[ \t]+|[ \t]*\n[ \t]*)${PROSE_VALUE}`, "giu"),
+    value: (m) => m[1],
+    skip: (m) => HASH_NAME.test(m[1]) || m[1].includes("(") || !/[A-Za-z]/.test(m[1]) || !quotedValue(m) && notMixedCase(m)
+  }
+];
+
 // src/hooks/shared.ts
 var HOOK_LOG_DIR = join4(homedir3(), ".captain-memo", "logs");
 var HOOK_LOG_FILE = join4(HOOK_LOG_DIR, "hook.log");

@@ -18,6 +18,7 @@ import { detectRepoRootSync } from '../worker/branch.ts';
 import { loadWorkerEnv, workerEnvLoadedKeys } from '../shared/worker-env.ts';
 import { folderProjectKey, projectKey } from '../shared/project-key.ts';
 import { workerAuthHeaders } from '../shared/worker-auth.ts';
+import { redactedHead } from '../worker/capture/shared.ts';
 
 const HOOK_LOG_DIR = join(homedir(), '.captain-memo', 'logs');
 const HOOK_LOG_FILE = join(HOOK_LOG_DIR, 'hook.log');
@@ -201,10 +202,14 @@ export function clamp(s: string, max: number): string {
   return points.slice(0, max - 1).join('') + '…';
 }
 
-/** Compact-stringify any object/value for tool_input/tool_response summaries. */
+/** Compact-stringify any object/value for tool_input/tool_response summaries. Redacted BEFORE the cut: a token the
+ *  cut lands in would keep a head too short for the worker's redactor to match (16 of 61 offsets at 1500 leaked).
+ *  Cost in the hook process, measured 2026-11-23 on a host at load ~35: the redactor bundle adds 19 KB (147 -> 167 KB)
+ *  and ~5-9 ms to load, the first call ~3.5-4 ms (regex compile), each further call ~0.15 ms, a 6 MB value ~0.2 ms
+ *  (only a window is redacted); against a ~200-250 ms hook start. */
 export function summarize(value: unknown, max = 1500): string {
   try {
-    return clamp(typeof value === 'string' ? value : JSON.stringify(value), max);
+    return clamp(redactedHead(typeof value === 'string' ? value : JSON.stringify(value), max), max);
   } catch {
     return '[unserializable]';
   }

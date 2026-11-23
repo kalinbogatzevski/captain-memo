@@ -203,7 +203,7 @@ test('a real codex rollout with credentials in the prompt, a tool line and the a
   ].map((o) => JSON.stringify(o)).join('\n') + '\n';
   writeFileSync(path, lines);
 
-  const src = createCodexSource({ projectId: 'proj', dir, quiesceMs: 0, warn: () => {} });
+  const src = createCodexSource({ projectId: 'proj', dir, quiesceMs: 0, now: () => Date.now() + 10_000, warn: () => {} });  // mtime can sit a fraction of a ms ahead of Date.now()
   const ref: SessionRef = src.discover()[0]!;
   const direct = src.extract(ref);                        // what the source hands the driver
   expect(direct).toHaveLength(2);

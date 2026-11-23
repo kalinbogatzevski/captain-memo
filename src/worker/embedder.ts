@@ -8,7 +8,7 @@ export type ApiFormat = 'openai' | 'aelita';
 export function isLoopbackEndpoint(endpoint: string): boolean {
   try {
     const host = new URL(endpoint).hostname;
-    return host === 'localhost' || host === '[::1]' || /^127\./.test(host);
+    return host === 'localhost' || host === '[::1]' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);   // URL already folds 127.1 and 2130706433 to 127.0.0.1; 127.example.com is remote
   } catch {
     return false;
   }

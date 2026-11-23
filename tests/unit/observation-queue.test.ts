@@ -138,3 +138,14 @@ test('retryFailed is a no-op when nothing is dead-lettered', () => {
   expect(r.revived).toBe(0);
   expect(queue.pendingCount()).toBe(1);          // pending rows are untouched
 });
+
+test('ObservationQueue — a second opener (CLI) leaves the worker\'s claimed rows alone; only recoverProcessing resets them', () => {
+  queue.enqueue(ev());
+  queue.enqueue(ev());
+  queue.takeBatch(10);
+  new ObservationQueue(join(workDir, 'queue.db')).close();
+  expect(queue.processingCount()).toBe(2);
+  new ObservationQueue(join(workDir, 'queue.db'), { recoverProcessing: true }).close();
+  expect(queue.processingCount()).toBe(0);
+  expect(queue.pendingCount()).toBe(2);
+});

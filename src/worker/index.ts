@@ -399,6 +399,10 @@ const InjectContextSchema = z.object({
   rank_profile: z.enum(['legacy', 'v2']).optional(),
 });
 
+// A paired device's MCP body cap. The SDK default is 4 MiB, and one ~4 MiB tools/call with ~400k keys stalled the event
+// loop 4-6 s (sdk 1.31.0/1.32.1, measured 2026-10-21); 1 MiB cuts that ~4x. Largest stored memory body here: 63.5 KB of
+// 3 102 files (2026-11-23), so a remember is ~16x under it even JSON-escaped.
+const MCP_MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 const SHORT_PROMPT_THRESHOLD = 10;
 const NO_OP_TOKENS = new Set(['ok', 'continue', 'yes', 'go', 'next', 'sure']);
 
@@ -740,7 +744,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
   // Plan-2: observation pipeline (queue → store → vector/meta).
   // ─────────────────────────────────────────────────────────────────────
   const obsQueue = !opts.readOnly && opts.observationQueueDbPath
-    ? new ObservationQueue(opts.observationQueueDbPath)
+    ? new ObservationQueue(opts.observationQueueDbPath, { recoverProcessing: true })
     : null;
   const obsStore = opts.observationsDbPath
     ? new ObservationsStore(opts.observationsDbPath, { readonly: !!opts.readOnly, tideConfig })
@@ -4116,6 +4120,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           const transport = new WebStandardStreamableHTTPServerTransport({
             sessionIdGenerator: () => crypto.randomUUID(),
             enableJsonResponse: true,
+            maxRequestBodySize: MCP_MAX_REQUEST_BODY_BYTES,
             onsessioninitialized: (newSid) => { gatewaySessions.set(newSid, session); },
             onsessionclosed: (closedSid) => { gatewaySessions.delete(closedSid); },
           });
