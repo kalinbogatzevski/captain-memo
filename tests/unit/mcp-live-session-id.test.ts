@@ -45,6 +45,7 @@ test('a tool call with the default deps files under the live id, read when the c
   const seen: Array<{ path: string; body: Record<string, unknown> }> = [];
   const srv = Bun.serve({ port: 0, async fetch(req) {
     const url = new URL(req.url);
+    if (url.pathname === '/health') return Response.json({ healthy: true });   // callWorker's preflight
     seen.push({ path: url.pathname, body: req.method === 'GET' ? Object.fromEntries(url.searchParams) : await req.json() as Record<string, unknown> });
     return Response.json({ ok: true, claims: [] });
   } });

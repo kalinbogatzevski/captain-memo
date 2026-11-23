@@ -1365,7 +1365,7 @@ async function installWindows(args: string[], opts: InstallOptions): Promise<num
   // ----- health probe -----
   header('Health probe');
   try {
-    const res = await fetch(`http://localhost:${port}/health`);
+    const res = await fetch(`http://localhost:${port}/health`, { signal: AbortSignal.timeout(5_000) });   // an orphaned listener would otherwise hang the installer
     const body = await res.text();
     if (res.ok && body.includes('"healthy":true')) ok(`worker is responding on http://localhost:${port}`);
     else warn(`worker responded but not yet healthy (HTTP ${res.status}) — initial indexing on a large corpus can take minutes`);

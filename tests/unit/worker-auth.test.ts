@@ -112,7 +112,7 @@ test('MCP tools and the CLI client send the token from CONFIG_DIR/worker.token',
   const token = ensureWorkerToken();   // the preload's scratch home: WORKER_TOKEN_PATH is never the real one here
   expect(WORKER_TOKEN_PATH).toContain('cm-test-home-');
   const seen: Array<string | null> = [];
-  const srv = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch: (r) => { seen.push(r.headers.get(WORKER_TOKEN_HEADER)); return Response.json({ items: [], results: [] }); } });
+  const srv = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch: (r) => { if (new URL(r.url).pathname !== '/health') seen.push(r.headers.get(WORKER_TOKEN_HEADER)); return Response.json({ items: [], results: [] }); } });   // /health (callWorker's preflight) is open by design
   const prev = process.env.CAPTAIN_MEMO_WORKER_PORT;
   process.env.CAPTAIN_MEMO_WORKER_PORT = String(srv.port);
   try {

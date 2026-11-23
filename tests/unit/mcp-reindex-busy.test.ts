@@ -10,7 +10,7 @@ const servers: Array<ReturnType<typeof Bun.serve>> = [];
 afterAll(() => { for (const s of servers) s.stop(true); });
 function worker(respond: () => Response) {
   const calls: string[] = [];
-  const srv = Bun.serve({ port: 0, fetch: (req) => { calls.push(new URL(req.url).pathname); return respond(); } });
+  const srv = Bun.serve({ port: 0, fetch: (req) => { if (new URL(req.url).pathname === '/health') return Response.json({ healthy: true }); calls.push(new URL(req.url).pathname); return respond(); } });
   servers.push(srv);
   return { calls, deps: { workerBase: `http://localhost:${srv.port}`, sessionId: 'sess-1', cwd: () => '/p' } };
 }

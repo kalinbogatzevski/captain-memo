@@ -38,6 +38,7 @@ import { evalCommand } from './commands/eval.ts';
 import { printBanner } from './banner.ts';
 import { VERSION } from '../shared/version.ts';
 import { WorkerCallError } from '../shared/worker-call.ts';
+import { MANUAL_START_HINT } from '../shared/worker-control.ts';
 
 const HELP = `captain-memo — local memory layer for Claude Code
 
@@ -112,10 +113,12 @@ function reportCliError(err: unknown): number {
     console.error(workerErrorReason(err));
     return 1;
   }
-  if (/ECONNREFUSED|Unable to connect|Connection refused|fetch failed|failed to connect/i.test(msg)) {
-    console.error('captain-memo worker is not reachable.');
-    console.error('  Start it with:  bun run worker:start   (or `captain-memo install` to set it up)');
-    console.error('  Check status:   captain-memo status');
+  const kind = err instanceof WorkerCallError ? err.kind
+    : /ECONNREFUSED|Unable to connect|Connection refused|fetch failed|failed to connect/i.test(msg) ? 'unreachable' : null;
+  if (kind === 'unreachable' || kind === 'timeout') {
+    console.error(msg);
+    console.error(`  Start:     ${MANUAL_START_HINT}   (or \`captain-memo install\` to set it up)`);
+    console.error('  Diagnose:  captain-memo doctor');
     return 1;
   }
   console.error(msg);
