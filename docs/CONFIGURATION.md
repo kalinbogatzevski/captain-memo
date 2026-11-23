@@ -404,7 +404,7 @@ having new work.
 |---|---|---|
 | `CAPTAIN_MEMO_IVF_ENABLED` | ON | `0` switches it off. Any other value, including a typo, leaves it on. |
 | `CAPTAIN_MEMO_IVF_MIN_CORPUS` | `3000` | Below this the flat scan is used regardless — it is faster than the arithmetic to avoid it. |
-| `CAPTAIN_MEMO_IVF_TARGET_PER_CLUSTER` | `300` | Vectors per cluster; cluster count is corpus size divided by this. Lowering it can make clusters count as oversized and start splits (see `REGROW_RATIO`). |
+| `CAPTAIN_MEMO_IVF_TARGET_PER_CLUSTER` | `300` | Vectors per cluster; cluster count is corpus size divided by this. With `REGROW_RATIO` set, lowering it can make clusters count as oversized and start splits. |
 | `CAPTAIN_MEMO_IVF_PROBE_CLUSTERS` | `16` | Clusters read per query. Lower is faster and misses more — see the table; measure on your own corpus. |
 | `CAPTAIN_MEMO_IVF_SWEEP_BATCH` | `64` | Vectors per slice. Measured optimum: past ~64 the vec0 partition rewrite goes superlinear (256 held the writer for 8.6 s), so a bigger batch is worse on **both** throughput and latency. |
 | `CAPTAIN_MEMO_IVF_BUILD_MS` | `2000` | Shortest gap between build slices. A slice slower than ~670 ms (many clusters, a busy machine) is followed by a gap of three slice-times instead, so the writer is busy at most 25% of the time: a 1.6 s slice at 931 clusters gets a 5.2 s gap. The earlier "~19% duty, 143k vectors in ~75 min" assumed a 376 ms slice and did not count the nearest-cluster ranking or the cluster rewrite. |
