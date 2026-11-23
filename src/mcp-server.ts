@@ -300,8 +300,8 @@ export const TOOLS = [
   },
   {
     name: 'todo_done',
-    description: 'Close a homework item, with a one-line note of what was done (or why it was dropped). Done items stay listable for a week.',
-    inputSchema: { type: 'object', properties: { id: { type: 'string' }, note: { type: 'string' } }, required: ['id'] },
+    description: 'Close a homework item, with a one-line note of what was done (or why it was dropped). Pass dropped: true when it was NOT done (rejected, obsolete, will not do): it is then listed as DROPPED, not done. Done items stay listable for a week.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' }, note: { type: 'string' }, dropped: { type: 'boolean', description: 'true = closed without doing it (dropped / rejected). Default false.' } }, required: ['id'] },
   },
   {
     name: 'work_active',
@@ -513,8 +513,8 @@ export async function dispatchTool(
         break;
       }
       case 'todo_claim': case 'todo_unclaim': case 'todo_done': {
-        const a = (args ?? {}) as { id?: string; note?: string };
-        result = await workerPost(workerBase, name === 'todo_claim' ? '/homework/claim' : name === 'todo_unclaim' ? '/homework/unclaim' : '/homework/done', { id: String(a.id ?? '').replace(/^#/, ''), by: sessionId, ...(a.note ? { note: a.note } : {}) });
+        const a = (args ?? {}) as { id?: string; note?: string; dropped?: unknown };
+        result = await workerPost(workerBase, name === 'todo_claim' ? '/homework/claim' : name === 'todo_unclaim' ? '/homework/unclaim' : '/homework/done', { id: String(a.id ?? '').replace(/^#/, ''), by: sessionId, ...(a.note ? { note: a.note } : {}), ...(name === 'todo_done' && a.dropped !== undefined ? { dropped: a.dropped } : {}) });
         break;
       }
       case 'work_active': {

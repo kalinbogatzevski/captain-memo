@@ -139,3 +139,10 @@ test('unclaim: you can hand back your own claim; not another session\'s, not an 
   doneHomework(kv, '1', 'app-18', 'ok', 4_000);
   expect(unclaimHomework(kv, '1', 'app-18')).toMatchObject({ error: 'not_found' }); // a closed item has no claim to hand back
 });
+
+test('#957: todo_done(dropped) stores the marker; a plain re-close clears it', () => {
+  const kv = makeKv();
+  addHomework(kv, { text: 'a' }, 1_000);
+  expect(doneHomework(kv, '1', 's', 'obsolete', 2_000, true)?.dropped).toBe(true);
+  expect(doneHomework(kv, '1', 's', 'did it after all', 3_000)).not.toHaveProperty('dropped');
+});
