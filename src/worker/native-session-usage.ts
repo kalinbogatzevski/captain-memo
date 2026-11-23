@@ -23,10 +23,11 @@
 // whole transcripts on a ~10s cadence is what this exists to avoid.
 
 import { stat, open, readFile } from 'fs/promises';
-import { readdirSync, readFileSync, statSync } from 'fs';
+import { readdirSync, readFileSync, writeFileSync, renameSync, mkdirSync, statSync } from 'fs';
 import type { Dirent } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
+import { DATA_DIR } from '../shared/paths.ts';
 
 /** Provider-reported usage for one native session, summed over its transcript. */
 export interface NativeSessionUsage {
@@ -184,9 +185,61 @@ const MSG_ID_MEMORY = 64;
 /** How much bucket history to retain. Caps memory (1 440 buckets/session at worst) and
  *  bounds the widest window that can be asked for honestly. */
 const MAX_BUCKET_MS = 24 * 60 * 60_000;
+/** The widest window /sessions/usage serves: window figures past MAX_BUCKET_MS were pruned. */
+export const MAX_WINDOW_MS = MAX_BUCKET_MS;
 const BUCKET_MS = 60_000;
 
 const ACC = new Map<string, Totals>();
+
+/** The accumulators, saved so a worker restart does not re-read every transcript on disk.
+ *  MEASURED 2026-11-23 on this host (7.5 GB, 4,325 transcripts, load ~3.5 on 24 cores): the all-time
+ *  scan cold cost 377.7 s CPU / 330.6 s wall; warm, 1.8 s CPU. With this state (9.2 MB) the first scan after a
+ *  restart cost 4.4 s CPU / 3.6 s wall, the parse a 258 ms block once per process; the save a 490 ms block per
+ *  all-time scan (every ALL_TIME_TTL_MS, ~0.2% duty). Saved then because every accumulator is current; a crash
+ *  loses at most one TTL of reading. Not on shutdown: the threaded worker terminates its engine without a stop. */
+function statePath(): string {
+  return join(process.env.CAPTAIN_MEMO_DATA_DIR ?? DATA_DIR, 'native-usage-state.json');
+}
+let stateLoaded = false;
+
+/** Write ACC to disk. Atomic (tmp + rename), so a reader never sees half a file. Best-effort. */
+export function saveNativeUsageState(): void {
+  try {
+    const acc = [...ACC].map(([path, t]) => [path, {
+      ...t,
+      seenMsgIds: [...t.seenMsgIds],
+      buckets: [...t.buckets],
+      ...(t.dispatched ? { dispatched: [...t.dispatched] } : {}),
+    }]);
+    const p = statePath();
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p + '.tmp', JSON.stringify({ v: 1, root: transcriptsRoot(), acc }));
+    renameSync(p + '.tmp', p);
+  } catch { /* no state file ⇒ the next boot scans cold, as before */ }
+}
+
+/** Seed ACC from disk once per process. Only for the same transcripts root, and an entry only
+ *  where the file is still at least as long as what was read: accumulate() then reads just the
+ *  appended bytes, and a shorter (truncated/rotated) file starts over — the same rule as in memory. */
+function loadNativeUsageState(now: number): void {
+  if (stateLoaded) return;
+  stateLoaded = true;
+  try {
+    const d = JSON.parse(readFileSync(statePath(), 'utf8')) as { v?: number; root?: string; acc?: [string, Record<string, unknown>][] };
+    if (d.v !== 1 || d.root !== transcriptsRoot() || !Array.isArray(d.acc)) return;
+    for (const [path, raw] of d.acc) {
+      let size: number;
+      try { size = statSync(path).size; } catch { continue; }
+      const t = raw as unknown as Totals;
+      if (typeof t.offset !== 'number' || size < t.offset || ACC.has(path)) continue;
+      t.seenMsgIds = new Map(raw.seenMsgIds as [string, { i: number; o: number; w: number; r: number }][]);
+      t.buckets = new Map(raw.buckets as [number, Bucket][]);
+      if (raw.dispatched) t.dispatched = new Map(raw.dispatched as [string, string][]);
+      t.lastTouchedMs = now;
+      ACC.set(path, t);
+    }
+  } catch { /* missing or unreadable ⇒ cold scan */ }
+}
 
 function fresh(): Totals {
   return { offset: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0, seenMsgIds: new Map(),
@@ -736,6 +789,7 @@ export async function readNativeSessionUsage(
    *  188.9M billed tokens, 27% of the all-time total — the moment the liveness fix landed. */
   opts?: { includeFinished?: boolean },
 ): Promise<NativeSessionUsage[]> {
+  loadNativeUsageState(now);
   const root = transcriptsRoot();
   let projectDirs: string[];
   try {
@@ -841,6 +895,7 @@ export async function readNativeSessionUsage(
 /** Test-only: clear the per-process accumulators. */
 export function _resetNativeUsageCache(): void {
   ACC.clear();
+  stateLoaded = false;
   // The lookup caches too. Both are module-level and keyed by a name, NOT by the config dir
   // they were resolved under — so a test that ran earlier under a different
   // CLAUDE_CONFIG_DIR left a cached MISS that a later test inherited, and the team-lead test
@@ -1048,6 +1103,7 @@ export function allTimeTotals(now = Date.now()): AllTimeTotals | null {
             fresh_tokens: fresh, output_tokens: out,
           cache_read_tokens: cr, computed_at_epoch_ms: Date.now(),
         };
+        saveNativeUsageState();
       })
       .catch(() => { /* keep the prior value; a failed scan must not blank the total */ })
       .finally(() => { allTimeInFlight = false; });

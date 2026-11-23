@@ -2753,8 +2753,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       // the same id recall-audit.jsonl records each injection against. One id, both
       // halves — what a session spent on the model, and what memory contributed.
       if (req.method === 'GET' && url.pathname === '/sessions/usage') {
-        const windowMs = Math.max(60_000, Number(url.searchParams.get('window_ms')) || 30 * 60_000);
-        const { readNativeSessionUsage, injectedBySession } = await import('./native-session-usage.ts');
+        const { readNativeSessionUsage, injectedBySession, MAX_WINDOW_MS } = await import('./native-session-usage.ts');
+        // Capped at the bucket retention: a wider window cannot be answered honestly, and one as wide as the all-time
+        // scan would run a second full scan that prunes the shared accumulators by its own clock.
+        const windowMs = Math.min(MAX_WINDOW_MS, Math.max(60_000, Number(url.searchParams.get('window_ms')) || 30 * 60_000));
         const { readCliSessionUsage } = await import('./cli-session-usage.ts');
         // Claude Code's rows, then the other CLIs' (Codex, opencode, Gemini: tagged `cli`, rows only, never in totals).
         const native = [...await readNativeSessionUsage(windowMs).catch(() => []), ...readCliSessionUsage(windowMs)];
