@@ -7,12 +7,31 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+## [0.58.12] — 2026-11-23
+
+### Added
+
+- **The standalone worker reports hook retrieval latency**, so `captain-memo doctor` shows the hook-latency line on a default install, not only in threaded mode.
+- **Closed homework keeps a DROPPED marker.** `todo_done(dropped: true)` records that an item was dropped rather than done.
+
 ### Changed
 
+- **Native-session usage survives a restart.** The transcript accumulators are persisted, so the first scan after a restart no longer re-reads every transcript (measured on the dev captain: 377.7 s of CPU down to 4.4 s). `/sessions/usage` caps its window at 24 hours.
+- **SessionStart runs the automatic update detached** on Linux and macOS, so a slow fetch no longer holds the session start; `install-hooks` writes each event's timeout from the plugin's hooks.json.
+- **Every worker call from the CLI and the MCP server is bounded** by the worker's own ceiling for that route, after a 3 s liveness check.
+- **`captain-memo top`:** hint bars step down to fit instead of losing [?]help and [q]uit, and cut lines end on a word.
 - **IVF: an oversized cluster can be split in place instead of the whole index being rebuilt — off by default.** `CAPTAIN_MEMO_IVF_REGROW_RATIO` now splits the largest cluster holding more than that many times `CAPTAIN_MEMO_IVF_TARGET_PER_CLUSTER` vectors into seeds drawn from its own members, moving its rows straight to them 64 per slice; no row is sent back to the unclustered partition, so search is not scanned flat as it was during the old rebuild (4.8-9.3 s for ~11 h at 279k). The default stays `0` (off): on a copy of a 400,797-vector store splitting takes roughly three to four hours and search ran 0.5-1.1 s meanwhile, against the 1.5 s the memory hook waits. Turn it on (3 was measured) after measuring on an idle box. A restart mid-split resumes it.
 
 ### Fixed
 
+- **The plugin-cache refresh starts `claude` by absolute path from the home folder**, never by name from the opened project's folder.
+- **Hook text is redacted before it is cut to length**, so a credential that straddled the cut no longer leaves its first characters behind.
+- **The MCP HTTP transport refuses request bodies over 1 MiB.**
+- **Only the worker's own boot requeues observations left in 'processing'**; a CLI opening the queue no longer does.
+- **The embedder loopback check matches a dotted 127.x.x.x address only**, so a host such as `127.example.com` counts as hosted (budget and redaction apply).
+- **Summarizer restore clears its skip entry and last error; the Claude OAuth summarizer retries once after a fresh credential read on 401/403; waking from sleep counts as activity** for idle detection.
+- **Every finished dedup run logs its row count, and a forced semantic pass always says what it saw.**
+- **`/stats` `ivf.assigned` counts rows in a cluster**, not summed hit counts.
 - **A cluster of identical vectors is no longer split forever.** Every seed drawn from it is the same point and ties go to the first, so one child took nearly all of it and was picked again each pass, the cluster count growing by empty seeds every time. A split whose largest child keeps 90% of the members now marks that child as not splittable (kept with the split state, cleared when the index is rebuilt), and every seed left empty is removed when a split finishes.
 
 ## [0.58.11] — 2026-11-23

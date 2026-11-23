@@ -15450,7 +15450,7 @@ function loadWorkerEnv(onlyKey) {
 // package.json
 var package_default = {
   name: "captain-memo",
-  version: "0.58.11",
+  version: "0.58.12",
   description: "Cross-AI local memory layer for Claude Code, Codex, Gemini CLI, Antigravity, goose, Cursor, opencode, Kimi CLI and more: hybrid search, six summarizer providers, hosted or local embedder. Replaces claude-mem.",
   type: "module",
   private: true,
@@ -15997,6 +15997,102 @@ function aiProcessPid(agents, start = process.ppid, root = "/proc", platform = p
   return;
 }
 
+// src/shared/worker-deadlines.ts
+var REQUEST_DEADLINE_MS = Number(process.env.CAPTAIN_MEMO_ENGINE_REQUEST_MS ?? 1e4);
+var LONG_WRITE_DEADLINE_MS = Number(process.env.CAPTAIN_MEMO_REINDEX_MS ?? 30 * 60000);
+var LONG_WRITE_PATHS = new Set(["/reindex", "/consolidate", "/capture/backfill"]);
+var REMEMBER_DEADLINE_MS = Number(process.env.CAPTAIN_MEMO_REMEMBER_MS ?? 60000);
+var REMEMBER_PATHS = new Set(["/remember", "/promote/slice"]);
+var IN_FLIGHT_HINTS = {
+  "/remember": "Do NOT retry: a retry is how you get two copies. In a few seconds, look for it with search_memory.",
+  "/promote/slice": "Do NOT start another slice until this one lands: a second would judge the same rows again. Its verdicts show in `captain-memo promote --report` (the judged total rises when they are recorded).",
+  "/reindex": "Do NOT start another reindex: a second is refused (409 reindex_running) while this one runs. A manual reindex has no progress readout, so give it minutes, not seconds, then check `captain-memo stats`.",
+  "/consolidate": "Do NOT run it again yet: its passes may already have started. A newer semantic or theme run in the Housekeeping panel of `captain-memo stats` shows each pass once it finishes.",
+  "/capture/backfill": "Do NOT start another backfill: a second one waits behind this one and re-reads every session file for nothing. The ingested session counts in `captain-memo capture status` rise while it runs."
+};
+var IN_FLIGHT_ON_TIMEOUT = new Set(Object.keys(IN_FLIGHT_HINTS));
+function inFlightHint(path) {
+  return IN_FLIGHT_HINTS[new URL(path, "http://x").pathname] ?? "Do NOT retry: it was not cancelled and may still be running.";
+}
+var CLIENT_READ_CEILING_MS = 25000;
+var CLIENT_MARGIN_MS = 5000;
+function clientCeilingMs(path) {
+  const p = new URL(path, "http://x").pathname;
+  if (LONG_WRITE_PATHS.has(p))
+    return LONG_WRITE_DEADLINE_MS + CLIENT_MARGIN_MS;
+  if (REMEMBER_PATHS.has(p))
+    return REMEMBER_DEADLINE_MS + CLIENT_MARGIN_MS;
+  return CLIENT_READ_CEILING_MS;
+}
+
+// src/shared/worker-call.ts
+class WorkerCallError extends Error {
+  kind;
+  path;
+  status;
+  body;
+  constructor(kind, path, message, status, body) {
+    super(message);
+    this.kind = kind;
+    this.path = path;
+    this.status = status;
+    this.body = body;
+    this.name = "WorkerCallError";
+  }
+}
+var PREFLIGHT_TIMEOUT_MS = 3000;
+var PREFLIGHT_CACHE_MS = 5000;
+var healthCache = new Map;
+var isTimeout = (e) => /TimeoutError|AbortError/.test(e instanceof Error ? e.name : String(e));
+var isRefused = (e) => /ECONNREFUSED|refused|Unable to connect|failed to connect|fetch failed/i.test(e instanceof Error ? `${e.name}: ${e.message}` : String(e));
+function healthFailureReason(e) {
+  if (isTimeout(e))
+    return "listener exists but does not answer \u2014 possible orphaned socket holder";
+  if (isRefused(e))
+    return "nothing listening";
+  return (e instanceof Error ? e.message : String(e)).slice(0, 160);
+}
+async function preflight(base, timeoutMs) {
+  const c = healthCache.get(base);
+  if (c && Date.now() - c.at < PREFLIGHT_CACHE_MS)
+    return c.reason;
+  let reason = null;
+  try {
+    await fetch(`${base}/health`, { signal: AbortSignal.timeout(timeoutMs) });
+  } catch (e) {
+    reason = isTimeout(e) ? `listener on ${base} exists but does not answer \u2014 usually an orphaned socket holder (a subprocess of a dead worker kept the port); run \`captain-memo doctor\`` : isRefused(e) ? `nothing listening on ${base}` : (e instanceof Error ? e.message : String(e)).slice(0, 160);
+  }
+  healthCache.set(base, { at: Date.now(), reason });
+  return reason;
+}
+async function callWorker(base, path, init = {}, opts = {}) {
+  const ceilingMs = opts.ceilingMs ?? clientCeilingMs(path);
+  const pathname = new URL(path, "http://x").pathname;
+  if (opts.preflight !== false && pathname !== "/health") {
+    const why = await preflight(base, opts.preflightTimeoutMs ?? PREFLIGHT_TIMEOUT_MS);
+    if (why)
+      throw new WorkerCallError("unreachable", path, `captain-memo worker is not reachable: ${why}`);
+  }
+  try {
+    const headers = new Headers(init.headers);
+    for (const [k, v] of Object.entries(workerAuthHeaders()))
+      headers.set(k, v);
+    return await fetch(`${base}${path}`, { ...init, headers, signal: AbortSignal.timeout(ceilingMs) });
+  } catch (e) {
+    if (isTimeout(e)) {
+      if (IN_FLIGHT_ON_TIMEOUT.has(pathname)) {
+        throw new WorkerCallError("unconfirmed", path, `worker ${pathname} did not answer within ${ceilingMs} ms: UNCONFIRMED, not failed. It was not cancelled and may still be running. ${inFlightHint(pathname)}`);
+      }
+      throw new WorkerCallError("timeout", path, `worker ${pathname} timed out after ${ceilingMs} ms \u2014 a listener that never answers is usually an orphaned socket holder; run \`captain-memo doctor\``);
+    }
+    if (isRefused(e)) {
+      healthCache.set(base, { at: Date.now(), reason: `nothing listening on ${base}` });
+      throw new WorkerCallError("unreachable", path, `captain-memo worker is not reachable: nothing listening on ${base}`);
+    }
+    throw e;
+  }
+}
+
 // src/mcp-server.ts
 loadWorkerEnv();
 var WORKER_BASE2 = `http://localhost:${process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT}`;
@@ -16029,9 +16125,9 @@ function liveSessionId(fallback, env = process.env, read = readClaudeSessionId, 
 var sessionIdNow = liveSessionId(PROCESS_SESSION_ID);
 var hostAiPid = () => process.env.CLAUDE_CODE_SESSION_ID ? process.ppid : aiProcessPid(["codex", "gemini"]);
 async function workerPost(base, path, body) {
-  const res = await fetch(`${base}${path}`, {
+  const res = await callWorker(base, path, {
     method: "POST",
-    headers: { "content-type": "application/json", ...workerAuthHeaders() },
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(body)
   });
   if (!res.ok) {
@@ -16245,8 +16341,8 @@ var TOOLS = [
   },
   {
     name: "todo_done",
-    description: "Close a homework item, with a one-line note of what was done (or why it was dropped). Done items stay listable for a week.",
-    inputSchema: { type: "object", properties: { id: { type: "string" }, note: { type: "string" } }, required: ["id"] }
+    description: "Close a homework item, with a one-line note of what was done (or why it was dropped). Pass dropped: true when it was NOT done (rejected, obsolete, will not do): it is then listed as DROPPED, not done. Done items stay listable for a week.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, note: { type: "string" }, dropped: { type: "boolean", description: "true = closed without doing it (dropped / rejected). Default false." } }, required: ["id"] }
   },
   {
     name: "work_active",
@@ -16378,15 +16474,19 @@ async function dispatchTool(name, args, deps = defaultDispatchDeps()) {
           cwd
         });
       case "stats": {
-        const res = await fetch(`${workerBase}/stats`, { headers: workerAuthHeaders() });
+        const res = await callWorker(workerBase, "/stats");
         if (!res.ok)
           throw new Error(`worker /stats returned ${res.status}`);
         result = await res.json();
         break;
       }
       case "status": {
-        const res = await fetch(`${workerBase}/health`);
-        result = res.ok ? await res.json() : { healthy: false };
+        try {
+          const res = await fetch(`${workerBase}/health`, { signal: AbortSignal.timeout(3000) });
+          result = res.ok ? await res.json() : { healthy: false, reason: `worker answered ${res.status}` };
+        } catch (e) {
+          result = { healthy: false, reason: healthFailureReason(e) };
+        }
         break;
       }
       case "work_set": {
@@ -16411,7 +16511,7 @@ async function dispatchTool(name, args, deps = defaultDispatchDeps()) {
       }
       case "todo_list": {
         const a = args ?? {};
-        const res = await fetch(`${workerBase}/homework/list?status=${encodeURIComponent(a.status ?? "open")}`, { headers: workerAuthHeaders() });
+        const res = await callWorker(workerBase, `/homework/list?status=${encodeURIComponent(a.status ?? "open")}`);
         if (!res.ok)
           throw new Error(`worker /homework/list returned ${res.status}`);
         result = await res.json();
@@ -16421,13 +16521,13 @@ async function dispatchTool(name, args, deps = defaultDispatchDeps()) {
       case "todo_unclaim":
       case "todo_done": {
         const a = args ?? {};
-        result = await workerPost(workerBase, name === "todo_claim" ? "/homework/claim" : name === "todo_unclaim" ? "/homework/unclaim" : "/homework/done", { id: String(a.id ?? "").replace(/^#/, ""), by: sessionId, ...a.note ? { note: a.note } : {} });
+        result = await workerPost(workerBase, name === "todo_claim" ? "/homework/claim" : name === "todo_unclaim" ? "/homework/unclaim" : "/homework/done", { id: String(a.id ?? "").replace(/^#/, ""), by: sessionId, ...a.note ? { note: a.note } : {}, ...name === "todo_done" && a.dropped !== undefined ? { dropped: a.dropped } : {} });
         break;
       }
       case "work_active": {
         const a = args ?? {};
         const q = new URLSearchParams({ session_id: a.session_id || sessionId });
-        const res = await fetch(`${workerBase}/worknote/active?${q.toString()}`, { headers: workerAuthHeaders() });
+        const res = await callWorker(workerBase, `/worknote/active?${q.toString()}`);
         if (!res.ok)
           throw new Error(`worker /worknote/active returned ${res.status}`);
         result = await res.json();
@@ -16442,6 +16542,8 @@ async function dispatchTool(name, args, deps = defaultDispatchDeps()) {
         throw new Error(`unknown tool: ${name}`);
     }
   } catch (err) {
+    if (err instanceof WorkerCallError && err.kind === "unconfirmed")
+      return { content: [{ type: "text", text: err.message }] };
     const e = err;
     return {
       content: [{ type: "text", text: `Error: ${e.message}` }],

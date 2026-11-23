@@ -1405,13 +1405,17 @@ var init_service_manager = __esm(() => {
 async function restartWorker(sm, name, opts) {
   await sm.restart(name, { graceful: opts.graceful ?? false, port: opts.port, force: true });
 }
+var MANUAL_START_HINT;
+var init_worker_control = __esm(() => {
+  MANUAL_START_HINT = process.platform === "win32" ? "Start-ScheduledTask -TaskName captain-memo-worker" : "systemctl --user start captain-memo-worker";
+});
 
 // package.json
 var package_default;
 var init_package = __esm(() => {
   package_default = {
     name: "captain-memo",
-    version: "0.58.11",
+    version: "0.58.12",
     description: "Cross-AI local memory layer for Claude Code, Codex, Gemini CLI, Antigravity, goose, Cursor, opencode, Kimi CLI and more: hybrid search, six summarizer providers, hosted or local embedder. Replaces claude-mem.",
     type: "module",
     private: true,
@@ -1901,15 +1905,16 @@ function spawnDetached(cmd, platform = process.platform, spawn = Bun.spawn) {
   spawn(cmd, { stdio: ["ignore", "ignore", "ignore"], detached: platform !== "win32", env: process.env }).unref();
 }
 async function startPromptUpdate(d = {}) {
+  const event = d.event ?? "UserPromptSubmit";
   if ((d.platform ?? process.platform) === "win32") {
-    await applyPromptUpdate("UserPromptSubmit", d.pass);
+    await applyPromptUpdate(event, d.pass);
     return "inline";
   }
   if (!readStampState(d.now).due)
     return "not-due";
   const entry = d.entry === undefined ? hookEntryPath() : d.entry;
   if (!entry) {
-    logHookError("UserPromptSubmit", new Error("auto-update: not started, this hook was not launched through the dispatcher entry"));
+    logHookError(event, new Error("auto-update: not started, this hook was not launched through the dispatcher entry"));
     return "no-entry";
   }
   try {
@@ -1921,7 +1926,7 @@ async function startPromptUpdate(d = {}) {
     (d.spawn ?? spawnDetached)([d.execPath ?? process.execPath, entry, "UpdateApply"]);
     return "spawned";
   } catch (err) {
-    logHookError("UserPromptSubmit", new Error(`auto-update: could not start the detached apply: ${err.message}`));
+    logHookError(event, new Error(`auto-update: could not start the detached apply: ${err.message}`));
     return "spawn-failed";
   }
 }
@@ -1932,6 +1937,7 @@ var init_auto_update = __esm(() => {
   init_self_update();
   init_self_updater();
   init_worker_transition();
+  init_worker_control();
   init_worker_heal_lock();
   init_worker_health_probe();
   init_shared2();
@@ -2017,6 +2023,17 @@ function marketplaceState(repoRoot, home = homedir8()) {
     return "unknown";
   }
 }
+function findClaudeBinary(home = homedir8()) {
+  const onPath = Bun.which("claude", { cwd: home });
+  if (onPath)
+    return onPath;
+  const exe = process.platform === "win32" ? "claude.exe" : "claude";
+  for (const p of [join14(home, ".local", "bin", exe), join14(home, ".claude", "local", exe), "/opt/homebrew/bin/claude", "/usr/local/bin/claude"]) {
+    if (existsSync9(p))
+      return p;
+  }
+  return null;
+}
 function activeCachedVersion(home = homedir8(), runningVersion) {
   const installed = readInstalledPaths(join14(home, ".claude", "plugins", "installed_plugins.json"));
   if (installed === null)
@@ -2043,10 +2060,13 @@ function refreshPluginCacheIfStale(runningVersion, repoRoot = REPO_ROOT3, deps =
   const pointsAt = deps.pointsAtCheckout ?? ((r) => marketplacePointsAtCheckout(r));
   if (!pointsAt(repoRoot))
     return { refreshed: false, skipped: "not a directory marketplace on this checkout" };
-  const run = deps.run ?? ((args) => {
-    const r = spawnSync4("claude", args, { stdio: "pipe", timeout: 120000 });
-    return r.status ?? 1;
-  });
+  let run = deps.run;
+  if (!run) {
+    const bin = findClaudeBinary();
+    if (!bin)
+      return { refreshed: false, skipped: "claude not found" };
+    run = (args) => spawnSync4(bin, args, { stdio: "pipe", timeout: 120000, cwd: homedir8() }).status ?? 1;
+  }
   if (run(["plugin", "marketplace", "update", "captain-memo"]) !== 0)
     return { refreshed: false, skipped: "marketplace update failed" };
   if (run(["plugin", "update", "captain-memo@captain-memo"]) !== 0)
@@ -2322,7 +2342,7 @@ async function main(options = {}) {
           const reachable = await probeHealthyWithRetries(() => probeWorkerAlive(port, 1500), 2, 1000);
           if (!reachable) {
             await Promise.resolve().then(() => init_service_manager());
-            await Promise.resolve();
+            await Promise.resolve().then(() => init_worker_control());
             await restartWorker(getServiceManager(), "captain-memo-worker", { port });
           }
         } finally {
@@ -2497,6 +2517,7 @@ async function ensureWorkerHealthy(deps) {
 
 // src/hooks/session-start.ts
 init_worker_transition();
+init_worker_control();
 init_worker_health_probe();
 init_worker_heal_lock();
 function fmtNum(n) {
@@ -2653,7 +2674,10 @@ async function main2() {
   let autoUpdateNotice = "";
   let updatedThisSession = false;
   if (process.env.CAPTAIN_MEMO_AUTO_UPDATE === "1") {
-    const out = await runAutoUpdatePass({ event: "SessionStart", afterBoot: waitWorkerHealthy });
+    const detach = process.platform !== "win32";
+    if (detach)
+      await startPromptUpdate({ event: "SessionStart" });
+    const out = detach ? { kind: "none" } : await runAutoUpdatePass({ event: "SessionStart", afterBoot: waitWorkerHealthy });
     const unshown = takeUnshownOutcome();
     if (out.kind === "updated") {
       updatedThisSession = true;
