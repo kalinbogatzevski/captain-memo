@@ -281,3 +281,13 @@ test('the MCP SDK client (bearer in requestInit) works end to end — no regress
     await client.close();
   }
 });
+
+test('an authenticated body over 1 MiB is refused with 413 before it is parsed', async () => {
+  const { token, gatewayPort } = await startPairedWorker('phone');
+  const res = await fetch(`http://127.0.0.1:${gatewayPort}/`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'x'.repeat(1_500_000), version: '0' } } }),
+  });
+  expect(res.status).toBe(413);
+});

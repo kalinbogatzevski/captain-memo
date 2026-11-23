@@ -1,5 +1,5 @@
 import { test, expect, beforeAll, afterAll } from 'bun:test';
-import { Embedder, embedRedactEnabled } from '../../src/worker/embedder.ts';
+import { Embedder, embedRedactEnabled, isLoopbackEndpoint } from '../../src/worker/embedder.ts';
 import { redactSecrets } from '../../src/shared/redact-secrets.ts';
 import { countTokens } from '../../src/shared/tokens.ts';
 
@@ -124,4 +124,10 @@ test('an Embedder built with no option follows the environment and its endpoint'
   await withEnv(undefined, () => {
     expect(new Embedder({ endpoint: hosted, model: 'm' }).redactsInput).toBe(false);
   });
+});
+
+test('loopback is a dotted 127 quad, localhost or [::1]; a remote host named 127.something is hosted', () => {
+  for (const u of ['http://127.0.0.1:11434', 'http://127.1/', 'http://localhost/', 'http://[::1]:8/']) expect(isLoopbackEndpoint(u)).toBe(true);
+  for (const u of ['http://127.example.com/', 'https://api.example.com', 'not a url']) expect(isLoopbackEndpoint(u)).toBe(false);
+  expect(embedRedactEnabled('http://127.example.com', { CAPTAIN_MEMO_EMBED_REDACT: '1' })).toBe(true);
 });

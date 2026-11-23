@@ -39,7 +39,9 @@ export interface ObservationQueueRow {
 export class ObservationQueue {
   private db: Database;
 
-  constructor(path: string) {
+  /** `recoverProcessing` is for the worker's own boot only: a CLI opener (queue retry/dedupe, maintenance) running
+   *  beside a live worker would otherwise push the worker's claimed rows back to pending and get them summarized twice. */
+  constructor(path: string, opts: { recoverProcessing?: boolean } = {}) {
     this.db = new Database(path);
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec('PRAGMA synchronous = NORMAL;');   // see observations-store.ts
@@ -48,7 +50,7 @@ export class ObservationQueue {
     // Startup recovery: rows stuck in 'processing' from a worker crash should
     // be retried, not abandoned. Without this, the queue.processing counter
     // grows monotonically across restarts.
-    this.db.exec(`UPDATE observation_queue SET status = 'pending' WHERE status = 'processing'`);
+    if (opts.recoverProcessing) this.db.exec(`UPDATE observation_queue SET status = 'pending' WHERE status = 'processing'`);
   }
 
   enqueue(event: RawObservationEvent): number {
