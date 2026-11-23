@@ -11,6 +11,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   readNativeSessionUsage,
+  saveNativeUsageState,
   _resetNativeUsageCache,
 } from '../../src/worker/native-session-usage.ts';
 
@@ -990,4 +991,28 @@ test('a session with no response yet reports no model or effort', async () => {
   const [s] = await readNativeSessionUsage();
   expect(s!.model).toBeUndefined();
   expect(s!.effort).toBeUndefined();
+});
+
+test('after a restart the saved state is trusted: only appended bytes are read', async () => {
+  const p = writeTranscript(SID, msg(100, 10));
+  await readNativeSessionUsage();
+  saveNativeUsageState();
+  _resetNativeUsageCache();   // a worker restart
+  // Rewrite the already-read bytes in place (same length): a cold re-read would now count 900.
+  writeFileSync(p, readFileSync(p, 'utf8').replace('"input_tokens":100', '"input_tokens":900'));
+  appendFileSync(p, msg(5, 1));
+  const [s] = await readNativeSessionUsage();
+  expect(s!.input_tokens).toBe(105);
+  expect(s!.output_tokens).toBe(11);
+});
+
+test('after a restart a transcript shorter than the saved offset is rebuilt', async () => {
+  const p = writeTranscript(SID, msg(100, 10) + msg(100, 10));
+  await readNativeSessionUsage();
+  saveNativeUsageState();
+  _resetNativeUsageCache();
+  writeFileSync(p, msg(7, 2));
+  const [s] = await readNativeSessionUsage();
+  expect(s!.input_tokens).toBe(7);
+  expect(s!.output_tokens).toBe(2);
 });
