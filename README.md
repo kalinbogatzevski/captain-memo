@@ -697,11 +697,11 @@ Above 3,000 vectors the corpus is partitioned into clusters by mini-batch k-mean
 centroid per 300 vectors at the time the index is built — and a search reads only the nearest few
 instead of scanning everything. On by default; `CAPTAIN_MEMO_IVF_ENABLED=0` switches it off.
 
-The cluster count is fixed when the index is first built; it is not re-derived as the store grows
-unless `CAPTAIN_MEMO_IVF_REGROW_RATIO` is set. It is off by default: a rebuild leaves search several
-times slower for hours on a large store, and the per-prompt memory hook can time out meanwhile, so
-set it only if you accept that or have raised `CAPTAIN_MEMO_HOOK_TIMEOUT_MS` in the AI tool's
-environment. Vectors with no direction (all zeros) are kept in a cluster no query probes, and
+The cluster count is set when the index is first built. As the store grows, a cluster that ends up
+with more than `CAPTAIN_MEMO_IVF_REGROW_RATIO` times its 300-vector target can be split in place into
+clusters of its own members; its rows never leave the index. It is off by default: a large store
+spends hours splitting with search at 0.5-1.1 s against the 1.5 s hook timeout, so set it (3 was
+measured) after measuring on an idle box. Vectors with no direction (all zeros) are kept in a cluster no query probes, and
 `doctor` warns when a cluster centre is all zeros; the worker repairs such an index itself, after an
 update and a restart.
 

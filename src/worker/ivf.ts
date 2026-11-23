@@ -46,9 +46,8 @@ export interface IvfConfig {
    *  update weight never drops below this even after many hits, so it keeps
    *  adapting instead of freezing solid once a cluster has seen a lot of data. */
   minLearningRate: number;
-  /** Rebuild the index once the corpus has grown to this many times the size it was built for (see `outgrown`).
-   *  0 (the default) never rebuilds; 3 is the setting that was measured. The count of clusters is otherwise chosen once, at
-   *  the bootstrap. */
+  /** Split any cluster holding more than this many times targetPerCluster vectors (see the sweep's split). 0 never splits.
+   *  The count of clusters is otherwise chosen once, at the bootstrap. */
   regrowRatio: number;
 }
 
@@ -96,24 +95,17 @@ export const DEFAULT_IVF_CONFIG: IvfConfig = {
   sweepIntervalMs: 60_000,
   buildIntervalMs: 2_000,
   minLearningRate: 0.01,
-  // OFF by default. A rebuild sends every vector back to the unclustered partition and assigns it again, and until that drains
-  // a query scans the parked ones flat: 4.8-9.3 s a search on a 279k store, for ~11 h. The UserPromptSubmit hook waits
-  // DEFAULT_HOOK_TIMEOUT_MS = 1500 ms (CAPTAIN_MEMO_HOOK_TIMEOUT_MS), so for that long every prompt's memory injection on
-  // that store would time out. Opt in with CAPTAIN_MEMO_IVF_REGROW_RATIO=3 when that is accepted or the hook timeout raised.
-  // It is for an index that has fallen far behind, not one that has merely grown: at 3, clusters
-  // average 900+ vectors against the 300 aimed for, and the dev store (279,227 vectors, 477 centroids, 1.95x) is left alone
-  // until ~430k. 2 would rebuild it at ~286k, 7k vectors from now. Growth by 3x between rebuilds also keeps the total
-  // rebuilding work proportional to the corpus, not to its history.
-  // MEASURED on a copy of the dev store (2026-10-14, nice 19, box at load 8-15, so slow and with fat tails; two runs, ranges
-  // below), the rebuild the dev store would get if it crossed the ratio:
-  //   reset phase   4,363 slices of 64 rows: slice 126-151 ms p50 / 333-373 p95, write transaction 46-52 ms p50 / 238-261 p95
-  //                 (451 and 1,095 ms max), ~7% of writer time at the 2 s gap -> 2.6 h
-  //   bootstrap     seed draw for k=931: 3.8-7.4 s (event loop stalled 1.1-1.3 s at most); replacing the 931 centroids:
-  //                 0.44-1.35 s, once
-  //   assign phase  4,363 slices at 1.6 s p50 / 3.6 p95, spaced 3 slice-times apart (BUILD_SPACING) so the writer is busy 25% -> 8.5 h
-  //   search        a flat scan of the store 4.8-9.3 s p50 against 1.0-1.4 s for the probe-16 query, so 4.7-6.4x slower
-  //                 while the parked rows drain; ~11 h in all for 279k vectors, ~17 h at 430k
-  // Not a cost the converged index ever pays, and the same assign phase a first build at that size already costs.
+  // OFF by default (owner decision 2026-11-23). A large store spends hours splitting (the figures below: ~3-4 h at 400k) and
+  // search runs 0.5-1.1 s meanwhile, against the 1.5 s the memory hook waits: too close to ship on for every store. Turn it
+  // on (3 is what was measured) after measuring on an idle box. With it set, a cluster past 3 x 300 = 900 vectors is split
+  // (see the sweep's splitSlice). A split moves one cluster's rows straight to
+  // seeds drawn from its own members, so search never scans a parked partition flat; the rebuild this replaced sent every row
+  // back to unclustered and made each search 4.8-9.3 s for ~11 h at 279k, against the 1.5 s the memory hook waits.
+  // MEASURED on a copy of the dev store (2026-11-23: 400,797 vectors, 477 clusters, 232 of them past 900 holding 341,958 rows,
+  // box at load 7-15), 160 split slices of 64 rows: slice 198 ms p50 / 561 p95 / 1,029 max, the write transaction 67 ms p50 /
+  // 327 p95 / 458 max (~3% of writer time at the 2 s gap); search during the split 507-641 ms p50, 873 ms p95, 1,141 max,
+  // against 515-897 ms p50 warm with no split running; recall@10 of probe-16 against probing every cluster 0.987 on the
+  // partly split copy, 0.953 before (30 random probes each). The whole store: ~5,300 slices, roughly 3-4 h, K 477 -> ~1,385.
   regrowRatio: 0,
 };
 
@@ -157,13 +149,6 @@ export function loadIvfConfig(env: Record<string, string | undefined>): IvfConfi
 /** How many clusters a collection of this size should have. Never less than 1. */
 export function targetClusterCount(vectorCount: number, cfg: IvfConfig): number {
   return Math.max(1, Math.round(vectorCount / cfg.targetPerCluster));
-}
-
-/** Has the corpus grown past what this index was built for, by `cfg.regrowRatio` times? `builtFor` is the vector count at
- *  the bootstrap (the one the store recorded). Comparing sizes, not seed counts, is what makes a rebuild unable to repeat: a
- *  bootstrap that found fewer usable seeds than it asked for still records the size it ran at. */
-export function outgrown(builtFor: number, vectorCount: number, cfg: IvfConfig): boolean {
-  return cfg.regrowRatio > 0 && builtFor > 0 && vectorCount >= cfg.regrowRatio * builtFor;
 }
 
 /** `cluster_id` of a chunk no query has placed yet: every query probes it, the sweep drains it. */
@@ -358,16 +343,49 @@ export function miniBatchUpdate(
   return { centroids: next, assignments };
 }
 
-/** nearestCentroid for each item, with a yield between items: 64 of them at ~12 ms each held the writer ~0.8 s every
- *  sweep minute on the reference store (477 x 1024). Feed the result to miniBatchUpdate with the SAME centroids. */
+/** Rows ranked per pass over the packed centroids by nearestInBatch. Each centroid is read once for the group instead of
+ *  once per row, and the yield comes between groups. MEASURED (2026-11-23, 1024 dims, 64 rows, box at load 17-22): per row
+ *  1,385 ms at 931 centroids (longest stretch without a yield 49 ms), groups of 8 302 ms (39 ms); at 477 686 -> 170 ms
+ *  (17 -> 23 ms); at 1,383 1,988 -> 442 ms (42 -> 57 ms). 16 gains ~25% more and doubles the stretch; 64 is one 200 ms block. */
+export const RANK_GROUP = 8;
+
+/** nearestCentroid for each vector of `group`, one pass over the packed centroids for all of them (same scores, same ties). */
+function nearestGroup(
+  group: ReadonlyArray<{ vector: number[] | Float32Array }>,
+  centroids: readonly Centroid[],
+): Array<{ clusterId: number; similarity: number } | null> {
+  const p = packed(centroids);
+  if (!p || group.some(g => g.vector.length !== p.dim)) return group.map(g => nearestCentroid(g.vector, centroids));
+  const { dim, unit } = p;
+  const best = group.map(() => -1), score = group.map(() => -Infinity);
+  for (let k = 0, o = 0; k < centroids.length; k++, o += dim) {
+    for (let r = 0; r < group.length; r++) {
+      const v = group[r]!.vector;
+      let s0 = 0, s1 = 0, s2 = 0, s3 = 0, j = 0;
+      for (; j + 3 < dim; j += 4) {
+        s0 += v[j]! * unit[o + j]!; s1 += v[j + 1]! * unit[o + j + 1]!;
+        s2 += v[j + 2]! * unit[o + j + 2]!; s3 += v[j + 3]! * unit[o + j + 3]!;
+      }
+      for (; j < dim; j++) s0 += v[j]! * unit[o + j]!;
+      const s = s0 + s1 + s2 + s3;
+      if (best[r]! < 0 || s > score[r]!) { score[r] = s; best[r] = k; }
+    }
+  }
+  return group.map((g, r) => best[r]! < 0 ? null
+    : { clusterId: centroids[best[r]!]!.clusterId, similarity: cosine(g.vector, centroids[best[r]!]!.vector) });
+}
+
+/** nearestCentroid for each item, RANK_GROUP at a time with a yield between groups: one row at a time, 64 of them at
+ *  ~12 ms each held the writer ~0.8 s every sweep minute on the reference store (477 x 1024). Feed the result to
+ *  miniBatchUpdate with the SAME centroids. */
 export async function nearestInBatch(
   batch: ReadonlyArray<{ vector: number[] | Float32Array }>,
   centroids: readonly Centroid[],
   yieldToLoop: () => Promise<void>,
 ): Promise<Array<{ clusterId: number } | null>> {
   const out: Array<{ clusterId: number } | null> = [];
-  for (const item of batch) {
-    out.push(nearestCentroid(item.vector, centroids));
+  for (let i = 0; i < batch.length; i += RANK_GROUP) {
+    out.push(...nearestGroup(batch.slice(i, i + RANK_GROUP), centroids));
     await yieldToLoop();
   }
   return out;

@@ -7,6 +7,14 @@ semantic-ish versioning while pre-1.0. Full notes for each release live on the
 
 ## [Unreleased]
 
+### Changed
+
+- **IVF: an oversized cluster can be split in place instead of the whole index being rebuilt — off by default.** `CAPTAIN_MEMO_IVF_REGROW_RATIO` now splits the largest cluster holding more than that many times `CAPTAIN_MEMO_IVF_TARGET_PER_CLUSTER` vectors into seeds drawn from its own members, moving its rows straight to them 64 per slice; no row is sent back to the unclustered partition, so search is not scanned flat as it was during the old rebuild (4.8-9.3 s for ~11 h at 279k). The default stays `0` (off): on a copy of a 400,797-vector store splitting takes roughly three to four hours and search ran 0.5-1.1 s meanwhile, against the 1.5 s the memory hook waits. Turn it on (3 was measured) after measuring on an idle box. A restart mid-split resumes it.
+
+### Fixed
+
+- **A cluster of identical vectors is no longer split forever.** Every seed drawn from it is the same point and ties go to the first, so one child took nearly all of it and was picked again each pass, the cluster count growing by empty seeds every time. A split whose largest child keeps 90% of the members now marks that child as not splittable (kept with the split state, cleared when the index is rebuilt), and every seed left empty is removed when a split finishes.
+
 ## [0.58.11] — 2026-11-23
 
 ### Added

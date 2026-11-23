@@ -5,7 +5,7 @@
 // newly-unclustered chunks, OR rebalance one batch of already-clustered ones.
 // Never more than one of those per tick, so cost per call stays predictable.
 import {
-  targetClusterCount, outgrown, seedCentroids, miniBatchUpdate, nearestInBatch, isZeroVector, UNCLUSTERED_CLUSTER,
+  targetClusterCount, seedCentroids, miniBatchUpdate, nearestInBatch, isZeroVector, UNCLUSTERED_CLUSTER,
   type IvfConfig, type Centroid,
 } from './ivf.ts';
 
@@ -16,12 +16,11 @@ export interface IvfSweepDeps {
   migrateLegacyBatch: (limit: number) => number;
   countVectors: (collection: string) => number;
   getCentroids: (collection: string) => Centroid[];
-  /** `bootstrapVectors` is passed by the bootstrap only: the corpus size this set was seeded for, kept so a later slice can
-   *  tell when the corpus has outgrown it (see bootstrapSize). */
+  /** `bootstrapVectors` is passed by the bootstrap only: the corpus size this set was seeded for (recorded, and it drops any
+   *  split in progress). */
   setCentroids: (collection: string, centroids: Centroid[], bootstrapVectors?: number) => void;
-  /** The corpus size the current centroids were seeded for; null for an index built before that was recorded (then read as
-   *  K x targetPerCluster). Optional: absent, every index reads that way. */
-  bootstrapSize?: (collection: string) => number | null;
+  /** Splitting oversized clusters (cfg.regrowRatio). Optional: absent, no cluster is ever split. */
+  split?: IvfSplitDeps;
   /** Write back just the centroids a slice moved. Optional: absent, every slice replaces the whole set with setCentroids. */
   updateCentroids?: (collection: string, changed: Centroid[]) => void;
   allocateClusterIds: (collection: string, n: number) => number[];
@@ -51,6 +50,24 @@ export interface IvfSweepDeps {
   yieldToLoop: () => Promise<void>;
 }
 
+/** VectorStore's split storage: splitInProgress, largestCluster, clusterSizes, unsplittableClusters, clusterRows,
+ *  sampleClusterVectors, startSplit, finishSplit. */
+export interface IvfSplitDeps {
+  current: (collection: string) => { clusterId: number; seedLo: number; seedHi: number } | null;
+  /** The largest of clusterIds holding more than `over` vectors. */
+  largest: (clusterIds: readonly number[], over: number) => { clusterId: number; size: number } | null;
+  /** Vectors in each of `clusterIds`, in order. */
+  sizes: (clusterIds: readonly number[]) => number[];
+  /** Clusters a split could not divide (see splitSlice): never picked again until a bootstrap replaces the set. */
+  unsplittable: (collection: string) => number[];
+  /** null: the store cannot read a cluster's rows cheaply, so nothing is split. */
+  rows: (clusterId: number, limit: number) => Array<{ chunkId: string; embedding: Float32Array }> | null;
+  sample: (clusterId: number, limit: number) => Array<{ chunkId: string; embedding: Float32Array }>;
+  start: (collection: string, clusterId: number, seeds: Centroid[]) => void;
+  /** `dropIds`: seeds left empty, removed with it; `unsplittable`: a child marked so (see unsplittable), same transaction. */
+  finish: (collection: string, clusterId: number, dropCentroid: boolean, more?: { dropIds: number[]; unsplittable?: number }) => void;
+}
+
 export interface IvfSweepResult {
   legacyMigrated: number;
   bootstrapped: number;
@@ -58,9 +75,11 @@ export interface IvfSweepResult {
   rebalanced: number;
   /** Rows sent back to unclustered while repairing an index seeded from vectors with no direction. */
   reset: number;
+  /** Rows moved out of an oversized cluster into the seeds that replace it. */
+  split: number;
 }
 
-const EMPTY_RESULT: IvfSweepResult = { legacyMigrated: 0, bootstrapped: 0, assigned: 0, rebalanced: 0, reset: 0 };
+const EMPTY_RESULT: IvfSweepResult = { legacyMigrated: 0, bootstrapped: 0, assigned: 0, rebalanced: 0, reset: 0, split: 0 };
 
 /**
  * Run one bounded IVF sweep slice. Does exactly one of, in priority order:
@@ -73,12 +92,13 @@ const EMPTY_RESULT: IvfSweepResult = { legacyMigrated: 0, bootstrapped: 0, assig
  *     config. See the plan's Global Constraints for the full incident.
  *  2. Nothing further, if clustering itself is disabled.
  *  3. Nothing, if the corpus is still below the clustering threshold.
- *  3b. Repair an index whose centroids include an all-zero one, or that the corpus
- *     has outgrown (see below): send one batch of its rows back to unclustered, and
- *     once none are left fall through to the bootstrap, which replaces the whole set.
+ *  3b. Repair an index whose centroids include an all-zero one: send one batch of
+ *     its rows back to unclustered, and once none are left fall through to the
+ *     bootstrap, which replaces the whole set.
  *  4. Bootstrap centroids (once), if the corpus has crossed the threshold
  *     and no centroids exist yet.
  *  5. Assign one batch of newly-unclustered chunks to existing centroids.
+ *  5b. Split the largest cluster past cfg.regrowRatio x targetPerCluster (see splitSlice).
  *  6. Rebalance one batch of already-clustered chunks (periodic upkeep),
  *     only actually moving chunks whose nearest centroid changed. The batch
  *     rotates through the corpus.
@@ -109,16 +129,7 @@ export async function runIvfSweepSlice(deps: IvfSweepDeps): Promise<IvfSweepResu
   // MEASURED on a copy of the 272k-vector dev store (2026-10-14), 300 reset slices of 64 rows, flat from the first slice to
   // the last as the unclustered partition grew to 19,200: slice 110-150 ms p50, 240-400 ms p95, 460 ms max; the write
   // transaction (the lock) 41-48 ms p50, 146-273 ms p95, 314 ms max; about 6% of writer time at the 2 s build cadence.
-  //
-  // The same repair redoes an index the corpus has outgrown. The number of clusters was chosen once, at the bootstrap, and a store
-  // seeded at ~3,300 vectors kept 11 centroids at 40.9k (an average cluster of 3,700), where every dedup, semantic and theme pass
-  // takes its groups from cluster membership. Once the corpus is `regrowRatio` times the size the index was built for (outgrown)
-  // the bootstrap below runs again with the K the corpus has now. It costs two passes over every row and, until the unclustered
-  // partition drains, flat-scan queries, so the ratio keeps it to an index that has fallen far behind, and the size the last
-  // bootstrap recorded (not its seed count) is what is compared, so a bootstrap that found few usable seeds cannot trigger another.
-  const regrowing = centroids.length > 0 && outgrown(
-    deps.bootstrapSize?.(collection) ?? centroids.length * cfg.targetPerCluster, totalVectors, cfg);
-  const repairing = regrowing || centroids.some(c => isZeroVector(c.vector));
+  const repairing = centroids.some(c => isZeroVector(c.vector));
   const resetBatch = (): number => {
     const placed = deps.sampleClusteredVectors(collection, cfg.sweepBatch);
     if (placed.length > 0) {
@@ -158,10 +169,12 @@ export async function runIvfSweepSlice(deps: IvfSweepDeps): Promise<IvfSweepResu
 
   // A slice moves at most sweepBatch centroids of K, and miniBatchUpdate hands every other one back as the same object, so
   // only those are written: rewriting all K every slice was 510 ms p50 of a 1.6 s assign slice at 931 centroids, 6.6 ms this way.
-  const saveCentroids = (updated: Centroid[]): void => {
-    if (!deps.updateCentroids) return deps.setCentroids(collection, updated);
-    const moved = updated.filter((c, i) => c !== centroids[i]);
-    if (moved.length > 0) deps.updateCentroids(collection, moved);
+  const saveCentroids = (updated: Centroid[], base: Centroid[] = centroids): void => {
+    const moved = updated.filter((c, i) => c !== base[i]);
+    if (moved.length === 0) return;
+    if (deps.updateCentroids) return deps.updateCentroids(collection, moved);
+    const byId = new Map(moved.map(c => [c.clusterId, c]));
+    deps.setCentroids(collection, deps.getCentroids(collection).map(c => byId.get(c.clusterId) ?? c));
   };
 
   const unclustered = deps.getUnclusteredChunks(collection, cfg.sweepBatch);
@@ -176,6 +189,12 @@ export async function runIvfSweepSlice(deps: IvfSweepDeps): Promise<IvfSweepResu
     })));
     saveCentroids(updated);
     return { ...EMPTY_RESULT, assigned: assignments.length };
+  }
+
+  if (deps.split && cfg.regrowRatio > 0) {
+    const moved = await splitSlice(deps, deps.split, centroids, saveCentroids);
+    if (moved !== null) return { ...EMPTY_RESULT, split: moved };
+    centroids = deps.getCentroids(collection);   // a split that just finished removed its old centroid
   }
 
   // Nothing unclustered left — periodic rebalance: resample already-clustered
@@ -195,4 +214,76 @@ export async function runIvfSweepSlice(deps: IvfSweepDeps): Promise<IvfSweepResu
   })));
   saveCentroids(updated);
   return { ...EMPTY_RESULT, rebalanced: changed.length };
+}
+
+/** A split whose largest child keeps this share of the members did not divide the cluster; that child is not split again.
+ *  ponytail: a fixed share, so a genuinely skewed cluster is pinned too and just stays oversized (no worse than splitting
+ *  off); the mark lasts until a bootstrap. Re-test a mark when the cluster has grown if that ever matters. */
+const SPLIT_STUCK_SHARE = 0.9;
+
+/** One slice of splitting an oversized cluster, or null when there is none to split (the caller rebalances instead).
+ *
+ *  The cluster count is chosen once, at the bootstrap, and the corpus keeps growing into it (a store seeded at ~3,300 vectors
+ *  kept 11 centroids at 40.9k, where every dedup pass takes its groups from cluster membership). The largest cluster holding
+ *  more than regrowRatio x targetPerCluster vectors gets round(size / targetPerCluster) seeds drawn from its own members, added
+ *  to the set beside it in one small transaction (startSplit). Each slice then moves sweepBatch of its rows straight to the
+ *  nearest of those seeds (ranked against the seeds only: it is a k-means of that one cluster; the rebalance later moves a
+ *  row that sits better in a neighbour), and once it is empty its centroid is removed (finishSplit) and the next split
+ *  starts in the same slice. Its rows never pass through the unclustered partition, so a query never scans parked rows flat,
+ *  and until they move they are probed through the old centroid, which stays in the set. Every state in between is a valid
+ *  index, so a restart mid-split loses nothing; the split is recorded so it resumes. */
+async function splitSlice(
+  deps: IvfSweepDeps,
+  s: IvfSplitDeps,
+  centroids: Centroid[],
+  saveCentroids: (updated: Centroid[], base: Centroid[]) => void,
+): Promise<number | null> {
+  const { cfg, collection } = deps;
+  const over = cfg.regrowRatio * cfg.targetPerCluster;
+  const drain = async (rows: Array<{ chunkId: string; embedding: Float32Array }>, seeds: Centroid[]): Promise<number> => {
+    const items = rows.map(r => ({ id: r.chunkId, vector: r.embedding }));
+    const { centroids: updated, assignments } = miniBatchUpdate(items, seeds, cfg, await nearestInBatch(items, seeds, deps.yieldToLoop));
+    const byId = new Map(rows.map(r => [r.chunkId, r.embedding]));
+    deps.reassignClusterBatch(assignments.map(a => ({ chunkId: a.id, embedding: byId.get(a.id)!, clusterId: a.clusterId })));
+    saveCentroids(updated, seeds);
+    return assignments.length;
+  };
+
+  const cur = s.current(collection);
+  if (cur) {
+    const rows = s.rows(cur.clusterId, cfg.sweepBatch);
+    if (rows === null) return null;
+    const seeds = centroids.filter(c => c.clusterId >= cur.seedLo && c.clusterId <= cur.seedHi);
+    if (rows.length > 0 && seeds.length > 0) return drain(rows, seeds);
+    // Empty: its centroid goes, with every seed that won no row. Seeds gone (a bootstrap replaced the set): forget the split
+    // and leave the cluster as it is. No await from rows() to finish(): add() checks its cluster against the live set, so
+    // nothing lands under an id dropped here.
+    if (rows.length === 0 && seeds.length > 0) {
+      const n = s.sizes(seeds.map(c => c.clusterId));
+      const top = n.indexOf(Math.max(...n));
+      const total = n.reduce((a, b) => a + b, 0);
+      // A cluster of (nearly) identical vectors: every seed drawn from it is the same point, ties go to the first, so one child
+      // takes nearly all of it and would be picked and split again, forever, K growing by empty seeds each time.
+      const stuck = n[top]! > over && n[top]! >= SPLIT_STUCK_SHARE * total;
+      s.finish(collection, cur.clusterId, true, {
+        dropIds: seeds.filter((_, i) => n[i] === 0).map(c => c.clusterId),
+        ...(stuck ? { unsplittable: seeds[top]!.clusterId } : {}),
+      });
+    } else {
+      s.finish(collection, cur.clusterId, rows.length === 0);
+    }
+    centroids = deps.getCentroids(collection);
+  }
+
+  const skip = new Set(s.unsplittable(collection));
+  const big = s.largest(centroids.map(c => c.clusterId).filter(id => !skip.has(id)), over);
+  if (!big || big.size <= over) return null;
+  const pool = s.sample(big.clusterId, Math.max(2, Math.round(big.size / cfg.targetPerCluster)));
+  if (pool.length < 2) return null;
+  const seeds = seedCentroids(pool.map(p => ({ id: p.chunkId, vector: p.embedding })),
+    deps.allocateClusterIds(collection, pool.length), deps.sample);
+  const rows = s.rows(big.clusterId, cfg.sweepBatch);
+  if (rows === null) return null;
+  s.start(collection, big.clusterId, seeds);
+  return drain(rows, seeds);
 }

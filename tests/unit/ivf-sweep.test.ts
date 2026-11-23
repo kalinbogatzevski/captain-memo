@@ -27,7 +27,7 @@ function baseDeps(overrides: Partial<IvfSweepDeps> = {}): IvfSweepDeps {
 
 test('runIvfSweepSlice — disabled config is a no-op', async () => {
   const result = await runIvfSweepSlice(baseDeps({ cfg: { ...DEFAULT_IVF_CONFIG, enabled: false } }));
-  expect(result).toEqual({ legacyMigrated: 0, bootstrapped: 0, assigned: 0, rebalanced: 0, reset: 0 });
+  expect(result).toEqual({ legacyMigrated: 0, bootstrapped: 0, assigned: 0, rebalanced: 0, reset: 0, split: 0 });
 });
 
 test('runIvfSweepSlice — legacy rows present: migrates one batch and stops (does not also cluster this tick)', async () => {
@@ -58,7 +58,7 @@ test('runIvfSweepSlice — disabled AND no legacy rows: a true no-op (clustering
     countLegacyRows: () => 0,
     countVectors: () => 10_000, // well above any threshold — must NOT bootstrap, because enabled is false
   }));
-  expect(result).toEqual({ legacyMigrated: 0, bootstrapped: 0, assigned: 0, rebalanced: 0, reset: 0 });
+  expect(result).toEqual({ legacyMigrated: 0, bootstrapped: 0, assigned: 0, rebalanced: 0, reset: 0, split: 0 });
 });
 
 test('runIvfSweepSlice — below minCorpusSize: does nothing (no bootstrap)', async () => {
@@ -66,7 +66,7 @@ test('runIvfSweepSlice — below minCorpusSize: does nothing (no bootstrap)', as
     cfg: { ...DEFAULT_IVF_CONFIG, enabled: true, minCorpusSize: 100 },
     countVectors: () => 50,
   }));
-  expect(result).toEqual({ legacyMigrated: 0, bootstrapped: 0, assigned: 0, rebalanced: 0, reset: 0 });
+  expect(result).toEqual({ legacyMigrated: 0, bootstrapped: 0, assigned: 0, rebalanced: 0, reset: 0, split: 0 });
 });
 
 test('runIvfSweepSlice — corpus above threshold, no centroids yet: bootstraps via sampleAnyVectors + allocateClusterIds + seedCentroids', async () => {
@@ -144,7 +144,7 @@ test('runIvfSweepSlice — a zero centroid: sends one batch of clustered rows ba
     reassignClusterBatch: (items) => { for (const i of items) moved.push({ chunkId: i.chunkId, clusterId: i.clusterId }); },
     setCentroids: () => { centroidsWritten = true; },
   }));
-  expect(result).toEqual({ legacyMigrated: 0, bootstrapped: 0, assigned: 0, rebalanced: 0, reset: 2 });
+  expect(result).toEqual({ legacyMigrated: 0, bootstrapped: 0, assigned: 0, rebalanced: 0, reset: 2, split: 0 });
   expect(moved).toEqual([{ chunkId: 'a', clusterId: -1 }, { chunkId: 'b', clusterId: -1 }]);
   expect(centroidsWritten).toBe(false);   // the old set stays until the new one replaces it in one write
 });

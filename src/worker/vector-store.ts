@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite';
 import { ensureExtensionCapableSqlite, isExtensionLoadingUnsupported, MACOS_SQLITE_REMEDY } from '../shared/sqlite-extensions.ts';
 import * as sqliteVec from 'sqlite-vec';
 import { readPaged } from '../shared/paged-read.ts';
-import { DEFAULT_IVF_CONFIG, nearestCentroids, nearestInBatch, hasDirection, isZeroVector, UNCLUSTERED_CLUSTER, type IvfConfig, type Centroid } from './ivf.ts';
+import { DEFAULT_IVF_CONFIG, defaultSample, nearestCentroids, nearestInBatch, hasDirection, isZeroVector, UNCLUSTERED_CLUSTER, type IvfConfig, type Centroid } from './ivf.ts';
 
 export interface VectorStoreOptions {
   dbPath: string;
@@ -134,6 +134,22 @@ CREATE TABLE IF NOT EXISTS vec_cluster_id_seq (
 CREATE TABLE IF NOT EXISTS vec_index_bootstrap (
   collection_name TEXT PRIMARY KEY,
   vectors INTEGER NOT NULL
+);
+
+-- The cluster being split, if any (see startSplit): its rows move to the seeds seed_lo..seed_hi, then its centroid goes.
+CREATE TABLE IF NOT EXISTS vec_index_split (
+  collection_name TEXT PRIMARY KEY,
+  cluster_id INTEGER NOT NULL,
+  seed_lo INTEGER NOT NULL,
+  seed_hi INTEGER NOT NULL
+);
+
+-- Clusters a split could not divide (one child kept nearly every row: identical vectors), so never split again; cleared
+-- with the set by a bootstrap (see finishSplit, setCentroids).
+CREATE TABLE IF NOT EXISTS vec_index_unsplittable (
+  collection_name TEXT NOT NULL,
+  cluster_id INTEGER NOT NULL,
+  PRIMARY KEY (collection_name, cluster_id)
 );
 `;
 const SEED_SEQ = `INSERT OR IGNORE INTO vec_cluster_id_seq (id, next_id) VALUES (1, 0);`;
@@ -631,7 +647,8 @@ export class VectorStore {
 
   /** Replace the full centroid set for a collection. Does not touch other
    *  collections' centroids. `bootstrapVectors` is passed by the bootstrap only (a seeding, not a drift update): it is
-   *  recorded in the same transaction, so the set and the size it was built for never disagree. */
+   *  recorded in the same transaction, so the set and the size it was built for never disagree, and any split in progress is
+   *  dropped with the set it belonged to. */
   setCentroids(collection: string, centroids: Centroid[], bootstrapVectors?: number): void {
     const del = this.db.query(`DELETE FROM vec_cluster_centroids WHERE collection_name = ?`);
     const ins = this.db.query(
@@ -645,6 +662,8 @@ export class VectorStore {
       }
       if (bootstrapVectors !== undefined) {
         this.db.query(`INSERT OR REPLACE INTO vec_index_bootstrap (collection_name, vectors) VALUES (?, ?)`).run(collection, bootstrapVectors);
+        this.db.query(`DELETE FROM vec_index_split WHERE collection_name = ?`).run(collection);   // its ids are gone with the set
+        this.db.query(`DELETE FROM vec_index_unsplittable WHERE collection_name = ?`).run(collection);
       }
     });
     tx();
@@ -679,6 +698,116 @@ export class VectorStore {
         const n = byId.get(c.clusterId);
         return n ? { clusterId: n.clusterId, vector: Array.from(new Float32Array(n.vector)), hitCount: n.hitCount } : c;
       }),
+    });
+  }
+
+  /** The split in progress for the collection (see startSplit), or null. */
+  splitInProgress(collection: string): { clusterId: number; seedLo: number; seedHi: number } | null {
+    try {
+      const r = this.db.query(`SELECT cluster_id, seed_lo, seed_hi FROM vec_index_split WHERE collection_name = ?`)
+        .get(collection) as { cluster_id: number; seed_lo: number; seed_hi: number } | null;
+      return r ? { clusterId: r.cluster_id, seedLo: r.seed_lo, seedHi: r.seed_hi } : null;
+    } catch { return null; }   // a read-only handle on a file that predates the table
+  }
+
+  /** The largest of `clusterIds` holding more than `over` vectors, or null (none, or a shadow layout this code does not know).
+   *  Each partition's chunk slots bound its count from above (chunks are part-filled after deletes and moves), so the exact
+   *  count is taken only while a bound can still beat both `over` and the best found. Run once per converged sweep tick and
+   *  once per split. MEASURED on a copy of the dev store (400,797 vectors, 477 clusters, 2026-11-23, box at load 9-14, warm):
+   *  93-136 ms p50, 160 ms max, almost all of it the bounds GROUP BY (none past `over`: 93 ms); 3 s on a cold cache. */
+  largestCluster(clusterIds: readonly number[], over = 0): { clusterId: number; size: number } | null {
+    try {
+      const live = new Set(clusterIds);
+      const bounds = this.db.query(`SELECT partition00 AS p, SUM(size) AS slots FROM vec_chunks_p_chunks
+                                     WHERE partition00 >= 0 GROUP BY 1 ORDER BY 2 DESC`).all() as Array<{ p: number; slots: number }>;
+      let best: { clusterId: number; size: number } | null = null;
+      for (const b of bounds) {
+        if (b.slots <= over || (best && b.slots <= best.size)) break;
+        if (!live.has(b.p)) continue;
+        const n = this.clusterSize(b.p);
+        if (n > over && (!best || n > best.size)) best = { clusterId: b.p, size: n };
+      }
+      return best;
+    } catch { return null; }
+  }
+
+  /** Vectors in one cluster, exactly (0.5 ms for 3,761 rows on the store measured above). Throws on an unknown shadow layout. */
+  private clusterSize(clusterId: number): number {
+    return (this.db.query(`SELECT COUNT(*) AS n FROM vec_chunks_p_chunks c
+                            CROSS JOIN vec_chunks_p_rowids r ON r.chunk_id = c.chunk_id WHERE c.partition00 = ?`)
+      .get(clusterId) as { n: number }).n;
+  }
+
+  /** Vectors in each of `clusterIds`, in order: the children of a finished split, once per split. */
+  clusterSizes(clusterIds: readonly number[]): number[] {
+    return clusterIds.map(id => this.clusterSize(id));
+  }
+
+  /** Clusters a split could not divide (see finishSplit), or none. */
+  unsplittableClusters(collection: string): number[] {
+    try {
+      return (this.db.query(`SELECT cluster_id FROM vec_index_unsplittable WHERE collection_name = ?`).all(collection) as Array<{ cluster_id: number }>)
+        .map(r => r.cluster_id);
+    } catch { return []; }   // a read-only handle on a file that predates the table
+  }
+
+  /** Up to `limit` vectors of one cluster (its leading rows), or null when the shadow layout is unknown. */
+  clusterRows(clusterId: number, limit: number): Array<{ chunkId: string; embedding: Float32Array }> | null {
+    const ids = this.shadowIdsInCluster(clusterId, true, limit);
+    return ids && this.vecRowsById(ids).map(r => ({
+      chunkId: r.chunk_id,
+      embedding: new Float32Array(r.embedding.buffer, r.embedding.byteOffset, r.embedding.byteLength / 4),
+    }));
+  }
+
+  /** Up to `limit` vectors with a direction, drawn at random from one cluster: the seeds of its split. */
+  sampleClusterVectors(clusterId: number, limit: number): Array<{ chunkId: string; embedding: Float32Array }> {
+    const ids = this.shadowIdsInCluster(clusterId, true, Number.MAX_SAFE_INTEGER) ?? [];
+    const out: Array<{ chunkId: string; embedding: Float32Array }> = [];
+    for (const i of defaultSample(ids.length, limit * 3)) {
+      const [r] = this.vecRowsById([ids[i]!]);
+      if (!r) continue;
+      const embedding = new Float32Array(r.embedding.buffer, r.embedding.byteOffset, r.embedding.byteLength / 4);
+      if (hasDirection(embedding)) out.push({ chunkId: r.chunk_id, embedding });
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
+  /** Begin splitting `clusterId`: its seeds (consecutive ids from allocateClusterIds) join the set and the split is recorded,
+   *  in one transaction. The cluster keeps its centroid, so its rows stay probed, until finishSplit. */
+  startSplit(collection: string, clusterId: number, seeds: Centroid[]): void {
+    const current = this.getCentroids(collection);
+    const ids = seeds.map(c => c.clusterId);
+    const ins = this.db.query(`INSERT INTO vec_cluster_centroids (collection_name, cluster_id, hit_count, centroid) VALUES (?, ?, ?, ?)`);
+    this.db.transaction(() => {
+      for (const c of seeds) ins.run(collection, c.clusterId, c.hitCount, new Uint8Array(new Float32Array(c.vector).buffer));
+      this.db.query(`INSERT OR REPLACE INTO vec_index_split (collection_name, cluster_id, seed_lo, seed_hi) VALUES (?, ?, ?, ?)`)
+        .run(collection, clusterId, Math.min(...ids), Math.max(...ids));
+    })();
+    this.centroidCache.set(collection, {
+      fp: this.centroidFingerprint(collection), at: Date.now(), own: true,
+      centroids: [...current, ...seeds.map(c => ({ clusterId: c.clusterId, vector: Array.from(new Float32Array(c.vector)), hitCount: c.hitCount }))],
+    });
+  }
+
+  /** End the split: forget it and, with `dropCentroid` (every row has moved), remove the cluster's centroid, in one
+   *  transaction, together with `more.dropIds` (seeds that won no row) and the `more.unsplittable` mark. add() checks its
+   *  cluster against the live set right before it writes, so nothing lands under a dropped id. */
+  finishSplit(collection: string, clusterId: number, dropCentroid: boolean, more?: { dropIds: number[]; unsplittable?: number }): void {
+    const current = this.getCentroids(collection);
+    const gone = new Set([...(dropCentroid ? [clusterId] : []), ...(more?.dropIds ?? [])]);
+    const del = this.db.query(`DELETE FROM vec_cluster_centroids WHERE collection_name = ? AND cluster_id = ?`);
+    this.db.transaction(() => {
+      for (const id of gone) del.run(collection, id);
+      this.db.query(`DELETE FROM vec_index_split WHERE collection_name = ?`).run(collection);
+      if (more?.unsplittable !== undefined) {
+        this.db.query(`INSERT OR IGNORE INTO vec_index_unsplittable (collection_name, cluster_id) VALUES (?, ?)`).run(collection, more.unsplittable);
+      }
+    })();
+    this.centroidCache.set(collection, {
+      fp: this.centroidFingerprint(collection), at: Date.now(), own: true,
+      centroids: current.filter(c => !gone.has(c.clusterId)),
     });
   }
 
@@ -913,13 +1042,16 @@ export class VectorStore {
    *
    *   COUNT centroids                       11.6 ms   ok
    *   COUNT from vec_chunk_meta             13.7 ms   ok
-   *   SUM(hit_count) from centroids          6.9 ms   ok  <- progress proxy
+   *   SUM(hit_count) from centroids          6.9 ms   ok  (no longer the progress figure, see below)
    *   COUNT vec_chunks_p WHERE cluster_id  1329.0 ms   REJECTED — would be a self-inflicted outage
    *
-   * `assigned` is the summed hit_count rather than a direct count of clustered rows: it answers
-   * the same question for a progress display and costs 6.9 ms instead of 1.3 s. It counts
-   * assignments made, so once the build completes and rebalancing begins it can drift past the
-   * vector count — hence the caller clamps to 100%.
+   * `assigned` is the vectors minus the rows at the unclustered sentinel, counted off the shadow tables' two indexes
+   * (never the vec0 table above). It was the summed hit_count, which counts assignments ever made, not membership: it
+   * read 100% through a repair's reset phase while every row went back to unclustered. MEASURED on a copy of the dev
+   * store (400,797 vectors, 2026-11-23, box at load 25): 6 rows at -1 0.0 ms p50; the worst case, a first build with
+   * every row still at -1, walks all of them: 141 ms p50 / 155 max (timed as the same count over every placed row).
+   * The sentinel is shared by every collection in the file (a worker writes one); a layout this code does not know falls
+   * back to the hit_count figure, clamped.
    */
   indexSummary(collection: string): { centroids: number; vectors: number; assigned: number; zeroCentroids: number } {
     const c = this.db
@@ -932,7 +1064,17 @@ export class VectorStore {
     // poll, a path polled every 2 s. Measured on the 272k-vector dev copy: 43.7 ms p50 this way against 44.4 ms for the
     // summary without it; the SQL compare was 50.3 ms.
     const zeroCentroids = c.n === 0 ? 0 : this.getCentroids(collection).filter(x => isZeroVector(x.vector)).length;
-    return { centroids: c.n, vectors: v.n, assigned: Math.min(c.h, v.n), zeroCentroids };
+    const unclustered = this.countUnclustered();
+    return { centroids: c.n, vectors: v.n, assigned: unclustered === null ? Math.min(c.h, v.n) : Math.max(0, v.n - unclustered), zeroCentroids };
+  }
+
+  /** Rows at the unclustered sentinel (every collection), or null when the shadow layout is unknown. */
+  private countUnclustered(): number | null {
+    try {
+      return (this.db.query(`SELECT COUNT(*) AS n FROM vec_chunks_p_chunks c
+                               CROSS JOIN vec_chunks_p_rowids r ON r.chunk_id = c.chunk_id
+                              WHERE c.partition00 = ${UNCLUSTERED}`).get() as { n: number }).n;
+    } catch { return null; }
   }
 
   /** Count of rows still in the pre-A2 `vec_chunks` table (0 once fully
