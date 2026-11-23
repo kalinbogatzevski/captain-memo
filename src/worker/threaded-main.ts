@@ -11,7 +11,7 @@ import { serializeRequest, deserializeResponse, type WireRequest, type WireRespo
 import { healthFromHeartbeat } from './health-heartbeat.ts';
 import { onEngineCrash, type SupervisorState } from './engine-supervisor.ts';
 import { classifyRoute } from './route-class.ts';
-import { InjectLatencyRing } from './inject-latency.ts';
+import { InjectLatencyRing, recordInjectOutcome } from './inject-latency.ts';
 import { ReaderPool } from './reader-pool.ts';
 import { startWorker, buildWorkerOptionsFromEnv, type WorkerHandle } from './index.ts';
 import { mergeEmbedUsage, type EmbedUsage } from './embedder.ts';
@@ -97,32 +97,7 @@ export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
    *  unparseable sample is simply skipped. `reqBody` carries the hook's own deadline_ms, which is
    *  what makes over_deadline meaningful (the deadline is the CALLER's, not a server constant). */
   function recordInject(reqBody: string | null, resBody: string | null, elapsedMs: number, failed: boolean): void {
-    try {
-      let deadlineMs: number | null = null;
-      if (reqBody) {
-        const q = JSON.parse(reqBody) as { deadline_ms?: number };
-        if (typeof q.deadline_ms === 'number' && q.deadline_ms > 0) deadlineMs = q.deadline_ms;
-      }
-      let embedMs: number | null = null;
-      let degraded = failed;
-      if (resBody) {
-        const r = JSON.parse(resBody) as { embed_ms?: number; degradation_flags?: unknown };
-        if (typeof r.embed_ms === 'number') embedMs = r.embed_ms;
-        const flags = r.degradation_flags;
-        if (Array.isArray(flags)) degraded ||= flags.length > 0;
-        else if (flags && typeof flags === 'object') degraded ||= Object.keys(flags).length > 0;
-      }
-      injectLatency.record({
-        elapsed_ms: elapsedMs,
-        embed_ms: embedMs,
-        degraded,
-        over_deadline: deadlineMs !== null && elapsedMs >= deadlineMs,
-        // Carried through so /stats can report the deadline these outcomes were judged against.
-        // doctor cannot recover it on its own — the hook takes CAPTAIN_MEMO_HOOK_TIMEOUT_MS from
-        // its own process env, which is Claude Code's, not the worker's.
-        deadline_ms: deadlineMs,
-      });
-    } catch { /* metrics must never break the request they measure */ }
+    recordInjectOutcome(injectLatency, reqBody, resBody, elapsedMs, failed);
   }
 
   const pool = new ReaderPool<number>(1);          // 1 in-flight per reader: one KNN scan at a time

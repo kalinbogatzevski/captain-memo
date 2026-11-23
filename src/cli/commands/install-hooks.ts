@@ -10,7 +10,12 @@ type EventName = typeof EVENTS[number];
 interface HookCommandEntry {
   type: 'command';
   command: string;
+  timeout?: number;
 }
+
+/** Claude Code's timeout per event, in seconds, as plugin/hooks/hooks.json registers it (a test pins the two together):
+ *  a settings.json install must not run under a different cut than the plugin. */
+export const EVENT_TIMEOUT_S: Partial<Record<EventName, number>> = { SessionStart: 60 };
 
 interface HookGroup {
   matcher?: string;
@@ -105,6 +110,8 @@ export function applyHookInstall(opts: ApplyHookInstallOptions): ApplyHookInstal
     if (existing) {
       if (!existing.command.startsWith(hookCommand)) {
         warnings.push(`${event}: marker present but command differs (${existing.command}); leaving untouched`);
+      } else if (EVENT_TIMEOUT_S[event] !== undefined) {
+        existing.timeout = EVENT_TIMEOUT_S[event];   // an entry written before the timeout key existed gets it
       }
       events_already_present++;
       settings.hooks[event] = groups;
@@ -114,6 +121,7 @@ export function applyHookInstall(opts: ApplyHookInstallOptions): ApplyHookInstal
     const newEntry: HookCommandEntry = {
       type: 'command',
       command: `${hookCommand} ${event} #${CAPTAIN_MEMO_HOOK_MARKER}`,
+      ...(EVENT_TIMEOUT_S[event] !== undefined ? { timeout: EVENT_TIMEOUT_S[event] } : {}),
     };
     groups.push({ hooks: [newEntry] });
     settings.hooks[event] = groups;

@@ -119,6 +119,7 @@ import { looksLikeCredential, redactSecrets } from '../shared/redact-secrets.ts'
 import { VERSION } from '../shared/version.ts';
 import { EDITION } from '../shared/edition.ts';
 import { withAuthReport, bootWorkerAuthGate } from '../shared/worker-auth.ts';
+import { InjectLatencyRing, recordInjectOutcome } from './inject-latency.ts';
 
 // Recursive directory size in bytes. Returns 0 for missing dirs (fail-open
 // for /stats — better an under-counted disk number than a 500 response).
@@ -4065,13 +4066,42 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
     };
   }
 
+  // The inject-latency window for THIS listener, i.e. the standalone worker (#955). The threaded worker keeps its own on main
+  // (threaded-main.ts) and engine threads never get here (noServe returns above), so each inject is recorded once. Without it a
+  // default install's /stats had no inject_latency and doctor's hook-latency line stayed silent, healthy or timing out.
+  // COST (measured 2026-11-23, bun 1.4.2, load ~11-14 on 24 cores, 3 runs): per inject, record() on a full 200-sample window
+  // 0.8-1.4 us, the request clone 3-9 us, the response clone 14-31 us, the two JSON.parse 13-54 us: under 0.1 ms on a call that
+  // embeds and searches (ms). Per /stats, merging the key into a 7.8 kB body 0.06-0.25 ms.
+  const injectLatency = new InjectLatencyRing();
+  const serveWithLatency = async (req: Request): Promise<Response> => {
+    const path = new URL(req.url).pathname;
+    if (req.method === 'POST' && path === '/inject/context') {
+      const reqBody = await req.clone().text().catch(() => null);
+      const start = Date.now();
+      const res = await handler(req);
+      recordInjectOutcome(injectLatency, reqBody, await res.clone().text().catch(() => null), Date.now() - start, res.status >= 500);
+      return res;
+    }
+    if (req.method === 'GET' && path === '/stats') {
+      const res = await handler(req);
+      if (!res.ok) return res;
+      const body = await res.text();
+      try {
+        const parsed = JSON.parse(body) as Record<string, unknown>;
+        parsed['inject_latency'] = injectLatency.stats();
+        return Response.json(parsed, { status: res.status });
+      } catch { return new Response(body, { status: res.status, headers: res.headers }); }
+    }
+    return handler(req);
+  };
+
   // Worker auth (#229) at the listener only: engine threads call `handler` with serialized requests and no token.
   const authGate = bootWorkerAuthGate();
   const server = Bun.serve({
     port: opts.port,
     // Loopback ONLY — the worker API must never be reachable off-box.
     hostname: '127.0.0.1',
-    fetch: async (req) => authGate.check(req) ?? withAuthReport(req, await handler(req), authGate),
+    fetch: async (req) => authGate.check(req) ?? withAuthReport(req, await serveWithLatency(req), authGate),
   });
   const resolvedPort = server.port ?? opts.port;
 

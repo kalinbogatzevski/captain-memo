@@ -1,6 +1,6 @@
 import { test, expect, beforeAll, afterAll } from 'bun:test';
 import { join } from 'path';
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 
 // Each hook runs in a THROWAWAY data dir. These hooks write state (the .degraded-<session_id> flag,
@@ -355,4 +355,32 @@ test('SessionStart — with auto-update on, a check the prompt hook found blocke
     expect(await banner()).not.toContain('BLOCKED');
     expect(existsSync(left)).toBe(false);
   } finally { rmSync(dataDir, { recursive: true, force: true }); }
+});
+
+// #951: SessionStart is registered with a 60 s timeout and an apply can take minutes, so on Linux/macOS its pass runs as the
+// detached UpdateApply child, like the prompt hook's. Run through the dispatcher entry (the spawn re-runs that file). A git that
+// takes 1.2 s per call and fails keeps the child's pass busy past the hook's exit; `.auto-update-spawn.lock` is the witness.
+test.skipIf(process.platform === 'win32')('SessionStart — a due auto-update check is started as a detached child, not run in-line', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cm-autoupd-detach-'));
+  try {
+    const dataDir = join(root, 'data'), fakeBin = join(root, 'bin');
+    mkdirSync(dataDir); mkdirSync(fakeBin);
+    writeFileSync(join(fakeBin, 'git'), '#!/bin/sh\nsleep 1.2\nexit 1\n', { mode: 0o755 });
+    const stamp = join(dataDir, '.last-update-check');
+    writeFileSync(stamp, '2020-01-01T00:00:00.000Z delay_ms=3600000 failures=0\n'); utimesSync(stamp, new Date('2020-01-01'), new Date('2020-01-01'));
+    const before = readFileSync(stamp, 'utf-8');
+    const proc = spawn({
+      cmd: ['bun', join(import.meta.dir, '../../bin/captain-memo-hook.ts'), 'SessionStart'], stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
+      env: { ...process.env, CAPTAIN_MEMO_DATA_DIR: dataDir, CAPTAIN_MEMO_WORKER_PORT: String(port), CAPTAIN_MEMO_AUTO_UPDATE: '1',
+        CAPTAIN_MEMO_DISABLE_SELF_HEAL: '1', GIT_DIR: join(dataDir, 'no-such-git-dir'), PATH: `${fakeBin}:${process.env.PATH}` },
+    });
+    proc.stdin.write(FIXTURE); proc.stdin.end();
+    await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    expect(await proc.exited).toBe(0);
+    expect(existsSync(join(dataDir, '.auto-update-spawn.lock'))).toBe(true);    // a child was started...
+    const done = () => readFileSync(stamp, 'utf-8') !== before && !existsSync(join(dataDir, '.auto-update.lock'));
+    expect(done()).toBe(false);                                                  // ...and the hook did not wait for its pass
+    for (const end = Date.now() + 20_000; Date.now() < end && !done();) await Bun.sleep(40);
+    expect(done()).toBe(true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
