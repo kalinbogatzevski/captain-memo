@@ -76,3 +76,18 @@ test('POST /inject/context — invalid body → 400', async () => {
   });
   expect(res.status).toBe(400);
 });
+
+// #955: the standalone worker (the default) recorded no inject latency, so /stats had no inject_latency and doctor's
+// "hook retrieval latency" line could never appear on a default install, healthy or timing out.
+test('standalone worker: /stats reports inject_latency for the injects it served, deadline included', async () => {
+  const inject = (body: object) => fetch(`http://localhost:${port}/inject/context`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  }).then((r) => r.text());
+  await inject({ prompt: 'erp-components rule', top_k: 5, deadline_ms: 60_000 });
+  await inject({ prompt: 'ok' });
+  const stats = await (await fetch(`http://localhost:${port}/stats`)).json() as { inject_latency?: { n: number; deadline_ms: number | null; degraded_n: number; over_deadline_n: number } };
+  expect(stats.inject_latency?.n).toBe(2);
+  expect(stats.inject_latency?.deadline_ms).toBe(60_000);
+  expect(stats.inject_latency?.over_deadline_n).toBe(0);
+  expect(stats.inject_latency?.degraded_n).toBe(2);   // skipEmbed and the short prompt both carry a degradation flag
+});
