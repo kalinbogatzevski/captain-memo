@@ -226,6 +226,21 @@ test('findClaudeBinary: PATH first, then the usual install folders, else null', 
   rmSync(home, { recursive: true, force: true });
 });
 
+test('findClaudeBinary: a `claude` in the cwd (an opened project) is never picked, even with "." on PATH', () => {
+  const root = mkdtempSync(join(tmpdir(), 'cm-claude-cwd-'));
+  const home = join(root, 'home'), cwd = join(root, 'project'), exe = process.platform === 'win32' ? 'claude.exe' : 'claude';
+  mkdirSync(join(home, '.local', 'bin'), { recursive: true });
+  mkdirSync(cwd, { recursive: true });
+  writeFileSync(join(cwd, exe), '#!/bin/sh\n', { mode: 0o755 });
+  writeFileSync(join(home, '.local', 'bin', exe), '#!/bin/sh\n', { mode: 0o755 });
+  // A child process: Bun.which reads the PATH the process started with, so it cannot be swapped in-process.
+  const mod = join(import.meta.dir, '../../src/cli/plugin-cache-refresh.ts');
+  const r = Bun.spawnSync([process.execPath, '-e', `const m = await import(${JSON.stringify(mod)}); console.log(m.findClaudeBinary(${JSON.stringify(home)}));`],
+    { cwd, env: { PATH: '.', HOME: home } });
+  rmSync(root, { recursive: true, force: true });
+  expect(r.stdout.toString().trim()).toBe(join(home, '.local', 'bin', exe));
+});
+
 test('heal: a copy inside the plugin cache (not a git clone) is never registered as a marketplace', async () => {
   const h = healHarness({ mk: 'absent', checkout: false });
   expect(await h.go()).toEqual({ healed: false, skipped: 'not a git checkout' });

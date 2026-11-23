@@ -79,10 +79,12 @@ export function clearPluginRemoved(dataDir: string = DATA_DIR): void {
   try { rmSync(join(dataDir, PLUGIN_REMOVED_MARKER), { force: true }); } catch { /* best effort */ }
 }
 
-/** The `claude` binary the heal runs: on PATH, else the usual install folders. A service manager's PATH often lacks
- *  ~/.local/bin, where the native installer puts it, and the heal would otherwise never be armed. */
+/** The `claude` binary the heal and the cache refresh run: on PATH, else the usual install folders. A service manager's
+ *  PATH often lacks ~/.local/bin, where the native installer puts it, and the heal would otherwise never be armed.
+ *  The lookup is anchored at `home`, not the caller's cwd: from a hook the cwd is the project the user opened, and a
+ *  relative PATH entry (or Windows' cwd-first search) must not pick up a `claude` planted in an untrusted clone. */
 export function findClaudeBinary(home: string = homedir()): string | null {
-  const onPath = Bun.which('claude');
+  const onPath = Bun.which('claude', { cwd: home });
   if (onPath) return onPath;
   const exe = process.platform === 'win32' ? 'claude.exe' : 'claude';
   for (const p of [join(home, '.local', 'bin', exe), join(home, '.claude', 'local', exe), '/opt/homebrew/bin/claude', '/usr/local/bin/claude']) {
@@ -175,10 +177,13 @@ export function refreshPluginCacheIfStale(
   const pointsAt = deps.pointsAtCheckout ?? ((r: string) => marketplacePointsAtCheckout(r));
   if (!pointsAt(repoRoot)) return { refreshed: false, skipped: 'not a directory marketplace on this checkout' };
 
-  const run = deps.run ?? ((args: string[]) => {
-    const r = spawnSync('claude', args, { stdio: 'pipe', timeout: 120_000 });
-    return r.status ?? 1;
-  });
+  let run = deps.run;
+  if (!run) {
+    // An absolute path, spawned from home: neither the lookup nor the exec may resolve `claude` in the opened project.
+    const bin = findClaudeBinary();
+    if (!bin) return { refreshed: false, skipped: 'claude not found' };
+    run = (args: string[]) => spawnSync(bin, args, { stdio: 'pipe', timeout: 120_000, cwd: homedir() }).status ?? 1;
+  }
 
   // Re-read the marketplace listing from the checkout, then update the plugin in place. A bare `marketplace add` is
   // a no-op on an existing entry, which is why the cache once froze; `marketplace update` is the call that re-reads it.
@@ -229,7 +234,9 @@ export async function healPluginRegistration(repoRoot: string = REPO_ROOT, deps:
     if (!(deps.hadPlugin ?? (() => hadPluginBefore()))()) return { healed: false, skipped: 'never installed here' };
   }
   const run = deps.run ?? (async (args: string[]) => {
-    try { return await Bun.spawn(['claude', ...args], { stdout: 'ignore', stderr: 'ignore', env: { ...process.env } }).exited; } catch { return 1; }
+    const bin = findClaudeBinary();
+    if (!bin) return 1;
+    try { return await Bun.spawn([bin, ...args], { stdout: 'ignore', stderr: 'ignore', env: { ...process.env }, cwd: homedir() }).exited; } catch { return 1; }
   });
   if (mk === 'absent' && await run(['plugin', 'marketplace', 'add', repoRoot]) !== 0) return { healed: false, skipped: 'marketplace add failed' };
   for (let i = 0; i < 3; i++) {
