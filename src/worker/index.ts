@@ -2671,10 +2671,11 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         return Response.json({ items, open: items.filter((i) => !i.done_at).length });
       }
       if (req.method === 'POST' && (url.pathname === '/homework/claim' || url.pathname === '/homework/done')) {
-        const b = (await req.json().catch(() => null)) as { id?: unknown; by?: unknown; note?: unknown } | null;
+        const b = (await req.json().catch(() => null)) as { id?: unknown; by?: unknown; note?: unknown; dropped?: unknown } | null;
         if (!b || (typeof b.id !== 'string' && typeof b.id !== 'number')) return Response.json({ error: 'invalid_request', details: 'id required' }, { status: 400 });
+        if (b.dropped !== undefined && typeof b.dropped !== 'boolean') return Response.json({ error: 'invalid_request', details: 'dropped must be true or false' }, { status: 400 });
         const by = typeof b.by === 'string' && b.by ? b.by : 'session';
-        const item = url.pathname === '/homework/claim' ? claimHomework(meta, String(b.id), by, Date.now()) : doneHomework(meta, String(b.id), by, typeof b.note === 'string' ? b.note : undefined, Date.now());
+        const item = url.pathname === '/homework/claim' ? claimHomework(meta, String(b.id), by, Date.now()) : doneHomework(meta, String(b.id), by, typeof b.note === 'string' ? b.note : undefined, Date.now(), b.dropped === true);
         if (!item) return Response.json({ error: 'not_found', detail: `no open homework #${String(b.id)}` }, { status: 404 });
         return Response.json({ item, open: listHomework(meta, { status: 'open' }, Date.now()).length });
       }

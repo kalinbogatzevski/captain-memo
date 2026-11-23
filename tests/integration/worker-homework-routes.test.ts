@@ -97,3 +97,10 @@ test('unclaim: the route hands back your own claim and refuses another session, 
   expect((await post('/homework/unclaim', { id: '9999', by: 'x' })).status).toBe(404);
   expect((await post('/homework/unclaim', { by: 'x' })).status).toBe(400);
 }, 20_000);
+
+test('#957: done takes dropped as a strict boolean and stores the marker', async () => {
+  const id = ((await (await post('/homework/add', { text: 'to drop', by: 'hook' })).json()) as { item: { id: string } }).item.id;
+  expect((await post('/homework/done', { id, by: 'x', dropped: 'yes' })).status).toBe(400);
+  const r = await (await post('/homework/done', { id, by: 'x', note: 'obsolete', dropped: true })).json() as { item: { dropped?: boolean } };
+  expect(r.item.dropped).toBe(true);
+});

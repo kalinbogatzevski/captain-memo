@@ -20,6 +20,7 @@ export interface HomeworkItem {
   done_at?: number;
   done_by?: string;
   note?: string;          // what was done / why closed
+  dropped?: true;         // #957: closed as DROPPED (not done), by todo_done(dropped); goes and comes with done_at
   due?: string;           // when it is due (ISO 8601, UTC); from then on the session-start list leads with it, ⏰
 }
 
@@ -124,11 +125,13 @@ export function unclaimHomework(kv: InboxKv, id: string, by: string): UnclaimRes
   return { item: next };
 }
 
-/** Close an item, with an optional note of what was done (or why it was dropped). */
-export function doneHomework(kv: InboxKv, id: string, by: string, note?: string, now: number = Date.now()): HomeworkItem | null {
+/** Close an item, with an optional note of what was done (or why it was dropped). `dropped` marks it closed as DROPPED
+ *  rather than done (#957), so a list does not have to guess it from the note. */
+export function doneHomework(kv: InboxKv, id: string, by: string, note?: string, now: number = Date.now(), dropped: boolean = false): HomeworkItem | null {
   const it = getHomework(kv, id);
   if (!it) return null;
   const next: HomeworkItem = { ...it, done_at: now, done_by: String(by).slice(0, 128), ...(note ? { note: String(note).slice(0, 500) } : {}) };
+  if (dropped) next.dropped = true; else delete next.dropped;
   kv.setKv(rowKey(it.id), JSON.stringify(next));
   return next;
 }
