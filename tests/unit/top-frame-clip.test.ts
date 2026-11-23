@@ -457,3 +457,34 @@ test('wide terminals are byte-identical to 0.58.4: the four Efficiency rows at 2
   ];
   for (const cell of cells) expect(rows.filter((l) => l.endsWith(cell))).toHaveLength(1);
 });
+
+// Every panel's hint bar steps down instead of being cut (#993): below ~112 columns the cut used to take [?]help [q]uit
+// off the end. fitHintBar drops the rarest entries first and keeps [?]help, [q]uit and the [Esc]back key.
+test('every panel keeps [q]uit, [?]help and its [Esc]back key in the hint bar at 60, 86 and 112 columns', () => {
+  const bad: string[] = [];
+  const data: FrameData = {
+    stats: fullStats({ nowMs: NOW }), homework: fullHomework(NOW), sessions: FULL_SESSIONS(NOW),
+    page: { rows: FULL_PAGE_ROWS(Math.floor(NOW / 1000)), total: 30 }, detail: FULL_DETAIL(Math.floor(NOW / 1000)),
+  };
+  const modes: Mode[] = ['dashboard', 'sources', 'tokens', 'homework', 'table', 'detail', 'help'];
+  withColor(() => atClock(() => {
+    for (const mode of modes) for (const cols of [60, 86, 112]) {
+      const base = initialState();
+      const lines = buildFrame({ ...base, mode, pageSize: 30, hw: { ...base.hw, sel: 3 } }, data, { cols, rows: 46 });
+      const written = writtenLines(screenBytes(lines, { cols, rows: lines.length }, scrollsFrame(mode) ? 0 : null)).map(stripAnsi);
+      const bar = written.find((l) => l.includes('[q]uit'));
+      if (!bar) { bad.push(`${mode} ${cols}: no [q]uit`); continue; }
+      if (bar.includes('…')) bad.push(`${mode} ${cols}: hint bar was cut`);
+      const want = [...new Set(lines.map(stripAnsi).join(' ').match(/\[(\?|[a-z]?\/?Esc)\][a-z]+/g) ?? [])]
+        .filter((k) => k === '[?]help' || k.includes('Esc]'));
+      for (const k of want) if (!bar.includes(k)) bad.push(`${mode} ${cols}: ${k} missing`);
+    }
+  }));
+  expect(bad).toEqual([]);
+});
+
+test('a cut line ends on a whole word, not mid-word', () => {
+  const line = '  Dedup         42%   1 234 / 5 678 unchanged since worker start';
+  const [out] = writtenLines(screenBytes([line], { cols: 58, rows: 4 }, 0));
+  expect(out).toBe('  Dedup         42%   1 234 / 5 678 unchanged since…');
+});

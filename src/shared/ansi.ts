@@ -60,20 +60,27 @@ export function visibleWidth(s: string): number {
 const SGR_SPLIT_RE = /(\x1b\[[0-9;]*m)/;   // capturing: the split keeps each escape, at the odd indexes
 const SGR_RESET_RE = /^\x1b\[0*m$/;
 
-/** Cut a possibly-colored string to at most `max` cells, ending in '…' when anything went. Cells are counted as
+/** Cut a possibly-colored string to at most `max` cells, ending in '…' when anything went; `atWord` backs the cut up to
+ *  the last word boundary. Cells are counted as
  *  visibleWidth counts them, SGR escapes are kept and take none, and a reset follows the cut when a style is still
  *  open, so a cut run cannot colour what the terminal draws next. A string that already fits comes back as is. */
-export function clipVisible(s: string, max: number): string {
+export function clipVisible(s: string, max: number, atWord = false): string {
   if (visibleWidth(s) <= max) return s;
   if (max < 1) return '';
   const room = max - 1;   // the ellipsis takes a cell
-  let out = '', used = 0, styled = false;
+  let out = '', used = 0, styled = false, prev = '';
+  let word: { out: string; used: number; styled: boolean } | null = null;   // just before the last space run
   scan: for (const [i, part] of s.split(SGR_SPLIT_RE).entries()) {
     if (i % 2) { out += part; styled = !SGR_RESET_RE.test(part); continue; }
     for (const ch of part) {
       const w = cellWidth(ch);
-      if (used + w > room) break scan;
-      out += ch; used += w;
+      if (used + w > room) {
+        // `atWord`: end on a whole word, unless that would give back more than half the line.
+        if (atWord && ch !== ' ' && prev !== ' ' && word && word.used * 2 >= room) ({ out, styled } = word);
+        break scan;
+      }
+      if (ch === ' ' && prev !== ' ') word = { out, used, styled };
+      out += ch; used += w; prev = ch;
     }
   }
   return out + '…' + (styled ? RESET : '');

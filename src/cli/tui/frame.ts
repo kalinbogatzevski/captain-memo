@@ -187,9 +187,9 @@ export function frameBytes(lines: string[]): string {
  *  the alt screen scrolls and the title row goes off the top (0.58.4 at 146x37: the Efficiency block's
  *  "Embed budget" row, 170 cells, in the right half of a two-column row). A line that fits is left alone;
  *  one that does not is cut one column short of the edge (the spare column spread() keeps for
- *  ambiguous-width glyphs) and ends in an ellipsis. */
+ *  ambiguous-width glyphs), back to the last word boundary, and ends in an ellipsis. */
 function fitLine(line: string, cols: number): string {
-  return visibleWidth(line) > cols ? clipVisible(line, cols - 1) : line;
+  return visibleWidth(line) > cols ? clipVisible(line, cols - 1, true) : line;
 }
 
 /** Everything `top` writes for one frame: clipped to the terminal's height by clipFrame and to its width
@@ -289,11 +289,17 @@ function hintBar(parts: string[]): string {
 }
 
 /** The hint bar, cut to fit `cols`: a wrapped hint line costs a physical row, which
- *  clips the frame. It drops the entries just before [?]help / [q]uit, so the rarest
- *  go first and those two always stay; [?]help still lists every key. */
+ *  clips the frame. It drops the entries just before the last two ([?]help / [q]uit),
+ *  so the rarest go first; those two and the [Esc]back key always stay, and [?]help
+ *  still lists every key. */
 export function fitHintBar(parts: string[], cols: number): string {
   const p = [...parts];
-  while (p.length > 3 && 2 + p.join('  ').length > cols - 1) p.splice(p.length - 3, 1);
+  while (2 + p.join('  ').length > cols - 1) {
+    let i = p.length - 3;
+    while (i >= 0 && p[i]!.includes('Esc]')) i--;
+    if (i < 0) break;
+    p.splice(i, 1);
+  }
   return hintBar(p);
 }
 
@@ -336,7 +342,7 @@ function sourcesFrame(state: TopState, data: FrameData, dims: Dims): string[] {
     out.push(...renderSourceBars(byOrigin, barWidth));
   }
   out.push('');
-  out.push(hintBar(['[s]urfaced', '[r]ecalled', '[n]recent', '[T]hemes', '[a/Esc]back', '[+/-]rate', '[?]help', '[q]uit']));
+  out.push(fitHintBar(['[s]urfaced', '[r]ecalled', '[n]recent', '[T]hemes', '[a/Esc]back', '[+/-]rate', '[?]help', '[q]uit'], dims.cols));
   return out;
 }
 
@@ -360,7 +366,7 @@ function tokensFrame(state: TopState, data: FrameData, dims: Dims): string[] {
   if (rows.length === 0) {
     out.push('  ' + dim('(no sessions active in the window — a session appears once it writes a message)'));
     out.push('');
-    out.push(hintBar(['[m/Esc]back', '[+/-]rate', '[?]help', '[q]uit']));
+    out.push(fitHintBar(['[m/Esc]back', '[+/-]rate', '[?]help', '[q]uit'], dims.cols));
     return out;
   }
 
@@ -395,7 +401,7 @@ function tokensFrame(state: TopState, data: FrameData, dims: Dims): string[] {
   out.push('');
   out.push('  ' + dim('cache-read is the same context re-sent each turn — it dwarfs fresh, so share is of fresh'));
   out.push('');
-  out.push(hintBar(['[s]urfaced', '[r]ecalled', '[T]hemes', '[a]I-sources', '[m/Esc]back', '[+/-]rate', '[?]help', '[q]uit']));
+  out.push(fitHintBar(['[s]urfaced', '[r]ecalled', '[T]hemes', '[a]I-sources', '[m/Esc]back', '[+/-]rate', '[?]help', '[q]uit'], dims.cols));
   return out;
 }
 
@@ -422,7 +428,7 @@ function homeworkFrame(state: TopState, data: FrameData, dims: Dims): string[] {
     spread(`  ${cyanBold('CAPTAIN MEMO')} ${dim('top — homework')}`, dim(liveStamp(state.refreshMs)), cols),
     ruleLine(cols),
   ];
-  const hint = hintBar(['[↑↓]select', '[c]laim', '[d]one', '[h/Esc]back', '[+/-]rate', '[?]help', '[q]uit']);
+  const hint = fitHintBar(['[↑↓]select', '[c]laim', '[d]one', '[h/Esc]back', '[+/-]rate', '[?]help', '[q]uit'], dims.cols);
   const items = data.homework;
   if (items == null) {
     out.push('', '  ' + dim('this worker does not report homework (an older captain-memo), or it could not be read'), '', hint);
@@ -565,10 +571,10 @@ function tableFrame(state: TopState, data: FrameData, dims: Dims): string[] {
 
   // Pad to push the footer near the bottom, then the hint bar.
   out.push('');
-  out.push(hintBar([
+  out.push(fitHintBar([
     '[↑↓]select', '[⏎]open', '[Tab]view', '[a]I-sources', '[o]sort', '[t]ype', '[/]find',
     '[c]ollapse', '[Esc]back', '[?]help', '[q]uit',
-  ]));
+  ], dims.cols));
   return out;
 }
 
@@ -590,7 +596,7 @@ function wrap(text: string, width: number): string[] {
 
 function detailFrame(state: TopState, data: FrameData, dims: Dims): string[] {
   const obs = data.detail;
-  if (!obs) return ['', '  ' + dim('loading observation…'), '', hintBar(['[Esc]back', '[q]uit'])];
+  if (!obs) return ['', '  ' + dim('loading observation…'), '', fitHintBar(['[Esc]back', '[q]uit'], dims.cols)];
 
   const cols = dims.cols;
   const out: string[] = [];
@@ -626,7 +632,7 @@ function detailFrame(state: TopState, data: FrameData, dims: Dims): string[] {
   out.push(...visible);
 
   out.push('');
-  out.push(hintBar(['[↑↓]scroll', '[Esc]back', '[q]uit']));
+  out.push(fitHintBar(['[↑↓]scroll', '[Esc]back', '[q]uit'], dims.cols));
   return out;
 }
 
@@ -671,6 +677,6 @@ function helpFrame(state: TopState, dims: Dims): string[] {
     term('Dream', 'co-retrieval pairs feeding the Dreams pipeline'),
     `    ${dim('Full glossary →')} ${cyan('captain-memo.ispcq.com/glossary.html')}`,
     '',
-    hintBar(['[Esc]back', '[?]close', '[q]uit']),
+    fitHintBar(['[Esc]back', '[?]close', '[q]uit'], dims.cols),
   ];
 }
