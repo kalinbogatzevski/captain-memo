@@ -1633,6 +1633,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       const startedAt = Math.floor(Date.now() / 1000);
       const dedupIngestBusy = () => processBatchPromise != null || (obsQueue?.pendingCount() ?? 0) > 0;
       let dedupAbortedInCandidates = false;
+      let dedupRows = 0;   // 0 groups is two different facts: "read 40,000 rows, none alike" and "read nothing"
       qmDedupPromise = runQmDedupSlice({
         // Cluster-local, not the (project, branch) cross-product. The IVF index already assigned
         // every embedding to a cluster at INSERT, so "which rows might be near this one" is work
@@ -1642,7 +1643,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         // title-greedy grouping afterwards. Per-row KNN was built, measured at ~107 ms a query,
         // and rejected: slower than what it replaced.
         candidates: async () => findDedupGroupsByCluster({
-          rows: await qmStore.allDedupCandidateRows(breathe),
+          rows: await qmStore.allDedupCandidateRows(breathe).then(rs => { dedupRows = rs.length; return rs; }),
           clusters: await clusterObservationIds(breathe),
           representativeVector: repVec,
           cosineThreshold: qmConfig.dedupCosineThreshold,
@@ -1672,10 +1673,10 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             abortedForIngest: r.aborted || dedupAbortedInCandidates, errored: false });
           const gaveUp = r.aborted || dedupAbortedInCandidates;
           if (!gaveUp && r.merges === 0) passSettledAt.set('dedup', dedupMark);
-          if (r.merges > 0 || gaveUp) {
-            console.error(`[qm-dedup] folded ${r.merges} member(s) from ${r.scanned} group(s)`
-              + (gaveUp ? ' — ABORTED for ingest before finishing' : ''));
-          }
+          // Every run, not only the failures: logging just merges>0 and aborts made worker.log read "aborted on
+          // every attempt" however many hourly runs finished clean with nothing to fold.
+          console.error(`[qm-dedup] folded ${r.merges} member(s) from ${r.scanned} group(s) over ${dedupRows} row(s)`
+            + (gaveUp ? ' — ABORTED for ingest before finishing' : ''));
         })
         .catch(err => {
           // A throwing slice must still leave an audit row, else /stats.qm.last_run
@@ -1796,6 +1797,7 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       // "there was nothing to fold". Same class of lying diagnostic as the capture/hook-latency
       // bugs in 0.38.9. Record it.
       let abortedInCandidates = false;
+      let candidateRows = 0;   // "0 groups" cannot otherwise be told from "the surfaced gate left nothing to read"
       semanticPromise = runQmDedupSlice({
         candidates: () => findSemanticGroups({
           yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
@@ -1810,7 +1812,11 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
           // having folded only what was recent. Observed exactly that: 1,031 rows folded, then a
           // plateau with ~3,000 still foldable further back. The sweep is operator-typed, bounded
           // by the corpus itself, and measured at 247 s / 321 ms worst stall — let it see everything.
-          rows: semStore.sameSessionCandidateRows(sweeping ? Number.MAX_SAFE_INTEGER : qmConfig.semanticWindow, sweeping),
+          rows: (() => {
+            const rs = semStore.sameSessionCandidateRows(sweeping ? Number.MAX_SAFE_INTEGER : qmConfig.semanticWindow, sweeping);
+            candidateRows = rs.length;
+            return rs;
+          })(),
           representativeVector: repVec,
           cosineThreshold: qmConfig.semanticCosineThreshold,
           // The group cap bounds the DOWNSTREAM slice, and for a scheduled pass 200 is right:
@@ -1838,8 +1844,8 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
             abortedForIngest: r.aborted || abortedInCandidates, errored: false });
           const gaveUp = r.aborted || abortedInCandidates;
           if (settledRun && !gaveUp && r.merges === 0) passSettledAt.set('semantic', semanticMark);
-          if (r.merges > 0 || gaveUp) {
-            console.error(`[qm-semantic] folded ${r.merges} restatement(s) from ${r.scanned} group(s)`
+          if (r.merges > 0 || gaveUp || !settledRun) {   // a forced run always says what it saw
+            console.error(`[qm-semantic] folded ${r.merges} restatement(s) from ${r.scanned} group(s) in ${candidateRows} candidate row(s)`
               + (gaveUp ? ' — ABORTED for ingest before finishing' : '')
               + (sweeping ? ' (backlog sweep)' : ''));
           }

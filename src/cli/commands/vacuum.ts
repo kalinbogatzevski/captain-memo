@@ -1,7 +1,7 @@
 import { existsSync, statSync, statfsSync } from 'fs';
 import { dirname, join } from 'path';
 import { Database } from 'bun:sqlite';
-import { workerGet } from '../client.ts';
+import { workerHealth } from '../client.ts';
 import { fmtBytes } from '../../shared/format.ts';
 import { VectorStore, VEC_CHUNK_SIZE, vectorOccupancy, type VectorOccupancy } from '../../worker/vector-store.ts';
 import { DATA_DIR, DEFAULT_WORKER_PORT, META_DB_PATH, VECTOR_DB_DIR } from '../../shared/paths.ts';
@@ -25,13 +25,9 @@ function fileSize(path: string): number {
   return total;
 }
 
+// Bounded (3 s): a listener that never answers must not hang the command.
 async function workerIsRunning(): Promise<boolean> {
-  try {
-    await workerGet('/health');
-    return true;
-  } catch {
-    return false;
-  }
+  return (await workerHealth()).healthy;
 }
 
 

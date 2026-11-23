@@ -14,7 +14,7 @@ import { loadWorkerEnv } from './shared/worker-env.ts';
 import { VERSION } from './shared/version.ts';
 import { resolveProjectId, absoluteClaimFiles } from './hooks/shared.ts';
 import { aiProcessPid } from './shared/ai-process.ts';
-import { workerAuthHeaders } from './shared/worker-auth.ts';
+import { callWorker, healthFailureReason, WorkerCallError } from './shared/worker-call.ts';
 
 // Lives in hooks/shared.ts so the UserPromptSubmit hook (`override: <file>`) can use it without importing this module.
 export { absoluteClaimFiles };
@@ -80,10 +80,13 @@ const sessionIdNow = liveSessionId(PROCESS_SESSION_ID);
 /** The AI CLI process this server runs under: the claude parent (see liveSessionId), else a Codex or Gemini ancestor. */
 const hostAiPid = (): number | undefined => (process.env.CLAUDE_CODE_SESSION_ID ? process.ppid : aiProcessPid(['codex', 'gemini']));
 
+// Every worker call goes through callWorker: a 3 s /health preflight and the route's own ceiling
+// (shared/worker-deadlines.ts). Without them a listener that accepts and never answers hung every tool
+// past the host's own timeout.
 async function workerPost(base: string, path: string, body: unknown): Promise<unknown> {
-  const res = await fetch(`${base}${path}`, {
+  const res = await callWorker(base, path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...workerAuthHeaders() },
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -471,14 +474,19 @@ export async function dispatchTool(
           cwd,
         });
       case 'stats': {
-        const res = await fetch(`${workerBase}/stats`, { headers: workerAuthHeaders() });
+        const res = await callWorker(workerBase, '/stats');
         if (!res.ok) throw new Error(`worker /stats returned ${res.status}`);
         result = await res.json();
         break;
       }
       case 'status': {
-        const res = await fetch(`${workerBase}/health`);
-        result = res.ok ? await res.json() : { healthy: false };
+        // Never an error: {healthy:false, reason} says which kind of dead (nothing listening vs. a listener that never answers).
+        try {
+          const res = await fetch(`${workerBase}/health`, { signal: AbortSignal.timeout(3_000) });
+          result = res.ok ? await res.json() : { healthy: false, reason: `worker answered ${res.status}` };
+        } catch (e) {
+          result = { healthy: false, reason: healthFailureReason(e) };
+        }
         break;
       }
       case 'work_set': {
@@ -507,7 +515,7 @@ export async function dispatchTool(
       }
       case 'todo_list': {
         const a = (args ?? {}) as { status?: string };
-        const res = await fetch(`${workerBase}/homework/list?status=${encodeURIComponent(a.status ?? 'open')}`, { headers: workerAuthHeaders() });
+        const res = await callWorker(workerBase, `/homework/list?status=${encodeURIComponent(a.status ?? 'open')}`);
         if (!res.ok) throw new Error(`worker /homework/list returned ${res.status}`);
         result = await res.json();
         break;
@@ -520,7 +528,7 @@ export async function dispatchTool(
       case 'work_active': {
         const a = (args ?? {}) as { session_id?: string };
         const q = new URLSearchParams({ session_id: a.session_id || sessionId });
-        const res = await fetch(`${workerBase}/worknote/active?${q.toString()}`, { headers: workerAuthHeaders() });
+        const res = await callWorker(workerBase, `/worknote/active?${q.toString()}`);
         if (!res.ok) throw new Error(`worker /worknote/active returned ${res.status}`);
         result = await res.json();
         break;
@@ -535,6 +543,9 @@ export async function dispatchTool(
       default: throw new Error(`unknown tool: ${name}`);
     }
   } catch (err) {
+    // A timed-out /remember or /reindex is NOT an error: the worker keeps running it, and isError would push the
+    // caller into the retry that duplicates the write. The message carries the path's own "do not retry" hint.
+    if (err instanceof WorkerCallError && err.kind === 'unconfirmed') return { content: [{ type: 'text', text: err.message }] };
     const e = err as Error;
     return {
       content: [{ type: 'text', text: `Error: ${e.message}` }],

@@ -16,7 +16,7 @@ import { ReaderPool } from './reader-pool.ts';
 import { startWorker, buildWorkerOptionsFromEnv, type WorkerHandle } from './index.ts';
 import { mergeEmbedUsage, type EmbedUsage } from './embedder.ts';
 import { bootWorkerAuthGate } from '../shared/worker-auth.ts';
-import { IN_FLIGHT_ON_TIMEOUT, inFlightHint } from '../shared/worker-deadlines.ts';
+import { IN_FLIGHT_ON_TIMEOUT, inFlightHint, LONG_WRITE_DEADLINE_MS, LONG_WRITE_PATHS, REMEMBER_DEADLINE_MS, REMEMBER_PATHS, REQUEST_DEADLINE_MS } from '../shared/worker-deadlines.ts';
 
 // Pass the URL OBJECT, not its .href string: on Windows a "file:///C:/…/engine.ts" string is
 // not reliably resolved by `new Worker(string)` across bun versions, whereas the URL object is
@@ -26,32 +26,8 @@ const ENGINE_URL = new URL('./engine.ts', import.meta.url);
 // Reader engines are read-only (startWorker({readOnly:true,noServe:true})). They serve the read
 // routes off the writer's heartbeat path entirely — see route-class.ts for the read/write split.
 const READER_URL = new URL('./engine-reader.ts', import.meta.url);
-const REQUEST_DEADLINE_MS = Number(process.env.CAPTAIN_MEMO_ENGINE_REQUEST_MS ?? 10_000);
-// Known-long write ops (a full reindex re-embeds the whole corpus — minutes, not seconds) get a
-// much longer thread-RPC ceiling. With the 10s default, main 503s the CLI with `thread_rpc_timeout`
-// on a write the writer is STILL running (the timeout abandons main's wait; it does NOT cancel the
-// writer) — reporting failure on an eventual success, and a restart mid-run leaves it partial.
-const LONG_WRITE_DEADLINE_MS = Number(process.env.CAPTAIN_MEMO_REINDEX_MS ?? 30 * 60_000);
-// /consolidate joins /reindex here because a forced pass is a whole-corpus scan (~50s measured)
-// plus, for themes, a model call per cluster.
-// /capture/backfill reads every session file of every active capture source (the running tick first, then its own all-history
-// tick, one session at a time with a yield between them): minutes on a big history, never the 10 s default. It took the default,
-// so main 503'd `thread_rpc_timeout` while the writer carried on ingesting. The 30 min ceiling is /reindex's, not a measured
-// backfill time (not measured: no copy of a real history to run it on).
-const LONG_WRITE_PATHS = new Set(['/reindex', '/consolidate', '/capture/backfill']);
-// The paths whose work survives a timeout here (IN_FLIGHT_ON_TIMEOUT) and their hints: shared/worker-deadlines.ts.
-// /remember does an LLM frontmatter `generate`, a semantic dedup search AND a chunk-embed pass before
-// it returns — none of which fit the 10s default on a real corpus, and it was never given a ceiling
-// of its own. MEASURED on this captain (149k chunks, external Voyage embedder), wall-clock at the
-// endpoint: create 1.8s @2KB · 2.1s @10KB · 2.9s @30KB, but an UPDATE to an EXISTING memory took
-// 14.0s @10KB — it re-searches, rewrites and re-ingests. So creates always fit and updates do not,
-// which is exactly the reported shape: /remember 503ing three times running on a large-body update
-// while small writes to the same worker succeeded instantly and /health stayed green (2026-08-08).
-// The timeout only abandons MAIN's wait — the writer runs on and completes the write, so the caller
-// was told "failed" about a write that had in fact landed. 60s is ~4x the measured worst case and
-// still short enough that a genuinely wedged write surfaces rather than hanging the CLI.
-// ponytail: one flat ceiling for the path; split per-op only if a slower corpus makes 60s tight.
-const REMEMBER_DEADLINE_MS = Number(process.env.CAPTAIN_MEMO_REMEMBER_MS ?? 60_000);
+// The per-route ceilings (REQUEST / LONG_WRITE / REMEMBER) live in shared/worker-deadlines.ts, so the clients budget
+// from the same numbers this file enforces.
 // How long to wait for the engine's first heartbeat before declaring the threaded path dead and
 // falling back to single-threaded. Generous on purpose: a healthy engine beats well under a
 // second, so this only fires for an engine that wedges without ever crashing AND never beating.
@@ -406,7 +382,7 @@ export async function startThreadedWorker(port: number): Promise<WorkerHandle> {
       // 10s default would 503 the caller on a slice that then completed anyway — the same
       // false-failure shape /remember had. Shares REMEMBER's ceiling; both are "one model call plus
       // a write", not a corpus scan.
-      : (url.pathname === '/remember' || url.pathname === '/promote/slice') ? REMEMBER_DEADLINE_MS
+      : REMEMBER_PATHS.has(url.pathname) ? REMEMBER_DEADLINE_MS
       : undefined,
     );
   };

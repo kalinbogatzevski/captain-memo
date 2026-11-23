@@ -1,14 +1,16 @@
-import { workerGet, workerHealthy } from '../client.ts';
+import { workerGet, workerHealth } from '../client.ts';
+import { MANUAL_START_HINT } from '../../shared/worker-control.ts';
 
 export async function statusCommand(args: string[] = []): Promise<number> {
   const json = args.includes('--json');
-  const healthy = await workerHealthy();
-  if (!healthy) {
+  const health = await workerHealth();
+  if (!health.healthy) {
     if (json) {
-      console.log(JSON.stringify({ healthy: false }));
+      console.log(JSON.stringify({ healthy: false, reason: health.reason ?? null }));
     } else {
-      console.error('captain-memo worker: NOT RUNNING');
-      console.error('  Start with: bun run worker:start');
+      console.error(`captain-memo worker: NOT RUNNING (${health.reason ?? 'unknown'})`);
+      console.error(`  Start:     ${MANUAL_START_HINT}`);
+      console.error('  Diagnose:  captain-memo doctor');
     }
     return 1;
   }

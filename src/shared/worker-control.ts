@@ -17,6 +17,12 @@
 
 import type { ServiceManager } from '../services/service-manager/types.ts';
 
+/** The OS-native way to start the worker by hand (no `systemctl` on Windows). Printed wherever a command finds
+ *  the worker down, next to `captain-memo doctor`. */
+export const MANUAL_START_HINT = process.platform === 'win32'
+  ? 'Start-ScheduledTask -TaskName captain-memo-worker'
+  : 'systemctl --user start captain-memo-worker';
+
 export interface RestartOptions {
   /** Worker HTTP port. Windows stop(force) hard-kills whatever still LISTENS here. */
   port: number;

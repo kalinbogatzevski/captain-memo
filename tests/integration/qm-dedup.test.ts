@@ -155,6 +155,11 @@ test('auto-dedup fold — cosine-gated, survivor keeps higher count, control sta
 
   // Two near-identical titles (high Jaccard → same group) + one same-family title
   // that we'll keep apart by vector. Survivor = the higher surfaced-count row.
+  // Every finished run logs its row count, not only merges and aborts: "0 groups" alone cannot tell "read 40,000
+  // rows, none alike" from "read nothing".
+  const logged: string[] = [];
+  const origErr = console.error;
+  console.error = (...a: unknown[]) => { logged.push(a.map(String).join(' ')); origErr(...a); };
   const survivor = await seed(port, 'wire quartermaster auto dedup timer into worker');
   const dup = await seed(port, 'wire quartermaster auto dedup timer into the worker now');
   const control = await seed(port, 'wire quartermaster auto dedup timer into worker control variant');
@@ -194,6 +199,8 @@ test('auto-dedup fold — cosine-gated, survivor keeps higher count, control sta
   expect(archivedFlagOf(control).archived).toBe(0);            // control NOT folded (cosine gate)
 
   expect(dedupRun).toBeDefined();                              // a dedup run recorded a merge
+  console.error = origErr;
+  expect(logged.some(l => /\[qm-dedup\] folded \d+ member\(s\) from \d+ group\(s\) over [1-9]\d* row\(s\)/.test(l))).toBe(true);
 
   // QM block surfaces on /stats.
   const stats = await (await fetch(`http://localhost:${port}/stats`)).json() as

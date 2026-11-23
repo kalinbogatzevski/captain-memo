@@ -92,7 +92,7 @@ test('work_set: relative files resolve against the repo root; absolute ones, and
 
 test('work_set dispatch sends absolute files to the worker', async () => {
   let body: { files?: string[] } = {};
-  const srv = Bun.serve({ port: 0, async fetch(req) { body = await req.json() as typeof body; return Response.json({ ok: true }); } });
+  const srv = Bun.serve({ port: 0, async fetch(req) { if (new URL(req.url).pathname === '/health') return Response.json({ healthy: true }); body = await req.json() as typeof body; return Response.json({ ok: true }); } });
   const root = require('node:child_process').execSync('git rev-parse --show-toplevel', { cwd: import.meta.dir, encoding: 'utf-8' }).trim();
   try {
     await dispatchTool('work_set', { what: 'x', files: ['src/mcp-server.ts'] }, { workerBase: `http://localhost:${srv.port}`, sessionId: 's', cwd: () => root });
@@ -104,7 +104,7 @@ test('work_set dispatch sends absolute files to the worker', async () => {
 // (this server's parent) so the heartbeat keeps its claim guarded; the model cannot pick the pid. Elsewhere, none.
 test('work_set stamps the parent pid under Claude Code only, over any pid the model passes', async () => {
   let body: { pid?: number } = {};
-  const srv = Bun.serve({ port: 0, async fetch(req) { body = await req.json() as typeof body; return Response.json({ ok: true }); } });
+  const srv = Bun.serve({ port: 0, async fetch(req) { if (new URL(req.url).pathname === '/health') return Response.json({ healthy: true }); body = await req.json() as typeof body; return Response.json({ ok: true }); } });
   const prev = process.env.CLAUDE_CODE_SESSION_ID;
   try {
     process.env.CLAUDE_CODE_SESSION_ID = 'sess';
@@ -122,7 +122,7 @@ test('work_set stamps the parent pid under Claude Code only, over any pid the mo
 // work_set and work_clear act only on the caller's own session: `by` is always this server's session, whatever the model sends.
 test('work_set and work_clear send the caller as `by`, over any `by` the model passes', async () => {
   const seen: Record<string, unknown> = {};
-  const srv = Bun.serve({ port: 0, async fetch(req) { seen[new URL(req.url).pathname] = await req.json(); return Response.json({ ok: true }); } });
+  const srv = Bun.serve({ port: 0, async fetch(req) { if (new URL(req.url).pathname === '/health') return Response.json({ healthy: true }); seen[new URL(req.url).pathname] = await req.json(); return Response.json({ ok: true }); } });
   try {
     const deps = { workerBase: `http://localhost:${srv.port}`, sessionId: 's', cwd: () => '/' };
     await dispatchTool('work_set', { what: 'x', session_id: 'peer', by: 'peer' }, deps);
@@ -139,7 +139,7 @@ test('todo_add: `due` is in the schema, optional, and reaches the worker only wh
   expect(props.properties.due?.type).toBe('string');
   expect(props.required).toEqual(['text']);
   const bodies: Array<Record<string, unknown>> = [];
-  const srv = Bun.serve({ port: 0, async fetch(req) { bodies.push(await req.json() as Record<string, unknown>); return Response.json({ item: { id: '1' }, open: 1 }); } });
+  const srv = Bun.serve({ port: 0, async fetch(req) { if (new URL(req.url).pathname === '/health') return Response.json({ healthy: true }); bodies.push(await req.json() as Record<string, unknown>); return Response.json({ item: { id: '1' }, open: 1 }); } });
   try {
     const deps = { workerBase: `http://localhost:${srv.port}`, sessionId: 's', cwd: () => '/' };
     await dispatchTool('todo_add', { text: 'with a due time', due: '2026-10-01T09:30' }, deps);

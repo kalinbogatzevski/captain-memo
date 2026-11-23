@@ -1,10 +1,10 @@
 import { MetaStore } from '../../worker/meta.ts';
 import { DEFAULT_WORKER_PORT, META_DB_PATH } from '../../shared/paths.ts';
-import { workerGet, workerPost } from '../client.ts';
+import { workerHealth, workerPost } from '../client.ts';
 import { vacuumCommand } from './vacuum.ts';
 import { cyanBold, dim, green, yellow } from '../../shared/ansi.ts';
-import { isWindows } from '../../shared/platform.ts';
 import { getServiceManager } from '../../services/service-manager/index.ts';
+import { MANUAL_START_HINT } from '../../shared/worker-control.ts';
 
 // Bare service id the ServiceManager expects (the systemd impl appends '.service').
 const SERVICE = 'captain-memo-worker';
@@ -13,18 +13,9 @@ const SERVICE = 'captain-memo-worker';
 // (POST /shutdown) hits the same worker the reindex talked to.
 const WORKER_PORT = Number(process.env.CAPTAIN_MEMO_WORKER_PORT ?? DEFAULT_WORKER_PORT);
 
-// OS-aware manual-start hint for the failure paths (no `systemctl` on Windows).
-const MANUAL_START_HINT = isWindows
-  ? 'Start-ScheduledTask -TaskName captain-memo-worker'
-  : 'systemctl --user start captain-memo-worker';
-
+// Bounded (3 s): a listener that never answers must not hang the command.
 async function workerIsRunning(): Promise<boolean> {
-  try {
-    await workerGet('/health');
-    return true;
-  } catch {
-    return false;
-  }
+  return (await workerHealth()).healthy;
 }
 
 async function waitForWorker(timeoutMs = 15_000): Promise<boolean> {
