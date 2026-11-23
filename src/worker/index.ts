@@ -1544,7 +1544,14 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         countVectors: (coll) => vector.countVectors(coll),
         getCentroids: (coll) => vector.getCentroids(coll),
         setCentroids: (coll, centroids, bootstrapVectors) => vector.setCentroids(coll, centroids, bootstrapVectors),
-        bootstrapSize: (coll) => vector.bootstrapSize(coll),
+        split: {
+          current: (coll) => vector.splitInProgress(coll),
+          largest: (ids) => vector.largestCluster(ids),
+          rows: (id, limit) => vector.clusterRows(id, limit),
+          sample: (id, limit) => vector.sampleClusterVectors(id, limit),
+          start: (coll, id, seeds) => vector.startSplit(coll, id, seeds),
+          finish: (coll, id, drop) => vector.finishSplit(coll, id, drop),
+        },
         updateCentroids: (coll, changed) => vector.updateCentroids(coll, changed),
         allocateClusterIds: (coll, n) => vector.allocateClusterIds(coll, n),
         sampleAnyVectors: (coll, limit) => vector.sampleAnyVectors(coll, limit),
@@ -1556,11 +1563,11 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
         yieldToLoop: () => new Promise<void>(r => setImmediate(r)),
       })
           .then(r => {
-            const building = r.legacyMigrated > 0 || r.bootstrapped > 0 || r.assigned > 0 || r.reset > 0;
+            const building = r.legacyMigrated > 0 || r.bootstrapped > 0 || r.assigned > 0 || r.reset > 0 || r.split > 0;
             if (building || r.rebalanced > 0) {
               console.error(
                 `[ivf-sweep] legacyMigrated=${r.legacyMigrated} bootstrapped=${r.bootstrapped} `
-                + `assigned=${r.assigned} rebalanced=${r.rebalanced} reset=${r.reset}`,
+                + `assigned=${r.assigned} rebalanced=${r.rebalanced} reset=${r.reset} split=${r.split}`,
               );
             }
             return building;

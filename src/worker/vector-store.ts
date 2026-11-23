@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite';
 import { ensureExtensionCapableSqlite, isExtensionLoadingUnsupported, MACOS_SQLITE_REMEDY } from '../shared/sqlite-extensions.ts';
 import * as sqliteVec from 'sqlite-vec';
 import { readPaged } from '../shared/paged-read.ts';
-import { DEFAULT_IVF_CONFIG, nearestCentroids, nearestInBatch, hasDirection, isZeroVector, UNCLUSTERED_CLUSTER, type IvfConfig, type Centroid } from './ivf.ts';
+import { DEFAULT_IVF_CONFIG, defaultSample, nearestCentroids, nearestInBatch, hasDirection, isZeroVector, UNCLUSTERED_CLUSTER, type IvfConfig, type Centroid } from './ivf.ts';
 
 export interface VectorStoreOptions {
   dbPath: string;
@@ -134,6 +134,14 @@ CREATE TABLE IF NOT EXISTS vec_cluster_id_seq (
 CREATE TABLE IF NOT EXISTS vec_index_bootstrap (
   collection_name TEXT PRIMARY KEY,
   vectors INTEGER NOT NULL
+);
+
+-- The cluster being split, if any (see startSplit): its rows move to the seeds seed_lo..seed_hi, then its centroid goes.
+CREATE TABLE IF NOT EXISTS vec_index_split (
+  collection_name TEXT PRIMARY KEY,
+  cluster_id INTEGER NOT NULL,
+  seed_lo INTEGER NOT NULL,
+  seed_hi INTEGER NOT NULL
 );
 `;
 const SEED_SEQ = `INSERT OR IGNORE INTO vec_cluster_id_seq (id, next_id) VALUES (1, 0);`;
@@ -631,7 +639,8 @@ export class VectorStore {
 
   /** Replace the full centroid set for a collection. Does not touch other
    *  collections' centroids. `bootstrapVectors` is passed by the bootstrap only (a seeding, not a drift update): it is
-   *  recorded in the same transaction, so the set and the size it was built for never disagree. */
+   *  recorded in the same transaction, so the set and the size it was built for never disagree, and any split in progress is
+   *  dropped with the set it belonged to. */
   setCentroids(collection: string, centroids: Centroid[], bootstrapVectors?: number): void {
     const del = this.db.query(`DELETE FROM vec_cluster_centroids WHERE collection_name = ?`);
     const ins = this.db.query(
@@ -645,6 +654,7 @@ export class VectorStore {
       }
       if (bootstrapVectors !== undefined) {
         this.db.query(`INSERT OR REPLACE INTO vec_index_bootstrap (collection_name, vectors) VALUES (?, ?)`).run(collection, bootstrapVectors);
+        this.db.query(`DELETE FROM vec_index_split WHERE collection_name = ?`).run(collection);   // its ids are gone with the set
       }
     });
     tx();
@@ -679,6 +689,92 @@ export class VectorStore {
         const n = byId.get(c.clusterId);
         return n ? { clusterId: n.clusterId, vector: Array.from(new Float32Array(n.vector)), hitCount: n.hitCount } : c;
       }),
+    });
+  }
+
+  /** The split in progress for the collection (see startSplit), or null. */
+  splitInProgress(collection: string): { clusterId: number; seedLo: number; seedHi: number } | null {
+    try {
+      const r = this.db.query(`SELECT cluster_id, seed_lo, seed_hi FROM vec_index_split WHERE collection_name = ?`)
+        .get(collection) as { cluster_id: number; seed_lo: number; seed_hi: number } | null;
+      return r ? { clusterId: r.cluster_id, seedLo: r.seed_lo, seedHi: r.seed_hi } : null;
+    } catch { return null; }   // a read-only handle on a file that predates the table
+  }
+
+  /** The largest of `clusterIds` by vector count, or null (none populated, or a shadow layout this code does not know).
+   *  Each partition's chunk slots bound its count from above (chunks are part-filled after deletes and moves), so the exact
+   *  count is taken only while a bound can still beat the best found. MEASURED on a copy of the dev store (400,797 vectors,
+   *  477 clusters, 2026-11-23, box at load 25): the bounds 0.8 ms p50, an exact count 0.5 ms (3,761 rows); the one-pass
+   *  exact GROUP BY over every row was 153 ms. Run once per converged sweep tick. */
+  largestCluster(clusterIds: readonly number[]): { clusterId: number; size: number } | null {
+    try {
+      const live = new Set(clusterIds);
+      const bounds = this.db.query(`SELECT partition00 AS p, SUM(size) AS slots FROM vec_chunks_p_chunks
+                                     WHERE partition00 >= 0 GROUP BY 1 ORDER BY 2 DESC`).all() as Array<{ p: number; slots: number }>;
+      const count = this.db.query(`SELECT COUNT(*) AS n FROM vec_chunks_p_chunks c
+                                     CROSS JOIN vec_chunks_p_rowids r ON r.chunk_id = c.chunk_id WHERE c.partition00 = ?`);
+      let best: { clusterId: number; size: number } | null = null;
+      for (const b of bounds) {
+        if (best && b.slots <= best.size) break;
+        if (!live.has(b.p)) continue;
+        const n = (count.get(b.p) as { n: number }).n;
+        if (n > 0 && (!best || n > best.size)) best = { clusterId: b.p, size: n };
+      }
+      return best;
+    } catch { return null; }
+  }
+
+  /** Up to `limit` vectors of one cluster (its leading rows), or null when the shadow layout is unknown. */
+  clusterRows(clusterId: number, limit: number): Array<{ chunkId: string; embedding: Float32Array }> | null {
+    const ids = this.shadowIdsInCluster(clusterId, true, limit);
+    return ids && this.vecRowsById(ids).map(r => ({
+      chunkId: r.chunk_id,
+      embedding: new Float32Array(r.embedding.buffer, r.embedding.byteOffset, r.embedding.byteLength / 4),
+    }));
+  }
+
+  /** Up to `limit` vectors with a direction, drawn at random from one cluster: the seeds of its split. */
+  sampleClusterVectors(clusterId: number, limit: number): Array<{ chunkId: string; embedding: Float32Array }> {
+    const ids = this.shadowIdsInCluster(clusterId, true, Number.MAX_SAFE_INTEGER) ?? [];
+    const out: Array<{ chunkId: string; embedding: Float32Array }> = [];
+    for (const i of defaultSample(ids.length, limit * 3)) {
+      const [r] = this.vecRowsById([ids[i]!]);
+      if (!r) continue;
+      const embedding = new Float32Array(r.embedding.buffer, r.embedding.byteOffset, r.embedding.byteLength / 4);
+      if (hasDirection(embedding)) out.push({ chunkId: r.chunk_id, embedding });
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
+  /** Begin splitting `clusterId`: its seeds (consecutive ids from allocateClusterIds) join the set and the split is recorded,
+   *  in one transaction. The cluster keeps its centroid, so its rows stay probed, until finishSplit. */
+  startSplit(collection: string, clusterId: number, seeds: Centroid[]): void {
+    const current = this.getCentroids(collection);
+    const ids = seeds.map(c => c.clusterId);
+    const ins = this.db.query(`INSERT INTO vec_cluster_centroids (collection_name, cluster_id, hit_count, centroid) VALUES (?, ?, ?, ?)`);
+    this.db.transaction(() => {
+      for (const c of seeds) ins.run(collection, c.clusterId, c.hitCount, new Uint8Array(new Float32Array(c.vector).buffer));
+      this.db.query(`INSERT OR REPLACE INTO vec_index_split (collection_name, cluster_id, seed_lo, seed_hi) VALUES (?, ?, ?, ?)`)
+        .run(collection, clusterId, Math.min(...ids), Math.max(...ids));
+    })();
+    this.centroidCache.set(collection, {
+      fp: this.centroidFingerprint(collection), at: Date.now(), own: true,
+      centroids: [...current, ...seeds.map(c => ({ clusterId: c.clusterId, vector: Array.from(new Float32Array(c.vector)), hitCount: c.hitCount }))],
+    });
+  }
+
+  /** End the split: forget it and, with `dropCentroid` (every row has moved), remove the cluster's centroid, in one
+   *  transaction. add() checks its cluster against the live set right before it writes, so nothing lands under the old id. */
+  finishSplit(collection: string, clusterId: number, dropCentroid: boolean): void {
+    const current = this.getCentroids(collection);
+    this.db.transaction(() => {
+      if (dropCentroid) this.db.query(`DELETE FROM vec_cluster_centroids WHERE collection_name = ? AND cluster_id = ?`).run(collection, clusterId);
+      this.db.query(`DELETE FROM vec_index_split WHERE collection_name = ?`).run(collection);
+    })();
+    this.centroidCache.set(collection, {
+      fp: this.centroidFingerprint(collection), at: Date.now(), own: true,
+      centroids: dropCentroid ? current.filter(c => c.clusterId !== clusterId) : current,
     });
   }
 
