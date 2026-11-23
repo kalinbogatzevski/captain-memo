@@ -721,7 +721,8 @@ unconditionally** — so a half-built or abandoned index never silently loses a 
 ~16 clusters the probe reads the whole corpus anyway. The index builds in the background in
 bounded slices, fast while there is work to assign and slow once converged.
 
-The partition is also interesting in its own right. Measured on that store: 412 clusters, **87% of
+The partition is also interesting in its own right. Measured on the same store at 144,159 vectors (a
+different August 2026 snapshot from the latency figures above): 412 clusters, **87% of
 them spanning more than one repository**, 72% mixing curated notes with captured observations, and
 three distinct kinds of grouping that nothing in the method distinguishes — topical, methodological
 (memories united by *how* something was learned rather than what it was about), and episodic (one
