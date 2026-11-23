@@ -39,6 +39,8 @@ export interface NativeSessionUsage {
   cache_read_tokens: number;
   /** Transcript mtime — when the session last produced a message. */
   last_activity_epoch_ms: number;
+  /** The CLI that wrote the session: absent for Claude Code, set by cli-session-usage.ts for the others. */
+  cli?: string | undefined;
   /** The model and effort of the session's LATEST response, as the transcript records them on every assistant
    *  message. Last, not first: both can change mid-session (/model, /effort). Absent before the first response. */
   model?: string | undefined;

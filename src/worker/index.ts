@@ -2749,7 +2749,9 @@ export async function startWorker(opts: WorkerOptions): Promise<WorkerHandle> {
       if (req.method === 'GET' && url.pathname === '/sessions/usage') {
         const windowMs = Math.max(60_000, Number(url.searchParams.get('window_ms')) || 30 * 60_000);
         const { readNativeSessionUsage, injectedBySession } = await import('./native-session-usage.ts');
-        const native = await readNativeSessionUsage(windowMs).catch(() => []);
+        const { readCliSessionUsage } = await import('./cli-session-usage.ts');
+        // Claude Code's rows, then the other CLIs' (Codex, opencode, Gemini: tagged `cli`, rows only, never in totals).
+        const native = [...await readNativeSessionUsage(windowMs).catch(() => []), ...readCliSessionUsage(windowMs)];
         const injected = await injectedBySession(
           `${process.env.CAPTAIN_MEMO_DATA_DIR ?? DATA_DIR}/recall-audit.jsonl`,
         ).catch(() => new Map<string, { tokens: number; injections: number }>());
